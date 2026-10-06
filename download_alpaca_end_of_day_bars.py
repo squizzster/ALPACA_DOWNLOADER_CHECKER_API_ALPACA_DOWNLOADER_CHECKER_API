@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Stable executable entry point for downloading Alpaca end-of-day bars."""
+"""Stable executable entry point for the complete Alpaca end-of-day ticker pipeline."""
 
 import sys
 
 from libs.alpaca_end_of_day_pipeline import AlpacaDownloadIntegrityError
+from libs.alpaca_end_of_day_ticker_pipeline import (
+    parse_end_of_day_ticker_pipeline_arguments as parse_command_line_arguments,
+)
+from libs.alpaca_end_of_day_ticker_pipeline import run_end_of_day_tickers_pipeline_command
 from libs.download_alpaca_end_of_day_bars import (
     ALPACA_ADJUSTMENT_MODES,
     ALPACA_BAR_TIMEFRAME,
@@ -12,10 +16,8 @@ from libs.download_alpaca_end_of_day_bars import (
     MIN_REQUEST_INTERVAL_SECONDS,
     REQUESTS_PER_MINUTE,
     AlpacaRequestRateLimiter,
-    parse_command_line_arguments,
     rate_limit_delay_seconds,
     request_alpaca_daily_bars,
-    run_end_of_day_download_command,
 )
 
 # Backward-compatible spelling from the former single-file implementation.
@@ -37,7 +39,7 @@ __all__ = [
 
 
 def main() -> None:
-    run_end_of_day_download_command(parse_command_line_arguments())
+    run_end_of_day_tickers_pipeline_command(parse_command_line_arguments())
 
 
 if __name__ == "__main__":

@@ -161,7 +161,7 @@ def publish_valid_test_download(test_directory: str | Path) -> PublishedTestDown
 
 class PublicationTests(unittest.TestCase):
     def test_version_changelog_matches_pipeline(self):
-        self.assertEqual(PIPELINE_VERSION, 14)
+        self.assertEqual(PIPELINE_VERSION, 16)
         self.assertEqual(len(validate_pipeline_change_log()), PIPELINE_VERSION)
 
     def test_pipeline_finishes_before_any_gzip_path_exists(self):
@@ -676,16 +676,28 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertFalse(validation_result.has_failures)
 
-    def test_missing_session_is_a_dataset_failure(self):
+    def test_missing_session_is_not_an_identity_blind_integrity_failure(self):
         daily_bars_with_missing_session = load_fixture_bars("nine_daily_bars_one_market_session_missing.json")
         validation_result = end_of_day_pipeline._validate_end_of_day_bars(
             daily_bars_with_missing_session,
             test_download_request_identity(),
         )
         self.assertEqual(validation_result.row_failures, ())
+        self.assertEqual(validation_result.dataset_failures, ())
+
+    def test_unexpected_closed_session_remains_a_dataset_failure(self):
+        daily_bars_with_closed_session = copy.deepcopy(load_fixture_bars())
+        closed_session_bar = copy.deepcopy(daily_bars_with_closed_session[3])
+        closed_session_bar["t"] = "2024-01-06T05:00:00Z"
+        daily_bars_with_closed_session.insert(4, closed_session_bar)
+        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+            daily_bars_with_closed_session,
+            test_download_request_identity(),
+        )
+        self.assertEqual(validation_result.row_failures, ())
         self.assertEqual(
-            validation_result.dataset_failures[0]["missing_sessions"],
-            ["2024-01-10"],
+            validation_result.dataset_failures[0]["unexpected_sessions"],
+            ["2024-01-06"],
         )
 
     def test_activity_fixture_has_one_exact_failure(self):

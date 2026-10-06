@@ -77,5 +77,16 @@
       "Split pipeline responsibilities into self-describing library modules with stable root facades and one-way ownership boundaries.",
       "Move reusable atomic-write, file-integrity, and US-market-calendar behavior into common libraries without changing downloaded filenames or manifest schemas."
     ]
+  },
+  {
+    "modifications": [
+      "Classify deterministic OHLC and VWAP range evaluations as integrity errors through shared pure rule evaluators whose policy can also support later warning boundaries without changing their mathematics."
+    ]
+  },
+  {
+    "modifications": [
+      "Stop classifying absent ticker sessions as integrity corruption before security identity and ownership boundaries are known.",
+      "Keep unexpected closed-session bars and duplicate or incorrectly ordered sessions in the action-required integrity boundary; defer missing-session analysis to UUID-segmented warning processing."
+    ]
   }
 ]

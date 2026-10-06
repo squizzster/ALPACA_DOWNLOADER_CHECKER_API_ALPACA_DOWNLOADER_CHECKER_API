@@ -1,0 +1,14 @@
+[
+  {
+    "modifications": [
+      "Establish a separately versioned end-of-day warning pipeline over authenticated Alpaca downloads and authenticated security-correlation outputs.",
+      "Validate cross-adjustment consistency across comparable download views and evaluate contextual market-data warnings independently within exact Alpaca UUID histories.",
+      "Publish cross-adjustment and security-segment statistical outputs atomically before a digest-binding receipt in the owning data/end_of_day symbol directory."
+    ]
+  },
+  {
+    "modifications": [
+      "Evaluate missing market sessions only inside correlated Alpaca UUID ownership segments, excluding calendar intervals between distinct securities and outside known terminal ownership boundaries."
+    ]
+  }
+]

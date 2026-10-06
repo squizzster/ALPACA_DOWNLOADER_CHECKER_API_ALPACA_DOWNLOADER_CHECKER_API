@@ -5,6 +5,7 @@ import sys
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 
 from libs.alpaca_end_of_day_pipeline import (
     INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
@@ -19,6 +20,7 @@ from libs.alpaca_end_of_day_pipeline import (
 )
 
 from .alpaca_http import AlpacaRequestRateLimiter, request_alpaca_daily_bars
+from .contracts import EndOfDayDownloadPlan, EndOfDayDownloadStageResult
 from .settings import (
     ALPACA_ADJUSTMENT_MODES,
     ALPACA_BAR_TIMEFRAME,
@@ -27,9 +29,32 @@ from .settings import (
 )
 
 
-def parse_command_line_arguments() -> argparse.Namespace:
-    argument_parser = argparse.ArgumentParser(description="Download daily Alpaca bars as compressed CSV.")
-    argument_parser.add_argument("--symbol", required=True, help="Stock ticker, for example DELL")
+def _read_alpaca_credentials(environment: Mapping[str, str]) -> tuple[str, str]:
+    api_key_id = environment.get("ALPACA_API_KEY_ID")
+    api_secret_key = environment.get("ALPACA_API_SECRET_KEY")
+    if not api_key_id or not api_secret_key:
+        raise SystemExit("set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY")
+    return api_key_id, api_secret_key
+
+
+def create_end_of_day_download_argument_parser(
+    *,
+    description: str = "Download daily Alpaca bars as compressed CSV.",
+    repeatable_symbols: bool = False,
+) -> argparse.ArgumentParser:
+    argument_parser = argparse.ArgumentParser(description=description)
+    argument_parser.add_argument(
+        "--symbol",
+        "-s",
+        dest="symbols" if repeatable_symbols else "symbol",
+        action="append" if repeatable_symbols else "store",
+        required=True,
+        help=(
+            "stock ticker; repeat for multiple tickers, for example --symbol DELL -s FB"
+            if repeatable_symbols
+            else "stock ticker, for example DELL"
+        ),
+    )
     argument_parser.add_argument(
         "--adjustment",
         action="append",
@@ -53,21 +78,65 @@ def parse_command_line_arguments() -> argparse.Namespace:
         action="store_true",
         help="redownload both boundary files when exactly one frozen download-pair file is missing",
     )
-    return argument_parser.parse_args()
+    return argument_parser
 
 
-def run_end_of_day_download_command(cli_arguments: argparse.Namespace) -> None:
-    validate_pipeline_change_log()
-    normalized_symbol = cli_arguments.symbol.upper()
-    if not re.fullmatch(r"[A-Z][A-Z0-9.-]*", normalized_symbol):
-        raise SystemExit(f"invalid symbol: {cli_arguments.symbol!r}")
+def parse_command_line_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
+    return create_end_of_day_download_argument_parser().parse_args(arguments)
 
+
+def end_of_day_download_plan_from_command_line(
+    cli_arguments: argparse.Namespace,
+) -> EndOfDayDownloadPlan:
+    download_plans = end_of_day_download_plans_from_command_line(cli_arguments)
+    if len(download_plans) != 1:
+        raise ValueError("a single-symbol command received multiple symbols")
+    return download_plans[0]
+
+
+def end_of_day_download_plans_from_command_line(
+    cli_arguments: argparse.Namespace,
+) -> tuple[EndOfDayDownloadPlan, ...]:
+    supplied_symbols = getattr(cli_arguments, "symbols", None)
+    if supplied_symbols is None:
+        supplied_symbols = [cli_arguments.symbol]
+    supplied_and_normalized_symbols = tuple((symbol, symbol.upper()) for symbol in supplied_symbols)
+    for supplied_symbol, normalized_symbol in supplied_and_normalized_symbols:
+        if not re.fullmatch(r"[A-Z][A-Z0-9.-]*", normalized_symbol):
+            raise SystemExit(f"invalid symbol: {supplied_symbol!r}")
+    normalized_symbols = tuple(
+        dict.fromkeys(normalized_symbol for _, normalized_symbol in supplied_and_normalized_symbols)
+    )
     requested_adjustment_modes = tuple(dict.fromkeys(cli_arguments.adjustment or ALPACA_ADJUSTMENT_MODES))
-    request_end_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+    return tuple(
+        EndOfDayDownloadPlan(
+            symbol=normalized_symbol,
+            adjustment_modes=requested_adjustment_modes,
+            force_authenticated_replacement=cli_arguments.force,
+            repair_orphaned_download_pair=cli_arguments.repair_orphaned_download_pair,
+        )
+        for normalized_symbol in normalized_symbols
+    )
+
+
+def run_end_of_day_download_stage(
+    download_plan: EndOfDayDownloadPlan,
+    *,
+    repository_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    request_end_timestamp: str | None = None,
+    request_rate_limiter: AlpacaRequestRateLimiter | None = None,
+) -> EndOfDayDownloadStageResult:
+    validate_pipeline_change_log()
+    resolved_repository_root = Path.cwd() if repository_root is None else repository_root
+    command_environment = os.environ if environment is None else environment
+    normalized_symbol = download_plan.symbol
+    requested_adjustment_modes = download_plan.adjustment_modes
+    request_end_timestamp = request_end_timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
     request_asof_date = request_end_timestamp[:10]
-    symbol_download_directory = Path("data") / "end_of_day" / normalized_symbol
+    symbol_download_directory = resolved_repository_root / "data" / "end_of_day" / normalized_symbol
     symbol_download_directory.mkdir(parents=True, exist_ok=True)
-    rate_limiter = AlpacaRequestRateLimiter()
+    rate_limiter = request_rate_limiter or AlpacaRequestRateLimiter()
     api_key_id = None
     api_secret_key = None
     failed_integrity_artifact_count = 0
@@ -97,14 +166,14 @@ def run_end_of_day_download_command(cli_arguments: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if download_pair_is_orphaned and not cli_arguments.repair_orphaned_download_pair:
+        if download_pair_is_orphaned and not download_plan.repair_orphaned_download_pair:
             print(
                 f"error: {download_path}: cache corruption: {cache_inspection.diagnostic}; "
                 "use --repair to repair",
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if cli_arguments.repair_orphaned_download_pair and not download_pair_is_orphaned:
+        if download_plan.repair_orphaned_download_pair and not download_pair_is_orphaned:
             if cache_inspection.download_manifest is not None:
                 authenticate_frozen_download(download_path, cache_inspection.download_manifest)
             print(
@@ -113,14 +182,20 @@ def run_end_of_day_download_command(cli_arguments: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if cache_inspection.required_action == "refresh_required" and not cli_arguments.force:
+        if (
+            cache_inspection.required_action == "refresh_required"
+            and not download_plan.force_authenticated_replacement
+        ):
             print(
                 f"error: {download_path}: {cache_inspection.diagnostic}; use --force to replace "
                 "the Alpaca download boundary",
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if cache_inspection.required_action == RECORDED_PRICING_DATA_FAILURE_ACTION and not cli_arguments.force:
+        if (
+            cache_inspection.required_action == RECORDED_PRICING_DATA_FAILURE_ACTION
+            and not download_plan.force_authenticated_replacement
+        ):
             print(
                 f"error: {download_path}: pricing/data integrity failed: "
                 f"{cache_inspection.diagnostic}; use --force to fetch a new Alpaca download",
@@ -129,10 +204,10 @@ def run_end_of_day_download_command(cli_arguments: argparse.Namespace) -> None:
             failed_integrity_artifact_count += 1
             continue
 
-        if cli_arguments.force and cache_inspection.download_manifest is not None:
+        if download_plan.force_authenticated_replacement and cache_inspection.download_manifest is not None:
             authenticate_frozen_download(download_path, cache_inspection.download_manifest)
 
-        replacement_authorized = cli_arguments.force or download_pair_is_orphaned
+        replacement_authorized = download_plan.force_authenticated_replacement or download_pair_is_orphaned
 
         if not replacement_authorized and cache_inspection.required_action == "cached":
             cached_download_manifest = cache_inspection.download_manifest
@@ -172,10 +247,7 @@ def run_end_of_day_download_command(cli_arguments: argparse.Namespace) -> None:
             print(f"{download_path}: cache unusable ({cache_inspection.diagnostic}); downloading")
 
         if api_key_id is None or api_secret_key is None:
-            api_key_id = os.environ.get("ALPACA_API_KEY_ID")
-            api_secret_key = os.environ.get("ALPACA_API_SECRET_KEY")
-            if not api_key_id or not api_secret_key:
-                raise SystemExit("set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY")
+            api_key_id, api_secret_key = _read_alpaca_credentials(command_environment)
 
         try:
             downloaded_alpaca_bars = request_alpaca_daily_bars(
@@ -211,9 +283,25 @@ def run_end_of_day_download_command(cli_arguments: argparse.Namespace) -> None:
             f"sha256={published_download_manifest['sha256']}"
         )
 
-    if failed_integrity_artifact_count:
+    return EndOfDayDownloadStageResult(
+        symbol=normalized_symbol,
+        requested_adjustment_modes=requested_adjustment_modes,
+        pricing_data_integrity_failure_count=failed_integrity_artifact_count,
+    )
+
+
+def run_end_of_day_download_command(
+    cli_arguments: argparse.Namespace,
+) -> EndOfDayDownloadStageResult:
+    download_stage_result = run_end_of_day_download_stage(
+        end_of_day_download_plan_from_command_line(cli_arguments)
+    )
+    if download_stage_result.has_pricing_data_integrity_failures:
         print(
-            f"error: {failed_integrity_artifact_count} artifact(s) failed pricing/data integrity",
+            "error: "
+            f"{download_stage_result.pricing_data_integrity_failure_count} "
+            "artifact(s) failed pricing/data integrity",
             file=sys.stderr,
         )
         raise SystemExit(1)
+    return download_stage_result

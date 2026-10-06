@@ -1,0 +1,39 @@
+[
+  {
+    "modifications": [
+      "Establish a separately versioned security-correlation layer over authenticated frozen Alpaca downloads and lineage evidence.",
+      "Partition every source row into digest-bound correlated and uncorrelated branch outputs, then publish their receipt last."
+    ]
+  },
+  {
+    "modifications": [
+      "Apply explicitly ordered ownership-interval and row-correlation rule registries and record rule provenance in correlation outputs.",
+      "Establish an exclusive terminal ticker-ownership boundary from an identity-resolved cash-merger acquiree action."
+    ]
+  },
+  {
+    "modifications": [
+      "Establish a base ownership interval when complete corporate-action evidence and the current asset lookup agree on exactly one input-symbol identity.",
+      "Apply ticker transitions and terminal merger boundaries as constraints on that base interval while preserving ambiguous ticker reuse as uncorrelated."
+    ]
+  },
+  {
+    "modifications": [
+      "Assign every correlated row segment to its exact Alpaca asset UUID and preserve name changes as directed UUID-to-UUID lineage edges without collapsing identity nodes.",
+      "Separate UUID attribution from boundary confidence so a unique candidate can pass with explicit warnings, while only missing or tied UUID candidates remain uncorrelated.",
+      "Prefer the asof-selected UUID predecessor branch over unrelated ticker reuse and preserve conflicting duplicate merger boundaries as warnings.",
+      "Keep mutable asset names and status in the lineage snapshot rather than serializing them as canonical historical identity."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish security-correlation branch manifests and their digest-binding receipt inside the owning data/end_of_day symbol directory with all other production pipeline manifests."
+    ]
+  },
+  {
+    "modifications": [
+      "Use an asset-resolved same-ticker stock-merger event as a dated transition between distinct predecessor and successor Alpaca UUIDs.",
+      "Preserve that transition as a stock-merger UUID lineage edge while excluding unrelated merger inputs from the requested ticker lineage."
+    ]
+  }
+]

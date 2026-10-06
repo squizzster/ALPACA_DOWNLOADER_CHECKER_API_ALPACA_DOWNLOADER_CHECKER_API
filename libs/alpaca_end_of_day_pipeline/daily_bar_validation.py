@@ -9,6 +9,11 @@ from datetime import time as datetime_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from libs.common.market_data_rule_evaluators import (
+    ERROR,
+    evaluate_ordered_bounds,
+    evaluate_value_within_bounds,
+)
 from libs.common.us_equity_market_session_calendar import (
     MarketCalendarError,
     compare_observed_to_expected_sessions,
@@ -133,14 +138,29 @@ def validate_daily_bar(
 
     if min(open_price, high_price, low_price, close_price, volume_weighted_average_price) <= 0:
         raise EndOfDayPipelineError(f"row {row_number}: prices must be positive")
-    if high_price < low_price:
+    if (
+        evaluate_ordered_bounds(
+            low_price,
+            high_price,
+            violation_outcome=ERROR,
+        ).outcome
+        == ERROR
+    ):
         raise EndOfDayPipelineError(f"row {row_number}: high is below low")
     for price_name, price_value in (
         ("open", open_price),
         ("close", close_price),
         ("vwap", volume_weighted_average_price),
     ):
-        if price_value < low_price or price_value > high_price:
+        if (
+            evaluate_value_within_bounds(
+                price_value,
+                low_price,
+                high_price,
+                violation_outcome=ERROR,
+            ).outcome
+            == ERROR
+        ):
             raise EndOfDayPipelineError(f"row {row_number}: {price_name} is outside the low/high range")
     if share_volume <= 0 or not share_volume.is_integer():
         raise EndOfDayPipelineError(f"row {row_number}: volume is not a positive integer")
@@ -248,23 +268,23 @@ def validate_end_of_day_bars(
         dataset_failures.append({"validation_error": "no row contained a usable timestamp for session coverage"})
     else:
         try:
-            expected_session_coverage, missing_session_dates, unexpected_session_dates = (
-                compare_observed_to_expected_sessions(
-                    observed_session_dates,
-                    observed_session_dates[0],
-                    request_identity["request_to"],
-                )
+            _, _, unexpected_session_dates = compare_observed_to_expected_sessions(
+                observed_session_dates,
+                observed_session_dates[0],
+                request_identity["request_to"],
             )
         except MarketCalendarError as calendar_validation_error:
             dataset_failures.append({"validation_error": str(calendar_validation_error)})
         else:
-            if tuple(observed_session_dates) != expected_session_coverage.session_dates:
+            sessions_are_unique_and_ordered = tuple(observed_session_dates) == tuple(
+                sorted(set(observed_session_dates))
+            )
+            if unexpected_session_dates or not sessions_are_unique_and_ordered:
                 session_coverage_failure = {
                     "validation_error": "US market session coverage failed",
-                    "missing_sessions": list(missing_session_dates),
                     "unexpected_sessions": list(unexpected_session_dates),
                 }
-                if not missing_session_dates and not unexpected_session_dates:
+                if not sessions_are_unique_and_ordered:
                     session_coverage_failure["ordering_error"] = "sessions are duplicated or out of order"
                 dataset_failures.append(session_coverage_failure)
 

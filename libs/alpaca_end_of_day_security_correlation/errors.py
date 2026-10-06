@@ -1,0 +1,2 @@
+class SecurityCorrelationError(RuntimeError):
+    pass
