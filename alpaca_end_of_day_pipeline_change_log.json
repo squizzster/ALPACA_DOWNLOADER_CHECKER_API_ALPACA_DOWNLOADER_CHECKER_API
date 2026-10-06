@@ -61,5 +61,10 @@
     "modifications": [
       "Close the pigz stderr pipe on both successful completion and exceptional process cleanup."
     ]
+  },
+  {
+    "modifications": [
+      "Use self-describing internal names and explicit ownership terminology without changing downloaded filenames, manifest filenames, or serialized keys."
+    ]
   }
 ]

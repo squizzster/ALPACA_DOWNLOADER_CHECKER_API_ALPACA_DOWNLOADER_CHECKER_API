@@ -2,6 +2,7 @@
 
 Small CLI for Alpaca US-equity daily bars. The design preserves the API response,
 records pipeline failures, and never lets one boundary silently repair another.
+The naming and ownership rules are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Contract
 
@@ -70,11 +71,11 @@ corruption is fatal and exits 2 without contacting Alpaca or changing artifacts.
 
 ## Pipeline rule
 
-Current `PIPELINE_VERSION`: **11**.
+Current `PIPELINE_VERSION`: **12**.
 
-Any pipeline behavior change must increment `PIPELINE_VERSION` and append exactly
-one object to `pipeline_version_change_log.json`. Its array length must equal the
-version or the CLI refuses to run.
+Any pipeline code or behavior change must increment `PIPELINE_VERSION` and append
+exactly one object to `alpaca_end_of_day_pipeline_change_log.json`. Its array
+length must equal the version or the CLI refuses to run.
 
 A new version invalidates the symbol-level receipt generation. Each selected gzip
 is SHA-authenticated and reprocessed locally. The first update starts a generation
@@ -91,17 +92,17 @@ trade count ≤ volume; and complete sessions from fixed `us_market_hours.json`.
 
 ```bash
 # All eight adjustment modes
-./download_eod.py --symbol DELL
+./download_alpaca_end_of_day_bars.py --symbol DELL
 
 # One or more modes
-./download_eod.py --symbol DELL --adjustment raw
-./download_eod.py --symbol DELL --adjustment split --adjustment dividend
+./download_alpaca_end_of_day_bars.py --symbol DELL --adjustment raw
+./download_alpaca_end_of_day_bars.py --symbol DELL --adjustment split --adjustment dividend
 
 # Explicit replacement of an authenticated pair
-./download_eod.py --symbol DELL --adjustment raw --force
+./download_alpaca_end_of_day_bars.py --symbol DELL --adjustment raw --force
 
 # Rebuild a pair only when gzip or sidecar is missing
-./download_eod.py --symbol DELL --adjustment raw --repair
+./download_alpaca_end_of_day_bars.py --symbol DELL --adjustment raw --repair
 ```
 
 Credentials are read only when a network request is required:
@@ -121,22 +122,28 @@ targets 180 requests/minute and honors `429`, `Retry-After`, and
 
 ## Tests
 
+Install Ruff once with `uv tool install ruff`. [`pyproject.toml`](pyproject.toml)
+sets its line length to 113: Ruff's default 88 plus 25.
+
 ```bash
+ruff check .
+ruff format --check .
 python3 -m unittest discover -s tests -v
 ```
 
-The checked-in fixtures are synthetic 9–10-row datasets: clean, one bad price, one
-bad activity value, and one missing session. Tests build real gzip/manifests under
-temporary directories and cover every cache-boundary state without network access.
+The checked-in fixtures are synthetic 9–10-row datasets: ten valid bars, one high
+below low, one trade count above volume, and one missing session. Tests build real
+gzip/manifests under temporary directories and cover every cache-boundary state
+without network access.
 
 ## Code map
 
 | File | Owner |
 |---|---|
-| `download_eod.py` | CLI, cache decision, Alpaca request, rate limiting. |
-| `eod_pipeline.py` | In-memory checks, compression/publication, receipts and failure manifests. |
-| `us_market_calendar.py` / `us_market_hours.json` | Authoritative expected US sessions. |
-| `pipeline_version_change_log.json` | Ordered pipeline changes; array position is the version. |
+| `download_alpaca_end_of_day_bars.py` | CLI, cache decision, Alpaca request, rate limiting. |
+| `alpaca_end_of_day_pipeline.py` | In-memory checks, compression/publication, receipts and failure manifests. |
+| `us_equity_market_session_calendar.py` / `us_market_hours.json` | Authoritative expected US sessions. |
+| `alpaca_end_of_day_pipeline_change_log.json` | Ordered pipeline changes; array position is the version. |
 
 `data/` is runtime state and is intentionally ignored by Git, including all gzip
 files and manifests. `us_market_hours.json` is tracked because the fixed calendar
