@@ -71,7 +71,7 @@ corruption is fatal and exits 2 without contacting Alpaca or changing artifacts.
 
 ## Pipeline rule
 
-Current `PIPELINE_VERSION`: **13**.
+Current `PIPELINE_VERSION`: **14**.
 
 Any pipeline code or behavior change must increment `PIPELINE_VERSION` and append
 exactly one object to `alpaca_end_of_day_pipeline_change_log.json`. Its array
@@ -86,7 +86,8 @@ stores the version once because receipts from different generations never mix.
 
 Current checks: timestamp parse/range/order; New York session midnight; positive
 finite OHLC/VWAP with high/low bounds; positive integer volume/trade count;
-trade count ≤ volume; and complete sessions from fixed `us_market_hours.json`.
+trade count ≤ volume; and complete sessions from fixed
+`libs/common/us_market_hours.json`.
 
 ## CLI
 
@@ -140,14 +141,17 @@ without network access.
 
 | File | Owner |
 |---|---|
-| `download_alpaca_end_of_day_bars.py` | CLI, cache decision, Alpaca request, rate limiting. |
-| `alpaca_end_of_day_pipeline.py` | In-memory checks, compression/publication, receipts and failure manifests. |
-| `us_equity_market_session_calendar.py` / `us_market_hours.json` | Authoritative expected US sessions. |
+| `download_alpaca_end_of_day_bars.py` | Stable executable entry point. |
+| `alpaca_end_of_day_pipeline.py` | Stable pipeline API facade. |
+| `us_equity_market_session_calendar.py` | Stable calendar compatibility facade. |
+| `libs/download_alpaca_end_of_day_bars/` | CLI orchestration, Alpaca HTTP, and rate limiting. |
+| `libs/alpaca_end_of_day_pipeline/` | Cache classification, validation, publication, and derived manifests. |
+| `libs/common/` | Atomic writes, file hashing, and authoritative US-session calendar data. |
 | `alpaca_end_of_day_pipeline_change_log.json` | Ordered pipeline changes; array position is the version. |
 
 `data/` is runtime state and is intentionally ignored by Git, including all gzip
-files and manifests. `us_market_hours.json` is tracked because the fixed calendar
-is integral to pipeline validation.
+files and manifests. `libs/common/us_market_hours.json` is tracked because the
+fixed calendar is integral to pipeline validation.
 
 The future repair/decision layer and final reader are not implemented. They must
 publish separate output. The reader will authenticate the frozen pair, then match

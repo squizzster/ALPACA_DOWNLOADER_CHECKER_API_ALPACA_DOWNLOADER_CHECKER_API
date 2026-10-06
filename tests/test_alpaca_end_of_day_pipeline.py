@@ -23,6 +23,7 @@ from alpaca_end_of_day_pipeline import (
     validate_and_publish_alpaca_download,
     validate_pipeline_change_log,
 )
+from libs.alpaca_end_of_day_pipeline import download_publication
 
 TEST_FIXTURES_DIRECTORY = Path(__file__).with_name("fixtures")
 DOWNLOAD_MANIFEST_KEYS = frozenset(
@@ -160,13 +161,13 @@ def publish_valid_test_download(test_directory: str | Path) -> PublishedTestDown
 
 class PublicationTests(unittest.TestCase):
     def test_version_changelog_matches_pipeline(self):
-        self.assertEqual(PIPELINE_VERSION, 13)
+        self.assertEqual(PIPELINE_VERSION, 14)
         self.assertEqual(len(validate_pipeline_change_log()), PIPELINE_VERSION)
 
     def test_pipeline_finishes_before_any_gzip_path_exists(self):
         with tempfile.TemporaryDirectory() as test_directory:
             artifact_paths = test_artifact_paths(test_directory)
-            original_validation_function = end_of_day_pipeline._validate_end_of_day_bars
+            original_validation_function = download_publication.validate_end_of_day_bars
             validation_calls_observed = []
 
             def assert_no_disk_artifacts_then_validate(alpaca_daily_bars, supplied_request_identity):
@@ -177,8 +178,8 @@ class PublicationTests(unittest.TestCase):
                 return original_validation_function(alpaca_daily_bars, supplied_request_identity)
 
             with mock.patch.object(
-                end_of_day_pipeline,
-                "_validate_end_of_day_bars",
+                download_publication,
+                "validate_end_of_day_bars",
                 assert_no_disk_artifacts_then_validate,
             ):
                 download_manifest = validate_and_publish_alpaca_download(

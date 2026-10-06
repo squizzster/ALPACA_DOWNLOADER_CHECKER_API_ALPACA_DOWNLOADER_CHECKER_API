@@ -71,5 +71,11 @@
     "modifications": [
       "Distinguish publication-time SHA verification, invalid frozen-download boundaries, recorded pricing/data failures, receipt-manifest ownership, and orphan-pair recovery in internal names."
     ]
+  },
+  {
+    "modifications": [
+      "Split pipeline responsibilities into self-describing library modules with stable root facades and one-way ownership boundaries.",
+      "Move reusable atomic-write, file-integrity, and US-market-calendar behavior into common libraries without changing downloaded filenames or manifest schemas."
+    ]
   }
 ]
