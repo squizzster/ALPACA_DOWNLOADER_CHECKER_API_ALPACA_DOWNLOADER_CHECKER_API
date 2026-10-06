@@ -1,0 +1,65 @@
+[
+  {
+    "modifications": [
+      "Stream CSV rows directly through pigz -5 without writing an intermediate plain CSV.",
+      "Validate bar fields and ordering, verify the compressed SHA-256, and publish compact manifests atomically."
+    ]
+  },
+  {
+    "modifications": [
+      "Separate the internal pipeline version from the manifest schema version.",
+      "Reprocess matching cached gzip data in memory when its pipeline version differs, using randomized same-directory temporary files."
+    ]
+  },
+  {
+    "modifications": [
+      "Use the fixed US market calendar to require complete daily session coverage.",
+      "Record session and calendar digests plus stat metadata, diagnose missing sessions, and redownload incomplete data."
+    ]
+  },
+  {
+    "modifications": [
+      "Require and validate an ordered pipeline version changelog whose entries exactly match every pipeline version through the current version."
+    ]
+  },
+  {
+    "modifications": [
+      "Treat an orphaned gzip or manifest as cache corruption requiring --repair, while reserving --force for deliberate refreshes of coherent cache entries."
+    ]
+  },
+  {
+    "modifications": [
+      "Strengthen end-of-day validation with New York session-midnight timestamps, complete OHLC/VWAP bounds, positive activity, and trade-count versus volume checks."
+    ]
+  },
+  {
+    "modifications": [
+      "Separate immutable Alpaca download ownership from pricing/data validation ownership.",
+      "Preserve every downloaded row and atomically maintain one symbol-level integrity manifest with exact failed rows, validation errors, and dataset coverage failures."
+    ]
+  },
+  {
+    "modifications": [
+      "Authenticate the frozen gzip against its download manifest before every local validation or forced replacement.",
+      "Abort on a download SHA-256 mismatch without publishing pricing/data integrity or making the data eligible for repair."
+    ]
+  },
+  {
+    "modifications": [
+      "Separate pipeline processing receipts from integrity failures.",
+      "Record every processed download SHA and pipeline version in pipeline.manifest.json while publishing only actual failures to integrity_failure.manifest.json.",
+      "Keep an incoming response in memory until all row and dataset integrity checks finish, and only then begin streaming unchanged rows through pigz.",
+      "Keep the failure-only manifest present with the pipeline version even when its failures array is empty, and never mix findings from different pipeline versions."
+    ]
+  },
+  {
+    "modifications": [
+      "Store the pipeline version once at pipeline-manifest scope and keep individual receipts limited to downloaded-artifact identity and processing metadata."
+    ]
+  },
+  {
+    "modifications": [
+      "Close the pigz stderr pipe on both successful completion and exceptional process cleanup."
+    ]
+  }
+]
