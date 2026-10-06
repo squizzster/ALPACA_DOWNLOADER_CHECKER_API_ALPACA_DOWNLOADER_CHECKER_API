@@ -1,102 +1,57 @@
 # Architecture
 
-## Objective
+## Flows
 
-The pipeline preserves a frozen, SHA-authenticated serialization of the rows returned by Alpaca and adds
-independently authenticated overlays. A future reader can therefore trace a returned value from the frozen download
-SHA through integrity, identity correlation, and later decision layers. The reader and repair-decision layers do not
-yet exist.
-
-Each layer owns one boundary. A downstream layer may authenticate and interpret an upstream artifact, but it may
-not repair, replace, or weaken that artifact's contract.
-
-## Execution flow
-
-The complete ticker pipeline is ordered by
-[`run_end_of_day_ticker_pipeline`](libs/alpaca_end_of_day_ticker_pipeline/orchestration.py):
+Update orchestration is defined in
+[`libs/alpaca_end_of_day_ticker_pipeline/orchestration.py`](libs/alpaca_end_of_day_ticker_pipeline/orchestration.py):
 
 ```text
 Alpaca bars or authenticated cache
-    -> download publication and deterministic integrity validation
-    -> direct Alpaca identity evidence
-    -> exhaustive correlated / uncorrelated row partition
-    -> cross-adjustment and UUID-scoped warning overlays
+  -> frozen download publication and integrity validation
+  -> Alpaca asset and corporate-action evidence
+  -> exhaustive correlated / uncorrelated row partition
+  -> digest-bound global master-ID index
+  -> warning and information overlays
 ```
 
-`run_alpaca_end_of_day_ticker_pipeline.py` is the explicit full-pipeline entry point.
-`download_alpaca_end_of_day_bars.py` is a compatibility entry point for the same full pipeline despite its older
-name. The lineage and correlation entry points expose narrower stages; there is no standalone warning CLI.
-
-Recorded integrity failures do not prevent correlation and warning publication for that ticker. The multi-ticker
-command processes every selected ticker before returning a final integrity-failure exit status. Authentication,
-correlation, or publication errors still abort because their boundary could not be established.
-
-## Owned boundaries
-
-### Frozen download
-
-`libs/alpaca_end_of_day_pipeline/download_publication.py` alone publishes a compressed CSV and its sidecar. The
-pair represents the unchanged Alpaca response and is immutable except through an explicitly authorized replacement
-or orphan-pair repair.
-
-`libs/alpaca_end_of_day_pipeline/symbol_manifests.py` separately owns processing receipts and action-required
-integrity failures. A clean receipt is inferred from trusted processing plus the absence of a matching failure; no
-success field is stored.
-
-### Identity evidence
-
-`libs/alpaca_security_lineage/` reads local metadata and queries Alpaca asset and corporate-action endpoints. It is
-read-only: its public API returns an in-memory report and its CLI writes JSON only to stdout. It does not authenticate
-the gzip or assign UUIDs to rows.
-
-### Security correlation
-
-`libs/alpaca_end_of_day_security_correlation/` authenticates frozen downloads and owns an exhaustive row partition.
-Every source row appears exactly once in either the correlated or uncorrelated branch. Uncorrelated rows and lineage
-work items remain explicit pipeline work; they are not integrity failures and are never assigned by guesswork.
-
-The two branch documents are published before their digest-binding receipt. A complete partition proves that every
-row was accounted for, not that every row received a security identity.
-
-### Warning overlays
-
-`libs/alpaca_end_of_day_warning_pipeline/` authenticates the current validation and correlation generations before
-publishing warning and information overlays. It owns no integrity-error classification. Cross-adjustment checks use
-comparable request cohorts; statistical and session-coverage checks do not cross Alpaca UUID boundaries. Its two
-outputs are published before their digest-binding receipt.
-
-### Orchestration
-
-`libs/alpaca_end_of_day_ticker_pipeline/` owns stage order, shared rate limiters, and aggregate command reporting. It
-does not own data artifacts. `libs/download_alpaca_end_of_day_bars/` owns bar-request construction, credential timing,
-and download-stage decisions, but delegates every write to the pipeline library.
-
-## Dependency direction
-
-Dependencies point inward and do not cycle:
+Reading is independent and read-only:
 
 ```text
-root entry points and compatibility facades
-    -> alpaca_end_of_day_ticker_pipeline
-        -> download_alpaca_end_of_day_bars -> alpaca_end_of_day_pipeline -> common
-        -> alpaca_security_lineage
-        -> alpaca_end_of_day_security_correlation
-            -> alpaca_security_lineage
-            -> alpaca_end_of_day_pipeline (read and authenticate)
-            -> common
-        -> alpaca_end_of_day_warning_pipeline
-            -> alpaca_end_of_day_security_correlation (read and authenticate)
-            -> alpaca_end_of_day_pipeline (read and authenticate)
-            -> common
+master ID + adjustment type
+  -> authenticate master index and resolve bound ticker sources
+  -> authenticate correlation, warnings, validation, and frozen downloads
+  -> return identity metadata, unchanged bars, errors, warnings, and provenance
 ```
 
-`libs/common/` owns reusable atomic writes, SHA-256, rule evaluators, and the tracked US-session calendar. It imports
-no application package. Root Python files remain stable commands or compatibility facades and contain no domain
-implementation.
+## Ownership
 
-## Naming and certainty
+| Boundary | Owner | Responsibility |
+|---|---|---|
+| Bar request | [`libs/download_alpaca_end_of_day_bars/`](libs/download_alpaca_end_of_day_bars/) | Request construction, credentials, rate limits, download-stage decisions |
+| Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](libs/alpaca_end_of_day_pipeline/) | Gzip/sidecar publication, cache state, deterministic validation, integrity manifests |
+| Identity evidence | [`libs/alpaca_security_lineage/`](libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal |
+| Correlation and master identity | [`libs/alpaca_end_of_day_security_correlation/`](libs/alpaca_end_of_day_security_correlation/) | Row partition, Alpaca-ID membership, master-ID derivation, master-index publication |
+| Advisory checks | [`libs/alpaca_end_of_day_warning_pipeline/`](libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and master-ID-scoped warning overlays |
+| Public read | [`libs/alpaca_end_of_day_reader/`](libs/alpaca_end_of_day_reader/) | Master lookup, dependency authentication, in-memory result, stdout adapter |
+| Shared primitives | [`libs/common/`](libs/common/) | Atomic writes, hashing, rule evaluation, tracked market calendar |
 
-Use the smallest name and nearby context that remove material ambiguity. Keep origin, scope, and certainty visible,
-especially in serialized artifacts that outlive the code that produced them. Terms such as `observed`, `inferred`,
-`verified`, and `unresolved` must remain materially distinct; a local guard must not compensate for ambiguous
-ownership.
+Root Python files are entry points or compatibility facades; domain logic belongs in the owning library.
+
+## Invariants
+
+- Frozen CSV bytes are never silently repaired or rewritten.
+- Every source row appears exactly once in either the correlated or uncorrelated branch.
+- A master ID is derived only from its sorted unique Alpaca-ID membership; evidence determines membership but is not
+  part of the digest input.
+- Most master IDs contain one Alpaca ID. Explicit lineage may join more; the terminal fallback may join exactly two
+  same-ticker candidates only when the complete history was otherwise uncorrelated and has no expected-session gap.
+- `security_master.index.json` is the reader's only discovery boundary. It contains identity metadata and source
+  digests, never bars, diagnostics, or repair state.
+- Integrity errors preserve and describe affected rows. Warnings are advisory. Neither changes returned values.
+- Outputs are written before their digest-binding receipts. Readers fail closed on missing, stale, or changed inputs.
+- No pricing-repair layer exists; `repair.overlay` and `repair.repaired_data` remain `null`.
+
+## Dependency rule
+
+Interpretation flows downstream only. A layer may authenticate and describe an upstream artifact, but may not weaken
+or mutate that boundary. `libs/common/` imports no application package.

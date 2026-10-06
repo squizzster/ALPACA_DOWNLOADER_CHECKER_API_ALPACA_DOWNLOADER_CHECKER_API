@@ -8,7 +8,12 @@ from .evidence import (
     TickerOwnershipInterval,
     identity_candidates_for_symbol,
 )
+from .security_identity import security_identity_for_alpaca_assets
 from .settings import CORRELATED_BRANCH, UNCORRELATED_BRANCH
+from .terminal_fallback import (
+    TERMINAL_FALLBACK_RULE_NAME,
+    apply_terminal_continuous_ticker_fallback,
+)
 from .uuid_lineage import build_uuid_lineage_edges, predecessor_uuid_branch
 
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
@@ -268,9 +273,16 @@ ROW_CORRELATION_RULES = (
 
 
 def row_correlation_rule_order() -> list[dict[str, Any]]:
-    return [
+    row_rules = [
         {"order": rule_order, "name": rule.name}
         for rule_order, rule in enumerate(ROW_CORRELATION_RULES, start=1)
+    ]
+    return [
+        *row_rules,
+        {
+            "order": len(row_rules) + 1,
+            "name": TERMINAL_FALLBACK_RULE_NAME,
+        },
     ]
 
 
@@ -290,10 +302,15 @@ def _decide_row(context: _RowRuleContext) -> _RowDecision:
 
 
 def _canonical_security(
+    security_id: str,
     asset_id: str,
     cusip: str | None,
 ) -> dict[str, Any]:
-    return {"asset_id": asset_id, "cusip": cusip}
+    return {
+        "security_id": security_id,
+        "alpaca_asset_id": asset_id,
+        "cusip": cusip,
+    }
 
 
 def _candidate_report_objects(
@@ -413,6 +430,22 @@ def correlate_download_rows(
         if decision.branch == CORRELATED_BRANCH:
             if decision.asset_id is None:
                 raise SecurityCorrelationError("correlated row decision has no Alpaca asset UUID")
+            identity_basis = (
+                "explicit_uuid_lineage"
+                if any(
+                    decision.asset_id in (edge.predecessor_asset_id, edge.successor_asset_id)
+                    for edge in uuid_lineage_edges
+                )
+                else "single_alpaca_asset_id"
+            )
+            security_identity = security_identity_for_alpaca_assets(
+                (decision.asset_id,),
+                uuid_lineage_edges,
+                tickers=(
+                    decision.interval.historical_symbol if decision.interval is not None else requested_symbol,
+                ),
+                basis=identity_basis,
+            )
             segment.update(
                 {
                     "historical_symbol": (
@@ -421,9 +454,11 @@ def correlate_download_rows(
                         else requested_symbol
                     ),
                     "canonical_security": _canonical_security(
+                        security_identity.security_id,
                         decision.asset_id,
                         decision.cusip,
                     ),
+                    "security_identity": security_identity.as_report_object(),
                     "identity_confidence": decision.identity_confidence,
                     "correlation_method": decision.rule_name,
                     "ticker_ownership_interval": (
@@ -458,4 +493,10 @@ def correlate_download_rows(
     )
     if partitioned_row_count != len(rows):
         raise SecurityCorrelationError(f"row partition invariant failed: {partitioned_row_count} != {len(rows)}")
-    return branches
+    return apply_terminal_continuous_ticker_fallback(
+        branches,
+        tuple(row.session_date for row in correlated_rows),
+        source,
+        lineage,
+        uuid_lineage_edges,
+    )

@@ -16,10 +16,12 @@ from libs.alpaca_end_of_day_pipeline import (
     read_frozen_alpaca_daily_bars,
 )
 from libs.alpaca_end_of_day_security_correlation import (
-    CORRELATION_VERSION,
-    correlated_pipeline_path,
-    security_correlation_manifest_path,
-    uncorrelated_pipeline_path,
+    SecurityCorrelationError,
+    authenticate_security_correlation,
+    is_security_id,
+)
+from libs.alpaca_end_of_day_security_correlation.security_identity import (
+    security_identity_report_is_valid,
 )
 from libs.common.file_integrity import calculate_file_sha256
 
@@ -60,85 +62,20 @@ def _validate_safe_filename(filename: object, suffix: str, description: str) -> 
     return filename
 
 
-def _authenticate_correlation_branch(
-    path: Path,
-    output_receipt: object,
-    *,
-    symbol: str,
-    generation_sha256: str,
-    expected_manifest_type: str,
-) -> tuple[dict[str, Any], str]:
-    if not isinstance(output_receipt, dict) or output_receipt.get("file") != path.name:
-        raise WarningPipelineError(f"correlation receipt does not bind {path.name}")
-    try:
-        output_stat = path.stat()
-    except OSError as error:
-        raise WarningPipelineError(f"correlation output is unavailable: {path}: {error}") from error
-    if output_stat.st_size != output_receipt.get("bytes") or output_stat.st_mtime_ns != output_receipt.get(
-        "mtime_ns"
-    ):
-        raise WarningPipelineError(f"correlation output stat does not match its receipt: {path}")
-    observed_sha256 = calculate_file_sha256(path)
-    if observed_sha256 != output_receipt.get("sha256"):
-        raise WarningPipelineError(f"correlation output SHA-256 does not match its receipt: {path}")
-    document = _read_json_object(path, "correlation output")
-    expected_identity = {
-        "manifest_type": expected_manifest_type,
-        "correlation_version": CORRELATION_VERSION,
-        "symbol": symbol,
-        "correlation_generation_sha256": generation_sha256,
-    }
-    for field_name, expected_value in expected_identity.items():
-        if document.get(field_name) != expected_value:
-            raise WarningPipelineError(
-                f"correlation output {path} has unexpected {field_name}: {document.get(field_name)!r}"
-            )
-    return document, observed_sha256
-
-
 def _authenticate_correlation_outputs(
     repository_root: Path,
     symbol: str,
 ) -> AuthenticatedCorrelationOutputs:
-    receipt_path = security_correlation_manifest_path(repository_root, symbol)
-    receipt = _read_json_object(receipt_path, "security-correlation receipt")
-    if receipt.get("manifest_type") != "end_of_day_security_correlation":
-        raise WarningPipelineError(f"invalid correlation receipt type: {receipt_path}")
-    if receipt.get("correlation_version") != CORRELATION_VERSION:
-        raise WarningPipelineError(
-            f"correlation receipt v{receipt.get('correlation_version')!r} is not current v{CORRELATION_VERSION}"
-        )
-    if receipt.get("symbol") != symbol:
-        raise WarningPipelineError(f"correlation receipt has wrong symbol: {receipt_path}")
-    partition = receipt.get("partition")
-    if not isinstance(partition, dict) or partition.get("row_partition_complete") is not True:
-        raise WarningPipelineError("security correlation does not contain a complete row partition")
-    generation_sha256 = receipt.get("correlation_generation_sha256")
-    if not isinstance(generation_sha256, str) or len(generation_sha256) != 64:
-        raise WarningPipelineError("security-correlation receipt has an invalid generation digest")
-    outputs = receipt.get("outputs")
-    if not isinstance(outputs, dict):
-        raise WarningPipelineError("security-correlation receipt has no outputs object")
-    correlated, correlated_sha256 = _authenticate_correlation_branch(
-        correlated_pipeline_path(repository_root, symbol),
-        outputs.get("correlated"),
-        symbol=symbol,
-        generation_sha256=generation_sha256,
-        expected_manifest_type="correlated_end_of_day_security_segments",
-    )
-    uncorrelated, uncorrelated_sha256 = _authenticate_correlation_branch(
-        uncorrelated_pipeline_path(repository_root, symbol),
-        outputs.get("uncorrelated"),
-        symbol=symbol,
-        generation_sha256=generation_sha256,
-        expected_manifest_type="uncorrelated_end_of_day_security_segments",
-    )
+    try:
+        authenticated = authenticate_security_correlation(repository_root, symbol)
+    except SecurityCorrelationError as error:
+        raise WarningPipelineError(f"could not authenticate security correlation: {error}") from error
     return AuthenticatedCorrelationOutputs(
-        receipt=receipt,
-        correlated=correlated,
-        uncorrelated=uncorrelated,
-        correlated_sha256=correlated_sha256,
-        uncorrelated_sha256=uncorrelated_sha256,
+        receipt=authenticated.receipt,
+        correlated=authenticated.correlated,
+        uncorrelated=authenticated.uncorrelated,
+        correlated_sha256=authenticated.correlated_sha256,
+        uncorrelated_sha256=authenticated.uncorrelated_sha256,
     )
 
 
@@ -195,10 +132,16 @@ def _validate_partition(correlation: AuthenticatedCorrelationOutputs) -> dict[st
                 raise WarningPipelineError(f"segment/source adjustment mismatch for {filename}")
             if branch_name == "correlated":
                 canonical_security = segment.get("canonical_security")
-                if not isinstance(canonical_security, dict) or not isinstance(
-                    canonical_security.get("asset_id"), str
+                security_identity = segment.get("security_identity")
+                if (
+                    not isinstance(canonical_security, dict)
+                    or not is_security_id(canonical_security.get("security_id"))
+                    or not security_identity_report_is_valid(security_identity)
+                    or security_identity.get("security_id") != canonical_security.get("security_id")
                 ):
-                    raise WarningPipelineError(f"correlated segment has no Alpaca asset UUID: {filename}")
+                    raise WarningPipelineError(
+                        f"correlated segment has no valid internal security identity: {filename}"
+                    )
             ranges_by_filename[filename].append((row_start, row_end))
             calculated_count += row_count
         if calculated_count != document.get("row_count"):

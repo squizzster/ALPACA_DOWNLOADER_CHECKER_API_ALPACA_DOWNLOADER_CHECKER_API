@@ -9,10 +9,14 @@ from pathlib import Path
 from libs.alpaca_end_of_day_pipeline import validate_and_publish_alpaca_download
 from libs.alpaca_end_of_day_security_correlation import (
     CORRELATION_VERSION,
+    authenticate_security_master,
     correlate_and_publish_alpaca_end_of_day_security_segments,
     correlated_pipeline_path,
     run_security_correlation_command,
     security_correlation_manifest_path,
+    security_id_for_alpaca_asset_ids,
+    security_master_manifest_path,
+    security_master_path,
     uncorrelated_pipeline_path,
     validate_correlation_change_log,
 )
@@ -23,6 +27,9 @@ from libs.alpaca_end_of_day_security_correlation.evidence import (
 from libs.alpaca_end_of_day_security_correlation.row_correlation import (
     correlate_download_rows,
     row_correlation_rule_order,
+)
+from libs.alpaca_end_of_day_security_correlation.terminal_fallback import (
+    TERMINAL_FALLBACK_WARNING,
 )
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
 from libs.alpaca_security_lineage import inspect_local_downloads
@@ -418,6 +425,78 @@ def b_lineage() -> dict:
     }
 
 
+def fun_like_lineage() -> dict:
+    old_fun_id = "old-fun-alpaca-id"
+    current_fun_id = "current-fun-alpaca-id"
+    old_dividend = {
+        "action_type": "cash_dividend",
+        "id": "old-fun-dividend",
+        "process_date": "2024-06-20",
+        "symbol": "FUN",
+        "cusip": "150185106",
+    }
+    merger = {
+        "action_type": "stock_merger",
+        "id": "fun-stock-merger",
+        "process_date": "2024-07-02",
+        "effective_date": "2024-07-02",
+        "acquiree_symbol": "SIX",
+        "acquiree_cusip": "83001A102",
+        "acquirer_symbol": "FUN",
+        "acquirer_cusip": "83001C108",
+    }
+    current_fun = asset(current_fun_id, "FUN", "Six Flags Entertainment Corporation")
+    old_fun = {
+        **asset(old_fun_id, "FUN", "Six Flags Entertainment Corporation"),
+        "status": "inactive",
+        "tradable": False,
+        "lookup_symbols": [],
+    }
+    return {
+        "query": complete_query("FUN"),
+        "corporate_actions": [old_dividend, merger],
+        "symbol_occupancy_evidence": [
+            occupancy(
+                "FUN",
+                "150185106",
+                old_fun_id,
+                action_type="cash_dividend",
+                action_id=old_dividend["id"],
+                process_date=old_dividend["process_date"],
+                role="symbol",
+            ),
+            occupancy(
+                "FUN",
+                "83001C108",
+                current_fun_id,
+                action_type="stock_merger",
+                action_id=merger["id"],
+                process_date=merger["process_date"],
+                role="acquirer",
+            ),
+        ],
+        "identities": [
+            {**old_fun, "lookup_cusips": ["150185106"]},
+            {**current_fun, "lookup_cusips": ["83001C108"]},
+        ],
+        "asset_lookups": [
+            {
+                "lookup": "FUN",
+                "lookup_kind": "symbol",
+                "found": True,
+                "asset": current_fun,
+            }
+        ],
+    }
+
+
+def fun_like_source() -> dict:
+    source = correlation_source("FUN", asof="2024-07-03")
+    source["request_from"] = "2024-06-28T00:00:00Z"
+    source["request_to"] = "2024-07-03T00:00:00Z"
+    return source
+
+
 class RowCorrelationTests(unittest.TestCase):
     def test_unique_uuid_candidate_correlates_dell_with_boundary_warning(self) -> None:
         lineage = dell_lineage()
@@ -438,7 +517,10 @@ class RowCorrelationTests(unittest.TestCase):
 
         self.assertEqual([], branches["uncorrelated"])
         self.assertEqual(2, branches["correlated"][0]["row_count"])
-        self.assertEqual("dell-asset-id", branches["correlated"][0]["canonical_security"]["asset_id"])
+        self.assertEqual(
+            "dell-asset-id",
+            branches["correlated"][0]["canonical_security"]["alpaca_asset_id"],
+        )
         self.assertEqual("24703L202", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
             {"order": 3, "name": "unique_uuid_candidate_with_warnings"},
@@ -529,11 +611,19 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(2, len(branches["correlated"]))
         old_segment, current_segment = branches["correlated"]
         self.assertEqual(
-            {"asset_id": "old-siri-asset-id", "cusip": "82968B103"},
+            {
+                "security_id": security_id_for_alpaca_asset_ids(["old-siri-asset-id", "current-siri-asset-id"]),
+                "alpaca_asset_id": "old-siri-asset-id",
+                "cusip": "82968B103",
+            },
             old_segment["canonical_security"],
         )
         self.assertEqual(
-            {"asset_id": "current-siri-asset-id", "cusip": "829933100"},
+            {
+                "security_id": old_segment["canonical_security"]["security_id"],
+                "alpaca_asset_id": "current-siri-asset-id",
+                "cusip": "829933100",
+            },
             current_segment["canonical_security"],
         )
 
@@ -552,6 +642,7 @@ class RowCorrelationTests(unittest.TestCase):
                 {"order": 2, "name": "requested_symbol_dated_uuid_interval"},
                 {"order": 3, "name": "unique_uuid_candidate_with_warnings"},
                 {"order": 4, "name": "unresolved_uuid_candidates"},
+                {"order": 5, "name": "two_uuid_continuous_ticker_history"},
             ],
             row_correlation_rule_order(),
         )
@@ -576,13 +667,13 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual([], branches["uncorrelated"])
         meta_segment, etf_segment = branches["correlated"]
         self.assertEqual("30303M102", meta_segment["canonical_security"]["cusip"])
-        self.assertEqual("meta-id", meta_segment["canonical_security"]["asset_id"])
+        self.assertEqual("meta-id", meta_segment["canonical_security"]["alpaca_asset_id"])
         self.assertEqual("FB", meta_segment["historical_symbol"])
         self.assertEqual(
             ["facebook-name-change"],
             meta_segment["ticker_ownership_interval"]["supporting_corporate_action_ids"],
         )
-        self.assertEqual("fb-etf-id", etf_segment["canonical_security"]["asset_id"])
+        self.assertEqual("fb-etf-id", etf_segment["canonical_security"]["alpaca_asset_id"])
         self.assertEqual("74349Y613", etf_segment["canonical_security"]["cusip"])
         self.assertIn("missing_dated_ticker_ownership_interval", etf_segment["warnings"])
         self.assertEqual(2, meta_segment["row_count"] + etf_segment["row_count"])
@@ -615,18 +706,24 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual([], branches["uncorrelated"])
         self.assertEqual(2, len(branches["correlated"]))
         historical_segment, current_segment = branches["correlated"]
-        self.assertEqual("historical-barrick-id", historical_segment["canonical_security"]["asset_id"])
+        self.assertEqual(
+            "historical-barrick-id",
+            historical_segment["canonical_security"]["alpaca_asset_id"],
+        )
         self.assertEqual("067901108", historical_segment["canonical_security"]["cusip"])
         self.assertEqual(2, historical_segment["row_count"])
         self.assertIn(
             "asof_uuid_lineage_overrode_requested_symbol_occupancy",
             historical_segment["warnings"],
         )
-        self.assertEqual("current-barrick-id", current_segment["canonical_security"]["asset_id"])
+        self.assertEqual(
+            "current-barrick-id",
+            current_segment["canonical_security"]["alpaca_asset_id"],
+        )
         self.assertEqual("06849F108", current_segment["canonical_security"]["cusip"])
         self.assertNotIn(
             "barnes-id",
-            {segment["canonical_security"]["asset_id"] for segment in branches["correlated"]},
+            {segment["canonical_security"]["alpaca_asset_id"] for segment in branches["correlated"]},
         )
 
     def test_asof_selected_meta_identity_beats_unrelated_historical_meta_ticker(self) -> None:
@@ -686,8 +783,78 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(["FB", "META"], [item["historical_symbol"] for item in branches["correlated"]])
         self.assertEqual(
             {"meta-id"},
-            {item["canonical_security"]["asset_id"] for item in branches["correlated"]},
+            {item["canonical_security"]["alpaca_asset_id"] for item in branches["correlated"]},
         )
+
+    def test_gapless_two_id_fun_history_receives_one_internal_security_id(self) -> None:
+        lineage = fun_like_lineage()
+        intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
+
+        self.assertEqual([], evidence_issues)
+        self.assertEqual([], intervals)
+        branches = correlate_download_rows(
+            [
+                {"t": "2024-06-28T04:00:00Z"},
+                {"t": "2024-07-01T04:00:00Z"},
+                {"t": "2024-07-02T04:00:00Z"},
+            ],
+            fun_like_source(),
+            lineage,
+            intervals,
+        )
+
+        self.assertEqual([], branches["uncorrelated"])
+        self.assertEqual(1, len(branches["correlated"]))
+        segment = branches["correlated"][0]
+        expected_security_id = security_id_for_alpaca_asset_ids(["old-fun-alpaca-id", "current-fun-alpaca-id"])
+        self.assertEqual(64, len(expected_security_id))
+        self.assertEqual(expected_security_id, segment["canonical_security"]["security_id"])
+        self.assertIsNone(segment["canonical_security"]["alpaca_asset_id"])
+        self.assertEqual(
+            ["current-fun-alpaca-id", "old-fun-alpaca-id"],
+            segment["security_identity"]["member_alpaca_asset_ids"],
+        )
+        self.assertEqual(["FUN"], segment["security_identity"]["member_tickers"])
+        self.assertIn(TERMINAL_FALLBACK_WARNING, segment["warnings"])
+        fallback = segment["terminal_correlation_fallback"]
+        self.assertTrue(fallback["eligible"])
+        self.assertTrue(all(fallback["criteria"].values()))
+        self.assertEqual(0, fallback["session_coverage"]["missing_session_count"])
+        self.assertTrue(
+            fallback["supplementary_corroboration"]["potential_identity_change_explanation_available"]
+        )
+        self.assertEqual(
+            "2024-07-02",
+            fallback["supplementary_corroboration"]["potential_identity_change_actions"][0]["effective_date"],
+        )
+
+    def test_two_id_history_with_one_missing_session_stays_uncorrelated(self) -> None:
+        lineage = fun_like_lineage()
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+
+        branches = correlate_download_rows(
+            [
+                {"t": "2024-06-28T04:00:00Z"},
+                {"t": "2024-07-02T04:00:00Z"},
+            ],
+            fun_like_source(),
+            lineage,
+            intervals,
+        )
+
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(1, len(branches["uncorrelated"]))
+        fallback = branches["uncorrelated"][0]["terminal_correlation_fallback"]
+        self.assertFalse(fallback["eligible"])
+        self.assertFalse(fallback["criteria"]["no_missing_expected_market_sessions"])
+        self.assertEqual(["2024-07-01"], fallback["session_coverage"]["missing_sessions"])
+
+    def test_internal_security_id_is_order_independent_and_membership_sensitive(self) -> None:
+        forward = security_id_for_alpaca_asset_ids(["alpaca-b", "alpaca-a"])
+        reverse = security_id_for_alpaca_asset_ids(["alpaca-a", "alpaca-b"])
+
+        self.assertEqual(forward, reverse)
+        self.assertNotEqual(forward, security_id_for_alpaca_asset_ids(["alpaca-a"]))
 
 
 class CorrelationPublicationTests(unittest.TestCase):
@@ -746,6 +913,7 @@ class CorrelationPublicationTests(unittest.TestCase):
                 set(source_state_after) - set(source_state_before),
             )
             self.assertEqual("published", first_receipt["publication_status"])
+            self.assertEqual("published", first_receipt["security_master"]["publication_status"])
             self.assertTrue(first_receipt["partition"]["row_partition_complete"])
             self.assertEqual(10, first_receipt["partition"]["correlated_row_count"])
             self.assertEqual(0, first_receipt["partition"]["uncorrelated_row_count"])
@@ -765,6 +933,21 @@ class CorrelationPublicationTests(unittest.TestCase):
                 receipt_document["uuid_lineage_edges"],
                 json.loads(correlated_path.read_text(encoding="utf-8"))["uuid_lineage_edges"],
             )
+            authenticated_master = authenticate_security_master(repository_root)
+            self.assertTrue(security_master_path(repository_root).is_file())
+            self.assertTrue(security_master_manifest_path(repository_root).is_file())
+            self.assertEqual(
+                authenticated_master.master_sha256,
+                first_receipt["security_master"]["output_sha256"],
+            )
+            self.assertNotIn(
+                "warning",
+                json.dumps(authenticated_master.master["securities"]).lower(),
+            )
+            self.assertNotIn(
+                "error",
+                json.dumps(authenticated_master.master["securities"]).lower(),
+            )
 
             output_state_before_cache = self._file_state(receipt_path.parent)
             lineage_report["generated_at"] = "2099-01-01T00:00:00Z"
@@ -779,6 +962,7 @@ class CorrelationPublicationTests(unittest.TestCase):
             output_state_after_cache = self._file_state(receipt_path.parent)
 
         self.assertEqual("cached", second_receipt["publication_status"])
+        self.assertEqual("cached", second_receipt["security_master"]["publication_status"])
         self.assertEqual(output_state_before_cache, output_state_after_cache)
         self.assertEqual(2, len(lineage_calls))
 

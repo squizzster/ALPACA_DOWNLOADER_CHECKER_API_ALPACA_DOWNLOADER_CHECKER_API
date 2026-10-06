@@ -1,0 +1,23 @@
+[
+  {
+    "modifications": [
+      "Establish a standalone read-only API and CLI for selecting one adjustment view by canonical Alpaca asset UUID.",
+      "Return unchanged authenticated frozen bars at UUID boundaries together with recorded integrity failures and applicable warning-overlay findings.",
+      "Authenticate validation, correlation, warning, and frozen-download boundaries without updating or repairing any artifact."
+    ]
+  },
+  {
+    "modifications": [
+      "Select histories by the repository's deterministic internal security ID rather than by one Alpaca asset UUID.",
+      "Return all contributing Alpaca IDs, CUSIPs, ticker history, and exact segment-level vendor provenance beneath the internal historical-pricing identity.",
+      "Ignore correlation generations from earlier schema versions during repository-wide discovery because they cannot contain an internal security ID from this reader contract."
+    ]
+  },
+  {
+    "modifications": [
+      "Resolve reads exclusively through the authenticated global security-master index instead of scanning ticker correlation manifests.",
+      "Accept the repository master ID through --master-id and reject Alpaca UUIDs or unpublished digest values.",
+      "Return the clean master identity metadata and exact master-index digest provenance while keeping errors and warnings in their separate read-result sections."
+    ]
+  }
+]

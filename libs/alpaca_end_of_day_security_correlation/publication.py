@@ -125,6 +125,33 @@ def _publish_branch(path: Path, document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _publish_master_and_decorate_receipt(
+    repository_root: Path,
+    correlation_report: dict[str, Any],
+    correlation_receipt: dict[str, Any],
+    *,
+    correlation_publication_status: str,
+) -> dict[str, Any]:
+    from .security_master import publish_security_master_update
+
+    master_receipt = publish_security_master_update(
+        repository_root,
+        correlation_report,
+        correlation_receipt,
+    )
+    return {
+        **correlation_receipt,
+        "publication_status": correlation_publication_status,
+        "security_master": {
+            "publication_status": master_receipt["publication_status"],
+            "security_master_version": master_receipt["security_master_version"],
+            "security_master_generation_sha256": master_receipt["security_master_generation_sha256"],
+            "master_id_count": master_receipt["master_id_count"],
+            "output_sha256": master_receipt["output"]["sha256"],
+        },
+    }
+
+
 def publish_security_correlation(
     repository_root: Path,
     correlation_report: dict[str, Any],
@@ -143,7 +170,12 @@ def publish_security_correlation(
         generation_sha256,
     )
     if cached_receipt is not None:
-        return {**cached_receipt, "publication_status": "cached"}
+        return _publish_master_and_decorate_receipt(
+            repository_root,
+            correlation_report,
+            cached_receipt,
+            correlation_publication_status="cached",
+        )
 
     publication_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     correlated_document = {
@@ -212,4 +244,9 @@ def publish_security_correlation(
         },
     }
     write_json_document_atomically(receipt_path, receipt, compact=False)
-    return {**receipt, "publication_status": "published"}
+    return _publish_master_and_decorate_receipt(
+        repository_root,
+        correlation_report,
+        receipt,
+        correlation_publication_status="published",
+    )

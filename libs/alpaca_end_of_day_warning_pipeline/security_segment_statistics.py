@@ -19,16 +19,16 @@ from .settings import WarningPipelineConfiguration
 SECURITY_SEGMENT_STATISTICAL_RULES = (
     (
         1,
-        "alpaca_uuid_partition",
-        "Build independent histories using only correlated Alpaca asset UUID segments.",
+        "internal_security_partition",
+        "Build independent histories using correlated internal historical-pricing security IDs.",
     ),
     (
         2,
-        "uuid_segment_session_coverage",
-        "Check missing sessions only inside one correlated UUID ownership segment.",
+        "security_segment_session_coverage",
+        "Check missing sessions only inside one correlated security-identity segment.",
     ),
     (3, "primary_activity_view", "Prefer raw activity data and choose one fully covering adjusted price view."),
-    (4, "corroborated_activity_collapse", "Compare activity with a robust trailing history inside one UUID."),
+    (4, "corroborated_activity_collapse", "Compare activity with a robust trailing security history."),
     (5, "one_trade_nonflat", "Flag a one-trade bar with a non-flat price range as contextual evidence."),
     (6, "repeated_liquid_bar", "Find repeated complete high-activity bar signatures."),
     (7, "isolated_price_level_reversal", "Find a full price-level jump that immediately reverses."),
@@ -57,7 +57,8 @@ class _SecurityCoverageSegment:
 
 @dataclass(frozen=True)
 class _SecurityAdjustmentHistory:
-    asset_id: str
+    security_id: str
+    alpaca_asset_ids: tuple[str, ...]
     cusips: tuple[str, ...]
     request_cohort: tuple[str, ...]
     adjustment: str
@@ -73,7 +74,11 @@ class _SecurityAdjustmentHistory:
 
     @property
     def canonical_security(self) -> dict[str, Any]:
-        return {"asset_id": self.asset_id, "cusips": list(self.cusips)}
+        return {
+            "security_id": self.security_id,
+            "alpaca_asset_ids": list(self.alpaca_asset_ids),
+            "cusips": list(self.cusips),
+        }
 
 
 def _iso_timestamp(timestamp: datetime) -> str:
@@ -91,7 +96,8 @@ def _build_security_histories(
     correlated_segments = inputs.correlation.correlated["segments"]
     correlated_analyzable_rows = 0
     excluded_integrity_rows = 0
-    cusips_by_asset_id: dict[str, set[str]] = defaultdict(set)
+    cusips_by_security_id: dict[str, set[str]] = defaultdict(set)
+    alpaca_asset_ids_by_security_id: dict[str, set[str]] = defaultdict(set)
 
     for segment in correlated_segments:
         filename = segment["data_file"]
@@ -99,11 +105,20 @@ def _build_security_histories(
         if view is None:
             raise WarningPipelineError(f"correlated segment refers to unloaded source {filename!r}")
         canonical_security = segment["canonical_security"]
-        asset_id = canonical_security["asset_id"]
+        security_id = canonical_security["security_id"]
         cusip = canonical_security.get("cusip")
         if isinstance(cusip, str) and cusip:
-            cusips_by_asset_id[asset_id].add(cusip)
-        key = (asset_id, view.request_cohort_key(), view.adjustment)
+            cusips_by_security_id[security_id].add(cusip)
+        candidate_securities = segment.get("candidate_securities")
+        if isinstance(candidate_securities, list):
+            cusips_by_security_id[security_id].update(
+                candidate["cusip"]
+                for candidate in candidate_securities
+                if isinstance(candidate, dict) and isinstance(candidate.get("cusip"), str) and candidate["cusip"]
+            )
+        security_identity = segment["security_identity"]
+        alpaca_asset_ids_by_security_id[security_id].update(security_identity["member_alpaca_asset_ids"])
+        key = (security_id, view.request_cohort_key(), view.adjustment)
         history = histories.setdefault(
             key,
             {
@@ -145,7 +160,7 @@ def _build_security_histories(
             existing_position = history["positions"].get(bar.timestamp)
             if existing_position is not None:
                 raise WarningPipelineError(
-                    f"Alpaca asset UUID {asset_id} has duplicate {view.adjustment} timestamp "
+                    f"internal security ID {security_id} has duplicate {view.adjustment} timestamp "
                     f"{_iso_timestamp(bar.timestamp)} in {existing_position[0]} and {filename}"
                 )
             history["bars"].append(bar)
@@ -153,12 +168,13 @@ def _build_security_histories(
             correlated_analyzable_rows += 1
 
     result = []
-    for (asset_id, request_cohort, adjustment), history in sorted(histories.items()):
+    for (security_id, request_cohort, adjustment), history in sorted(histories.items()):
         view = history["view"]
         result.append(
             _SecurityAdjustmentHistory(
-                asset_id=asset_id,
-                cusips=tuple(sorted(cusips_by_asset_id[asset_id])),
+                security_id=security_id,
+                alpaca_asset_ids=tuple(sorted(alpaca_asset_ids_by_security_id[security_id])),
+                cusips=tuple(sorted(cusips_by_security_id[security_id])),
                 request_cohort=request_cohort,
                 adjustment=adjustment,
                 adjustment_actions=view.adjustment_actions,
@@ -177,13 +193,15 @@ def _build_security_histories(
     correlated_row_count = inputs.correlation.correlated["row_count"]
     uncorrelated_row_count = inputs.correlation.uncorrelated["row_count"]
     if correlated_analyzable_rows + excluded_integrity_rows != correlated_row_count:
-        raise WarningPipelineError("analyzable and integrity-excluded UUID rows do not exhaust correlation")
+        raise WarningPipelineError(
+            "analyzable and integrity-excluded internal-security rows do not exhaust correlation"
+        )
     return result, {
         "correlated_source_row_count": correlated_row_count,
         "uncorrelated_source_row_count": uncorrelated_row_count,
         "correlated_analyzable_row_count": correlated_analyzable_rows,
         "correlated_integrity_excluded_row_count": excluded_integrity_rows,
-        "canonical_security_count": len(cusips_by_asset_id),
+        "canonical_security_count": len(alpaca_asset_ids_by_security_id),
         "security_adjustment_history_count": len(result),
     }
 
@@ -232,7 +250,7 @@ def _validated_optional_date(value: str | None, description: str) -> date | None
         raise WarningPipelineError(f"{description} is not an ISO date: {value!r}") from error
 
 
-def _evaluate_uuid_segment_session_coverage(
+def _evaluate_security_segment_session_coverage(
     primary: _SecurityAdjustmentHistory,
     collector: FindingCollector,
 ) -> None:
@@ -242,7 +260,7 @@ def _evaluate_uuid_segment_session_coverage(
         observed_session_dates = segment.observed_session_dates
         if not observed_session_dates:
             continue
-        collector.evaluated("uuid_segment_session_coverage")
+        collector.evaluated("security_segment_session_coverage")
         if observed_session_dates != tuple(sorted(set(observed_session_dates))):
             continue
 
@@ -260,7 +278,7 @@ def _evaluate_uuid_segment_session_coverage(
         coverage_end = min(request_end, ownership_end) if ownership_end else last_observed + timedelta(days=1)
         if coverage_start >= coverage_end:
             raise WarningPipelineError(
-                f"correlated UUID segment {segment.data_file}:{segment.row_start}-{segment.row_end} "
+                f"correlated security segment {segment.data_file}:{segment.row_start}-{segment.row_end} "
                 "has no valid ownership coverage interval"
             )
         try:
@@ -271,14 +289,14 @@ def _evaluate_uuid_segment_session_coverage(
             )
         except MarketCalendarError as error:
             raise WarningPipelineError(
-                f"could not evaluate UUID session coverage for {segment.data_file}: {error}"
+                f"could not evaluate security session coverage for {segment.data_file}: {error}"
             ) from error
         if not missing_session_dates:
             continue
         collector.add(
-            "uuid_segment_session_coverage",
+            "security_segment_session_coverage",
             WARNING,
-            "Expected market sessions are absent inside one correlated Alpaca UUID ownership segment.",
+            "Expected market sessions are absent inside one correlated security-identity segment.",
             data_files=(segment.data_file,),
             evidence={
                 "row_start": segment.row_start,
@@ -295,8 +313,8 @@ def _evaluate_uuid_segment_session_coverage(
             },
             confidence="observed",
             basis=(
-                "calendar comparison is scoped to one UUID segment; intervals between different UUIDs "
-                "are intentionally excluded"
+                "calendar comparison is scoped to one correlated security segment; intervals outside its "
+                "known ownership bounds are excluded"
             ),
             canonical_security=primary.canonical_security,
         )
@@ -405,11 +423,11 @@ def _evaluate_activity(
             collector.add(
                 "corroborated_activity_collapse",
                 WARNING,
-                f"{bar.session_date}: trade count collapses relative to this UUID history.",
+                f"{bar.session_date}: trade count collapses relative to this security history.",
                 data_files=same_count_files,
                 evidence=evidence,
                 confidence="high",
-                basis="within-UUID anomaly corroborated by volume or mean trade size",
+                basis="within-security anomaly corroborated by volume or mean trade size",
                 canonical_security=primary.canonical_security,
             )
     return flagged_activity
@@ -485,7 +503,7 @@ def _evaluate_prices(
             collector.add(
                 "isolated_price_level_reversal",
                 WARNING,
-                "An entire price bar jumps far from both adjacent UUID rows and immediately reverses.",
+                "An entire price bar jumps far from both adjacent security rows and immediately reverses.",
                 data_files=adjusted.data_files,
                 evidence={
                     "previous": previous.exact_evidence(),
@@ -515,7 +533,7 @@ def _evaluate_prices(
             collector.add(
                 "extreme_unsupported_wick",
                 WARNING,
-                "An extreme high/low is unsupported by the bar body, VWAP, and adjacent UUID rows.",
+                "An extreme high/low is unsupported by the bar body, VWAP, and adjacent security rows.",
                 data_files=adjusted.data_files,
                 evidence=current.exact_evidence(),
                 confidence="high",
@@ -571,17 +589,17 @@ def validate_security_segment_statistics(
     histories, coverage = _build_security_histories(inputs)
     grouped: dict[tuple[str, tuple[str, ...]], list[_SecurityAdjustmentHistory]] = defaultdict(list)
     for history in histories:
-        grouped[(history.asset_id, history.request_cohort)].append(history)
+        grouped[(history.security_id, history.request_cohort)].append(history)
 
     evaluated_histories = []
-    for (asset_id, request_cohort), security_histories in sorted(grouped.items()):
-        collector.evaluated("alpaca_uuid_partition")
+    for (security_id, request_cohort), security_histories in sorted(grouped.items()):
+        collector.evaluated("internal_security_partition")
         usable = [history for history in security_histories if history.bars]
         if not usable:
             continue
         collector.evaluated("primary_activity_view")
         primary, price_view = _choose_primary_histories(usable)
-        _evaluate_uuid_segment_session_coverage(primary, collector)
+        _evaluate_security_segment_session_coverage(primary, collector)
         flagged_activity = _evaluate_activity(usable, primary, collector)
         _evaluate_one_trade_and_repeated_bars(primary, flagged_activity, collector)
         _evaluate_prices(primary, price_view, collector)

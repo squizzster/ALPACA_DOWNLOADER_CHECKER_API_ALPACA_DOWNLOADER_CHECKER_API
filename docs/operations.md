@@ -1,111 +1,91 @@
-# Commands and operations
+# Operations
 
-Run commands from the repository root.
+Run from the repository root. Use each command's `--help` as the option authority.
 
-## Prerequisites
+## Requirements
 
-- `python3`; Ruff targets Python 3.11 as configured in [`pyproject.toml`](../pyproject.toml).
-- `pigz` on `PATH` whenever a new, forced, or repaired frozen download must be published. Cache reads and local
-  validation migrations do not invoke it.
-- `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` for every full-pipeline, lineage, or correlation command. The full
-  pipeline always queries identity APIs even when all bar downloads are cached; bar credentials themselves are read
-  lazily by the download stage.
+- Python 3.11-compatible runtime.
+- `pigz` when publishing or replacing a frozen download.
+- `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` for update, lineage, or correlation commands.
+- No credentials for the reader.
 
-Use built-in help as the option authority:
+## Update
 
-```bash
-./run_alpaca_end_of_day_ticker_pipeline.py --help
-./download_alpaca_end_of_day_bars.py --help
-./inspect_alpaca_security_lineage.py --help
-./correlate_alpaca_end_of_day_security_segments.py --help
-```
-
-## Complete ticker pipeline
-
-The primary command accepts repeatable symbols and processes them in order:
+Run every stage for one or more tickers:
 
 ```bash
-./run_alpaca_end_of_day_ticker_pipeline.py --symbol DELL -s FB -s TWTR
+./run_alpaca_end_of_day_ticker_pipeline.py --symbol FUN -s DELL -s FB
 ```
 
-Omitting `--adjustment` selects every supported adjustment. Repeating it selects specific modes. The older
-`download_alpaca_end_of_day_bars.py` entry point invokes the same complete pipeline and remains a compatibility
-command; it is not a download-only CLI.
+Omit `--adjustment` to process all eight views. Repeat it to select views. The full pipeline always refreshes identity
+evidence, then publishes correlation, the master index, and warnings; coherent generations remain cached.
+Correlation inspects every stored gzip for that ticker, so after a validation-version change run all views before a
+partial-view update.
 
-The stages are download/cache validation, live identity evidence, correlation publication, and warning publication.
-The command reports correlation and warning generation summaries on stdout. Identity evidence is fetched afresh but
-semantic generation digests exclude its timestamp and API request count, allowing unchanged correlation output to
-remain cached.
-
-Correlation inspects every local `*.csv.gz` in the symbol directory, not only adjustments selected on the command
-line. Every such file must have a current validation receipt. After a validation version change, omit `--adjustment`
-on the first run for a symbol with multiple existing modes so the complete receipt generation is rebuilt before
-correlation.
+`download_alpaca_end_of_day_bars.py` is a compatibility entry point for the same full pipeline.
 
 ## Narrow commands
 
-The lineage command is read-only and emits one JSON document to stdout:
-
 ```bash
+# Read-only lineage evidence to stdout.
 ./inspect_alpaca_security_lineage.py FB > /tmp/fb-lineage.json
-```
 
-It reads local sidecars and derived-manifest summaries without authenticating gzip SHA-256, then queries Alpaca. The
-report is evidence, not a row-to-UUID assignment.
-
-The correlation command queries lineage, authenticates every local frozen download, publishes both row-partition
-branches and their receipt, then prints that receipt:
-
-```bash
+# Authenticate local downloads, publish correlation and master-index updates, print the receipt.
 ./correlate_alpaca_end_of_day_security_segments.py FB
 ```
 
-It requires current validation receipts. Use the complete pipeline to migrate stale validation state. Warning
-publication currently has a library API but no standalone executable.
+Correlation requires current validation receipts. Warning publication has a library API but no standalone command.
+
+## Read
+
+```bash
+./read_alpaca_end_of_day_ticker.py \
+  --type raw \
+  --master-id <64-hex-master-id>
+```
+
+Types: `raw`, `split`, `dividend`, `spin-off`, `split,dividend`, `split,spin-off`, `dividend,spin-off`, `all`.
+
+The command emits one JSON document to stdout. It accepts no Alpaca UUID, performs no update or repair, and makes no
+network request. Authentication/read failures go to stderr with status `1`; argument errors use argparse status `2`.
+
+Public API:
+
+```python
+from libs.alpaca_end_of_day_reader import read_alpaca_end_of_day_security_history
+
+history = read_alpaca_end_of_day_security_history("<64-hex-master-id>", "raw")
+```
 
 ## Replacement and recovery
 
-Use the narrowest adjustment selection with a mutation flag:
-
 ```bash
+# Replace one coherent frozen pair after authenticating it.
 ./run_alpaca_end_of_day_ticker_pipeline.py --symbol DELL --adjustment raw --force
+
+# Recreate exactly one orphaned gzip/sidecar pair.
 ./run_alpaca_end_of_day_ticker_pipeline.py --symbol DELL --adjustment raw --repair
 ```
 
-`--force` replaces every selected coherent pair after first recomputing and verifying its existing SHA-256. It is
-required when the request identity changes, including a later request end/`asof`. It cannot bypass malformed metadata,
-changed file stats, or a SHA mismatch.
+| State | Action |
+|---|---|
+| Both gzip and sidecar absent | Normal download |
+| Coherent current pair | Cache hit |
+| Coherent pair with stale derived generation | Local revalidation/republication; frozen pair unchanged |
+| Changed request identity, including a later default end date | `--force` |
+| Exactly one of gzip/sidecar missing | `--repair` on that adjustment |
+| Malformed metadata, changed stat, or SHA mismatch | Stop; neither flag chooses an authority |
 
-The default request end is the current UTC midnight and `asof` is that date. Running on a later UTC date therefore
-changes the request identity of an existing pair and requires `--force` to fetch that later range.
+Do not manually delete one member of a pair to refresh data. `--repair` repairs publication completeness, not prices,
+identity, or derived manifests.
 
-`--repair` is only for exactly one missing member of a gzip/sidecar pair. Every selected pair must be orphaned, so
-select the specific affected adjustment. It redownloads and republishes the complete pair; it does not repair prices,
-identity assignments, or derived manifests.
+## Exit status
 
-Do not manually delete only one member to refresh data. Do not use either flag to choose an authority after an
-unexplained mismatch.
+| Status | Meaning |
+|---|---|
+| `0` | Selected stages completed with no pricing/data integrity failure |
+| `1` | Recorded/replayed integrity failure or runtime-stage failure |
+| `2` | Corrupt frozen boundary or invalid recovery mode |
 
-## Cache and migration behavior
-
-- Both frozen files absent: the bar stage downloads normally.
-- Coherent current pair and current derived generation: cache hit; no artifact is rewritten.
-- Coherent pair with a stale or missing validation receipt: SHA-authenticate and revalidate locally.
-- Current recorded integrity failure: replay it without changing the frozen pair unless `--force` requests a fresh
-  authenticated replacement.
-- Changed request identity: require `--force`.
-- Malformed, stat-inconsistent, or SHA-mismatched boundary: abort without replacement.
-
-Version-driven local migrations may update validation, correlation, and warning manifests. They must leave frozen
-gzips and sidecars unchanged.
-
-## Exit behavior
-
-- `0`: all requested stages completed and no selected artifact reported a pricing/data integrity failure.
-- `1`: pricing/data failures were recorded or replayed, or a non-boundary runtime stage failed.
-- `2`: the frozen download boundary is corrupt, unsafe to replace, or used with an invalid recovery mode.
-
-For multiple symbols, recorded pricing/data failures are aggregated after every selected ticker has completed its
-downstream stages. An authentication or runtime exception aborts immediately. Warnings, information findings,
-uncorrelated rows, and uncorrelated work items do not by themselves change the CLI exit status; inspect their owning
-manifests before treating a ticker as reader-ready.
+For multiple tickers, recorded integrity failures are aggregated after processing all selected tickers. Authentication
+or publication failure aborts immediately. Warnings and uncorrelated work do not change exit status.

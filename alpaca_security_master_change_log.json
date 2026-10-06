@@ -1,0 +1,9 @@
+[
+  {
+    "modifications": [
+      "Publish a global digest-bound lookup from repository historical-pricing master IDs to their contributing correlation generations.",
+      "Retain available Alpaca IDs, ticker history, names, observed dates, ownership periods, identity events, CUSIPs, FIGI-family identifiers, exchanges, asset classes, statuses, and per-provider identity records without inventing missing metadata.",
+      "Exclude errors, warnings, repair state, and bar values from the identity index, and make its authenticated master-ID lookup the standalone reader's only discovery boundary."
+    ]
+  }
+]

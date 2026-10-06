@@ -1,120 +1,104 @@
-# Data and artifact contracts
+# Technical contracts
 
-## Canonical sources
+## Authoritative sources
 
-Use these sources instead of copying constants or schemas into another document:
-
-- Bar request defaults and adjustment modes: `ALPACA_ADJUSTMENT_MODES`, `EARLIEST_REQUEST_TIMESTAMP`,
-  `ALPACA_DATA_FEED`, and `ALPACA_BAR_TIMEFRAME` in
-  [`libs/download_alpaca_end_of_day_bars/settings.py`](../libs/download_alpaca_end_of_day_bars/settings.py).
-- HTTP query construction, retry count, pagination rejection, and rate-limit handling:
-  [`request_alpaca_daily_bars`](../libs/download_alpaca_end_of_day_bars/alpaca_http.py).
-- Frozen CSV columns and request-identity fields:
-  [`libs/alpaca_end_of_day_pipeline/contracts.py`](../libs/alpaca_end_of_day_pipeline/contracts.py).
-- Hard row and dataset validation:
-  [`validate_end_of_day_bars`](../libs/alpaca_end_of_day_pipeline/daily_bar_validation.py).
-- Cache classification and frozen-file authentication:
-  [`inspect_cached_download`](../libs/alpaca_end_of_day_pipeline/cached_downloads.py) and
-  [`authenticate_frozen_download`](../libs/alpaca_end_of_day_pipeline/cached_downloads.py).
-- Identity evidence and API traversal:
-  [`build_identity_report`](../libs/alpaca_security_lineage/lineage.py).
-- Ordered ownership and row-correlation rules:
-  [`OWNERSHIP_INTERVAL_RULES`](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py) and
-  [`ROW_CORRELATION_RULES`](../libs/alpaca_end_of_day_security_correlation/row_correlation.py).
-- Warning rules and thresholds:
-  [`CROSS_ADJUSTMENT_RULES`](../libs/alpaca_end_of_day_warning_pipeline/cross_adjustment_warnings.py),
-  [`SECURITY_SEGMENT_STATISTICAL_RULES`](../libs/alpaca_end_of_day_warning_pipeline/security_segment_statistics.py),
-  and [`WarningPipelineConfiguration`](../libs/alpaca_end_of_day_warning_pipeline/settings.py).
-- Authoritative market sessions:
-  [`libs/common/us_market_hours.json`](../libs/common/us_market_hours.json), loaded by
-  [`us_equity_market_session_calendar.py`](../libs/common/us_equity_market_session_calendar.py).
-
-## Frozen source contract
-
-The bar request uses ticker symbols, SIP `1Day` data, ascending order, an explicit `asof`, and a 10,000-bar limit.
-Any returned next-page token is rejected; the code never accepts a silently truncated dataset. The request identity
-also includes the adjustment, start, end, feed, and timeframe.
-
-The complete JSON response remains in memory until deterministic validation finishes. Only then is every row,
-including a failed row, serialized without pricing repair through `pigz -5` into a same-directory temporary gzip. No
-plain CSV is written. SHA-256 is calculated and independently verified before each boundary file is atomically
-replaced.
-
-The CSV preserves bar fields but not Alpaca's outer returned-symbol key. Keep the requested ticker, `asof`, and request
-range when interpreting historical symbol mapping; a filename or response label is not a security identity.
-
-## Integrity classification
-
-The base pipeline treats these as action-required integrity failures:
-
-- missing fields or unusable, out-of-range, non-increasing, or non-session-midnight timestamps;
-- non-positive or non-finite OHLC/VWAP, invalid high/low ordering, or open/close/VWAP outside the range;
-- non-positive or non-integral volume or trade count, or trade count greater than volume;
-- empty/unusable datasets, calendar-range errors, unexpected closed-session rows, and duplicated or incorrectly
-  ordered sessions.
-
-An absent expected session is not a pre-identity integrity failure. Ticker changes, ticker reuse, acquisitions, and
-listing boundaries can create legitimate gaps. After correlation, missing-session checks are advisory and scoped to
-one UUID ownership segment; intervals between distinct UUIDs are excluded. The regression contracts are in
-[`ValidationTests`](../tests/test_alpaca_end_of_day_pipeline.py) and
-[`WarningPipelineTests`](../tests/test_alpaca_end_of_day_warning_pipeline.py).
-
-Integrity failures do not alter or filter the frozen gzip. Exact failed row data and deterministic error text are
-recorded in the integrity manifest. Warning findings never enter that manifest.
-
-## On-disk artifacts
-
-All production artifacts for a ticker live in `data/end_of_day/<SYMBOL>/`.
-
-| Artifact | Owner and contract |
+| Contract | Source |
 |---|---|
-| `<adjustment>.csv.gz` | Frozen Alpaca rows for one request identity. Commas in adjustment names become underscores in filenames. |
-| `<adjustment>.csv.gz.manifest.json` | Download-boundary sidecar: request identity, coverage, file stat, SHA-256, and publication verification. |
-| `pipeline.manifest.json` | Current validation generation and one versionless processing receipt per processed download. |
-| `integrity_failure.manifest.json` | Current action-required failures only; it exists with `failures: []` when clean. |
-| `correlated.pipeline.json` | Row ranges assigned to canonical Alpaca asset UUIDs with their provenance. |
-| `uncorrelated.pipeline.json` | Unassigned row ranges and non-row lineage work items retained without inference. |
-| `security_correlation.manifest.json` | Receipt that binds both correlation branches, their inputs, rule order, and generation. |
-| `cross_adjustment_warnings.pipeline.json` | Warning/information findings across comparable adjustment views. |
-| `security_segment_statistical_warnings.pipeline.json` | Warning/information findings evaluated within UUID histories. |
-| `warning_pipeline.manifest.json` | Receipt that binds both warning outputs to current upstream digests and configuration. |
+| Request defaults and adjustment labels | [`download_alpaca_end_of_day_bars/settings.py`](../libs/download_alpaca_end_of_day_bars/settings.py) |
+| HTTP, pagination, retries, and rate limits | [`download_alpaca_end_of_day_bars/alpaca_http.py`](../libs/download_alpaca_end_of_day_bars/alpaca_http.py) |
+| Frozen columns and request identity | [`alpaca_end_of_day_pipeline/contracts.py`](../libs/alpaca_end_of_day_pipeline/contracts.py) |
+| Hard validation | [`alpaca_end_of_day_pipeline/daily_bar_validation.py`](../libs/alpaca_end_of_day_pipeline/daily_bar_validation.py) |
+| Cache and frozen-file authentication | [`alpaca_end_of_day_pipeline/cached_downloads.py`](../libs/alpaca_end_of_day_pipeline/cached_downloads.py) |
+| Asset and corporate-action evidence | [`alpaca_security_lineage/lineage.py`](../libs/alpaca_security_lineage/lineage.py) |
+| Ownership and row-correlation rules | [`ownership_interval_rules.py`](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py), [`row_correlation.py`](../libs/alpaca_end_of_day_security_correlation/row_correlation.py) |
+| Master-ID derivation and terminal fallback | [`security_identity.py`](../libs/alpaca_end_of_day_security_correlation/security_identity.py), [`terminal_fallback.py`](../libs/alpaca_end_of_day_security_correlation/terminal_fallback.py) |
+| Master index | [`security_master.py`](../libs/alpaca_end_of_day_security_correlation/security_master.py) |
+| Warning rules | [`cross_adjustment_warnings.py`](../libs/alpaca_end_of_day_warning_pipeline/cross_adjustment_warnings.py), [`security_segment_statistics.py`](../libs/alpaca_end_of_day_warning_pipeline/security_segment_statistics.py) |
+| Public read result | [`alpaca_end_of_day_reader/history.py`](../libs/alpaca_end_of_day_reader/history.py) |
+| Market sessions | [`common/us_market_hours.json`](../libs/common/us_market_hours.json) |
 
-`data/` is ignored by Git. Do not use runtime artifacts as fixtures or commit them. The tracked calendar is application
-input, not runtime output.
+## Frozen source
 
-## Authentication and cache trust
+- Request identity includes symbol, adjustment, start, end, `asof`, feed, and timeframe.
+- Alpaca requests use SIP `1Day`, ascending order, a 10,000-bar limit, and reject any next-page token.
+- Validated rows are serialized through `pigz -5`; no plain CSV is published.
+- The gzip sidecar binds request identity, row coverage, file stat, and SHA-256.
+- Integrity failures do not alter or remove rows. Exact failures are stored in `integrity_failure.manifest.json`.
+- A missing expected session is not a pre-identity integrity failure. It is identity evidence for the terminal fallback
+  and an advisory check after correlation.
 
-The gzip and sidecar form one frozen boundary. Exactly one present file is an orphaned pair. A malformed sidecar,
-changed size or `mtime_ns`, or a SHA mismatch is not an orphan and cannot be repaired by choosing one file as truth.
+## Master identity
 
-Normal cache reads trust the publication-verified sidecar while file size and `mtime_ns` still match. Local
-reprocessing, forced replacement, and correlation recompute gzip SHA-256. A forced replacement authenticates the
-existing pair before contacting Alpaca and cannot overwrite an unexplained mismatch. Warning processing authenticates
-the correlation outputs and verifies the frozen file's stat and manifest bindings; it does not rehash the gzip.
+```text
+master_id = SHA-256("\n".join(sorted(unique_alpaca_asset_ids)))
+```
 
-Correlation accepts current clean downloads and downloads with recorded integrity failures, authenticates their
-SHA-256, and partitions every row exactly once. Warning processing then authenticates the correlation receipt and
-both branches, verifies the exhaustive ranges, and binds the current validation manifests by digest. Rows with
-recorded row-level integrity failures remain in the frozen source and correlation partition but are excluded from
-numeric warning calculations.
+Ticker, name, date, CUSIP, FIGI, corporate-action, and calendar evidence determine or describe membership; none changes
+the digest for a fixed membership set.
 
-Do not confuse these states:
+The final continuity rule runs only after all earlier rules leave the complete source uncorrelated. It promotes a
+history only when every criterion is exactly `true`:
 
-- an empty integrity-failure list means no current hard failure was recorded;
-- a complete correlation partition means all source rows were placed in a branch;
-- zero uncorrelated rows means all source rows received an identity assignment;
-- warnings and information are advisory and do not become integrity errors;
-- command exit success is defined by the CLI implementation and is not a future reader-readiness guarantee.
+- the only unresolved reason is ambiguous identity;
+- exactly two stable Alpaca-ID candidates exist;
+- both candidates use the requested ticker;
+- market-calendar evaluation succeeds;
+- no expected session is missing or unexpected.
 
-## Versioned generations
+Promotion retains both Alpaca IDs, the calendar proof, any identity-changing action evidence, and an unresolved-boundary
+warning. Otherwise the rows remain uncorrelated.
 
-Validation, correlation, and warnings have independent version constants and ordered changelogs. Their current values
-are authoritative in
-[`pipeline_version.py`](../libs/alpaca_end_of_day_pipeline/pipeline_version.py),
-[`correlation_version.py`](../libs/alpaca_end_of_day_security_correlation/correlation_version.py), and
-[`warning_pipeline_version.py`](../libs/alpaca_end_of_day_warning_pipeline/warning_pipeline_version.py).
+## Artifacts
 
-A validation-version change reauthenticates and reprocesses frozen downloads locally; it does not rewrite the gzip or
-its sidecar. Correlation and warning generation digests include their own versions and upstream identities, so stale
-derived outputs rebuild while coherent identical generations remain byte-stable cache hits. Receipt files are
-published after the outputs they authenticate.
+Per ticker: `data/end_of_day/<SYMBOL>/`
+
+| Artifact | Contract |
+|---|---|
+| `<adjustment>.csv.gz` | Frozen Alpaca rows |
+| `<adjustment>.csv.gz.manifest.json` | Frozen-source receipt |
+| `pipeline.manifest.json` | Current validation generation and processing receipts |
+| `integrity_failure.manifest.json` | Current hard failures; present with `failures: []` when clean |
+| `correlated.pipeline.json` | Master-ID-assigned row ranges with exact Alpaca provenance |
+| `uncorrelated.pipeline.json` | Unassigned row ranges and lineage work items |
+| `security_correlation.manifest.json` | Digest binding both exhaustive branches |
+| `cross_adjustment_warnings.pipeline.json` | Comparable-view findings |
+| `security_segment_statistical_warnings.pipeline.json` | Master-ID history findings |
+| `warning_pipeline.manifest.json` | Digest binding both warning outputs and upstream generations |
+
+Global: `data/end_of_day/`
+
+| Artifact | Contract |
+|---|---|
+| `security_master.index.json` | Master ID → Alpaca IDs, names, tickers, dates, identifiers, membership basis, available views, source symbols, and exact correlation digests. No bars, warnings, errors, or repair state. |
+| `security_master.manifest.json` | Index stat, SHA-256, version, generation, source count, and master-ID count |
+
+Runtime `data/` is ignored by Git.
+
+## Reader
+
+Input is one published 64-hex master ID and one exact adjustment label. `all` is Alpaca's all-actions-adjusted view,
+not a wildcard.
+
+The reader:
+
+1. authenticates the master index and resolves the ID;
+2. authenticates only the correlation sources and digests named by that identity;
+3. authenticates applicable warning, validation, and frozen-download boundaries;
+4. returns one JSON-compatible structure without writing or contacting Alpaca.
+
+`bars` preserves frozen CSV field strings. Each bar includes source/row/segment provenance plus referenced integrity
+and warning IDs. Equal duplicate observations are coalesced with all provenance; conflicting values at one timestamp
+abort. Full diagnostics remain in their top-level sections. `security` is the clean master-index record.
+
+Until a repair owner exists, returned values come from authenticated frozen downloads and both repair fields are
+`null`.
+
+## Authentication meanings
+
+- Empty integrity failures: no current hard failure recorded.
+- Complete partition: every source row is in one branch.
+- Zero uncorrelated rows: every source row has an identity assignment.
+- Warning/information findings: advisory only.
+- Successful update: stages completed; a read still authenticates its selected dependency chain independently.
+
+Version sources and required changelogs are indexed in [Development](development.md).

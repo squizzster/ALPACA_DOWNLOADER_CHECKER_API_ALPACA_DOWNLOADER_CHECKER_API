@@ -10,5 +10,11 @@
     "modifications": [
       "Evaluate missing market sessions only inside correlated Alpaca UUID ownership segments, excluding calendar intervals between distinct securities and outside known terminal ownership boundaries."
     ]
+  },
+  {
+    "modifications": [
+      "Group security histories and advisory checks by the repository's internal historical-pricing security ID while retaining all contributing Alpaca asset IDs and CUSIPs as provenance.",
+      "Allow an authenticated continuous pricing history to span an Alpaca identity transition without treating the vendor's distinct identifiers as interchangeable."
+    ]
   }
 ]

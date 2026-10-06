@@ -155,7 +155,7 @@ def publish_warning_pipeline(
     }
     statistics_document = {
         **common_document,
-        "manifest_type": "end_of_day_security_uuid_statistical_warning_overlay",
+        "manifest_type": "end_of_day_internal_security_statistical_warning_overlay",
         "input_boundary": "authenticated_security_correlation_partition",
         "correlation": report["correlation"],
         "report": report["security_segment_statistics"],

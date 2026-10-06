@@ -35,5 +35,12 @@
       "Use an asset-resolved same-ticker stock-merger event as a dated transition between distinct predecessor and successor Alpaca UUIDs.",
       "Preserve that transition as a stock-merger UUID lineage edge while excluding unrelated merger inputs from the requested ticker lineage."
     ]
+  },
+  {
+    "modifications": [
+      "Introduce a deterministic SHA-256 internal security identifier derived from the sorted unique Alpaca asset-ID set while retaining exact Alpaca and ticker provenance.",
+      "At the final correlation boundary, promote a fully uncorrelated same-ticker history only when exactly two stable Alpaca ID candidates exist and every expected market session is present through the request endpoint.",
+      "Retain the two candidates, calendar proof, potential corporate-action explanation, and an unresolved-vendor-boundary warning on every continuity-based promotion."
+    ]
   }
 ]

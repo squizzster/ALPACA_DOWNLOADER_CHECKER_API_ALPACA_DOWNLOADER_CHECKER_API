@@ -4,6 +4,10 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from libs.alpaca_end_of_day_security_correlation import (
+    CORRELATION_VERSION,
+    security_id_for_alpaca_asset_ids,
+)
 from libs.alpaca_end_of_day_warning_pipeline import (
     WARNING_PIPELINE_VERSION,
     cross_adjustment_warnings_path,
@@ -107,9 +111,32 @@ def download_view(
     )
 
 
+def correlated_security_fields(
+    alpaca_asset_id: str,
+    cusip: str,
+    *,
+    member_alpaca_asset_ids: tuple[str, ...] | None = None,
+    tickers: tuple[str, ...] = ("TEST",),
+) -> dict:
+    members = member_alpaca_asset_ids or (alpaca_asset_id,)
+    security_id = security_id_for_alpaca_asset_ids(members)
+    return {
+        "canonical_security": {
+            "security_id": security_id,
+            "alpaca_asset_id": alpaca_asset_id,
+            "cusip": cusip,
+        },
+        "security_identity": {
+            "security_id": security_id,
+            "member_alpaca_asset_ids": sorted(members),
+            "member_tickers": sorted(tickers),
+        },
+    }
+
+
 class WarningPipelineTests(unittest.TestCase):
     def test_version_changelog_matches_warning_overlay(self) -> None:
-        self.assertEqual(2, WARNING_PIPELINE_VERSION)
+        self.assertEqual(3, WARNING_PIPELINE_VERSION)
         self.assertEqual(WARNING_PIPELINE_VERSION, len(validate_warning_pipeline_change_log()))
 
     def test_shared_formula_keeps_measurement_static_while_policy_selects_severity(self) -> None:
@@ -135,7 +162,7 @@ class WarningPipelineTests(unittest.TestCase):
         self.assertEqual(ERROR, error_result.outcome)
         self.assertEqual(warning_result.measurements, error_result.measurements)
 
-    def test_statistics_never_compare_rows_across_alpaca_asset_uuid_boundary(self) -> None:
+    def test_statistics_never_compare_rows_across_internal_security_boundary(self) -> None:
         bars = []
         for row_number in range(1, 61):
             if row_number == 25:
@@ -171,14 +198,14 @@ class WarningPipelineTests(unittest.TestCase):
                     "row_start": 1,
                     "row_end": 30,
                     "row_count": 30,
-                    "canonical_security": {"asset_id": "old-uuid", "cusip": "OLD"},
+                    **correlated_security_fields("old-uuid", "OLD"),
                 },
                 {
                     **source,
                     "row_start": 31,
                     "row_end": 60,
                     "row_count": 30,
-                    "canonical_security": {"asset_id": "new-uuid", "cusip": "NEW"},
+                    **correlated_security_fields("new-uuid", "NEW"),
                 },
             ],
         }
@@ -202,8 +229,13 @@ class WarningPipelineTests(unittest.TestCase):
         warnings = [finding for finding in report["findings"] if finding["severity"] == "warning"]
         self.assertEqual(1, len(warnings))
         self.assertEqual("corroborated_activity_collapse", warnings[0]["check_id"])
-        self.assertEqual("old-uuid", warnings[0]["canonical_security"]["asset_id"])
-        self.assertNotIn("new-uuid", {item["canonical_security"]["asset_id"] for item in warnings})
+        old_security_id = security_id_for_alpaca_asset_ids(["old-uuid"])
+        new_security_id = security_id_for_alpaca_asset_ids(["new-uuid"])
+        self.assertEqual(old_security_id, warnings[0]["canonical_security"]["security_id"])
+        self.assertNotIn(
+            new_security_id,
+            {item["canonical_security"]["security_id"] for item in warnings},
+        )
 
     def test_session_gap_between_asset_uuids_is_not_a_missing_session_warning(self) -> None:
         bars = [
@@ -223,6 +255,7 @@ class WarningPipelineTests(unittest.TestCase):
             "validation_pipeline_version": 16,
             "download_sha256_authenticated": True,
         }
+        member_ids = ("old-uuid", "new-uuid")
         inputs = WarningPipelineInputs(
             symbol="TEST",
             source_downloads=(source,),
@@ -238,7 +271,11 @@ class WarningPipelineTests(unittest.TestCase):
                             "row_end": 2,
                             "row_count": 2,
                             "historical_symbol": "TEST",
-                            "canonical_security": {"asset_id": "old-uuid", "cusip": "OLD"},
+                            **correlated_security_fields(
+                                "old-uuid",
+                                "OLD",
+                                member_alpaca_asset_ids=member_ids,
+                            ),
                         },
                         {
                             **source,
@@ -246,7 +283,11 @@ class WarningPipelineTests(unittest.TestCase):
                             "row_end": 4,
                             "row_count": 2,
                             "historical_symbol": "TEST",
-                            "canonical_security": {"asset_id": "new-uuid", "cusip": "NEW"},
+                            **correlated_security_fields(
+                                "new-uuid",
+                                "NEW",
+                                member_alpaca_asset_ids=member_ids,
+                            ),
                         },
                     ],
                 },
@@ -261,7 +302,7 @@ class WarningPipelineTests(unittest.TestCase):
         report = validate_security_segment_statistics(inputs, DEFAULT_CONFIGURATION)
 
         self.assertNotIn(
-            "uuid_segment_session_coverage",
+            "security_segment_session_coverage",
             {finding["check_id"] for finding in report["findings"]},
         )
 
@@ -296,7 +337,7 @@ class WarningPipelineTests(unittest.TestCase):
                             "row_end": 2,
                             "row_count": 2,
                             "historical_symbol": "TEST",
-                            "canonical_security": {"asset_id": "one-uuid", "cusip": "ONE"},
+                            **correlated_security_fields("one-uuid", "ONE"),
                         }
                     ],
                 },
@@ -310,12 +351,17 @@ class WarningPipelineTests(unittest.TestCase):
 
         report = validate_security_segment_statistics(inputs, DEFAULT_CONFIGURATION)
         coverage_findings = [
-            finding for finding in report["findings"] if finding["check_id"] == "uuid_segment_session_coverage"
+            finding
+            for finding in report["findings"]
+            if finding["check_id"] == "security_segment_session_coverage"
         ]
 
         self.assertEqual(1, len(coverage_findings))
         self.assertEqual(["2024-01-03"], coverage_findings[0]["evidence"]["missing_sessions"])
-        self.assertEqual("one-uuid", coverage_findings[0]["canonical_security"]["asset_id"])
+        self.assertEqual(
+            security_id_for_alpaca_asset_ids(["one-uuid"]),
+            coverage_findings[0]["canonical_security"]["security_id"],
+        )
 
     def test_cross_adjustment_model_disagreement_is_a_warning_not_an_integrity_error(self) -> None:
         raw_bar = daily_bar(1, price="10", volume="1000", trade_count="100")
@@ -369,7 +415,7 @@ class WarningPipelineTests(unittest.TestCase):
             "integrity_failure_manifest_sha256": "c" * 64,
             "source_downloads": [],
             "correlation": {
-                "correlation_version": 6,
+                "correlation_version": CORRELATION_VERSION,
                 "correlation_generation_sha256": "d" * 64,
                 "correlated_output_sha256": "e" * 64,
                 "uncorrelated_output_sha256": "f" * 64,

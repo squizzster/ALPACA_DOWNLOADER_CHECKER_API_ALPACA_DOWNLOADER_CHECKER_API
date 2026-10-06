@@ -1,41 +1,28 @@
 # Alpaca end-of-day data
 
-This repository implements a provenance-preserving pipeline for Alpaca US-equity daily bars. It keeps each
-download as an authenticated frozen source, records deterministic integrity failures separately, assigns row
-segments to Alpaca asset UUIDs when the evidence permits, and publishes advisory warning overlays. Downstream
-layers authenticate and describe upstream data; they do not silently rewrite it.
+Provenance-preserving Alpaca US-equity daily bars with frozen source files, explicit integrity results, historical
+security correlation, a repository master-ID index, advisory warnings, and a read-only API/CLI.
 
-## Ethos
+## Documentation index
 
-The system is building toward `READ TICKER`: a reader that can authenticate the original provider bytes and every
-applicable decision layered above them before assembling a usable security history in memory.
+| Need | Document |
+|---|---|
+| Pipeline stages, ownership, and invariants | [Architecture](ARCHITECTURE.md) |
+| Master-ID rules, artifacts, and reader result contract | [Technical contracts](docs/technical-contracts.md) |
+| Update, read, cache, and recovery commands | [Operations](docs/operations.md) |
+| Code ownership, versions, changelogs, and tests | [Development](docs/development.md) |
 
-Preserve observed reality first. Give each interpretation, segmentation, repair decision, and warning its own
-versioned, digest-bound owner. Never make a downstream convenience silently rewrite an upstream fact, and never turn
-uncertainty into an identity assignment. A successful branch may continue while unresolved work remains explicit in
-another branch.
+## Primary commands
 
-The reader and pricing-repair decision layers are not implemented. The current boundaries and their authority are
-defined in [the architecture](ARCHITECTURE.md).
+```bash
+# Update one or more tickers through every pipeline stage.
+./run_alpaca_end_of_day_ticker_pipeline.py --symbol FUN -s DELL
 
-## Documentation
+# Read one published adjustment view by repository master ID.
+./read_alpaca_end_of_day_ticker.py --type raw --master-id <64-hex-master-id>
+```
 
-### Architecture
-
-- [Pipeline boundaries and code ownership](ARCHITECTURE.md) — execution order, dependency direction, mutation
-  authority, and the distinction between integrity, identity, and advisory findings.
-
-### Technical
-
-- [Data and artifact contracts](docs/technical-contracts.md) — authoritative source locations, validation
-  invariants, on-disk artifacts, authentication, correlation semantics, and versioned generations.
-
-### CLI and operations
-
-- [Commands and operational recovery](docs/operations.md) — prerequisites, full and standalone commands, cache
-  behavior, `--force`, `--repair`, exit behavior, and common hazards.
-
-### Development
-
-- [Development guide](docs/development.md) — implementation map, compatibility surfaces, version-bump rules, and
-  verification commands.
+The reader resolves IDs only through `data/end_of_day/security_master.index.json`. A master ID is SHA-256 over the
+newline-joined sorted unique Alpaca asset IDs in one historical pricing identity. The index contains identity metadata,
+not bars, warnings, errors, or repairs. Until a repair layer exists, reads return authenticated frozen values with
+separate integrity and warning sections and `null` repair fields.

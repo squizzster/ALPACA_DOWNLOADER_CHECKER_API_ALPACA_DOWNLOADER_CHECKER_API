@@ -39,7 +39,7 @@ def build_warning_pipeline_report(
             ],
             "output_boundaries": [
                 "cross_adjustment_warning_overlay",
-                "security_uuid_statistical_warning_overlay",
+                "internal_security_statistical_warning_overlay",
             ],
             "severity_domain": ["warning", "information"],
             "integrity_error_owner": "alpaca_end_of_day_pipeline/integrity_failure.manifest.json",
