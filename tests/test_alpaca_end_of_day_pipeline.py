@@ -160,7 +160,7 @@ def publish_valid_test_download(test_directory: str | Path) -> PublishedTestDown
 
 class PublicationTests(unittest.TestCase):
     def test_version_changelog_matches_pipeline(self):
-        self.assertEqual(PIPELINE_VERSION, 12)
+        self.assertEqual(PIPELINE_VERSION, 13)
         self.assertEqual(len(validate_pipeline_change_log()), PIPELINE_VERSION)
 
     def test_pipeline_finishes_before_any_gzip_path_exists(self):
@@ -297,7 +297,7 @@ class PublicationTests(unittest.TestCase):
             )
             self.assertEqual(
                 cache_inspection.required_action,
-                "integrity_failed",
+                "recorded_pricing_data_failure",
             )
 
     def test_existing_pair_requires_authorized_replacement(self):
@@ -513,7 +513,7 @@ class CacheDecisionTests(unittest.TestCase):
                 published_download.paths.download_path,
                 test_download_request_identity(),
             )
-            self.assertEqual(cache_inspection.required_action, "download_integrity_failed")
+            self.assertEqual(cache_inspection.required_action, "invalid_frozen_download_boundary")
 
     def test_sidecar_without_sha_is_fatal(self):
         with tempfile.TemporaryDirectory() as test_directory:
@@ -525,7 +525,7 @@ class CacheDecisionTests(unittest.TestCase):
                 published_download.paths.download_path,
                 test_download_request_identity(),
             )
-            self.assertEqual(cache_inspection.required_action, "download_integrity_failed")
+            self.assertEqual(cache_inspection.required_action, "invalid_frozen_download_boundary")
 
     def test_changed_download_stat_is_fatal(self):
         with tempfile.TemporaryDirectory() as test_directory:
@@ -537,7 +537,7 @@ class CacheDecisionTests(unittest.TestCase):
                 published_download.paths.download_path,
                 test_download_request_identity(),
             )
-            self.assertEqual(cache_inspection.required_action, "download_integrity_failed")
+            self.assertEqual(cache_inspection.required_action, "invalid_frozen_download_boundary")
 
     def test_request_identity_change_requires_force(self):
         with tempfile.TemporaryDirectory() as test_directory:

@@ -66,5 +66,10 @@
     "modifications": [
       "Use self-describing internal names and explicit ownership terminology without changing downloaded filenames, manifest filenames, or serialized keys."
     ]
+  },
+  {
+    "modifications": [
+      "Distinguish publication-time SHA verification, invalid frozen-download boundaries, recorded pricing/data failures, receipt-manifest ownership, and orphan-pair recovery in internal names."
+    ]
   }
 ]

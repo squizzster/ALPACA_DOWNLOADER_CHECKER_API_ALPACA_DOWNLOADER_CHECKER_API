@@ -71,7 +71,7 @@ corruption is fatal and exits 2 without contacting Alpaca or changing artifacts.
 
 ## Pipeline rule
 
-Current `PIPELINE_VERSION`: **12**.
+Current `PIPELINE_VERSION`: **13**.
 
 Any pipeline code or behavior change must increment `PIPELINE_VERSION` and append
 exactly one object to `alpaca_end_of_day_pipeline_change_log.json`. Its array
@@ -101,7 +101,7 @@ trade count ≤ volume; and complete sessions from fixed `us_market_hours.json`.
 # Explicit replacement of an authenticated pair
 ./download_alpaca_end_of_day_bars.py --symbol DELL --adjustment raw --force
 
-# Rebuild a pair only when gzip or sidecar is missing
+# Redownload both halves of an orphaned pair
 ./download_alpaca_end_of_day_bars.py --symbol DELL --adjustment raw --repair
 ```
 
@@ -153,4 +153,5 @@ The future repair/decision layer and final reader are not implemented. They must
 publish separate output. The reader will authenticate the frozen pair, then match
 receipts, failures, and repair decisions by data file, download SHA, and pipeline
 version before combining them in memory; a listed failure without a decision cannot
-produce repaired output. CLI `--repair` only redownloads a pair with one missing half.
+produce repaired output. CLI `--repair` only redownloads an orphaned download pair;
+it never repairs pricing/data.

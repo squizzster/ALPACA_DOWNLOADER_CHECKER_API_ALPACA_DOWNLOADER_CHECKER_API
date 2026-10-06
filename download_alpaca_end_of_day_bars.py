@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alpaca_end_of_day_pipeline import (
+    INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
     PIPELINE_VERSION,
+    RECORDED_PRICING_DATA_FAILURE_ACTION,
     AlpacaDownloadIntegrityError,
     PricingDataIntegrityError,
     authenticate_and_revalidate_cached_download,
@@ -80,8 +82,9 @@ def parse_command_line_arguments() -> argparse.Namespace:
     )
     replacement_mode_arguments.add_argument(
         "--repair",
+        dest="repair_orphaned_download_pair",
         action="store_true",
-        help="repair a download pair when exactly one file is missing",
+        help="redownload both boundary files when exactly one frozen download-pair file is missing",
     )
     return argument_parser.parse_args()
 
@@ -197,21 +200,21 @@ def main() -> None:
         if cache_inspection.required_action == "error":
             print(f"error: {download_path}: {cache_inspection.diagnostic}", file=sys.stderr)
             raise SystemExit(2)
-        if cache_inspection.required_action == "download_integrity_failed":
+        if cache_inspection.required_action == INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION:
             print(
                 f"error: {download_path}: Alpaca download boundary failed: "
                 f"{cache_inspection.diagnostic}; aborting without repair or replacement",
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if download_pair_is_orphaned and not cli_arguments.repair:
+        if download_pair_is_orphaned and not cli_arguments.repair_orphaned_download_pair:
             print(
                 f"error: {download_path}: cache corruption: {cache_inspection.diagnostic}; "
                 "use --repair to repair",
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if cli_arguments.repair and not download_pair_is_orphaned:
+        if cli_arguments.repair_orphaned_download_pair and not download_pair_is_orphaned:
             if cache_inspection.download_manifest is not None:
                 authenticate_frozen_download(download_path, cache_inspection.download_manifest)
             print(
@@ -227,7 +230,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if cache_inspection.required_action == "integrity_failed" and not cli_arguments.force:
+        if cache_inspection.required_action == RECORDED_PRICING_DATA_FAILURE_ACTION and not cli_arguments.force:
             print(
                 f"error: {download_path}: pricing/data integrity failed: "
                 f"{cache_inspection.diagnostic}; use --force to fetch a new Alpaca download",

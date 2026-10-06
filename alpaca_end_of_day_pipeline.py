@@ -25,8 +25,12 @@ from us_equity_market_session_calendar import (
 
 MANIFEST_SCHEMA_VERSION = 1
 # Bump whenever validation, transformation, or serialization behavior changes.
-PIPELINE_VERSION = 12
+PIPELINE_VERSION = 13
 PIPELINE_CHANGE_LOG_PATH = Path(__file__).with_name("alpaca_end_of_day_pipeline_change_log.json")
+PIPELINE_RECEIPT_MANIFEST_FILENAME = "pipeline.manifest.json"
+PUBLICATION_SHA256_VERIFIED_MANIFEST_KEY = "verified"
+INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION = "invalid_frozen_download_boundary"
+RECORDED_PRICING_DATA_FAILURE_ACTION = "recorded_pricing_data_failure"
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
 CSV_COLUMN_ALPACA_FIELD_PAIRS = (
     ("timestamp", "t"),
@@ -114,7 +118,7 @@ def download_manifest_path(download_path: Path | str) -> Path:
 
 def pipeline_receipt_manifest_path(download_path: Path | str) -> Path:
     """Return the processing-receipt manifest for a symbol directory."""
-    return Path(download_path).parent / "pipeline.manifest.json"
+    return Path(download_path).parent / PIPELINE_RECEIPT_MANIFEST_FILENAME
 
 
 def integrity_failure_manifest_path(download_path: Path | str) -> Path:
@@ -251,29 +255,30 @@ def inspect_cached_download(download_path: Path | str, request_identity: dict) -
             download_manifest = json.load(sidecar_manifest_file)
     except (OSError, json.JSONDecodeError) as manifest_load_error:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic=f"invalid manifest: {manifest_load_error}",
         )
 
     if not isinstance(download_manifest, dict):
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="manifest is not an object",
         )
     manifest_schema_version = download_manifest.get("manifest_version", MANIFEST_SCHEMA_VERSION)
     if manifest_schema_version != MANIFEST_SCHEMA_VERSION:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="manifest schema does not match",
         )
-    if download_manifest.get("verified") is not True:
+    publication_sha256_was_verified = download_manifest.get(PUBLICATION_SHA256_VERIFIED_MANIFEST_KEY)
+    if publication_sha256_was_verified is not True:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
-            diagnostic="manifest is not verified",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
+            diagnostic="manifest does not record publication-time SHA-256 verification",
         )
     if download_manifest.get("file") != download_path.name:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="manifest filename does not match",
         )
     if any(
@@ -289,25 +294,25 @@ def inspect_cached_download(download_path: Path | str, request_identity: dict) -
     recorded_download_sha256 = download_manifest.get("sha256")
     if not isinstance(recorded_download_sha256, str) or len(recorded_download_sha256) != 64:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="invalid SHA-256 in manifest",
         )
     try:
         int(recorded_download_sha256, 16)
     except ValueError:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="invalid SHA-256 in manifest",
         )
 
     if not isinstance(download_manifest.get("rows"), int) or download_manifest["rows"] < 1:
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="invalid row count in manifest",
         )
     if not download_manifest.get("from") or not download_manifest.get("to"):
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="manifest has no date coverage",
         )
 
@@ -316,7 +321,7 @@ def inspect_cached_download(download_path: Path | str, request_identity: dict) -
         or download_manifest.get("mtime_ns") != download_file_stat.st_mtime_ns
     ):
         return CachedDownloadInspection(
-            required_action="download_integrity_failed",
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             download_manifest=download_manifest,
             diagnostic="download file stat no longer matches its authenticated manifest",
         )
@@ -394,7 +399,7 @@ def inspect_cached_download(download_path: Path | str, request_identity: dict) -
             diagnostic=f"stale failure entry in {integrity_failure_manifest_path(download_path)}",
         )
     return CachedDownloadInspection(
-        required_action="integrity_failed",
+        required_action=RECORDED_PRICING_DATA_FAILURE_ACTION,
         download_manifest=download_manifest,
         diagnostic=f"failures are recorded in {integrity_failure_manifest_path(download_path)}",
     )
@@ -943,7 +948,7 @@ def validate_and_publish_alpaca_download(
         "manifest_version": MANIFEST_SCHEMA_VERSION,
         "boundary": "alpaca_download",
         "pipeline_version": PIPELINE_VERSION,
-        "verified": True,
+        PUBLICATION_SHA256_VERIFIED_MANIFEST_KEY: True,
         "file": download_path.name,
         "sha256": compressed_download_sha256,
         "bytes": compressed_download_stat.st_size,
