@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from eod_pipeline import (
+    DownloadIntegrityError,
     PIPELINE_VERSION,
     PipelineIntegrityError,
     inspect_cached_artifact,
@@ -313,6 +314,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except DownloadIntegrityError as error:
+        print(f"error: {error}", file=sys.stderr)
+        raise SystemExit(2)
     except (OSError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)

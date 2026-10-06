@@ -3,6 +3,8 @@ import csv
 import gzip
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -239,6 +241,36 @@ class PublicationTests(unittest.TestCase):
             )
             self.assertEqual(rebuilt_failures["pipeline_version"], PIPELINE_VERSION)
             self.assertEqual(rebuilt_failures["failures"], [])
+
+
+class CliBoundaryTests(unittest.TestCase):
+    def test_force_cannot_replace_a_sha_mismatched_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "data" / "end_of_day"
+            data, _, _, _, _ = create_valid_artifact(output)
+            damaged = bytearray(data.read_bytes())
+            damaged[20] ^= 1
+            data.write_bytes(damaged)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(eod_pipeline.__file__).with_name("download_eod.py")),
+                    "--symbol",
+                    "TEST",
+                    "--adjustment",
+                    "raw",
+                    "--force",
+                ],
+                cwd=temporary,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("SHA-256 mismatch", completed.stderr)
+            self.assertNotIn("set ALPACA_API", completed.stderr)
 
 
 class CacheDecisionTests(unittest.TestCase):

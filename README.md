@@ -53,15 +53,20 @@ match the sidecar.
 
 ## State decisions
 
-| Gzip | Sidecar | Receipt/failure state | Action |
-|---|---|---|---|
-| absent | absent | any | Download normally. |
-| exactly one present | — | any | Abort; require `--repair`. |
-| present | invalid or inconsistent | any | Fatal; no repair or force. |
-| authenticated | current receipt SHA | no failure | Use cache. |
-| authenticated | current receipt SHA | matching failure | Report failure on stderr; do not rewrite data. |
-| authenticated | missing/stale receipt, old manifest version, or new SHA | any | Authenticate gzip, read into memory, and run the current pipeline locally. No network or gzip rewrite. |
-| authenticated, request identity changed | valid | any | Require `--force`. |
+| Gzip | Sidecar / derived state | Action |
+|---|---|---|
+| absent | absent | Download normally. |
+| exactly one present | no `--repair` | Abort. `--force` is not a substitute. |
+| exactly one present | `--repair` | Redownload, then replace/create both halves as one complete pair. |
+| present | malformed, stat-inconsistent, or SHA-mismatched sidecar | Fatal; neither flag may repair or replace it. |
+| authenticated | current receipt SHA, no failure | Use cache. |
+| authenticated | current receipt SHA, matching failure | Replay the failure on stderr; do not rewrite data. |
+| authenticated | missing/stale receipt, old manifest version, or new SHA | Authenticate gzip, read it into memory, and run the current pipeline locally. No network or gzip rewrite. |
+| authenticated, request identity changed | valid | Require `--force`. |
+
+Pricing/data failures, whether newly found or replayed, are reported on stderr;
+the CLI finishes the selected adjustments and exits 1. Download-boundary
+corruption is fatal and exits 2 without contacting Alpaca or changing artifacts.
 
 ## Pipeline rule
 
@@ -72,9 +77,11 @@ one object to `pipeline_version_change_log.json`. Its array length must equal th
 version or the CLI refuses to run.
 
 A new version invalidates the symbol-level receipt generation. Each selected gzip
-is SHA-authenticated and reprocessed locally. `pipeline.manifest.json` stores the
-version once; receipts do not. `integrity_failure.manifest.json` stores the version
-at its header and on each failure, and never mixes failure versions.
+is SHA-authenticated and reprocessed locally. The first update starts a generation
+containing only adjustments processed at that version; an unselected adjustment
+has no current receipt and reprocesses when later requested. `pipeline.manifest.json`
+stores the version once because receipts from different generations never mix.
+`integrity_failure.manifest.json` stores it at the header and on each failure.
 
 Current checks: timestamp parse/range/order; New York session midnight; positive
 finite OHLC/VWAP with high/low bounds; positive integer volume/trade count;
@@ -136,6 +143,7 @@ files and manifests. `us_market_hours.json` is tracked because the fixed calenda
 is integral to pipeline validation.
 
 The future repair/decision layer and final reader are not implemented. They must
-publish separate output. The reader will combine the frozen download, matching
-failure evidence, and repair decisions in memory. CLI `--repair` is only for a
-missing half of the download pair.
+publish separate output. The reader will authenticate the frozen pair, then match
+receipts, failures, and repair decisions by data file, download SHA, and pipeline
+version before combining them in memory; a listed failure without a decision cannot
+produce repaired output. CLI `--repair` only redownloads a pair with one missing half.
