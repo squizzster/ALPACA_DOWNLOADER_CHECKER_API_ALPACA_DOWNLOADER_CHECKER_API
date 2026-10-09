@@ -7,6 +7,7 @@ class EndOfDayDownloadPlan:
     adjustment_modes: tuple[str, ...]
     force_authenticated_replacement: bool
     repair_orphaned_download_pair: bool
+    adaptive_adjustment_downloads: bool = False
 
 
 @dataclass(frozen=True)

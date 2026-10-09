@@ -161,7 +161,7 @@ def publish_valid_test_download(test_directory: str | Path) -> PublishedTestDown
 
 class PublicationTests(unittest.TestCase):
     def test_version_changelog_matches_pipeline(self):
-        self.assertEqual(PIPELINE_VERSION, 16)
+        self.assertEqual(PIPELINE_VERSION, 19)
         self.assertEqual(len(validate_pipeline_change_log()), PIPELINE_VERSION)
 
     def test_pipeline_finishes_before_any_gzip_path_exists(self):
@@ -719,12 +719,105 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertEqual(validation_result.dataset_failures, ())
 
+    def test_trade_count_above_volume_remains_invalid_without_split_adjustment(self):
+        for adjustment in ("raw", "dividend", "spin-off", "dividend,spin-off"):
+            with self.subTest(adjustment=adjustment):
+                bars = copy.deepcopy(load_fixture_bars())
+                bars[1].update(v=1, n=2000)
+
+                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                    bars,
+                    test_download_request_identity(adjustment=adjustment),
+                )
+
+                self.assertEqual(1, len(validation_result.row_failures))
+                self.assertIn(
+                    "trade_count exceeds volume",
+                    validation_result.row_failures[0]["validation_error"],
+                )
+
+    def test_split_adjusted_trade_count_above_scaled_volume_is_valid(self):
+        for adjustment in ("split", "split,dividend", "split,spin-off", "all"):
+            with self.subTest(adjustment=adjustment):
+                bars = copy.deepcopy(load_fixture_bars())
+                bars[1].update(v=1, n=2000)
+
+                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                    bars,
+                    test_download_request_identity(adjustment=adjustment),
+                )
+
+                self.assertFalse(validation_result.has_failures)
+
+    def test_split_adjusted_volume_may_round_to_zero_while_trades_remain(self):
+        bars = copy.deepcopy(load_fixture_bars())
+        bars[1].update(v=0, n=8)
+
+        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+            bars,
+            test_download_request_identity(adjustment="split"),
+        )
+
+        self.assertFalse(validation_result.has_failures)
+
+    def test_split_adjusted_volume_remains_a_nonnegative_integer(self):
+        for invalid_volume in (-1, 0.5):
+            with self.subTest(invalid_volume=invalid_volume):
+                bars = copy.deepcopy(load_fixture_bars())
+                bars[1].update(v=invalid_volume)
+
+                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                    bars,
+                    test_download_request_identity(adjustment="split"),
+                )
+
+                self.assertEqual(1, len(validation_result.row_failures))
+                self.assertIn(
+                    "volume is not a nonnegative integer",
+                    validation_result.row_failures[0]["validation_error"],
+                )
+
+    def test_flat_explicit_zero_activity_bar_is_valid(self):
+        for explicit_zero in (0, "0"):
+            with self.subTest(explicit_zero=explicit_zero):
+                daily_bars_with_zero_activity = copy.deepcopy(load_fixture_bars())
+                daily_bars_with_zero_activity[1].update(
+                    o="101",
+                    h="101",
+                    l="101",
+                    c="101",
+                    v=explicit_zero,
+                    n=explicit_zero,
+                    vw=explicit_zero,
+                )
+                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                    daily_bars_with_zero_activity,
+                    test_download_request_identity(),
+                )
+                self.assertFalse(validation_result.has_failures)
+
+    def test_zero_activity_tuple_with_nonmatching_ohlc_is_invalid(self):
+        daily_bars_with_nonflat_zero_activity = copy.deepcopy(load_fixture_bars())
+        daily_bars_with_nonflat_zero_activity[1].update(v=0, n=0, vw=0)
+
+        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+            daily_bars_with_nonflat_zero_activity,
+            test_download_request_identity(),
+        )
+
+        self.assertEqual(1, len(validation_result.row_failures))
+        self.assertIn(
+            "zero-activity tuple requires matching OHLC prices",
+            validation_result.row_failures[0]["validation_error"],
+        )
+
     def test_individual_row_rules(self):
         invalid_bar_cases = (
             (lambda row: row.update(h=90), "high is below low"),
             (lambda row: row.update(o=110), "open is outside"),
             (lambda row: row.update(c=110), "close is outside"),
             (lambda row: row.update(vw=110), "vwap is outside"),
+            (lambda row: row.update(vw=0), "prices must be positive"),
             (lambda row: row.update(o=-1), "prices must be positive"),
             (lambda row: row.update(h=float("nan")), "high is not finite"),
             (lambda row: row.update(v=0), "volume is not a positive integer"),

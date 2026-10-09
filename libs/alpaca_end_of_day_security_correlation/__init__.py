@@ -2,6 +2,7 @@ from .artifact_paths import (
     correlated_pipeline_path,
     security_correlation_directory,
     security_correlation_manifest_path,
+    security_master_directory,
     security_master_manifest_path,
     security_master_path,
     uncorrelated_pipeline_path,
@@ -21,7 +22,7 @@ from .correlation_version import (
     validate_correlation_change_log,
 )
 from .errors import SecurityCorrelationError
-from .publication import publish_security_correlation
+from .publication import publish_security_correlation, publish_security_correlation_artifacts
 from .security_identity import (
     SECURITY_ID_SCHEME_VERSION,
     is_master_id,
@@ -30,9 +31,17 @@ from .security_identity import (
     security_id_for_alpaca_asset_ids,
 )
 from .security_master import (
+    LINEAGE_GAP_AVAILABILITY_STATUS,
+    OFFLINE_AVAILABILITY_STATUS,
+    ONLINE_AVAILABILITY_STATUS,
+    SECURITY_AVAILABILITY_STATUSES,
     AuthenticatedSecurityMaster,
     authenticate_security_master,
     lookup_security_master_identity,
+    migrate_legacy_security_master,
+    migrate_sharded_security_master_availability_status,
+    migrate_sharded_security_master_online_status,
+    publish_security_master_online_status,
     publish_security_master_update,
 )
 from .security_master_version import (
@@ -46,6 +55,10 @@ __all__ = [
     "AuthenticatedSecurityMaster",
     "CORRELATION_CHANGE_LOG_PATH",
     "CORRELATION_VERSION",
+    "LINEAGE_GAP_AVAILABILITY_STATUS",
+    "OFFLINE_AVAILABILITY_STATUS",
+    "ONLINE_AVAILABILITY_STATUS",
+    "SECURITY_AVAILABILITY_STATUSES",
     "SecurityCorrelationError",
     "SECURITY_ID_SCHEME_VERSION",
     "SECURITY_MASTER_CHANGE_LOG_PATH",
@@ -57,6 +70,7 @@ __all__ = [
     "correlated_pipeline_path",
     "parse_command_line_arguments",
     "publish_security_correlation",
+    "publish_security_correlation_artifacts",
     "run_security_correlation_command",
     "security_correlation_directory",
     "security_correlation_manifest_path",
@@ -64,9 +78,14 @@ __all__ = [
     "is_security_id",
     "is_master_id",
     "lookup_security_master_identity",
+    "migrate_legacy_security_master",
+    "migrate_sharded_security_master_availability_status",
+    "migrate_sharded_security_master_online_status",
+    "publish_security_master_online_status",
     "master_id_for_alpaca_asset_ids",
     "publish_security_master_update",
     "security_master_manifest_path",
+    "security_master_directory",
     "security_master_path",
     "uncorrelated_pipeline_path",
     "validate_correlation_change_log",

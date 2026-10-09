@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .errors import EndOfDayReaderError
 
-READER_VERSION = 3
+READER_VERSION = 5
 READER_CHANGE_LOG_PATH = Path(__file__).resolve().parents[2] / "alpaca_end_of_day_reader_change_log.json"
 
 

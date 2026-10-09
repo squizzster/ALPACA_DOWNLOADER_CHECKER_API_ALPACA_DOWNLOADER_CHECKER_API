@@ -3,6 +3,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+ACCEPTED_ZERO_ACTIVITY_BAR_REASON = "accepted_zero_activity_bar"
+RECORDED_INTEGRITY_ROW_FAILURE_REASON = "recorded_integrity_row_failure"
+
 
 @dataclass(frozen=True)
 class AnalyzableDailyBar:

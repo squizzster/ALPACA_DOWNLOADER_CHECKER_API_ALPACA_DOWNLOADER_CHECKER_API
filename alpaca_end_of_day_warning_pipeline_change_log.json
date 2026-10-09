@@ -16,5 +16,21 @@
       "Group security histories and advisory checks by the repository's internal historical-pricing security ID while retaining all contributing Alpaca asset IDs and CUSIPs as provenance.",
       "Allow an authenticated continuous pricing history to span an Alpaca identity transition without treating the vendor's distinct identifiers as interchangeable."
     ]
+  },
+  {
+    "modifications": [
+      "Treat an authenticated zero-row correlation source as an empty warning input while retaining its recorded dataset-integrity failure upstream."
+    ]
+  },
+  {
+    "modifications": [
+      "Treat an integrity-accepted flat-price zero-activity bar as a valid source and session observation while omitting it from numerical advisory analysis without producing a warning or information finding.",
+      "Report accepted zero-activity exclusions separately from hard-integrity exclusions in warning-analysis coverage metadata."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept zero volume in an integrity-accepted split-adjusted bar as analyzable input, preserving the provider's rounded split-volume semantics throughout warning analysis."
+    ]
   }
 ]

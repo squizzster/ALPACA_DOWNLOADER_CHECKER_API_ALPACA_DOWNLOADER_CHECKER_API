@@ -1,8 +1,16 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
 .env
+.env.*
+!.env.example
 .*.tmp.*
 /data/
 /experimental_temp/
+/alpaca_run_logs/
+/ticker_lists/
+/unique_ticker_codes.csv

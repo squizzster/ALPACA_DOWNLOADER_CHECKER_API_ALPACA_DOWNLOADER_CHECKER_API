@@ -10,6 +10,7 @@ from .settings import (
     SYMBOL_FIELD_PATTERN,
     SYMBOL_PATTERN,
 )
+from .symbol_disposition import classify_symbol_disposition
 
 
 def action_identity_key(action: dict[str, Any]) -> tuple[str, str]:
@@ -130,12 +131,15 @@ def build_identity_report(
 
     for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
         for identifier in identifiers:
-            asset = client.get_asset(identifier)
+            lookup_result = client.get_asset_lookup(identifier)
+            asset = lookup_result["asset"]
             asset_lookups.append(
                 {
                     "lookup": identifier,
                     "lookup_kind": lookup_kind,
                     "found": asset is not None,
+                    "outcome": lookup_result["outcome"],
+                    "http_status": lookup_result["http_status"],
                     "asset": compact_asset(asset) if asset is not None else None,
                 }
             )
@@ -212,6 +216,14 @@ def build_identity_report(
     if any(not item["stat_matches_sidecar"] for item in local_report["downloads"]):
         warnings.append("At least one local gzip/sidecar pair is missing, unreadable, or stat-inconsistent.")
 
+    symbol_disposition = classify_symbol_disposition(
+        symbol,
+        local_report,
+        asset_lookups,
+        identities,
+        input_symbol_occupants,
+    )
+
     return {
         "query": {
             "input_symbol": symbol,
@@ -229,5 +241,6 @@ def build_identity_report(
         "symbol_occupancy_evidence": occupancy_evidence,
         "input_symbol_occupants": input_symbol_occupants,
         "unresolved_cusips": sorted(set(cusips) - set(asset_id_by_cusip)),
+        "symbol_disposition": symbol_disposition,
         "warnings": warnings,
     }

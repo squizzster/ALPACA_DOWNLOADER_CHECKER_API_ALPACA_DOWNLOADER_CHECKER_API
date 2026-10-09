@@ -2,7 +2,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from libs.alpaca_end_of_day_pipeline import PIPELINE_VERSION
-from libs.alpaca_security_lineage import inspect_alpaca_security_lineage
+from libs.alpaca_security_lineage import (
+    RECURRING_PIPELINE_RUN,
+    inspect_alpaca_security_lineage,
+    recurring_pipeline_should_skip,
+)
 
 from .correlation_version import CORRELATION_VERSION, validate_correlation_change_log
 from .errors import SecurityCorrelationError
@@ -66,6 +70,28 @@ def build_security_correlation_report(
         }
         for evidence_issue in evidence_issues
     ]
+    symbol_disposition = lineage.get("symbol_disposition")
+    if not isinstance(symbol_disposition, dict):
+        symbol_disposition = {
+            "classification": "unresolved_symbol_disposition",
+            "data_policy": "investigate",
+            "recurring_pipeline_action": RECURRING_PIPELINE_RUN,
+            "input_symbol_asset_lookup": {"outcome": "missing", "http_status": None},
+            "resolved_alpaca_asset_ids": [],
+            "local_market_data": None,
+            "market_data_series_identity": None,
+            "test_symbol_evidence": None,
+        }
+    if recurring_pipeline_should_skip(symbol_disposition):
+        work_items.append(
+            {
+                "scope": "symbol_disposition",
+                "symbol": symbol,
+                "reason_code": symbol_disposition["classification"],
+                "data_policy": symbol_disposition["data_policy"],
+                "recurring_pipeline_action": symbol_disposition["recurring_pipeline_action"],
+            }
+        )
     source_downloads = []
     files = []
     symbol_directory = local_report.get("directory")
@@ -154,6 +180,7 @@ def build_security_correlation_report(
             "row_partition_is_exhaustive": True,
         },
         "lineage_evidence_sha256": lineage_evidence_sha256(lineage_report),
+        "symbol_disposition": symbol_disposition,
         "lineage_report": lineage_report,
         "source_downloads": source_downloads,
         "source_row_count": source_row_count,

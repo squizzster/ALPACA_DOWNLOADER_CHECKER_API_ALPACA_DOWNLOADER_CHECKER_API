@@ -1,3 +1,9 @@
+from .availability import (
+    get_alpaca_end_of_day_security_availability,
+    is_alpaca_end_of_day_security_online,
+    list_alpaca_end_of_day_master_ids_by_availability_status,
+    list_online_alpaca_end_of_day_master_ids,
+)
 from .command_line import parse_command_line_arguments, run_end_of_day_reader_command
 from .errors import EndOfDayReaderError
 from .history import (
@@ -14,6 +20,10 @@ __all__ = [
     "EndOfDayReaderError",
     "READER_CHANGE_LOG_PATH",
     "READER_VERSION",
+    "get_alpaca_end_of_day_security_availability",
+    "is_alpaca_end_of_day_security_online",
+    "list_alpaca_end_of_day_master_ids_by_availability_status",
+    "list_online_alpaca_end_of_day_master_ids",
     "parse_command_line_arguments",
     "read_alpaca_end_of_day_security_history",
     "read_alpaca_end_of_day_ticker",

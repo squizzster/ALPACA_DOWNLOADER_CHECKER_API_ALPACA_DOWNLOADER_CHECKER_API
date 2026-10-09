@@ -9,6 +9,10 @@ sys.dont_write_bytecode = True
 from libs.alpaca_end_of_day_reader import (  # noqa: E402
     READER_VERSION,
     EndOfDayReaderError,
+    get_alpaca_end_of_day_security_availability,
+    is_alpaca_end_of_day_security_online,
+    list_alpaca_end_of_day_master_ids_by_availability_status,
+    list_online_alpaca_end_of_day_master_ids,
     parse_command_line_arguments,
     read_alpaca_end_of_day_security_history,
     read_alpaca_end_of_day_ticker,
@@ -18,6 +22,10 @@ from libs.alpaca_end_of_day_reader import (  # noqa: E402
 __all__ = [
     "EndOfDayReaderError",
     "READER_VERSION",
+    "get_alpaca_end_of_day_security_availability",
+    "is_alpaca_end_of_day_security_online",
+    "list_alpaca_end_of_day_master_ids_by_availability_status",
+    "list_online_alpaca_end_of_day_master_ids",
     "main",
     "parse_command_line_arguments",
     "read_alpaca_end_of_day_security_history",

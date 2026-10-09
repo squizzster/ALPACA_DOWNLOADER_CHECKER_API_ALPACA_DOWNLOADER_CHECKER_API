@@ -42,6 +42,7 @@ def correlation_generation_sha256(correlation_report: dict[str, Any]) -> str:
         "correlation_version": CORRELATION_VERSION,
         "symbol": correlation_report["symbol"],
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "symbol_disposition": correlation_report["symbol_disposition"],
         "source_downloads": correlation_report["source_downloads"],
         "ownership_interval_rule_order": correlation_report["ownership_interval_rule_order"],
         "row_correlation_rule_order": correlation_report["row_correlation_rule_order"],
@@ -152,10 +153,11 @@ def _publish_master_and_decorate_receipt(
     }
 
 
-def publish_security_correlation(
+def publish_security_correlation_artifacts(
     repository_root: Path,
     correlation_report: dict[str, Any],
 ) -> dict[str, Any]:
+    """Publish only the correlation boundary, leaving final master status to the caller."""
     validate_correlation_change_log()
     symbol = correlation_report["symbol"]
     correlated_path = correlated_pipeline_path(repository_root, symbol)
@@ -170,12 +172,7 @@ def publish_security_correlation(
         generation_sha256,
     )
     if cached_receipt is not None:
-        return _publish_master_and_decorate_receipt(
-            repository_root,
-            correlation_report,
-            cached_receipt,
-            correlation_publication_status="cached",
-        )
+        return {**cached_receipt, "publication_status": "cached"}
 
     publication_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     correlated_document = {
@@ -185,6 +182,7 @@ def publish_security_correlation(
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "symbol_disposition": correlation_report["symbol_disposition"],
         "created_at": publication_timestamp,
         "source_download_count": len(correlation_report["source_downloads"]),
         "source_downloads": correlation_report["source_downloads"],
@@ -200,6 +198,7 @@ def publish_security_correlation(
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "symbol_disposition": correlation_report["symbol_disposition"],
         "created_at": publication_timestamp,
         "source_download_count": len(correlation_report["source_downloads"]),
         "source_downloads": correlation_report["source_downloads"],
@@ -219,6 +218,7 @@ def publish_security_correlation(
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "symbol_disposition": correlation_report["symbol_disposition"],
         "lineage_evidence_digest_excludes": ["generated_at", "lineage.api_request_count"],
         "created_at": publication_timestamp,
         "boundary": correlation_report["boundary"],
@@ -244,9 +244,18 @@ def publish_security_correlation(
         },
     }
     write_json_document_atomically(receipt_path, receipt, compact=False)
+    return {**receipt, "publication_status": "published"}
+
+
+def publish_security_correlation(
+    repository_root: Path,
+    correlation_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Publish correlation artifacts and conservatively publish new identities offline."""
+    receipt = publish_security_correlation_artifacts(repository_root, correlation_report)
     return _publish_master_and_decorate_receipt(
         repository_root,
         correlation_report,
         receipt,
-        correlation_publication_status="published",
+        correlation_publication_status=receipt["publication_status"],
     )

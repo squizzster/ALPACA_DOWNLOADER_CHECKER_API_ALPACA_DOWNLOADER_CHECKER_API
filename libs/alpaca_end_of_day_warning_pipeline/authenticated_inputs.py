@@ -12,6 +12,7 @@ from libs.alpaca_end_of_day_pipeline import (
     download_manifest_path,
     inspect_cached_download,
     integrity_failure_manifest_path,
+    is_accepted_zero_activity_bar,
     pipeline_receipt_manifest_path,
     read_frozen_alpaca_daily_bars,
 )
@@ -27,6 +28,8 @@ from libs.common.file_integrity import calculate_file_sha256
 
 from .errors import WarningPipelineError
 from .models import (
+    ACCEPTED_ZERO_ACTIVITY_BAR_REASON,
+    RECORDED_INTEGRITY_ROW_FAILURE_REASON,
     AnalyzableDailyBar,
     AuthenticatedCorrelationOutputs,
     DownloadValidationView,
@@ -90,7 +93,7 @@ def _validate_partition(correlation: AuthenticatedCorrelationOutputs) -> dict[st
         filename = _validate_safe_filename(source.get("data_file"), ".csv.gz", "source filename")
         if filename in sources_by_filename:
             raise WarningPipelineError(f"duplicate security-correlation source: {filename}")
-        if type(source.get("rows")) is not int or source["rows"] < 1:
+        if type(source.get("rows")) is not int or source["rows"] < 0:
             raise WarningPipelineError(f"invalid source row count for {filename}")
         sources_by_filename[filename] = source
 
@@ -210,7 +213,14 @@ def _parse_timestamp(value: object, filename: str, row_number: int) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _analyzable_bar(row: dict, filename: str, row_number: int, timestamp: datetime) -> AnalyzableDailyBar:
+def _analyzable_bar(
+    row: dict,
+    filename: str,
+    row_number: int,
+    timestamp: datetime,
+    *,
+    split_adjusted: bool,
+) -> AnalyzableDailyBar | None:
     values = {}
     for field_name, source_field in NUMERIC_FIELDS.items():
         try:
@@ -219,11 +229,28 @@ def _analyzable_bar(row: dict, filename: str, row_number: int, timestamp: dateti
             raise WarningPipelineError(
                 f"{filename} row {row_number}: invalid {field_name} in integrity-accepted row"
             ) from error
-        if not value.is_finite() or value <= 0:
+        if not value.is_finite():
             raise WarningPipelineError(
-                f"{filename} row {row_number}: nonpositive/nonfinite {field_name} in integrity-accepted row"
+                f"{filename} row {row_number}: nonfinite {field_name} in integrity-accepted row"
             )
         values[field_name] = value
+    if is_accepted_zero_activity_bar(
+        open_price=values["open"],
+        high_price=values["high"],
+        low_price=values["low"],
+        close_price=values["close"],
+        share_volume=values["volume"],
+        trade_count=values["trade_count"],
+        volume_weighted_average_price=values["vwap"],
+    ):
+        return None
+    for field_name, value in values.items():
+        if (field_name == "volume" and split_adjusted and value < 0) or (
+            (field_name != "volume" or not split_adjusted) and value <= 0
+        ):
+            raise WarningPipelineError(
+                f"{filename} row {row_number}: nonpositive {field_name} in integrity-accepted row"
+            )
     return AnalyzableDailyBar(
         row_number=row_number,
         timestamp_text=str(row["t"]),
@@ -282,9 +309,19 @@ def _load_download_view(
         previous_timestamp = timestamp
         timestamps[row_number] = timestamp
         if row_number in failed_rows:
-            excluded_rows.append({"row_number": row_number, "reason": "recorded_integrity_row_failure"})
+            excluded_rows.append({"row_number": row_number, "reason": RECORDED_INTEGRITY_ROW_FAILURE_REASON})
             continue
-        bars[row_number] = _analyzable_bar(row, filename, row_number, timestamp)
+        analyzable_bar = _analyzable_bar(
+            row,
+            filename,
+            row_number,
+            timestamp,
+            split_adjusted="split" in actions,
+        )
+        if analyzable_bar is None:
+            excluded_rows.append({"row_number": row_number, "reason": ACCEPTED_ZERO_ACTIVITY_BAR_REASON})
+            continue
+        bars[row_number] = analyzable_bar
 
     return DownloadValidationView(
         data_file=filename,

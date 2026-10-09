@@ -622,6 +622,10 @@ def read_alpaca_end_of_day_security_history(
             "master_id": canonical_id,
             "type": selected_type,
         },
+        "availability": {
+            "online": master_identity["online"],
+            "availability_status": master_identity["availability_status"],
+        },
         "value_policy": {
             "returned_value_source": "authenticated_frozen_download",
             "rows_with_recorded_integrity_errors_are_preserved": True,

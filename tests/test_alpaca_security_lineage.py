@@ -10,10 +10,17 @@ from pathlib import Path
 from unittest import mock
 
 from libs.alpaca_security_lineage import (
+    EXCHANGE_TEST_SYMBOL,
+    HISTORICAL_MARKET_DATA_ONLY,
+    INACTIVE_EMPTY_ASSET_OUT_OF_SCOPE,
+    JUST_SKIP,
+    OTC_ASSET_OUT_OF_SCOPE,
+    UNSUPPORTED_EMPTY_SYMBOL,
     AlpacaIdentityClient,
     build_identity_report,
     inspect_alpaca_security_lineage,
     inspect_local_downloads,
+    recurring_pipeline_should_skip,
     run_security_lineage_command,
 )
 
@@ -44,6 +51,35 @@ METV_ASSET = {
     "status": "active",
     "tradable": True,
 }
+
+ALL_ADJUSTMENTS = (
+    "raw",
+    "split",
+    "dividend",
+    "spin-off",
+    "split,dividend",
+    "split,spin-off",
+    "dividend,spin-off",
+    "all",
+)
+
+
+def complete_sip_downloads(rows: int) -> list[dict]:
+    return [
+        {
+            "rows": rows,
+            "adjustment": adjustment,
+            "request_from": "2016-01-01T00:00:00Z",
+            "asof": "2026-10-06",
+            "feed": "sip",
+            "timeframe": "1Day",
+            "sidecar_readable": True,
+            "gzip_present": True,
+            "stat_matches_sidecar": True,
+            "pipeline_receipt_matches": True,
+        }
+        for adjustment in ALL_ADJUSTMENTS
+    ]
 
 
 class FakeIdentityClient:
@@ -95,8 +131,116 @@ class FakeIdentityClient:
         return self.actions[symbol]
 
     def get_asset(self, identifier: str) -> dict | None:
+        return self.get_asset_lookup(identifier)["asset"]
+
+    def get_asset_lookup(self, identifier: str) -> dict:
         self.request_count += 1
-        return self.assets.get(identifier)
+        resolved_asset = self.assets.get(identifier)
+        return {
+            "outcome": "found" if resolved_asset is not None else "not_found",
+            "http_status": 200 if resolved_asset is not None else 404,
+            "asset": resolved_asset,
+        }
+
+
+class MissingIdentityClient:
+    def __init__(self) -> None:
+        self.request_count = 0
+
+    def get_corporate_actions(self, symbol: str, start_date: str, end_date: str) -> list[dict]:
+        self.request_count += 1
+        return []
+
+    def get_asset_lookup(self, identifier: str) -> dict:
+        self.request_count += 1
+        return {"outcome": "not_found", "http_status": 404, "asset": None}
+
+
+class OtcIdentityClient:
+    def __init__(self) -> None:
+        self.request_count = 0
+
+    def get_corporate_actions(self, symbol: str, start_date: str, end_date: str) -> list[dict]:
+        self.request_count += 1
+        return []
+
+    def get_asset_lookup(self, identifier: str) -> dict:
+        self.request_count += 1
+        return {
+            "outcome": "found",
+            "http_status": 200,
+            "asset": {
+                "id": "otc-asset-id",
+                "class": "us_equity",
+                "exchange": "OTC",
+                "symbol": "ANY-SPELLING",
+                "name": "OTC evidence fixture",
+                "status": "inactive",
+                "tradable": False,
+            },
+        }
+
+
+class InactiveIdentityClient:
+    def __init__(self, *, tradable: bool = False) -> None:
+        self.request_count = 0
+        self.tradable = tradable
+
+    def get_corporate_actions(self, symbol: str, start_date: str, end_date: str) -> list[dict]:
+        self.request_count += 1
+        return []
+
+    def get_asset_lookup(self, identifier: str) -> dict:
+        self.request_count += 1
+        return {
+            "outcome": "found",
+            "http_status": 200,
+            "asset": {
+                "id": "inactive-asset-id",
+                "class": "us_equity",
+                "exchange": "NASDAQ",
+                "symbol": identifier,
+                "name": "Inactive evidence fixture",
+                "status": "inactive",
+                "tradable": self.tradable,
+            },
+        }
+
+
+class HistoricalAliasIdentityClient:
+    def __init__(self) -> None:
+        self.request_count = 0
+        self.name_change = {
+            "action_type": "name_change",
+            "id": "historical-alias-name-change",
+            "process_date": "2025-02-01",
+            "old_symbol": "OLDD",
+            "old_cusip": "123456789",
+            "new_symbol": "NEW",
+            "new_cusip": "123456789",
+        }
+        self.asset = {
+            "id": "resolved-lineage-id",
+            "class": "us_equity",
+            "exchange": "NASDAQ",
+            "symbol": "NEW",
+            "name": "Resolved lineage fixture",
+            "status": "active",
+            "tradable": True,
+        }
+
+    def get_corporate_actions(self, symbol: str, start_date: str, end_date: str) -> list[dict]:
+        self.request_count += 1
+        return [self.name_change]
+
+    def get_asset_lookup(self, identifier: str) -> dict:
+        self.request_count += 1
+        asset = self.asset if identifier in {"NEW", "123456789"} else None
+        return {
+            "outcome": "found" if asset is not None else "not_found",
+            "http_status": 200 if asset is not None else 404,
+            "asset": asset,
+        }
 
 
 class FakeRateLimiter:
@@ -123,6 +267,7 @@ class IdentityReportTests(unittest.TestCase):
             "present": True,
             "downloads": [
                 {
+                    "rows": 1,
                     "request_from": "2016-01-01T00:00:00Z",
                     "asof": "2026-10-06",
                     "stat_matches_sidecar": True,
@@ -146,6 +291,218 @@ class IdentityReportTests(unittest.TestCase):
         )
         self.assertEqual(("2016-01-01", "2026-10-06"), client.last_date_range)
         self.assertEqual([], report["unresolved_cusips"])
+        self.assertTrue(all(lookup["http_status"] == 200 for lookup in report["asset_lookups"]))
+        self.assertTrue(all(lookup["outcome"] == "found" for lookup in report["asset_lookups"]))
+        self.assertIsNone(report["symbol_disposition"]["market_data_series_identity"])
+
+    def test_missing_asset_with_rows_is_retained_as_a_non_security_series(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": [
+                {
+                    "rows": 3,
+                    "request_from": "2016-01-01T00:00:00Z",
+                    "asof": "2026-10-06",
+                    "sidecar_readable": True,
+                    "gzip_present": True,
+                    "stat_matches_sidecar": True,
+                    "pipeline_receipt_matches": True,
+                }
+            ],
+        }
+
+        report = build_identity_report("CHLN", local_report, MissingIdentityClient())
+
+        self.assertEqual(
+            {
+                "lookup": "CHLN",
+                "lookup_kind": "symbol",
+                "found": False,
+                "outcome": "not_found",
+                "http_status": 404,
+                "asset": None,
+            },
+            report["asset_lookups"][0],
+        )
+        disposition = report["symbol_disposition"]
+        self.assertEqual(HISTORICAL_MARKET_DATA_ONLY, disposition["classification"])
+        self.assertEqual("retain", disposition["data_policy"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+        self.assertFalse(disposition["market_data_series_identity"]["is_security_identity"])
+        self.assertEqual([], disposition["resolved_alpaca_asset_ids"])
+
+    def test_missing_asset_with_authenticated_empty_download_is_quarantined(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": [
+                {
+                    "rows": 0,
+                    "request_from": "2016-01-01T00:00:00Z",
+                    "asof": "2026-10-06",
+                    "sidecar_readable": True,
+                    "gzip_present": True,
+                    "stat_matches_sidecar": True,
+                    "pipeline_receipt_matches": True,
+                }
+            ],
+        }
+
+        disposition = build_identity_report("AACC", local_report, MissingIdentityClient())["symbol_disposition"]
+
+        self.assertEqual(UNSUPPORTED_EMPTY_SYMBOL, disposition["classification"])
+        self.assertEqual("quarantine", disposition["data_policy"])
+        self.assertEqual("skip", disposition["recurring_pipeline_action"])
+        self.assertIsNone(disposition["market_data_series_identity"])
+
+    def test_known_exchange_test_symbol_is_excluded_with_source_evidence(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": [
+                {
+                    "rows": 10,
+                    "request_from": "2016-01-01T00:00:00Z",
+                    "asof": "2026-10-06",
+                    "sidecar_readable": True,
+                    "gzip_present": True,
+                    "stat_matches_sidecar": True,
+                    "pipeline_receipt_matches": True,
+                }
+            ],
+        }
+
+        disposition = build_identity_report("ZXZZT", local_report, MissingIdentityClient())["symbol_disposition"]
+
+        self.assertEqual(EXCHANGE_TEST_SYMBOL, disposition["classification"])
+        self.assertEqual("exclude", disposition["data_policy"])
+        self.assertTrue(disposition["test_symbol_evidence"]["test_issue"])
+        self.assertFalse(disposition["market_data_series_identity"]["is_security_identity"])
+
+    def test_empty_otc_asset_on_sip_is_out_of_scope_without_ticker_pattern_inference(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(0),
+        }
+
+        disposition = build_identity_report("ODD.NAME", local_report, OtcIdentityClient())["symbol_disposition"]
+
+        self.assertEqual(OTC_ASSET_OUT_OF_SCOPE, disposition["classification"])
+        self.assertEqual("out_of_scope", disposition["data_policy"])
+        self.assertEqual("skip", disposition["recurring_pipeline_action"])
+        self.assertEqual("OTC", disposition["out_of_scope_evidence"]["exchange"])
+        self.assertTrue(recurring_pipeline_should_skip(disposition))
+
+    def test_otc_asset_with_existing_rows_is_not_silently_put_out_of_scope(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(1),
+        }
+
+        disposition = build_identity_report("ODD.NAME", local_report, OtcIdentityClient())["symbol_disposition"]
+
+        self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+
+    def test_inactive_nontradable_asset_with_authenticated_empty_sip_history_is_out_of_scope(
+        self,
+    ) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(0),
+        }
+
+        disposition = build_identity_report("ACETQ", local_report, InactiveIdentityClient())[
+            "symbol_disposition"
+        ]
+
+        self.assertEqual(INACTIVE_EMPTY_ASSET_OUT_OF_SCOPE, disposition["classification"])
+        self.assertEqual("out_of_scope", disposition["data_policy"])
+        self.assertEqual("skip", disposition["recurring_pipeline_action"])
+        self.assertEqual("inactive", disposition["out_of_scope_evidence"]["status"])
+        self.assertFalse(disposition["out_of_scope_evidence"]["tradable"])
+        self.assertTrue(recurring_pipeline_should_skip(disposition))
+
+    def test_inactive_asset_with_existing_rows_remains_in_scope(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(1),
+        }
+
+        disposition = build_identity_report("OLD", local_report, InactiveIdentityClient())["symbol_disposition"]
+
+        self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+
+    def test_inactive_but_tradable_empty_asset_remains_in_scope(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(0),
+        }
+
+        disposition = build_identity_report(
+            "ODD",
+            local_report,
+            InactiveIdentityClient(tradable=True),
+        )["symbol_disposition"]
+
+        self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+
+    def test_inactive_empty_asset_without_all_adjustments_remains_in_scope(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(0)[:-1],
+        }
+
+        disposition = build_identity_report("OLD", local_report, InactiveIdentityClient())["symbol_disposition"]
+
+        self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+
+    def test_empty_historical_alias_with_resolved_lineage_is_just_skipped(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(0),
+        }
+
+        disposition = build_identity_report("OLDD", local_report, HistoricalAliasIdentityClient())[
+            "symbol_disposition"
+        ]
+
+        self.assertEqual(JUST_SKIP, disposition["classification"])
+        self.assertEqual("just_skip", disposition["data_policy"])
+        self.assertEqual("skip", disposition["recurring_pipeline_action"])
+        self.assertEqual("123456789", disposition["just_skip_evidence"]["cusip"])
+        self.assertEqual(
+            "resolved-lineage-id",
+            disposition["just_skip_evidence"]["alpaca_asset_id"],
+        )
+        self.assertTrue(recurring_pipeline_should_skip(disposition))
+
+    def test_historical_alias_with_rows_is_not_just_skipped(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(1),
+        }
+
+        disposition = build_identity_report("OLDD", local_report, HistoricalAliasIdentityClient())[
+            "symbol_disposition"
+        ]
+
+        self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+
+    def test_historical_alias_without_all_adjustments_is_not_just_skipped(self) -> None:
+        local_report = {
+            "present": True,
+            "downloads": complete_sip_downloads(0)[:-1],
+        }
+
+        disposition = build_identity_report("OLDD", local_report, HistoricalAliasIdentityClient())[
+            "symbol_disposition"
+        ]
+
+        self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
 
     def test_public_api_returns_report_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -164,7 +521,7 @@ class IdentityReportTests(unittest.TestCase):
             paths_after = list(repository_root.rglob("*"))
 
         self.assertEqual(paths_before, paths_after)
-        self.assertEqual(1, report["report_version"])
+        self.assertEqual(3, report["report_version"])
         self.assertEqual("2026-10-06T12:00:00Z", report["generated_at"])
         self.assertEqual("FB", report["symbol"])
         self.assertFalse(report["local"]["present"])
@@ -211,6 +568,8 @@ class LocalInspectionTests(unittest.TestCase):
                 "request_from": "2016-01-01T00:00:00Z",
                 "request_to": "2024-01-04T00:00:00Z",
                 "asof": "2024-01-04",
+                "feed": "sip",
+                "timeframe": "1Day",
             }
             (symbol_directory / "raw.csv.gz.manifest.json").write_text(json.dumps(sidecar))
             pipeline_manifest = {
@@ -248,6 +607,8 @@ class LocalInspectionTests(unittest.TestCase):
         download = report["downloads"][0]
         self.assertTrue(download["stat_matches_sidecar"])
         self.assertTrue(download["pipeline_receipt_matches"])
+        self.assertEqual("sip", download["feed"])
+        self.assertEqual("1Day", download["timeframe"])
         dataset_failure = download["integrity_failure"]["dataset_failures"][0]
         self.assertEqual(2, dataset_failure["missing_sessions_count"])
         self.assertEqual("2024-01-04", dataset_failure["first_missing_sessions"])
@@ -280,6 +641,26 @@ class LocalInspectionTests(unittest.TestCase):
 
 
 class AlpacaIdentityClientTests(unittest.TestCase):
+    def test_asset_lookup_exposes_not_found_http_status(self) -> None:
+        response_body = io.BytesIO(b'{"code":40410000,"message":"asset not found"}')
+        http_error = urllib.error.HTTPError(
+            "https://example.test/asset",
+            404,
+            "Not Found",
+            {},
+            response_body,
+        )
+        client = AlpacaIdentityClient("key", "secret", rate_limiter=FakeRateLimiter())
+
+        with mock.patch("urllib.request.urlopen", side_effect=http_error):
+            result = client.get_asset_lookup("MISSING")
+
+        self.assertEqual(
+            {"outcome": "not_found", "http_status": 404, "asset": None},
+            result,
+        )
+        self.assertTrue(response_body.closed)
+
     def test_asset_not_found_returns_none_and_closes_error_response(self) -> None:
         response_body = io.BytesIO(b'{"message":"not found"}')
         http_error = urllib.error.HTTPError(

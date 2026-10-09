@@ -1,10 +1,12 @@
 import io
 import json
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import libs.alpaca_end_of_day_security_correlation.security_master as security_master_module
 from libs.alpaca_end_of_day_pipeline import (
     PricingDataIntegrityError,
     validate_and_publish_alpaca_download,
@@ -12,6 +14,10 @@ from libs.alpaca_end_of_day_pipeline import (
 from libs.alpaca_end_of_day_reader import (
     READER_VERSION,
     EndOfDayReaderError,
+    get_alpaca_end_of_day_security_availability,
+    is_alpaca_end_of_day_security_online,
+    list_alpaca_end_of_day_master_ids_by_availability_status,
+    list_online_alpaca_end_of_day_master_ids,
     parse_command_line_arguments,
     read_alpaca_end_of_day_security_history,
     run_end_of_day_reader_command,
@@ -19,19 +25,26 @@ from libs.alpaca_end_of_day_reader import (
 )
 from libs.alpaca_end_of_day_security_correlation import (
     SECURITY_MASTER_VERSION,
+    SecurityCorrelationError,
     authenticate_security_master,
     build_security_correlation_report,
     lookup_security_master_identity,
     master_id_for_alpaca_asset_ids,
-    publish_security_correlation,
+    migrate_legacy_security_master,
+    publish_security_correlation_artifacts,
+    publish_security_master_online_status,
+    publish_security_master_update,
     security_master_path,
     validate_security_master_change_log,
 )
+from libs.alpaca_end_of_day_ticker_pipeline import evaluate_security_online_status
 from libs.alpaca_end_of_day_warning_pipeline import (
     build_warning_pipeline_report,
     publish_warning_pipeline,
 )
 from libs.alpaca_security_lineage import inspect_local_downloads
+from libs.common.atomic_writes import write_json_document_atomically
+from libs.common.file_integrity import calculate_file_sha256
 
 TEST_FIXTURES_DIRECTORY = Path(__file__).with_name("fixtures")
 TEST_ASSET_UUID = "11111111-1111-4111-8111-111111111111"
@@ -113,11 +126,14 @@ def _publish_reader_fixture(
     symbol: str = "TEST",
     asset_id: str = TEST_ASSET_UUID,
     name: str = "Test Security",
+    conflicting_first_close: bool = False,
 ) -> Path:
     fixture_name = fixture_name or (
         "ten_daily_bars_one_high_below_low.json" if with_integrity_failure else "ten_valid_daily_bars.json"
     )
     bars = json.loads((TEST_FIXTURES_DIRECTORY / fixture_name).read_text(encoding="utf-8"))
+    if conflicting_first_close:
+        bars[0]["c"] = 103
     download_path = repository_root / "data" / "end_of_day" / symbol / "raw.csv.gz"
     if with_integrity_failure:
         try:
@@ -133,9 +149,29 @@ def _publish_reader_fixture(
         _lineage_report(repository_root, symbol, asset_id, name),
         repository_root,
     )
-    publish_security_correlation(repository_root, correlation_report)
+    correlation_receipt = publish_security_correlation_artifacts(
+        repository_root,
+        correlation_report,
+    )
     warning_report = build_warning_pipeline_report(repository_root, symbol)
     publish_warning_pipeline(repository_root, warning_report)
+    publish_security_master_update(
+        repository_root,
+        correlation_report,
+        correlation_receipt,
+        online_by_master_id=None,
+    )
+    evaluation = evaluate_security_online_status(
+        repository_root,
+        [master_id_for_alpaca_asset_ids([asset_id])],
+    )
+    publish_security_master_online_status(
+        repository_root,
+        evaluation.online_by_master_id,
+        availability_status_by_master_id=evaluation.availability_status_by_master_id,
+        expected_security_object_sha256_by_master_id=(evaluation.security_object_sha256_by_master_id),
+        expected_source_object_sha256_by_symbol=evaluation.source_object_sha256_by_symbol,
+    )
     return download_path
 
 
@@ -151,21 +187,206 @@ class EndOfDayReaderTests(unittest.TestCase):
 
             authenticated = authenticate_security_master(repository_root)
             identity = lookup_security_master_identity(repository_root, TEST_MASTER_ID.upper())
+            authenticated_identity = authenticated.identities_by_master_id[TEST_MASTER_ID]
+            serialized_identities = json.dumps(list(authenticated.identities_by_master_id.values())).lower()
+            root_document = json.loads(security_master_path(repository_root).read_text(encoding="utf-8"))
 
-        self.assertEqual(identity, authenticated.identities_by_master_id[TEST_MASTER_ID])
+        self.assertEqual(identity, authenticated_identity)
         self.assertEqual(TEST_MASTER_ID, identity["master_id"])
+        self.assertTrue(identity["online"])
+        self.assertEqual("online", identity["availability_status"])
         self.assertEqual(["TEST"], identity["tickers"])
         self.assertEqual(["Test Security"], identity["names"])
         self.assertEqual(["raw"], identity["available_adjustments"])
         self.assertEqual("2024-01-02", identity["first_observed_session_date"])
         self.assertEqual("2024-01-16", identity["last_observed_session_date"])
-        serialized_identities = json.dumps(authenticated.master["securities"]).lower()
         self.assertNotIn("warning", serialized_identities)
         self.assertNotIn("error", serialized_identities)
+        self.assertNotIn("sources", root_document)
+        self.assertNotIn("securities", root_document)
+        self.assertEqual(1, root_document["source_count"])
+        self.assertEqual(1, root_document["master_id_count"])
+        self.assertLess(len(json.dumps(root_document)), 2_500)
         self.assertEqual(
             authenticated.master_sha256,
             authenticated.receipt["output"]["sha256"],
         )
+
+    def test_public_availability_requires_clean_readable_bars_and_never_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(repository_root, with_integrity_failure=False)
+            files_before = {
+                path.relative_to(repository_root): (path.stat().st_size, path.stat().st_mtime_ns)
+                for path in repository_root.rglob("*")
+                if path.is_file()
+            }
+
+            online = get_alpaca_end_of_day_security_availability(
+                TEST_MASTER_ID.upper(),
+                repository_root=repository_root,
+            )
+            offline = get_alpaca_end_of_day_security_availability(
+                "f" * 64,
+                repository_root=repository_root,
+            )
+            online_ids = list_online_alpaca_end_of_day_master_ids(
+                repository_root=repository_root,
+            )
+            is_online = is_alpaca_end_of_day_security_online(
+                TEST_MASTER_ID,
+                repository_root=repository_root,
+            )
+            files_after = {
+                path.relative_to(repository_root): (path.stat().st_size, path.stat().st_mtime_ns)
+                for path in repository_root.rglob("*")
+                if path.is_file()
+            }
+
+        self.assertEqual(
+            {
+                "master_id": TEST_MASTER_ID,
+                "online": True,
+                "availability_status": "online",
+            },
+            online,
+        )
+        self.assertEqual(
+            {
+                "master_id": "f" * 64,
+                "online": False,
+                "availability_status": "offline",
+            },
+            offline,
+        )
+        self.assertTrue(is_online)
+        self.assertEqual([TEST_MASTER_ID], online_ids)
+        self.assertEqual(files_before, files_after)
+
+    def test_internal_market_session_gap_is_queryable_but_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                fixture_name="nine_daily_bars_one_market_session_missing.json",
+            )
+
+            availability = get_alpaca_end_of_day_security_availability(
+                TEST_MASTER_ID,
+                repository_root=repository_root,
+            )
+            lineage_gap_ids = list_alpaca_end_of_day_master_ids_by_availability_status(
+                "lineage_gap",
+                repository_root=repository_root,
+            )
+            online_ids = list_online_alpaca_end_of_day_master_ids(
+                repository_root=repository_root,
+            )
+            history = read_alpaca_end_of_day_security_history(
+                TEST_MASTER_ID,
+                "raw",
+                repository_root=repository_root,
+            )
+
+        self.assertEqual(
+            {
+                "master_id": TEST_MASTER_ID,
+                "online": False,
+                "availability_status": "lineage_gap",
+            },
+            availability,
+        )
+        self.assertEqual([TEST_MASTER_ID], lineage_gap_ids)
+        self.assertEqual([], online_ids)
+        self.assertEqual(
+            {"online": False, "availability_status": "lineage_gap"},
+            history["availability"],
+        )
+        self.assertEqual(9, history["bar_count"])
+        self.assertEqual(0, history["integrity"]["error_count"])
+
+    def test_sharded_source_object_tampering_is_detected_when_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(repository_root, with_integrity_failure=False)
+            authenticated = authenticate_security_master(repository_root)
+            descriptor = authenticated.sources_by_symbol.object_descriptor("TEST")
+            source_path = security_master_path(repository_root).parent / descriptor["file"]
+            source_path.write_bytes(source_path.read_bytes() + b"changed")
+
+            with self.assertRaisesRegex(SecurityCorrelationError, "SHA-256 authentication"):
+                lookup_security_master_identity(repository_root, TEST_MASTER_ID)
+
+    def test_migrates_an_authenticated_version_one_master_without_changing_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(repository_root, with_integrity_failure=False)
+            authenticated = authenticate_security_master(repository_root)
+            sources = list(authenticated.sources_by_symbol.values())
+            for source in sources:
+                for identity in source["identities"]:
+                    identity.pop("online")
+                    identity.pop("availability_status")
+            securities = security_master_module._aggregate_security_entries(
+                sources,
+                include_online=False,
+                include_availability_status=False,
+            )
+
+            shutil.rmtree(security_master_path(repository_root).parent)
+            legacy_path = security_master_module.legacy_security_master_path(repository_root)
+            legacy_receipt_path = security_master_module.legacy_security_master_manifest_path(repository_root)
+            legacy_path.parent.mkdir(parents=True, exist_ok=True)
+            generation = security_master_module._legacy_generation_sha256(sources, securities)
+            legacy_document = {
+                "manifest_type": "end_of_day_security_master_index",
+                "security_master_version": 1,
+                "security_master_generation_sha256": generation,
+                "created_at": "2026-10-08T00:00:00Z",
+                "source_count": len(sources),
+                "master_id_count": len(securities),
+                "sources": sources,
+                "securities": securities,
+            }
+            write_json_document_atomically(legacy_path, legacy_document, compact=False)
+            legacy_stat = legacy_path.stat()
+            legacy_receipt = {
+                "manifest_type": "end_of_day_security_master_index_receipt",
+                "security_master_version": 1,
+                "security_master_generation_sha256": generation,
+                "created_at": "2026-10-08T00:00:00Z",
+                "source_count": len(sources),
+                "master_id_count": len(securities),
+                "output": {
+                    "file": legacy_path.name,
+                    "sha256": calculate_file_sha256(legacy_path),
+                    "bytes": legacy_stat.st_size,
+                    "mtime_ns": legacy_stat.st_mtime_ns,
+                    "publication_sha256_verified": True,
+                },
+            }
+            write_json_document_atomically(
+                legacy_receipt_path,
+                legacy_receipt,
+                compact=False,
+            )
+
+            migration_receipt = migrate_legacy_security_master(repository_root)
+            migrated_identity = lookup_security_master_identity(repository_root, TEST_MASTER_ID)
+
+        self.assertEqual("published", migration_receipt["publication_status"])
+        self.assertEqual(SECURITY_MASTER_VERSION, migration_receipt["security_master_version"])
+        self.assertEqual(
+            securities[0],
+            {
+                key: value
+                for key, value in migrated_identity.items()
+                if key not in {"online", "availability_status"}
+            },
+        )
+        self.assertFalse(migrated_identity["online"])
+        self.assertEqual("offline", migrated_identity["availability_status"])
 
     def test_master_update_replaces_one_source_without_losing_existing_identities(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -182,12 +403,62 @@ class EndOfDayReaderTests(unittest.TestCase):
             authenticated = authenticate_security_master(repository_root)
             original = lookup_security_master_identity(repository_root, TEST_MASTER_ID)
             second = lookup_security_master_identity(repository_root, SECOND_MASTER_ID)
+            online_ids = list_online_alpaca_end_of_day_master_ids(
+                repository_root=repository_root,
+            )
+            second_availability = get_alpaca_end_of_day_security_availability(
+                SECOND_MASTER_ID,
+                repository_root=repository_root,
+            )
 
         self.assertEqual(2, authenticated.master["source_count"])
         self.assertEqual(2, authenticated.master["master_id_count"])
         self.assertEqual(["TEST"], original["source_symbols"])
         self.assertEqual(["NEXT"], second["source_symbols"])
         self.assertEqual(["Next Security"], second["names"])
+        self.assertEqual(sorted((TEST_MASTER_ID, SECOND_MASTER_ID)), online_ids)
+        self.assertEqual(
+            {
+                "master_id": SECOND_MASTER_ID,
+                "online": True,
+                "availability_status": "online",
+            },
+            second_availability,
+        )
+
+    def test_shared_master_id_is_offline_when_the_public_reader_finds_conflicting_bars(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(repository_root, with_integrity_failure=False)
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                symbol="TEST.A",
+                asset_id=TEST_ASSET_UUID,
+                conflicting_first_close=True,
+            )
+
+            availability = get_alpaca_end_of_day_security_availability(
+                TEST_MASTER_ID,
+                repository_root=repository_root,
+            )
+            identity = lookup_security_master_identity(repository_root, TEST_MASTER_ID)
+            with self.assertRaisesRegex(EndOfDayReaderError, "conflicting authenticated bars"):
+                read_alpaca_end_of_day_security_history(
+                    TEST_MASTER_ID,
+                    "raw",
+                    repository_root=repository_root,
+                )
+
+        self.assertEqual(
+            {
+                "master_id": TEST_MASTER_ID,
+                "online": False,
+                "availability_status": "offline",
+            },
+            availability,
+        )
+        self.assertEqual(["TEST", "TEST.A"], identity["source_symbols"])
 
     def test_rejects_a_well_formed_but_unpublished_master_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -217,6 +488,10 @@ class EndOfDayReaderTests(unittest.TestCase):
         self.assertEqual(
             {"master_id": TEST_MASTER_ID, "type": "raw"},
             result["query"],
+        )
+        self.assertEqual(
+            {"online": False, "availability_status": "offline"},
+            result["availability"],
         )
         self.assertEqual(TEST_MASTER_ID, result["security"]["master_id"])
         self.assertEqual([TEST_ASSET_UUID], result["security"]["alpaca_asset_ids"])

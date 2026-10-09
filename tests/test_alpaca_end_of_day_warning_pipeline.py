@@ -16,10 +16,13 @@ from libs.alpaca_end_of_day_warning_pipeline import (
     validate_warning_pipeline_change_log,
     warning_pipeline_manifest_path,
 )
+from libs.alpaca_end_of_day_warning_pipeline.authenticated_inputs import _analyzable_bar
 from libs.alpaca_end_of_day_warning_pipeline.cross_adjustment_warnings import (
     build_cross_adjustment_warnings,
 )
+from libs.alpaca_end_of_day_warning_pipeline.errors import WarningPipelineError
 from libs.alpaca_end_of_day_warning_pipeline.models import (
+    ACCEPTED_ZERO_ACTIVITY_BAR_REASON,
     AnalyzableDailyBar,
     AuthenticatedCorrelationOutputs,
     DownloadValidationView,
@@ -136,8 +139,123 @@ def correlated_security_fields(
 
 class WarningPipelineTests(unittest.TestCase):
     def test_version_changelog_matches_warning_overlay(self) -> None:
-        self.assertEqual(3, WARNING_PIPELINE_VERSION)
+        self.assertEqual(6, WARNING_PIPELINE_VERSION)
         self.assertEqual(WARNING_PIPELINE_VERSION, len(validate_warning_pipeline_change_log()))
+
+    def test_flat_zero_activity_bar_is_accepted_without_warning_analysis(self) -> None:
+        timestamp = datetime(2024, 1, 3, 5, tzinfo=timezone.utc)
+        row = {
+            "t": "2024-01-03T05:00:00Z",
+            "o": "20.04",
+            "h": "20.04",
+            "l": "20.04",
+            "c": "20.04",
+            "v": "0",
+            "n": "0",
+            "vw": "0",
+        }
+
+        self.assertIsNone(
+            _analyzable_bar(
+                row,
+                "raw.csv.gz",
+                2,
+                timestamp,
+                split_adjusted=False,
+            )
+        )
+
+        active_bar = dated_daily_bar(1, date(2024, 1, 2))
+        view = download_view("raw.csv.gz", "raw", [active_bar], "a" * 64)
+        view = DownloadValidationView(
+            data_file=view.data_file,
+            download_sha256=view.download_sha256,
+            adjustment=view.adjustment,
+            adjustment_actions=view.adjustment_actions,
+            manifest=view.manifest,
+            source_row_count=2,
+            timestamp_by_row_number={1: active_bar.timestamp, 2: timestamp},
+            bars_by_row_number={1: active_bar},
+            excluded_rows=({"row_number": 2, "reason": ACCEPTED_ZERO_ACTIVITY_BAR_REASON},),
+        )
+        source = {
+            "data_file": "raw.csv.gz",
+            "download_manifest": "raw.csv.gz.manifest.json",
+            "download_sha256": "a" * 64,
+            "rows": 2,
+            "adjustment": "raw",
+            "pipeline_state": "cached",
+            "validation_pipeline_version": 18,
+            "download_sha256_authenticated": True,
+        }
+        inputs = WarningPipelineInputs(
+            symbol="TEST",
+            source_downloads=(source,),
+            download_views=(view,),
+            correlation=AuthenticatedCorrelationOutputs(
+                receipt={"partition": {"row_partition_complete": True}},
+                correlated={
+                    "row_count": 2,
+                    "segments": [
+                        {
+                            **source,
+                            "row_start": 1,
+                            "row_end": 2,
+                            "row_count": 2,
+                            "historical_symbol": "TEST",
+                            **correlated_security_fields("one-uuid", "ONE"),
+                        }
+                    ],
+                },
+                uncorrelated={"row_count": 0, "segments": []},
+                correlated_sha256="b" * 64,
+                uncorrelated_sha256="c" * 64,
+            ),
+            pipeline_receipt_manifest_sha256="d" * 64,
+            integrity_failure_manifest_sha256="e" * 64,
+        )
+
+        cross_adjustment = build_cross_adjustment_warnings((view,), DEFAULT_CONFIGURATION)
+        statistics = validate_security_segment_statistics(inputs, DEFAULT_CONFIGURATION)
+
+        self.assertEqual(0, cross_adjustment["total_finding_count"])
+        self.assertEqual(0, statistics["total_finding_count"])
+        self.assertEqual(
+            1,
+            statistics["coverage"]["correlated_accepted_zero_activity_row_count"],
+        )
+
+    def test_split_rounded_zero_volume_remains_analyzable(self) -> None:
+        timestamp = datetime(2024, 1, 3, 5, tzinfo=timezone.utc)
+        row = {
+            "t": "2024-01-03T05:00:00Z",
+            "o": "20",
+            "h": "21",
+            "l": "19",
+            "c": "20.5",
+            "v": "0",
+            "n": "8",
+            "vw": "20.25",
+        }
+
+        adjusted_bar = _analyzable_bar(
+            row,
+            "split.csv.gz",
+            2,
+            timestamp,
+            split_adjusted=True,
+        )
+        self.assertIsNotNone(adjusted_bar)
+        self.assertEqual(Decimal("0"), adjusted_bar.values["volume"])
+
+        with self.assertRaisesRegex(WarningPipelineError, "nonpositive volume"):
+            _analyzable_bar(
+                row,
+                "raw.csv.gz",
+                2,
+                timestamp,
+                split_adjusted=False,
+            )
 
     def test_shared_formula_keeps_measurement_static_while_policy_selects_severity(self) -> None:
         raw_prices = {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "vwap": 10.5}

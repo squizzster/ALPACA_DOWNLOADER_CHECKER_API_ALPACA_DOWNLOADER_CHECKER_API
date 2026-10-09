@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .errors import SecurityCorrelationError
 
-CORRELATION_VERSION = 7
+CORRELATION_VERSION = 8
 CORRELATION_CHANGE_LOG_PATH = (
     Path(__file__).resolve().parents[2] / "alpaca_end_of_day_security_correlation_change_log.json"
 )

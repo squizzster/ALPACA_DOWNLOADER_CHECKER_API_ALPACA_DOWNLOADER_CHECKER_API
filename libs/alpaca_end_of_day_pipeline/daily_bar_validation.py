@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from datetime import time as datetime_time
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,25 @@ from .contracts import CSV_COLUMN_ALPACA_FIELD_PAIRS, DOWNLOAD_REQUEST_IDENTITY_
 from .errors import EndOfDayPipelineError
 
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
+SPLIT_ADJUSTED_MODES = frozenset(("split", "split,dividend", "split,spin-off", "all"))
+
+
+def is_accepted_zero_activity_bar(
+    *,
+    open_price: float | Decimal,
+    high_price: float | Decimal,
+    low_price: float | Decimal,
+    close_price: float | Decimal,
+    share_volume: float | Decimal,
+    trade_count: float | Decimal,
+    volume_weighted_average_price: float | Decimal,
+) -> bool:
+    """Return whether Alpaca explicitly encoded a flat, zero-activity daily bar."""
+    return (
+        open_price > 0
+        and open_price == high_price == low_price == close_price
+        and share_volume == trade_count == volume_weighted_average_price == 0
+    )
 
 
 @dataclass(frozen=True)
@@ -103,6 +123,7 @@ def validate_daily_bar(
     previous_bar_timestamp: datetime | None,
     request_start_timestamp: datetime,
     request_end_timestamp: datetime,
+    adjustment: str,
 ) -> tuple[dict, datetime, str]:
     if not isinstance(alpaca_bar, Mapping):
         raise EndOfDayPipelineError(f"row {row_number}: bar is not an object")
@@ -136,7 +157,21 @@ def validate_daily_bar(
     share_volume = parse_finite_number(alpaca_bar["v"], "volume", row_number)
     trade_count = parse_finite_number(alpaca_bar["n"], "trade_count", row_number)
 
-    if min(open_price, high_price, low_price, close_price, volume_weighted_average_price) <= 0:
+    if min(open_price, high_price, low_price, close_price) <= 0:
+        raise EndOfDayPipelineError(f"row {row_number}: prices must be positive")
+    has_explicit_zero_activity_tuple = share_volume == trade_count == volume_weighted_average_price == 0
+    is_explicit_zero_activity_bar = is_accepted_zero_activity_bar(
+        open_price=open_price,
+        high_price=high_price,
+        low_price=low_price,
+        close_price=close_price,
+        share_volume=share_volume,
+        trade_count=trade_count,
+        volume_weighted_average_price=volume_weighted_average_price,
+    )
+    if has_explicit_zero_activity_tuple and not is_explicit_zero_activity_bar:
+        raise EndOfDayPipelineError(f"row {row_number}: zero-activity tuple requires matching OHLC prices")
+    if not is_explicit_zero_activity_bar and volume_weighted_average_price <= 0:
         raise EndOfDayPipelineError(f"row {row_number}: prices must be positive")
     if (
         evaluate_ordered_bounds(
@@ -147,11 +182,13 @@ def validate_daily_bar(
         == ERROR
     ):
         raise EndOfDayPipelineError(f"row {row_number}: high is below low")
-    for price_name, price_value in (
+    prices_requiring_range_validation = [
         ("open", open_price),
         ("close", close_price),
-        ("vwap", volume_weighted_average_price),
-    ):
+    ]
+    if not is_explicit_zero_activity_bar:
+        prices_requiring_range_validation.append(("vwap", volume_weighted_average_price))
+    for price_name, price_value in prices_requiring_range_validation:
         if (
             evaluate_value_within_bounds(
                 price_value,
@@ -162,12 +199,15 @@ def validate_daily_bar(
             == ERROR
         ):
             raise EndOfDayPipelineError(f"row {row_number}: {price_name} is outside the low/high range")
-    if share_volume <= 0 or not share_volume.is_integer():
-        raise EndOfDayPipelineError(f"row {row_number}: volume is not a positive integer")
-    if trade_count <= 0 or not trade_count.is_integer():
-        raise EndOfDayPipelineError(f"row {row_number}: trade_count is not a positive integer")
-    if trade_count > share_volume:
-        raise EndOfDayPipelineError(f"row {row_number}: trade_count exceeds volume")
+    if not is_explicit_zero_activity_bar:
+        split_adjusted = adjustment in SPLIT_ADJUSTED_MODES
+        if share_volume < 0 or not share_volume.is_integer() or (share_volume == 0 and not split_adjusted):
+            required_volume_domain = "nonnegative" if split_adjusted else "positive"
+            raise EndOfDayPipelineError(f"row {row_number}: volume is not a {required_volume_domain} integer")
+        if trade_count <= 0 or not trade_count.is_integer():
+            raise EndOfDayPipelineError(f"row {row_number}: trade_count is not a positive integer")
+        if not split_adjusted and trade_count > share_volume:
+            raise EndOfDayPipelineError(f"row {row_number}: trade_count exceeds volume")
 
     csv_row = {
         csv_column: alpaca_bar[alpaca_field] for csv_column, alpaca_field in CSV_COLUMN_ALPACA_FIELD_PAIRS
@@ -240,6 +280,7 @@ def validate_end_of_day_bars(
                 previous_bar_timestamp,
                 request_start_timestamp,
                 request_end_timestamp,
+                request_identity["adjustment"],
             )
         except EndOfDayPipelineError as row_validation_error:
             row_failures.append(

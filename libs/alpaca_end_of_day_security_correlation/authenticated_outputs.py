@@ -132,6 +132,7 @@ def _validate_generation(
         "correlation_version": receipt.get("correlation_version"),
         "symbol": receipt.get("symbol"),
         "lineage_evidence_sha256": receipt.get("lineage_evidence_sha256"),
+        "symbol_disposition": receipt.get("symbol_disposition"),
         "source_downloads": receipt.get("source_downloads"),
         "ownership_interval_rule_order": receipt.get("ownership_interval_rule_order"),
         "row_correlation_rule_order": receipt.get("row_correlation_rule_order"),
@@ -169,7 +170,7 @@ def _validate_partition(
             raise SecurityCorrelationError(f"invalid source manifest filename for {filename}")
         if not _is_sha256(source.get("download_sha256")):
             raise SecurityCorrelationError(f"invalid source SHA-256 for {filename}")
-        if type(source.get("rows")) is not int or source["rows"] < 1:
+        if type(source.get("rows")) is not int or source["rows"] < 0:
             raise SecurityCorrelationError(f"invalid source row count for {filename}")
         if not isinstance(source.get("adjustment"), str):
             raise SecurityCorrelationError(f"invalid source adjustment for {filename}")
@@ -180,6 +181,7 @@ def _validate_partition(
     for branch_name, document in (("correlated", correlated), ("uncorrelated", uncorrelated)):
         for shared_field in (
             "lineage_evidence_sha256",
+            "symbol_disposition",
             "source_downloads",
             "ownership_interval_rule_order",
             "row_correlation_rule_order",

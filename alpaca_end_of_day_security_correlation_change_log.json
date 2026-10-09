@@ -42,5 +42,13 @@
       "At the final correlation boundary, promote a fully uncorrelated same-ticker history only when exactly two stable Alpaca ID candidates exist and every expected market session is present through the request endpoint.",
       "Retain the two candidates, calendar proof, potential corporate-action explanation, and an unresolved-vendor-boundary warning on every continuity-based promotion."
     ]
+  },
+  {
+    "modifications": [
+      "Bind an explicit symbol disposition to each correlation generation, distinguishing supported assets, retained historical symbol-only series, evidence-backed OTC or inactive-empty out-of-scope assets, quarantined empty symbols, exchange test symbols, and unresolved evidence.",
+      "Mark an exact-404 historical alias as just_skip only when one corporate-action/CUSIP occupant resolves to an Alpaca asset ID and all eight authenticated SIP/1Day views are empty.",
+      "Keep UUID-less historical and test rows in the exhaustive uncorrelated branch with a deterministic non-security market-data-series ID rather than fabricating an Alpaca or master security identity.",
+      "Publish disposition work items and explicit reason codes so recurring orchestration can skip authenticated quarantined or excluded symbols without deleting frozen evidence."
+    ]
   }
 ]

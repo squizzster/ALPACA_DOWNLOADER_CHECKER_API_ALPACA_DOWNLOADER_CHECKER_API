@@ -19,5 +19,19 @@
       "Accept the repository master ID through --master-id and reject Alpaca UUIDs or unpublished digest values.",
       "Return the clean master identity metadata and exact master-index digest provenance while keeping errors and warnings in their separate read-result sections."
     ]
+  },
+  {
+    "modifications": [
+      "Read provider-neutral online status directly from each authenticated per-master-ID identity shard without recalculating its dependencies for every consumer.",
+      "Expose public APIs to query one master ID's persisted online boolean and list the identities whose pipeline-published status is true.",
+      "Return the stored online boolean with a history while keeping Alpaca active/inactive metadata independent from repository availability."
+    ]
+  },
+  {
+    "modifications": [
+      "Return each published master ID's persisted availability_status classification alongside its online boolean.",
+      "Expose a read-only status-filtered listing API so unresolved lineage_gap identities can be queried without rescanning bar histories.",
+      "Keep lineage-gap histories readable for investigation while excluding them from the online inventory."
+    ]
   }
 ]

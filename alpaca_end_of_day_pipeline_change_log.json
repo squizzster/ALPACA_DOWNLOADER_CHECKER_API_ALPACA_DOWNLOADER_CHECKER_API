@@ -88,5 +88,26 @@
       "Stop classifying absent ticker sessions as integrity corruption before security identity and ownership boundaries are known.",
       "Keep unexpected closed-session bars and duplicate or incorrectly ordered sessions in the action-required integrity boundary; defer missing-session analysis to UUID-segmented warning processing."
     ]
+  },
+  {
+    "modifications": [
+      "Add empirical adaptive adjustment acquisition with an authenticated all-eight fallback for observation patterns outside the recorded policy.",
+      "Represent inferred logical adjustment views with explicit empirical-alias manifests and same-directory hard links to authenticated direct downloads.",
+      "Compact byte-identical authenticated direct downloads into atomic hard-link replacements while retaining all logical filenames and independent provenance manifests.",
+      "Keep an authenticated zero-row Alpaca response cacheable as a recorded dataset-integrity failure, and let downstream exhaustive partitions represent that source as empty instead of misclassifying zero coverage as boundary corruption."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept an explicitly zero-activity Alpaca bar only when open, high, low, and close are the same positive price and volume, trade count, and VWAP are all present and numerically zero together.",
+      "Keep partial or contradictory zero-activity states inside the hard integrity boundary."
+    ]
+  },
+  {
+    "modifications": [
+      "Validate Alpaca split-containing views against split-adjusted volume semantics: accept nonnegative integer volume, including rounding to zero, and do not compare unadjusted trade count with split-scaled volume.",
+      "Retain positive integer volume and trade-count-not-above-volume checks for raw and price-only-adjusted views, while requiring positive integer trade count for every active bar.",
+      "Classify an exact Alpaca HTTP 400 invalid-symbol response as the known error code invalid_ticker_code while preserving nonzero batch failure semantics."
+    ]
   }
 ]

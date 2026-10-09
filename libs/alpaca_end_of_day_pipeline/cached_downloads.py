@@ -10,7 +10,11 @@ from .artifact_paths import (
     pipeline_receipt_manifest_path,
 )
 from .contracts import (
+    ALPACA_DOWNLOAD_BOUNDARY,
     DOWNLOAD_REQUEST_IDENTITY_FIELDS,
+    EMPIRICAL_ADJUSTMENT_ALIAS_BOUNDARY,
+    EMPIRICAL_ADJUSTMENT_PATTERNS,
+    EMPIRICAL_ADJUSTMENT_POLICY,
     INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
     MANIFEST_SCHEMA_VERSION,
     PUBLICATION_SHA256_VERIFIED_MANIFEST_KEY,
@@ -27,6 +31,124 @@ class CachedDownloadInspection:
     required_action: str
     download_manifest: dict | None = None
     diagnostic: str | None = None
+
+
+def _read_manifest_object(path: Path, description: str) -> dict:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise EndOfDayPipelineError(f"could not read {description}: {error}") from error
+    if not isinstance(document, dict):
+        raise EndOfDayPipelineError(f"{description} is not an object")
+    return document
+
+
+def _empirical_alias_diagnostic(download_path: Path, download_manifest: dict) -> str | None:
+    equivalence = download_manifest.get("empirical_equivalence")
+    storage = download_manifest.get("storage")
+    if not isinstance(equivalence, dict) or not isinstance(storage, dict):
+        return "empirical alias has no equivalence or storage evidence"
+    source_filename = equivalence.get("source_file")
+    source_manifest_filename = equivalence.get("source_manifest")
+    source_adjustment = equivalence.get("source_adjustment")
+    if (
+        not isinstance(source_filename, str)
+        or Path(source_filename).name != source_filename
+        or not source_filename.endswith(".csv.gz")
+        or not isinstance(source_manifest_filename, str)
+        or source_manifest_filename != source_filename + ".manifest.json"
+        or not isinstance(source_adjustment, str)
+        or not source_adjustment
+        or source_filename != source_adjustment.replace(",", "_") + ".csv.gz"
+    ):
+        return "empirical alias has unsafe or invalid source evidence"
+    if storage.get("kind") != "hard_link" or storage.get("canonical_file") != source_filename:
+        return "empirical alias storage does not identify its source hard link"
+    if equivalence.get("policy") != EMPIRICAL_ADJUSTMENT_POLICY:
+        return "empirical alias has an unsupported policy identity"
+    if equivalence.get("pattern") not in EMPIRICAL_ADJUSTMENT_PATTERNS:
+        return "empirical alias has an unsupported pattern identity"
+
+    source_path = download_path.parent / source_filename
+    source_manifest_path = download_path.parent / source_manifest_filename
+    try:
+        source_manifest = _read_manifest_object(source_manifest_path, "empirical alias source manifest")
+        source_stat = source_path.stat()
+        files_share_inode = source_path.samefile(download_path)
+    except (OSError, EndOfDayPipelineError) as error:
+        return str(error)
+    if not files_share_inode:
+        return "empirical alias does not share its source inode"
+    if calculate_file_sha256(source_manifest_path) != equivalence.get("source_manifest_sha256"):
+        return "empirical alias source manifest SHA-256 does not match"
+    if (
+        source_manifest.get("boundary") != ALPACA_DOWNLOAD_BOUNDARY
+        or source_manifest.get("file") != source_filename
+        or source_manifest.get("adjustment") != source_adjustment
+        or source_manifest.get("sha256") != download_manifest.get("sha256")
+        or source_manifest.get("bytes") != source_stat.st_size
+        or source_manifest.get("mtime_ns") != source_stat.st_mtime_ns
+        or source_manifest.get(PUBLICATION_SHA256_VERIFIED_MANIFEST_KEY) is not True
+    ):
+        return "empirical alias source is not an authenticated direct download boundary"
+    for field_name in DOWNLOAD_REQUEST_IDENTITY_FIELDS:
+        if field_name != "adjustment" and source_manifest.get(field_name) != download_manifest.get(field_name):
+            return f"empirical alias source has inconsistent {field_name}"
+
+    observations = equivalence.get("observed_downloads")
+    if not isinstance(observations, list) or len(observations) < 2:
+        return "empirical alias has insufficient observed-download evidence"
+    observed_adjustments = set()
+    source_was_observed = False
+    for observation in observations:
+        if not isinstance(observation, dict):
+            return "empirical alias has malformed observed-download evidence"
+        observed_filename = observation.get("file")
+        observed_manifest_filename = observation.get("manifest")
+        observed_adjustment = observation.get("adjustment")
+        if (
+            not isinstance(observed_filename, str)
+            or Path(observed_filename).name != observed_filename
+            or not observed_filename.endswith(".csv.gz")
+            or not isinstance(observed_manifest_filename, str)
+            or observed_manifest_filename != observed_filename + ".manifest.json"
+            or not isinstance(observed_adjustment, str)
+            or not observed_adjustment
+            or observed_filename != observed_adjustment.replace(",", "_") + ".csv.gz"
+            or observed_adjustment in observed_adjustments
+        ):
+            return "empirical alias has invalid observed-download identity"
+        observed_adjustments.add(observed_adjustment)
+        observed_path = download_path.parent / observed_filename
+        observed_manifest_path = download_path.parent / observed_manifest_filename
+        try:
+            observed_manifest = _read_manifest_object(
+                observed_manifest_path,
+                "empirical alias observation manifest",
+            )
+            observed_stat = observed_path.stat()
+        except (OSError, EndOfDayPipelineError) as error:
+            return str(error)
+        if (
+            calculate_file_sha256(observed_manifest_path) != observation.get("manifest_sha256")
+            or observed_manifest.get("boundary") != ALPACA_DOWNLOAD_BOUNDARY
+            or observed_manifest.get("file") != observed_filename
+            or observed_manifest.get("adjustment") != observed_adjustment
+            or observed_manifest.get("sha256") != observation.get("sha256")
+            or observed_manifest.get("bytes") != observed_stat.st_size
+            or observed_manifest.get("mtime_ns") != observed_stat.st_mtime_ns
+            or observed_manifest.get(PUBLICATION_SHA256_VERIFIED_MANIFEST_KEY) is not True
+        ):
+            return "empirical alias observation is not an authenticated direct download boundary"
+        for field_name in DOWNLOAD_REQUEST_IDENTITY_FIELDS:
+            if field_name != "adjustment" and observed_manifest.get(field_name) != download_manifest.get(
+                field_name
+            ):
+                return f"empirical alias observation has inconsistent {field_name}"
+        source_was_observed = source_was_observed or observed_filename == source_filename
+    if not source_was_observed:
+        return "empirical alias source is absent from its observed-download evidence"
+    return None
 
 
 def inspect_cached_download(download_path: Path | str, request_identity: dict) -> CachedDownloadInspection:
@@ -124,15 +246,20 @@ def inspect_cached_download(download_path: Path | str, request_identity: dict) -
             diagnostic="invalid SHA-256 in manifest",
         )
 
-    if not isinstance(download_manifest.get("rows"), int) or download_manifest["rows"] < 1:
+    recorded_row_count = download_manifest.get("rows")
+    if type(recorded_row_count) is not int or recorded_row_count < 0:
         return CachedDownloadInspection(
             required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             diagnostic="invalid row count in manifest",
         )
-    if not download_manifest.get("from") or not download_manifest.get("to"):
+    if recorded_row_count == 0:
+        coverage_is_valid = download_manifest.get("from") is None and download_manifest.get("to") is None
+    else:
+        coverage_is_valid = bool(download_manifest.get("from") and download_manifest.get("to"))
+    if not coverage_is_valid:
         return CachedDownloadInspection(
             required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
-            diagnostic="manifest has no date coverage",
+            diagnostic="manifest row count and date coverage are inconsistent",
         )
 
     if (
@@ -143,6 +270,22 @@ def inspect_cached_download(download_path: Path | str, request_identity: dict) -
             required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
             download_manifest=download_manifest,
             diagnostic="download file stat no longer matches its authenticated manifest",
+        )
+
+    boundary = download_manifest.get("boundary")
+    if boundary == EMPIRICAL_ADJUSTMENT_ALIAS_BOUNDARY:
+        alias_diagnostic = _empirical_alias_diagnostic(download_path, download_manifest)
+        if alias_diagnostic is not None:
+            return CachedDownloadInspection(
+                required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
+                download_manifest=download_manifest,
+                diagnostic=alias_diagnostic,
+            )
+    elif boundary != ALPACA_DOWNLOAD_BOUNDARY:
+        return CachedDownloadInspection(
+            required_action=INVALID_FROZEN_DOWNLOAD_BOUNDARY_ACTION,
+            download_manifest=download_manifest,
+            diagnostic="download manifest has an unsupported boundary",
         )
 
     try:

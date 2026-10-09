@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -16,18 +17,24 @@ from .settings import (
 class AlpacaIdentityRequestRateLimiter:
     def __init__(self) -> None:
         self.next_request_monotonic = 0.0
+        self._request_condition = threading.Condition()
 
     def wait_until_request_allowed(self) -> None:
-        delay_seconds = self.next_request_monotonic - time.monotonic()
-        if delay_seconds > 0:
-            time.sleep(delay_seconds)
-        self.next_request_monotonic = time.monotonic() + MIN_REQUEST_INTERVAL_SECONDS
+        with self._request_condition:
+            while True:
+                delay_seconds = self.next_request_monotonic - time.monotonic()
+                if delay_seconds <= 0:
+                    self.next_request_monotonic = time.monotonic() + MIN_REQUEST_INTERVAL_SECONDS
+                    return
+                self._request_condition.wait(timeout=delay_seconds)
 
     def defer_requests_for_seconds(self, delay_seconds: float) -> None:
-        self.next_request_monotonic = max(
-            self.next_request_monotonic,
-            time.monotonic() + delay_seconds,
-        )
+        with self._request_condition:
+            self.next_request_monotonic = max(
+                self.next_request_monotonic,
+                time.monotonic() + delay_seconds,
+            )
+            self._request_condition.notify_all()
 
 
 def rate_limit_delay_seconds(response_headers, default_seconds: float = 60.0) -> float:
@@ -103,11 +110,20 @@ class AlpacaIdentityClient:
         raise RuntimeError(f"Alpaca request retry limit reached for {url}")
 
     def get_asset(self, identifier: str) -> dict[str, Any] | None:
+        return self.get_asset_lookup(identifier)["asset"]
+
+    def get_asset_lookup(self, identifier: str) -> dict[str, Any]:
+        """Return an asset plus the explicit HTTP outcome used as evidence."""
         encoded_identifier = urllib.parse.quote(identifier, safe="")
-        return self.request_json(
+        asset = self.request_json(
             f"{ASSET_API_BASE_URL}/{encoded_identifier}",
             allow_not_found=True,
         )
+        return {
+            "outcome": "not_found" if asset is None else "found",
+            "http_status": 404 if asset is None else 200,
+            "asset": asset,
+        }
 
     def get_corporate_actions(
         self,

@@ -3,6 +3,8 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY
+
 from .errors import SecurityCorrelationError
 from .evidence import (
     TickerOwnershipInterval,
@@ -182,6 +184,25 @@ def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision
     return None
 
 
+def _apply_exchange_test_symbol_exclusion_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    disposition = context.lineage.get("symbol_disposition")
+    if not isinstance(disposition, dict) or disposition.get("classification") != EXCHANGE_TEST_SYMBOL:
+        return None
+    candidates = identity_candidates_for_symbol(
+        context.lineage,
+        context.requested_symbol,
+        context.intervals,
+        context.session_date,
+    )
+    return _RowDecision(
+        branch=UNCORRELATED_BRANCH,
+        reason_codes=("exchange_test_symbol_excluded",),
+        candidates=tuple((str(candidate["asset_id"]), candidate.get("cusip")) for candidate in candidates),
+    )
+
+
 def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecision | None:
     requested_symbol_matches = _interval_matches(
         context.intervals,
@@ -242,7 +263,14 @@ def _apply_unresolved_uuid_candidates_rule(context: _RowRuleContext) -> _RowDeci
         (str(candidate["asset_id"]), candidate.get("cusip")) for candidate in candidate_objects
     )
     if not candidate_keys:
-        reason_codes = ("no_security_identity_evidence",)
+        disposition = context.lineage.get("symbol_disposition")
+        classification = disposition.get("classification") if isinstance(disposition, dict) else None
+        if classification == EXCHANGE_TEST_SYMBOL:
+            reason_codes = ("exchange_test_symbol_excluded",)
+        elif classification == HISTORICAL_MARKET_DATA_ONLY:
+            reason_codes = ("historical_market_data_without_alpaca_asset",)
+        else:
+            reason_codes = ("no_security_identity_evidence",)
     else:
         reason_codes = ("ambiguous_security_identity_candidates",)
     return _RowDecision(
@@ -253,6 +281,10 @@ def _apply_unresolved_uuid_candidates_rule(context: _RowRuleContext) -> _RowDeci
 
 
 ROW_CORRELATION_RULES = (
+    RowCorrelationRule(
+        name="exchange_test_symbol_exclusion",
+        apply=_apply_exchange_test_symbol_exclusion_rule,
+    ),
     RowCorrelationRule(
         name="asof_selected_uuid_lineage_interval",
         apply=_apply_asof_selected_identity_rule,
@@ -473,6 +505,12 @@ def correlate_download_rows(
                 }
             )
         else:
+            symbol_disposition = lineage.get("symbol_disposition")
+            series_identity = (
+                symbol_disposition.get("market_data_series_identity")
+                if isinstance(symbol_disposition, dict)
+                else None
+            )
             segment.update(
                 {
                     "reason_codes": list(decision.reason_codes),
@@ -482,6 +520,9 @@ def correlate_download_rows(
                         requested_symbol,
                         intervals,
                         first_row.session_date,
+                    ),
+                    "market_data_series_identity": (
+                        series_identity if isinstance(series_identity, dict) else None
                     ),
                 }
             )

@@ -12,7 +12,7 @@ from .settings import CORRELATED_BRANCH, UNCORRELATED_BRANCH
 from .uuid_lineage import UuidLineageEdge
 
 TERMINAL_FALLBACK_RULE_NAME = "two_uuid_continuous_ticker_history"
-TERMINAL_FALLBACK_RULE_ORDER = 5
+TERMINAL_FALLBACK_RULE_ORDER = 6
 TERMINAL_FALLBACK_WARNING = (
     "two_alpaca_uuid_candidates_joined_by_continuous_ticker_history_with_unresolved_vendor_boundary"
 )

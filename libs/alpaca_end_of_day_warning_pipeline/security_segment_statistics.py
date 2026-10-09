@@ -13,7 +13,12 @@ from libs.common.us_equity_market_session_calendar import (
 
 from .errors import WarningPipelineError
 from .findings import INFORMATION, WARNING, FindingCollector
-from .models import AnalyzableDailyBar, WarningPipelineInputs
+from .models import (
+    ACCEPTED_ZERO_ACTIVITY_BAR_REASON,
+    RECORDED_INTEGRITY_ROW_FAILURE_REASON,
+    AnalyzableDailyBar,
+    WarningPipelineInputs,
+)
 from .settings import WarningPipelineConfiguration
 
 SECURITY_SEGMENT_STATISTICAL_RULES = (
@@ -89,6 +94,26 @@ def _build_security_histories(
     inputs: WarningPipelineInputs,
 ) -> tuple[list[_SecurityAdjustmentHistory], dict[str, Any]]:
     views_by_filename = {view.data_file: view for view in inputs.download_views}
+    exclusion_reasons_by_filename: dict[str, dict[int, str]] = {}
+    for filename, view in views_by_filename.items():
+        reasons_by_row_number: dict[int, str] = {}
+        for excluded_row in view.excluded_rows:
+            row_number = excluded_row.get("row_number") if isinstance(excluded_row, dict) else None
+            reason = excluded_row.get("reason") if isinstance(excluded_row, dict) else None
+            if (
+                type(row_number) is not int
+                or row_number < 1
+                or row_number > view.source_row_count
+                or reason
+                not in {
+                    ACCEPTED_ZERO_ACTIVITY_BAR_REASON,
+                    RECORDED_INTEGRITY_ROW_FAILURE_REASON,
+                }
+                or row_number in reasons_by_row_number
+            ):
+                raise WarningPipelineError(f"invalid excluded-row metadata in {filename!r}")
+            reasons_by_row_number[row_number] = reason
+        exclusion_reasons_by_filename[filename] = reasons_by_row_number
     histories: dict[
         tuple[str, tuple[str, ...], str],
         dict[str, Any],
@@ -96,6 +121,7 @@ def _build_security_histories(
     correlated_segments = inputs.correlation.correlated["segments"]
     correlated_analyzable_rows = 0
     excluded_integrity_rows = 0
+    accepted_zero_activity_rows = 0
     cusips_by_security_id: dict[str, set[str]] = defaultdict(set)
     alpaca_asset_ids_by_security_id: dict[str, set[str]] = defaultdict(set)
 
@@ -155,7 +181,15 @@ def _build_security_histories(
         for row_number in range(segment["row_start"], segment["row_end"] + 1):
             bar = view.bars_by_row_number.get(row_number)
             if bar is None:
-                excluded_integrity_rows += 1
+                exclusion_reason = exclusion_reasons_by_filename[filename].get(row_number)
+                if exclusion_reason == RECORDED_INTEGRITY_ROW_FAILURE_REASON:
+                    excluded_integrity_rows += 1
+                elif exclusion_reason == ACCEPTED_ZERO_ACTIVITY_BAR_REASON:
+                    accepted_zero_activity_rows += 1
+                else:
+                    raise WarningPipelineError(
+                        f"row {row_number} in {filename!r} is neither analyzable nor explicitly excluded"
+                    )
                 continue
             existing_position = history["positions"].get(bar.timestamp)
             if existing_position is not None:
@@ -192,14 +226,19 @@ def _build_security_histories(
 
     correlated_row_count = inputs.correlation.correlated["row_count"]
     uncorrelated_row_count = inputs.correlation.uncorrelated["row_count"]
-    if correlated_analyzable_rows + excluded_integrity_rows != correlated_row_count:
+    if (
+        correlated_analyzable_rows + excluded_integrity_rows + accepted_zero_activity_rows
+        != correlated_row_count
+    ):
         raise WarningPipelineError(
-            "analyzable and integrity-excluded internal-security rows do not exhaust correlation"
+            "analyzable, accepted zero-activity, and integrity-excluded internal-security rows "
+            "do not exhaust correlation"
         )
     return result, {
         "correlated_source_row_count": correlated_row_count,
         "uncorrelated_source_row_count": uncorrelated_row_count,
         "correlated_analyzable_row_count": correlated_analyzable_rows,
+        "correlated_accepted_zero_activity_row_count": accepted_zero_activity_rows,
         "correlated_integrity_excluded_row_count": excluded_integrity_rows,
         "canonical_security_count": len(alpaca_asset_ids_by_security_id),
         "security_adjustment_history_count": len(result),

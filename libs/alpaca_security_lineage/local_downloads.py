@@ -70,6 +70,8 @@ def _download_summary_without_manifest(data_filename: str, data_stat, sidecar_pr
         "request_from": None,
         "request_to": None,
         "asof": None,
+        "feed": None,
+        "timeframe": None,
         "gzip_present": data_stat is not None,
         "stat_matches_sidecar": False,
         "pipeline_receipt_matches": False,
@@ -138,6 +140,8 @@ def inspect_local_downloads(repository_root: Path, symbol: str) -> dict[str, Any
                 "request_from": manifest.get("request_from"),
                 "request_to": manifest.get("request_to"),
                 "asof": manifest.get("asof"),
+                "feed": manifest.get("feed"),
+                "timeframe": manifest.get("timeframe"),
                 "gzip_present": data_stat is not None,
                 "stat_matches_sidecar": (
                     data_stat is not None

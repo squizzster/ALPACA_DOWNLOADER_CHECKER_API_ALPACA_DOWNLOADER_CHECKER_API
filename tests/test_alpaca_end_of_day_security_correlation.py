@@ -1,11 +1,16 @@
 import argparse
 import copy
+import hashlib
 import io
 import json
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
+import libs.alpaca_end_of_day_security_correlation.security_master as security_master_module
 from libs.alpaca_end_of_day_pipeline import validate_and_publish_alpaca_download
 from libs.alpaca_end_of_day_security_correlation import (
     CORRELATION_VERSION,
@@ -32,7 +37,12 @@ from libs.alpaca_end_of_day_security_correlation.terminal_fallback import (
     TERMINAL_FALLBACK_WARNING,
 )
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
-from libs.alpaca_security_lineage import inspect_local_downloads
+from libs.alpaca_security_lineage import (
+    EXCHANGE_TEST_SYMBOL,
+    HISTORICAL_MARKET_DATA_ONLY,
+    inspect_local_downloads,
+    market_data_series_identity,
+)
 from libs.common.file_integrity import calculate_file_sha256
 
 TEST_FIXTURES_DIRECTORY = Path(__file__).with_name("fixtures")
@@ -523,7 +533,7 @@ class RowCorrelationTests(unittest.TestCase):
         )
         self.assertEqual("24703L202", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
-            {"order": 3, "name": "unique_uuid_candidate_with_warnings"},
+            {"order": 4, "name": "unique_uuid_candidate_with_warnings"},
             branches["correlated"][0]["correlation_rule"],
         )
         self.assertIn("missing_dated_ticker_ownership_interval", branches["correlated"][0]["warnings"])
@@ -563,7 +573,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(2, branches["correlated"][0]["row_count"])
         self.assertEqual("90184L102", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
-            {"order": 2, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 3, "name": "requested_symbol_dated_uuid_interval"},
             branches["correlated"][0]["correlation_rule"],
         )
 
@@ -638,11 +648,12 @@ class RowCorrelationTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                {"order": 1, "name": "asof_selected_uuid_lineage_interval"},
-                {"order": 2, "name": "requested_symbol_dated_uuid_interval"},
-                {"order": 3, "name": "unique_uuid_candidate_with_warnings"},
-                {"order": 4, "name": "unresolved_uuid_candidates"},
-                {"order": 5, "name": "two_uuid_continuous_ticker_history"},
+                {"order": 1, "name": "exchange_test_symbol_exclusion"},
+                {"order": 2, "name": "asof_selected_uuid_lineage_interval"},
+                {"order": 3, "name": "requested_symbol_dated_uuid_interval"},
+                {"order": 4, "name": "unique_uuid_candidate_with_warnings"},
+                {"order": 5, "name": "unresolved_uuid_candidates"},
+                {"order": 6, "name": "two_uuid_continuous_ticker_history"},
             ],
             row_correlation_rule_order(),
         )
@@ -849,6 +860,88 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertFalse(fallback["criteria"]["no_missing_expected_market_sessions"])
         self.assertEqual(["2024-07-01"], fallback["session_coverage"]["missing_sessions"])
 
+    def test_historical_symbol_without_asset_retains_non_security_series_identity(self) -> None:
+        series_identity = market_data_series_identity("CHLN")
+        lineage = {
+            "identities": [],
+            "asset_lookups": [
+                {
+                    "lookup": "CHLN",
+                    "lookup_kind": "symbol",
+                    "found": False,
+                    "outcome": "not_found",
+                    "http_status": 404,
+                    "asset": None,
+                }
+            ],
+            "symbol_occupancy_evidence": [],
+            "corporate_actions": [],
+            "symbol_disposition": {
+                "classification": HISTORICAL_MARKET_DATA_ONLY,
+                "data_policy": "retain",
+                "recurring_pipeline_action": "run",
+                "market_data_series_identity": series_identity,
+            },
+        }
+
+        branches = correlate_download_rows(
+            [{"t": "2016-01-04T05:00:00Z"}],
+            correlation_source("CHLN", asof="2026-10-06"),
+            lineage,
+            [],
+        )
+
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(1, len(branches["uncorrelated"]))
+        segment = branches["uncorrelated"][0]
+        self.assertEqual(
+            ["historical_market_data_without_alpaca_asset"],
+            segment["reason_codes"],
+        )
+        self.assertEqual(series_identity, segment["market_data_series_identity"])
+        self.assertFalse(segment["market_data_series_identity"]["is_security_identity"])
+
+    def test_exchange_test_symbol_is_explicitly_excluded_from_security_correlation(self) -> None:
+        test_asset = asset("test-asset-id", "ZXZZT", "NASDAQ TEST STOCK")
+        lineage = {
+            "identities": [{**test_asset, "lookup_symbols": ["ZXZZT"]}],
+            "asset_lookups": [
+                {
+                    "lookup": "ZXZZT",
+                    "lookup_kind": "symbol",
+                    "found": True,
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": test_asset,
+                }
+            ],
+            "symbol_occupancy_evidence": [],
+            "corporate_actions": [],
+            "symbol_disposition": {
+                "classification": EXCHANGE_TEST_SYMBOL,
+                "data_policy": "exclude",
+                "recurring_pipeline_action": "skip",
+                "market_data_series_identity": market_data_series_identity("ZXZZT"),
+            },
+        }
+
+        branches = correlate_download_rows(
+            [{"t": "2026-09-30T04:00:00Z"}],
+            correlation_source("ZXZZT", asof="2026-10-06"),
+            lineage,
+            [],
+        )
+
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(
+            ["exchange_test_symbol_excluded"],
+            branches["uncorrelated"][0]["reason_codes"],
+        )
+        self.assertEqual(
+            ["test-asset-id"],
+            [item["asset_id"] for item in branches["uncorrelated"][0]["candidate_securities"]],
+        )
+
     def test_internal_security_id_is_order_independent_and_membership_sensitive(self) -> None:
         forward = security_id_for_alpaca_asset_ids(["alpaca-b", "alpaca-a"])
         reverse = security_id_for_alpaca_asset_ids(["alpaca-a", "alpaca-b"])
@@ -860,6 +953,116 @@ class RowCorrelationTests(unittest.TestCase):
 class CorrelationPublicationTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
         self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
+
+    def test_concurrent_security_master_updates_preserve_every_symbol(self) -> None:
+        def source_contribution(
+            correlation_report,
+            correlation_receipt,
+            online_by_master_id,
+        ):
+            symbol = correlation_report["symbol"]
+            digest = hashlib.sha256(symbol.encode("ascii")).hexdigest()
+            return {
+                "symbol": symbol,
+                "correlation_version": CORRELATION_VERSION,
+                "correlation_generation_sha256": digest,
+                "correlated_output_sha256": digest,
+                "uncorrelated_output_sha256": digest,
+                "identities": [],
+            }
+
+        original_authenticator = security_master_module._authenticate_optional_security_master
+
+        def deliberately_slow_authenticator(repository_root):
+            authenticated = original_authenticator(repository_root)
+            time.sleep(0.05)
+            return authenticated
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            with (
+                patch.object(
+                    security_master_module,
+                    "_source_contribution",
+                    side_effect=source_contribution,
+                ),
+                patch.object(
+                    security_master_module,
+                    "_authenticate_optional_security_master",
+                    side_effect=deliberately_slow_authenticator,
+                ),
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                futures = [
+                    executor.submit(
+                        security_master_module.publish_security_master_update,
+                        repository_root,
+                        {"symbol": symbol},
+                        {},
+                    )
+                    for symbol in ("FIRST", "SECOND")
+                ]
+                for future in futures:
+                    future.result()
+
+            authenticated_master = authenticate_security_master(repository_root)
+            authenticated_symbols = [
+                source["symbol"] for source in authenticated_master.sources_by_symbol.values()
+            ]
+
+        self.assertEqual(
+            ["FIRST", "SECOND"],
+            authenticated_symbols,
+        )
+
+    def test_source_only_update_reuses_the_security_inventory(self) -> None:
+        generation = 0
+
+        def source_contribution(
+            correlation_report,
+            correlation_receipt,
+            online_by_master_id,
+        ):
+            digest = hashlib.sha256(f"TEST:{generation}".encode("ascii")).hexdigest()
+            return {
+                "symbol": "TEST",
+                "correlation_version": CORRELATION_VERSION,
+                "correlation_generation_sha256": digest,
+                "correlated_output_sha256": digest,
+                "uncorrelated_output_sha256": digest,
+                "identities": [],
+            }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            with patch.object(
+                security_master_module,
+                "_source_contribution",
+                side_effect=source_contribution,
+            ):
+                security_master_module.publish_security_master_update(
+                    repository_root,
+                    {"symbol": "TEST"},
+                    {},
+                )
+                first = authenticate_security_master(repository_root)
+                first_source_inventory = first.master["source_inventory"]
+                first_security_inventory = first.master["security_inventory"]
+                generation = 1
+                security_master_module.publish_security_master_update(
+                    repository_root,
+                    {"symbol": "TEST"},
+                    {},
+                )
+                second = authenticate_security_master(repository_root)
+
+            root_size = security_master_path(repository_root).stat().st_size
+
+        self.assertNotEqual(first_source_inventory, second.master["source_inventory"])
+        self.assertEqual(first_security_inventory, second.master["security_inventory"])
+        self.assertEqual(1, second.master["source_count"])
+        self.assertEqual(0, second.master["master_id_count"])
+        self.assertLess(root_size, 2_500)
 
     def test_publishes_both_digest_bound_branches_and_then_uses_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -928,6 +1131,10 @@ class CorrelationPublicationTests(unittest.TestCase):
             receipt_document = json.loads(receipt_path.read_text(encoding="utf-8"))
             self.assertNotIn("publication_status", receipt_document)
             self.assertEqual(CORRELATION_VERSION, receipt_document["correlation_version"])
+            self.assertEqual(
+                "alpaca_asset_identity_available",
+                receipt_document["symbol_disposition"]["classification"],
+            )
             self.assertEqual(1, len(receipt_document["uuid_lineage_edges"]))
             self.assertEqual(
                 receipt_document["uuid_lineage_edges"],
@@ -942,11 +1149,11 @@ class CorrelationPublicationTests(unittest.TestCase):
             )
             self.assertNotIn(
                 "warning",
-                json.dumps(authenticated_master.master["securities"]).lower(),
+                json.dumps(list(authenticated_master.identities_by_master_id.values())).lower(),
             )
             self.assertNotIn(
                 "error",
-                json.dumps(authenticated_master.master["securities"]).lower(),
+                json.dumps(list(authenticated_master.identities_by_master_id.values())).lower(),
             )
 
             output_state_before_cache = self._file_state(receipt_path.parent)
@@ -1060,9 +1267,21 @@ class CorrelationPublicationTests(unittest.TestCase):
                         "lookup": "TEST",
                         "lookup_kind": "symbol",
                         "found": True,
+                        "outcome": "found",
+                        "http_status": 200,
                         "asset": current_asset,
                     }
                 ],
+                "symbol_disposition": {
+                    "classification": "alpaca_asset_identity_available",
+                    "data_policy": "process",
+                    "recurring_pipeline_action": "run",
+                    "input_symbol_asset_lookup": {"outcome": "found", "http_status": 200},
+                    "resolved_alpaca_asset_ids": [current_asset_id, old_asset_id],
+                    "local_market_data": None,
+                    "market_data_series_identity": None,
+                    "test_symbol_evidence": None,
+                },
             },
         }
 

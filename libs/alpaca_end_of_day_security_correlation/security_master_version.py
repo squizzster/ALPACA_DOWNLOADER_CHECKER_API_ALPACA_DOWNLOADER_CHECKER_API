@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .errors import SecurityCorrelationError
 
-SECURITY_MASTER_VERSION = 1
+SECURITY_MASTER_VERSION = 4
 SECURITY_MASTER_CHANGE_LOG_PATH = Path(__file__).resolve().parents[2] / "alpaca_security_master_change_log.json"
 
 

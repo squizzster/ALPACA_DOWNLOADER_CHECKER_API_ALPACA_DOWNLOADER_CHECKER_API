@@ -5,5 +5,26 @@
       "Retain available Alpaca IDs, ticker history, names, observed dates, ownership periods, identity events, CUSIPs, FIGI-family identifiers, exchanges, asset classes, statuses, and per-provider identity records without inventing missing metadata.",
       "Exclude errors, warnings, repair state, and bar values from the identity index, and make its authenticated master-ID lookup the standalone reader's only discovery boundary."
     ]
+  },
+  {
+    "modifications": [
+      "Replace the monolithic security-master payload with a small digest-bound root under data/end_of_day/json_manifests, sharded immutable source and master-ID objects, and SHA-256-prefix inventory buckets.",
+      "Keep source_count distinct from master_id_count and authenticate per-symbol source contributions and per-master-ID aggregates lazily through their committed inventory roots.",
+      "Update one source and only its affected master-ID aggregates without rereading or rewriting the complete security-master payload."
+    ]
+  },
+  {
+    "modifications": [
+      "Persist one provider-neutral online boolean on each source identity contribution and its per-master-ID aggregate.",
+      "Define online at the aggregate master-ID boundary by exercising every published adjustment through the public reader, including cross-source conflict detection, after dependencies are current.",
+      "Keep availability inside the existing sharded identity objects so consumers read a precomputed boolean without a new database or monolithic status catalog."
+    ]
+  },
+  {
+    "modifications": [
+      "Persist an availability_status classification beside each online boolean while retaining the boolean as the consumer's primary availability gate.",
+      "Define lineage_gap as an offline unresolved boundary: the authenticated public reader otherwise succeeds, but at least one expected US market session is absent strictly between the first and last returned bars.",
+      "Aggregate and update availability classifications in the existing per-source and per-master-ID shards without adding a database or monolithic status catalog."
+    ]
   }
 ]
