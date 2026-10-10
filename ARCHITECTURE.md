@@ -1,79 +1,102 @@
 # Architecture
 
-## Flows
+## Responsibility boundary
 
-Update orchestration is defined in
+This repository is the acquisition, integrity, identity, publication, and read boundary for its data. It downloads
+provider data, preserves and authenticates source artifacts, checks pricing and session integrity, resolves security
+identity, publishes the histories that satisfy the read contract, and serves them to downstream consumers. Its
+responsibility ends at that handoff.
+
+A publication result is a statement about data readiness. It is not a judgment about a security, its investment value,
+or its suitability for any strategy. Trading, research, screening, modelling, and policy decisions belong to consumers
+and never feed back into publication eligibility.
+
+## Two read boundaries
+
+The project deliberately separates application consumption from operator inspection:
+
+| Boundary | Supported entrypoint | What it exposes |
+|---|---|---|
+| Consumer | [`alpaca_end_of_day.DataLibrary`](alpaca_end_of_day.py) | Only the authenticated online universe, public identity metadata, exact bars, search, ticker resolution, and flat export. |
+| Operator/internal | [`libs/alpaca_end_of_day_reader`](libs/alpaca_end_of_day_reader/) | Detailed provenance, validation findings, warning overlays, source selection, and offline records for pipeline evaluation or investigation. |
+
+A consumer cannot discover an offline identity through the public boundary. Every well-formed ID outside the opened
+online snapshot receives the same `PublicIdUnavailableError`. Internal readers remain necessary because operators must
+be able to explain and repair publication failures without exposing that machinery as an application contract.
+
+## Update flow
+
+Update orchestration is owned by
 [`libs/alpaca_end_of_day_ticker_pipeline/orchestration.py`](libs/alpaca_end_of_day_ticker_pipeline/orchestration.py):
 
 ```text
 Alpaca bars or authenticated cache
-  -> frozen download publication and integrity validation
-  -> Alpaca asset and corporate-action evidence, including explicit asset-lookup HTTP outcomes
-  -> symbol disposition (process, retain, just_skip, out_of_scope, quarantine, exclude, or investigate)
+  -> frozen source publication and hard integrity validation
+  -> asset and corporate-action evidence
+  -> symbol disposition
   -> exhaustive correlated / uncorrelated row partition
-  -> warning and information overlays
-  -> completed-data online evaluation
-  -> digest-bound global master-ID index
+  -> advisory warning overlays
+  -> authenticated internal reads of every advertised adjustment
+  -> online and availability evaluation
+  -> sharded, digest-bound master catalogue
 ```
 
-Reading is independent and read-only:
+The complete pipeline publishes derived artifacts only after their inputs authenticate. Receipts are written last so a
+reader never treats a partially published generation as complete.
+
+## Consumer flow
 
 ```text
-master ID + adjustment type
-  -> authenticate master index and resolve bound ticker sources
-  -> authenticate correlation, warnings, validation, and frozen downloads
-  -> return identity metadata, unchanged bars, errors, warnings, and provenance
+DataLibrary construction
+  -> authenticate one security-master generation
+  -> expose only identity shards with online = true
+
+public ID + adjustment + optional dates
+  -> authenticate selected identity and source dependencies
+  -> read exact frozen values through the internal reader
+  -> require the same catalogue generation and online state
+  -> project a small typed consumer result
 ```
 
-Consumer availability is a smaller public boundary: the selected authenticated master-ID shard contains the boolean
-and compact classification computed by the completed ticker pipeline. `online: true` means published identity plus
-bars plus current authenticated dependencies plus successful public-reader results for every advertised adjustment
-with zero unresolved boundaries. The final check therefore includes conflicts between ticker sources and expected
-market sessions absent inside the returned history. A clean readable history with such a gap is offline and classified
-`lineage_gap`; it remains readable for investigation. The API exposes none of the provider, request-rate, or
-storage-layout mechanics used to produce that state.
+`DataLibrary` is bound to the generation opened at construction. A concurrent publication causes a history read to
+raise `CatalogChangedError`; the caller creates a new instance to observe the new snapshot.
 
-## Ownership
+## Code ownership
 
 | Boundary | Owner | Responsibility |
 |---|---|---|
-| Bar request | [`libs/download_alpaca_end_of_day_bars/`](libs/download_alpaca_end_of_day_bars/) | Request construction, credentials, rate limits, download-stage decisions |
-| Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](libs/alpaca_end_of_day_pipeline/) | Direct and empirical-alias gzip/sidecar publication, authenticated hard-link compaction, cache state, deterministic validation, integrity manifests |
-| Identity evidence | [`libs/alpaca_security_lineage/`](libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal |
-| Correlation and master identity | [`libs/alpaca_end_of_day_security_correlation/`](libs/alpaca_end_of_day_security_correlation/) | Row partition, Alpaca-ID membership, master-ID derivation, master-index publication |
-| Advisory checks | [`libs/alpaca_end_of_day_warning_pipeline/`](libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and master-ID-scoped warning overlays |
-| Public read | [`libs/alpaca_end_of_day_reader/`](libs/alpaca_end_of_day_reader/) | Master lookup, dependency authentication, in-memory result, stdout adapter |
-| Shared primitives | [`libs/common/`](libs/common/) | Atomic writes, hashing, rule evaluation, tracked market calendar |
+| Consumer library | [`alpaca_end_of_day.py`](alpaca_end_of_day.py) | Online-only catalogue, search, resolution, typed history, and flat CSV projection. |
+| Bar request | [`libs/download_alpaca_end_of_day_bars/`](libs/download_alpaca_end_of_day_bars/) | CLI planning, credentials, HTTP, pagination, rate limiting, and adjustment acquisition. |
+| Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](libs/alpaca_end_of_day_pipeline/) | Gzip/sidecar publication, cache state, validation, authenticated aliases, and immutable-boundary errors. |
+| Identity evidence | [`libs/alpaca_security_lineage/`](libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal and symbol disposition. |
+| Correlation and master identity | [`libs/alpaca_end_of_day_security_correlation/`](libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row partition, episode partition, master-ID derivation, and sharded catalogue publication. |
+| Advisory checks | [`libs/alpaca_end_of_day_warning_pipeline/`](libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and security-history warning overlays. |
+| Internal authenticated read | [`libs/alpaca_end_of_day_reader/`](libs/alpaca_end_of_day_reader/) | Dependency authentication, source conflict handling, detailed result, and operator status queries. |
+| Online evaluation | [`libs/alpaca_end_of_day_ticker_pipeline/online_status.py`](libs/alpaca_end_of_day_ticker_pipeline/online_status.py) | Exercise every advertised read and classify final availability. |
+| Shared primitives | [`libs/common/`](libs/common/) | Atomic writes, hashing, pure rule evaluation, and the tracked US-market calendar. |
 
-Root Python files are entry points or compatibility facades; domain logic belongs in the owning library.
+Root Python files are stable entrypoints or compatibility facades. Domain behavior belongs in its owning library, and
+`libs/common/` imports no application package.
 
-## Invariants
+## Core invariants
 
-- Frozen CSV bytes are never silently repaired or rewritten. Storage compaction may atomically replace a pathname with
-  a byte-identical authenticated hard link, while its manifest records that storage relationship.
-- An inferred adjustment view is always labeled `empirical_adjustment_alias`; it never claims to be a direct Alpaca
-  response. Its manifest binds the policy, observed direct downloads, source manifest, and shared inode.
-- Every source row appears exactly once in either the correlated or uncorrelated branch.
-- A master ID is derived only from its sorted unique Alpaca-ID membership; evidence determines membership but is not
-  part of the digest input.
-- A UUID-less Alpaca symbol series may have a stable `market_data_series_id`, but that identifier is explicitly not a
-  security identity and never enters the master index. This retains historical data without conflating ticker reuse.
-- Recurring batch skips fail closed: orchestration skips only a disposition bound to an authenticated complete
-  correlation partition. Explicit single-symbol runs always re-evaluate the symbol.
-- Most master IDs contain one Alpaca ID. Explicit lineage may join more; the terminal fallback may join exactly two
-  same-ticker candidates only when the complete history was otherwise uncorrelated and has no expected-session gap.
-- `data/end_of_day/json_manifests/security_master.index.json` is the reader's small discovery root. It binds
-  SHA-256-prefix inventories of immutable per-symbol source objects and per-master-ID aggregate objects, never bars,
-  diagnostics, or repair state. A single-ticker update replaces only the applicable objects and inventory buckets.
-- Every current per-master-ID object stores one `online` boolean and `availability_status`, aggregated from its
-  contributing source records. Online means zero unresolved boundaries; `lineage_gap` is offline even when the reader
-  otherwise succeeds. Repository availability is independent of Alpaca's active/inactive metadata. The public API
-  reads the stored fields and does not create another monolithic publication.
-- Integrity errors preserve and describe affected rows. Warnings are advisory. Neither changes returned values.
-- Outputs are written before their digest-binding receipts. Readers fail closed on missing, stale, or changed inputs.
-- No pricing-repair layer exists; `repair.overlay` and `repair.repaired_data` remain `null`.
+- Frozen CSV bytes are never silently repaired or rewritten. An authorized publisher may atomically replace a path;
+  authenticated byte-identical views may share an inode while retaining distinct provenance manifests.
+- Every source row appears exactly once in the correlated or uncorrelated branch. Ambiguity remains explicit.
+- A ticker is a dated label, not permanent identity. Rules operate on generic authenticated evidence and never on a
+  hard-coded ticker exception.
+- A public/master ID is the SHA-256 digest of sorted unique Alpaca asset-ID membership. Descriptive metadata helps
+  establish membership but does not change the digest for a fixed member set.
+- A UUID-less market-data series may receive a non-security series ID for retention, but it never enters the master
+  catalogue.
+- Online means that the published identity has bars, every selected dependency authenticates, every advertised
+  adjustment reads successfully, and no integrity error, source conflict, or unresolved session/identity boundary
+  remains. Provider `active` or `tradable` metadata does not define online status.
+- Verified venue suspensions and tightly evidenced same-security rename boundaries may explain otherwise missing
+  sessions. Unexplained internal sessions keep an identity offline.
+- Integrity failures preserve and describe the source rows. Advisory warnings do not alter returned values.
+- Readers never update, repair, download, or contact Alpaca.
 
-## Dependency rule
-
-Interpretation flows downstream only. A layer may authenticate and describe an upstream artifact, but may not weaken
-or mutate that boundary. `libs/common/` imports no application package.
+The exact evidence gates and artifact schemas live in [Technical contracts](docs/technical-contracts.md). Consumer
+semantics live in [Public API](docs/public-api.md), and operational mutation rules live in
+[Operations](docs/operations.md).
