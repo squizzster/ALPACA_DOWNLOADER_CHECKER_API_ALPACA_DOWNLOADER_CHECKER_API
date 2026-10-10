@@ -19,6 +19,7 @@ from .correlation import (
 from .correlation_version import (
     CORRELATION_CHANGE_LOG_PATH,
     CORRELATION_VERSION,
+    SUPPORTED_CORRELATION_VERSIONS,
     validate_correlation_change_log,
 )
 from .errors import SecurityCorrelationError
@@ -40,6 +41,7 @@ from .security_master import (
     lookup_security_master_identity,
     migrate_legacy_security_master,
     migrate_sharded_security_master_availability_status,
+    migrate_sharded_security_master_correlation_versions,
     migrate_sharded_security_master_online_status,
     publish_security_master_online_status,
     publish_security_master_update,
@@ -55,6 +57,7 @@ __all__ = [
     "AuthenticatedSecurityMaster",
     "CORRELATION_CHANGE_LOG_PATH",
     "CORRELATION_VERSION",
+    "SUPPORTED_CORRELATION_VERSIONS",
     "LINEAGE_GAP_AVAILABILITY_STATUS",
     "OFFLINE_AVAILABILITY_STATUS",
     "ONLINE_AVAILABILITY_STATUS",
@@ -79,6 +82,7 @@ __all__ = [
     "is_master_id",
     "lookup_security_master_identity",
     "migrate_legacy_security_master",
+    "migrate_sharded_security_master_correlation_versions",
     "migrate_sharded_security_master_availability_status",
     "migrate_sharded_security_master_online_status",
     "publish_security_master_online_status",

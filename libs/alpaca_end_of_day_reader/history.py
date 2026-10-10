@@ -357,37 +357,143 @@ def _source_provenance(
     return {
         "source_id": source_id,
         "symbol": symbol,
+        "historical_symbol": segment.get("historical_symbol"),
         "data_file": segment["data_file"],
         "row_number": row_number,
         "segment_id": segment["segment_id"],
     }
 
 
-def _merge_bar(
-    bars_by_timestamp: dict[str, dict[str, Any]],
+def _record_bar_candidate(
+    candidates_by_timestamp: dict[str, list[dict[str, Any]]],
     values: dict[str, str],
     provenance: dict[str, Any],
     integrity_error_ids: list[str],
 ) -> None:
-    timestamp = values["timestamp"]
-    existing = bars_by_timestamp.get(timestamp)
-    if existing is None:
-        bars_by_timestamp[timestamp] = {
-            **values,
+    candidates_by_timestamp[values["timestamp"]].append(
+        {
+            "values": values,
+            "provenance": provenance,
             "integrity_error_ids": list(integrity_error_ids),
-            "warning_ids": [],
-            "provenance": [provenance],
         }
-        return
-    existing_values = {field_name: existing[field_name] for field_name in BAR_FIELD_NAMES}
-    if existing_values != values:
-        raise EndOfDayReaderError(
-            f"conflicting authenticated bars for security history at {timestamp}; no source was preferred"
-        )
-    existing["provenance"].append(provenance)
-    existing["integrity_error_ids"] = list(
-        dict.fromkeys((*existing["integrity_error_ids"], *integrity_error_ids))
     )
+
+
+def _bar_value_key(candidate: dict[str, Any]) -> tuple[str, ...]:
+    values = candidate["values"]
+    return tuple(values[field_name] for field_name in BAR_FIELD_NAMES)
+
+
+def _resolve_bar_candidates(
+    candidates_by_timestamp: dict[str, list[dict[str, Any]]],
+    selected_timestamps_by_source: dict[str, frozenset[str]],
+    *,
+    allow_strict_superset_selection: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    bars = []
+    resolution_groups: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]] = {}
+    resolved_differing_overlap_count = 0
+    for timestamp in sorted(candidates_by_timestamp):
+        candidates = candidates_by_timestamp[timestamp]
+        keys = {_bar_value_key(candidate) for candidate in candidates}
+        chosen_key = next(iter(keys)) if len(keys) == 1 else None
+        if chosen_key is None:
+            chosen_candidates = []
+            selection_rule = None
+            if allow_strict_superset_selection:
+                maximal_candidates = []
+                for candidate in candidates:
+                    source_id = candidate["provenance"]["source_id"]
+                    coverage = selected_timestamps_by_source[source_id]
+                    if not any(
+                        coverage < selected_timestamps_by_source[other["provenance"]["source_id"]]
+                        for other in candidates
+                    ):
+                        maximal_candidates.append(candidate)
+                maximal_keys = {_bar_value_key(candidate) for candidate in maximal_candidates}
+                if len(maximal_keys) == 1:
+                    chosen_candidates = maximal_candidates
+                    selection_rule = "strict_superset_of_correlated_session_coverage"
+
+            if not chosen_candidates:
+                historical_ticker_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate["provenance"].get("symbol") == candidate["provenance"].get("historical_symbol")
+                ]
+                historical_ticker_source_ids = {
+                    candidate["provenance"]["source_id"] for candidate in historical_ticker_candidates
+                }
+                historical_ticker_keys = {
+                    _bar_value_key(candidate) for candidate in historical_ticker_candidates
+                }
+                if len(historical_ticker_source_ids) == 1 and len(historical_ticker_keys) == 1:
+                    chosen_candidates = historical_ticker_candidates
+                    selection_rule = "requested_symbol_matches_historical_ticker"
+
+            if not chosen_candidates or selection_rule is None:
+                raise EndOfDayReaderError(
+                    f"conflicting authenticated bars for security history at {timestamp}; "
+                    "no source was preferred"
+                )
+            chosen_key = _bar_value_key(chosen_candidates[0])
+            preferred_source_ids = tuple(
+                sorted(
+                    {
+                        candidate["provenance"]["source_id"]
+                        for candidate in chosen_candidates
+                        if _bar_value_key(candidate) == chosen_key
+                    }
+                )
+            )
+            superseded_source_ids = tuple(
+                sorted(
+                    {
+                        candidate["provenance"]["source_id"]
+                        for candidate in candidates
+                        if _bar_value_key(candidate) != chosen_key
+                    }
+                )
+            )
+            resolved_differing_overlap_count += 1
+            resolution_key = (selection_rule, preferred_source_ids, superseded_source_ids)
+            resolution = resolution_groups.setdefault(
+                resolution_key,
+                {
+                    "selection_rule": selection_rule,
+                    "preferred_source_ids": list(preferred_source_ids),
+                    "superseded_source_ids": list(superseded_source_ids),
+                    "first_timestamp": timestamp,
+                    "last_timestamp": timestamp,
+                    "timestamp_count": 0,
+                },
+            )
+            resolution["last_timestamp"] = timestamp
+            resolution["timestamp_count"] += 1
+
+        chosen_candidates = [candidate for candidate in candidates if _bar_value_key(candidate) == chosen_key]
+        values = chosen_candidates[0]["values"]
+        bars.append(
+            {
+                **values,
+                "integrity_error_ids": list(
+                    dict.fromkeys(
+                        error_id
+                        for candidate in chosen_candidates
+                        for error_id in candidate["integrity_error_ids"]
+                    )
+                ),
+                "warning_ids": [],
+                "provenance": [candidate["provenance"] for candidate in chosen_candidates],
+            }
+        )
+    return bars, {
+        "policy": (
+            "strict_superset_then_historical_ticker" if allow_strict_superset_selection else "historical_ticker"
+        ),
+        "resolved_differing_overlap_count": resolved_differing_overlap_count,
+        "resolutions": list(resolution_groups.values()),
+    }
 
 
 def _finding_applies_to_selected_rows(
@@ -508,7 +614,8 @@ def read_alpaca_end_of_day_security_history(
         segments_by_source[source_key].append(segment)
         correlation_by_source[source_key] = correlation
 
-    bars_by_timestamp: dict[str, dict[str, Any]] = {}
+    candidates_by_timestamp: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    selected_timestamps_by_source: dict[str, frozenset[str]] = {}
     integrity_errors = []
     sources = []
     result_segments = []
@@ -545,12 +652,14 @@ def read_alpaca_end_of_day_security_history(
             for row_number in range(segment["row_start"], segment["row_end"] + 1):
                 values = _bar_values(rows[row_number - 1])
                 selected_timestamps.add(values["timestamp"])
-                _merge_bar(
-                    bars_by_timestamp,
+                _record_bar_candidate(
+                    candidates_by_timestamp,
                     values,
                     _source_provenance(source_id, symbol, row_number, segment),
                     error_ids_by_row[row_number],
                 )
+
+        selected_timestamps_by_source[source_id] = frozenset(selected_timestamps)
 
         warning_outputs = warnings_by_symbol[symbol]
         sources.append(
@@ -585,7 +694,11 @@ def read_alpaca_end_of_day_security_history(
             }
         )
 
-    bars = [bars_by_timestamp[timestamp] for timestamp in sorted(bars_by_timestamp)]
+    bars, source_selection = _resolve_bar_candidates(
+        candidates_by_timestamp,
+        selected_timestamps_by_source,
+        allow_strict_superset_selection=selected_type != "raw",
+    )
     applicable_warnings, source_overlay_omitted_finding_count = _applicable_warnings(
         canonical_id,
         warnings_by_symbol,
@@ -634,6 +747,7 @@ def read_alpaca_end_of_day_security_history(
             "overlay": None,
             "repaired_data": None,
         },
+        "source_selection": source_selection,
         "security": master_identity,
         "bar_count": len(bars),
         "selected_source_row_count": selected_source_row_count,

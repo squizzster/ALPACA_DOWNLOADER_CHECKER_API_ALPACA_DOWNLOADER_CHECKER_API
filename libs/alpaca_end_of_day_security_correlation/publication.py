@@ -38,8 +38,9 @@ def lineage_evidence_sha256(lineage_report: dict[str, Any]) -> str:
 
 
 def correlation_generation_sha256(correlation_report: dict[str, Any]) -> str:
+    correlation_version = correlation_report.get("correlation_version", CORRELATION_VERSION)
     generation_identity = {
-        "correlation_version": CORRELATION_VERSION,
+        "correlation_version": correlation_version,
         "symbol": correlation_report["symbol"],
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
         "symbol_disposition": correlation_report["symbol_disposition"],
@@ -53,6 +54,8 @@ def correlation_generation_sha256(correlation_report: dict[str, Any]) -> str:
         "correlated": correlation_report["correlated"],
         "uncorrelated": correlation_report["uncorrelated"],
     }
+    if correlation_version >= 12:
+        generation_identity["verified_session_exclusions"] = correlation_report["verified_session_exclusions"]
     return canonical_json_sha256(generation_identity)
 
 
@@ -182,6 +185,7 @@ def publish_security_correlation_artifacts(
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "verified_session_exclusions": correlation_report["verified_session_exclusions"],
         "symbol_disposition": correlation_report["symbol_disposition"],
         "created_at": publication_timestamp,
         "source_download_count": len(correlation_report["source_downloads"]),
@@ -198,6 +202,7 @@ def publish_security_correlation_artifacts(
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "verified_session_exclusions": correlation_report["verified_session_exclusions"],
         "symbol_disposition": correlation_report["symbol_disposition"],
         "created_at": publication_timestamp,
         "source_download_count": len(correlation_report["source_downloads"]),
@@ -218,6 +223,7 @@ def publish_security_correlation_artifacts(
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
         "lineage_evidence_sha256": correlation_report["lineage_evidence_sha256"],
+        "verified_session_exclusions": correlation_report["verified_session_exclusions"],
         "symbol_disposition": correlation_report["symbol_disposition"],
         "lineage_evidence_digest_excludes": ["generated_at", "lineage.api_request_count"],
         "created_at": publication_timestamp,

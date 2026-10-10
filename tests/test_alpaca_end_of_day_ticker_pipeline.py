@@ -17,6 +17,11 @@ from libs.alpaca_end_of_day_ticker_pipeline import (
     run_end_of_day_ticker_pipeline,
     run_end_of_day_tickers_pipeline_command,
 )
+from libs.alpaca_end_of_day_ticker_pipeline.online_status import (
+    _positive_raw_activity_during_exclusion,
+    _session_grid_has_unresolved_boundary,
+    _short_same_security_name_change_exclusions,
+)
 from libs.download_alpaca_end_of_day_bars import (
     REQUESTS_PER_MINUTE,
     AlpacaInvalidTickerCodeError,
@@ -93,6 +98,238 @@ def quarantined_empty_symbol_disposition() -> dict:
         "market_data_series_identity": None,
         "test_symbol_evidence": None,
     }
+
+
+class VerifiedSessionExclusionRuleTests(unittest.TestCase):
+    @staticmethod
+    def _name_change_fixture(process_date: str = "2024-01-03"):
+        adjustments = (
+            "all",
+            "dividend",
+            "dividend,spin-off",
+            "raw",
+            "spin-off",
+            "split",
+            "split,dividend",
+            "split,spin-off",
+        )
+        bars = [
+            {"timestamp": "2024-01-02T05:00:00Z"},
+            {"timestamp": "2024-01-04T05:00:00Z"},
+        ]
+        identity = {
+            "alpaca_asset_ids": ["asset-1"],
+            "cusips": ["123456789"],
+            "exchanges": ["NASDAQ"],
+            "available_adjustments": list(adjustments),
+            "observed_history_ranges": [
+                {
+                    "ticker": "OLD",
+                    "first_session_date": "2024-01-02",
+                    "last_session_date": "2024-01-02",
+                },
+                {
+                    "ticker": "NEW",
+                    "first_session_date": "2024-01-04",
+                    "last_session_date": "2024-01-04",
+                },
+            ],
+            "identity_events": [{"action_type": "name_change", "event_id": "event-1"}],
+        }
+        results = {adjustment: {"bars": list(bars)} for adjustment in adjustments}
+        lineage = {
+            "corporate_actions": [
+                {
+                    "action_type": "name_change",
+                    "id": "event-1",
+                    "old_symbol": "OLD",
+                    "new_symbol": "NEW",
+                    "old_cusip": "123456789",
+                    "new_cusip": "123456789",
+                    "process_date": process_date,
+                }
+            ],
+            "asset_lookups": [
+                {
+                    "lookup_kind": "symbol",
+                    "lookup": "OLD",
+                    "outcome": "not_found",
+                    "asset": None,
+                },
+                {
+                    "lookup_kind": "symbol",
+                    "lookup": "NEW",
+                    "outcome": "found",
+                    "asset": {"id": "asset-1"},
+                },
+                {
+                    "lookup_kind": "cusip",
+                    "lookup": "123456789",
+                    "outcome": "found",
+                    "asset": {"id": "asset-1"},
+                },
+            ],
+            "identities": [{"id": "asset-1", "symbol": "NEW"}],
+            "unresolved_cusips": [],
+        }
+        receipts = (
+            {
+                "evidence_issues": [],
+                "lineage_report": {"lineage": lineage},
+            },
+        )
+        raw_source_session_dates = frozenset(("2024-01-02", "2024-01-04"))
+        return identity, results, receipts, raw_source_session_dates
+
+    def test_one_session_same_security_name_change_is_resolved(self) -> None:
+        for process_date in ("2024-01-03", "2024-01-04"):
+            with self.subTest(process_date=process_date):
+                identity, results, receipts, raw_dates = self._name_change_fixture(process_date)
+                self.assertEqual(
+                    frozenset(("2024-01-03",)),
+                    _short_same_security_name_change_exclusions(
+                        identity,
+                        results,
+                        receipts,
+                        raw_dates,
+                    ),
+                )
+
+    def test_up_to_five_sessions_resolve_but_six_or_disagreement_do_not(self) -> None:
+        identity, results, receipts, raw_dates = self._name_change_fixture("2024-01-09")
+        for result in results.values():
+            result["bars"][-1] = {"timestamp": "2024-01-09T05:00:00Z"}
+        raw_dates = frozenset(("2024-01-02", "2024-01-09"))
+        identity["observed_history_ranges"][-1]["first_session_date"] = "2024-01-09"
+        identity["observed_history_ranges"][-1]["last_session_date"] = "2024-01-09"
+        self.assertEqual(
+            frozenset(("2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08")),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+        identity, results, receipts, raw_dates = self._name_change_fixture("2024-01-11")
+        for result in results.values():
+            result["bars"][-1] = {"timestamp": "2024-01-11T05:00:00Z"}
+        raw_dates = frozenset(("2024-01-02", "2024-01-11"))
+        identity["observed_history_ranges"][-1]["first_session_date"] = "2024-01-11"
+        identity["observed_history_ranges"][-1]["last_session_date"] = "2024-01-11"
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+        identity, results, receipts, raw_dates = self._name_change_fixture()
+        results["all"]["bars"].insert(1, {"timestamp": "2024-01-03T05:00:00Z"})
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+    def test_competing_lookup_or_duplicate_action_is_not_resolved(self) -> None:
+        identity, results, receipts, raw_dates = self._name_change_fixture()
+        receipts[0]["lineage_report"]["lineage"]["asset_lookups"][0] = {
+            "lookup_kind": "symbol",
+            "lookup": "OLD",
+            "outcome": "found",
+            "asset": {"id": "different-asset"},
+        }
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+        identity, results, receipts, raw_dates = self._name_change_fixture()
+        competing = dict(receipts[0]["lineage_report"]["lineage"]["corporate_actions"][0])
+        competing["id"] = "event-2"
+        receipts[0]["lineage_report"]["lineage"]["corporate_actions"].append(competing)
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+        identity, results, receipts, raw_dates = self._name_change_fixture()
+        receipts[0]["lineage_report"]["lineage"]["identities"].append({"id": "different-asset", "symbol": "OLD"})
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+        identity, results, receipts, raw_dates = self._name_change_fixture()
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(
+                identity,
+                results,
+                receipts,
+                raw_dates | {"2024-01-03"},
+            ),
+        )
+
+        identity, results, receipts, raw_dates = self._name_change_fixture()
+        receipts[0]["lineage_report"]["lineage"]["corporate_actions"].append(
+            {
+                "action_type": "stock_merger",
+                "id": "event-2",
+                "process_date": "2024-01-03",
+            }
+        )
+        self.assertEqual(
+            frozenset(),
+            _short_same_security_name_change_exclusions(identity, results, receipts, raw_dates),
+        )
+
+    def test_only_covered_missing_sessions_without_positive_activity_are_resolved(self) -> None:
+        active_bar = {
+            "timestamp": "2024-01-02T05:00:00Z",
+            "open": "10",
+            "high": "11",
+            "low": "9",
+            "close": "10",
+            "volume": "100",
+            "trade_count": "10",
+            "vwap": "10",
+        }
+        later_bar = {**active_bar, "timestamp": "2024-01-04T05:00:00Z"}
+        excluded_dates = frozenset(("2024-01-03",))
+
+        self.assertEqual(
+            (True, False),
+            _session_grid_has_unresolved_boundary([active_bar, later_bar]),
+        )
+        self.assertEqual(
+            (False, False),
+            _session_grid_has_unresolved_boundary(
+                [active_bar, later_bar],
+                excluded_dates,
+            ),
+        )
+
+        zero_observation = {
+            **active_bar,
+            "timestamp": "2024-01-03T05:00:00Z",
+            "open": "10",
+            "high": "10",
+            "low": "10",
+            "close": "10",
+            "volume": "0",
+            "trade_count": "0",
+            "vwap": "0",
+        }
+        positive_observation = {**active_bar, "timestamp": "2024-01-03T05:00:00Z"}
+        self.assertEqual(
+            (False, False),
+            _positive_raw_activity_during_exclusion(
+                [active_bar, zero_observation, later_bar],
+                excluded_dates,
+            ),
+        )
+        self.assertEqual(
+            (True, False),
+            _positive_raw_activity_during_exclusion(
+                [active_bar, positive_observation, later_bar],
+                excluded_dates,
+            ),
+        )
 
 
 class EndOfDayTickerPipelineTests(unittest.TestCase):

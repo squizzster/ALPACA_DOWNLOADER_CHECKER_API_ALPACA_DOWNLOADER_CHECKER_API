@@ -26,5 +26,11 @@
       "Define lineage_gap as an offline unresolved boundary: the authenticated public reader otherwise succeeds, but at least one expected US market session is absent strictly between the first and last returned bars.",
       "Aggregate and update availability classifications in the existing per-source and per-master-ID shards without adding a database or monolithic status catalog."
     ]
+  },
+  {
+    "modifications": [
+      "Allow one authenticated security master to reference supported correlation generations during incremental correlation-rule migration.",
+      "Preserve every source identity, master ID, availability classification, and frozen-data binding while migrating the derived sharded catalogue from version 4."
+    ]
   }
 ]

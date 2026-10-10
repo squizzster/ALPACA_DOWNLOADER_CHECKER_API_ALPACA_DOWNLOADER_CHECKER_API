@@ -33,5 +33,19 @@
       "Expose a read-only status-filtered listing API so unresolved lineage_gap identities can be queried without rescanning bar histories.",
       "Keep lineage-gap histories readable for investigation while excluding them from the online inventory."
     ]
+  },
+  {
+    "modifications": [
+      "Resolve differing adjusted duplicate bars only when one authenticated source has a strict superset of the other source's correlated session coverage.",
+      "Keep every raw disagreement plus equal-coverage and partial-overlap adjusted disagreements as hard read errors instead of preferring an ambiguous source.",
+      "Return an aggregated source_selection audit showing every differing overlap resolved by the strict-superset rule."
+    ]
+  },
+  {
+    "modifications": [
+      "Resolve an otherwise-unresolved authenticated bar disagreement only when exactly one contributing source was requested under the dated historical ticker assigned to that row.",
+      "Apply historical-ticker selection after the existing equal-value and adjusted strict-superset rules so previously readable histories retain their selected values.",
+      "Keep disagreements with zero or multiple ticker-matching sources as hard read errors and report the applied selection rule in source-selection provenance."
+    ]
   }
 ]

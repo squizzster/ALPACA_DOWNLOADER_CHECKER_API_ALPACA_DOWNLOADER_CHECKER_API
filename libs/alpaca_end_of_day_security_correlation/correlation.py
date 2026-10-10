@@ -9,12 +9,20 @@ from libs.alpaca_security_lineage import (
 )
 
 from .correlation_version import CORRELATION_VERSION, validate_correlation_change_log
+from .episode_partition import assess_distinct_uuid_episode_partitions
 from .errors import SecurityCorrelationError
 from .evidence import build_ticker_ownership_intervals, ownership_interval_rule_order
 from .frozen_downloads import read_authenticated_frozen_download
+from .identity_partition import assess_one_session_distinct_uuid_transition
 from .publication import lineage_evidence_sha256, publish_security_correlation
-from .row_correlation import correlate_download_rows, row_correlation_rule_order
+from .row_correlation import (
+    correlate_download_rows,
+    download_session_dates,
+    row_correlation_rule_order,
+)
+from .session_exclusions import read_verified_session_exclusions
 from .settings import CORRELATED_BRANCH, SYMBOL_PATTERN, UNCORRELATED_BRANCH
+from .ticker_reuse_gap import adjustment_session_consensus
 from .uuid_lineage import build_uuid_lineage_edges
 
 
@@ -61,6 +69,10 @@ def build_security_correlation_report(
     intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
     uuid_lineage_edges, uuid_lineage_issues = build_uuid_lineage_edges(lineage)
     evidence_issues.extend(uuid_lineage_issues)
+    verified_session_exclusions = read_verified_session_exclusions(
+        repository_root,
+        symbol,
+    )
     correlated_segments = []
     uncorrelated_segments = []
     work_items = [
@@ -108,6 +120,7 @@ def build_security_correlation_report(
             }
         )
 
+    authenticated_work_items = []
     for local_download in sorted(
         (item for item in local_downloads if isinstance(item, dict)),
         key=lambda item: str(item.get("file")),
@@ -118,11 +131,48 @@ def build_security_correlation_report(
             local_download,
         )
         source = _source_context(authenticated_download)
+        authenticated_work_items.append(
+            (
+                authenticated_download,
+                source,
+                download_session_dates(authenticated_download.rows),
+            )
+        )
+
+    session_consensus = adjustment_session_consensus(
+        (
+            (
+                f"{source['adjustment']}:{source['data_file']}",
+                session_dates,
+            )
+            for _, source, session_dates in authenticated_work_items
+        )
+    )
+    distinct_uuid_transition = assess_one_session_distinct_uuid_transition(
+        repository_root,
+        lineage,
+    )
+    if distinct_uuid_transition is not None and symbol not in {
+        distinct_uuid_transition.predecessor.symbol,
+        distinct_uuid_transition.successor.symbol,
+    }:
+        distinct_uuid_transition = None
+    distinct_uuid_episode_partitions = assess_distinct_uuid_episode_partitions(
+        repository_root,
+        symbol,
+        lineage,
+    )
+
+    for authenticated_download, source, _ in authenticated_work_items:
         file_branches = correlate_download_rows(
             authenticated_download.rows,
             source,
             lineage,
             intervals,
+            adjustment_consensus=session_consensus,
+            evidence_issues=evidence_issues,
+            distinct_uuid_transition=distinct_uuid_transition,
+            distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]
@@ -180,6 +230,7 @@ def build_security_correlation_report(
             "row_partition_is_exhaustive": True,
         },
         "lineage_evidence_sha256": lineage_evidence_sha256(lineage_report),
+        "verified_session_exclusions": verified_session_exclusions,
         "symbol_disposition": symbol_disposition,
         "lineage_report": lineage_report,
         "source_downloads": source_downloads,

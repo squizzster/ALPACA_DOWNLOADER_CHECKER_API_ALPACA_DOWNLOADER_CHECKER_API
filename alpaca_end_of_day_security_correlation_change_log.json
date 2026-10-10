@@ -50,5 +50,76 @@
       "Keep UUID-less historical and test rows in the exhaustive uncorrelated branch with a deterministic non-security market-data-series ID rather than fabricating an Alpaca or master security identity.",
       "Publish disposition work items and explicit reason codes so recurring orchestration can skip authenticated quarantined or excluded symbols without deleting frozen evidence."
     ]
+  },
+  {
+    "modifications": [
+      "Generalize the terminal continuous-ticker fallback to a stable non-empty set of same-ticker, same-name Alpaca UUID candidates anchored by exactly one current symbol lookup.",
+      "Retain and report candidates whose current asset ticker does not match the requested ticker, but exclude them from the promoted security identity.",
+      "Continue authenticating version-8 correlation artifacts during targeted version-9 migration so unaffected frozen histories do not require a universe rerun."
+    ]
+  },
+  {
+    "modifications": [
+      "Treat a gap of at least 60 expected US market sessions as evidence of possible ticker reuse and partition the symbol history at the last such gap.",
+      "Assign only the complete rightmost pricing run to a unique current symbol lookup with a non-empty asset name, preserving every earlier pricing run as uncorrelated.",
+      "Prevent the undated unique-UUID fallback from joining histories across a qualifying ticker-reuse gap when the current run cannot be allocated."
+    ]
+  },
+  {
+    "modifications": [
+      "Restrict the 60-session ticker-gap assessment to candidate detection because calendar continuity, a current name, and an undated symbol lookup do not establish historical security identity.",
+      "Fail closed on both sides of a detected ticker-reuse gap before applying existing interval or candidate fallbacks; a later correlation rule may promote an episode only when it proves complete dated identity evidence for that episode.",
+      "Preserve the current lookup only as diagnostic candidate evidence."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind authenticated venue-session exclusions to the exact Alpaca UUID, CUSIP, exchange, market calendar, and primary-source bytes used by online availability evaluation.",
+      "Resolve a missing-session boundary only when every missing session is inside the verified full-session suspension and no positive-activity raw bar occurs inside it."
+    ]
+  },
+  {
+    "modifications": [
+      "Allocate only a complete rightmost pricing suffix after at least 100 missing market sessions when every authenticated adjustment has the identical session set and the current symbol resolves to exactly one UUID, CUSIP, non-empty name, and exchange.",
+      "Keep every pre-gap row uncorrelated and veto allocation of both sides when explicit dated lineage evidence assigns a pre-gap session to the current suffix UUID.",
+      "Keep the 60-session gap detector and fail-closed guard ahead of all existing identity fallbacks so rejected gaps cannot be joined by an inferred or generic correlation rule."
+    ]
+  },
+  {
+    "modifications": [
+      "Allow the complete current suffix to publish without a CUSIP when every other allocation gate passes and the current symbol resolves to one exact Alpaca UUID.",
+      "Continue to reject current identities with multiple conflicting CUSIPs."
+    ]
+  },
+  {
+    "modifications": [
+      "Allow an otherwise-qualified, internally complete rightmost suffix to publish when its exact Alpaca asset status is inactive, even when the suffix ends before the global request endpoint.",
+      "Keep an otherwise-qualified incomplete suffix offline and flag it when the exact Alpaca asset remains active; reject the inactive rule when dated right-suffix evidence identifies a different Alpaca UUID."
+    ]
+  },
+  {
+    "modifications": [
+      "Allocate a post-gap rightmost pricing episode to a different Alpaca UUID when an exact CUSIP lookup and unambiguous corporate-action ownership interval identify it and its authenticated session grid is complete through the dated terminal boundary.",
+      "Treat a conflicting undated symbol lookup as a recorded warning, keep pre-gap rows uncorrelated, and reject the allocation when explicit dated evidence assigns the same UUID to the pre-gap episode."
+    ]
+  },
+  {
+    "modifications": [
+      "Partition a one-session action boundary when the old and new tickers each resolve to one different Alpaca UUID, no third UUID competes for either ticker, and all authenticated adjustment grids agree.",
+      "Evaluate the two internally complete pricing episodes as isolated security identities while retaining the corporate-action relationship as provenance."
+    ]
+  },
+  {
+    "modifications": [
+      "Keep action-linked Alpaca UUID histories as separate security identities when every UUID has one internally continuous authenticated session run in all eight adjustment views.",
+      "Apply the partition after dated row identity resolution so the rule changes grouping without reinterpreting source rows or treating intervening sessions as nontrading.",
+      "Reject the partition when any UUID recurs across an internal gap, overlaps another UUID, lacks an adjustment view, or relies on an undated identity assignment."
+    ]
+  },
+  {
+    "modifications": [
+      "Assign a complete current ticker run to its exact current Alpaca UUID after authenticated evidence shows the prior occupant renamed away at least 100 market sessions earlier and dated nonstructural actions bind the later ticker and CUSIP to the new UUID.",
+      "Keep the historical occupant separate and reject the rule on incomplete adjustment grids, unresolved identity evidence, competing in-run occupancy, or an in-run structural action."
+    ]
   }
 ]

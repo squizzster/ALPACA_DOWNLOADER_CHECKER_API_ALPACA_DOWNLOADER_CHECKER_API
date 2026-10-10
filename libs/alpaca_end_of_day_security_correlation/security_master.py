@@ -18,7 +18,7 @@ from .artifact_paths import (
     security_master_manifest_path,
     security_master_path,
 )
-from .correlation_version import CORRELATION_VERSION
+from .correlation_version import CORRELATION_VERSION, SUPPORTED_CORRELATION_VERSIONS
 from .errors import SecurityCorrelationError
 from .security_identity import (
     SECURITY_ID_SCHEME_VERSION,
@@ -26,6 +26,7 @@ from .security_identity import (
     security_id_for_alpaca_asset_ids,
 )
 from .security_master_version import SECURITY_MASTER_VERSION, validate_security_master_change_log
+from .session_exclusions import validate_verified_session_exclusions
 from .settings import SYMBOL_PATTERN
 
 IDENTITY_STRING_LIST_FIELDS = (
@@ -491,17 +492,35 @@ def _source_contribution(
         if online_by_master_id is None
         else online_by_master_id
     )
+    identities = _source_master_entries(
+        correlation_report,
+        resolved_online,
+        availability_status_by_master_id,
+    )
+    verified_session_exclusions = validate_verified_session_exclusions(
+        correlation_report.get("verified_session_exclusions"),
+        correlation_report["symbol"],
+    )
+    for event in verified_session_exclusions["events"]:
+        matching_identities = [
+            identity
+            for identity in identities
+            if event["alpaca_asset_id"] in identity["alpaca_asset_ids"]
+            and event["cusip"] in identity["cusips"]
+            and event["exchange"] in identity["exchanges"]
+        ]
+        if len(matching_identities) != 1:
+            raise SecurityCorrelationError(
+                "verified session exclusion does not match exactly one correlated security identity"
+            )
     return {
         "symbol": correlation_report["symbol"],
-        "correlation_version": CORRELATION_VERSION,
+        "correlation_version": correlation_receipt["correlation_version"],
         "correlation_generation_sha256": correlation_receipt["correlation_generation_sha256"],
         "correlated_output_sha256": correlated_output["sha256"],
         "uncorrelated_output_sha256": uncorrelated_output["sha256"],
-        "identities": _source_master_entries(
-            correlation_report,
-            resolved_online,
-            availability_status_by_master_id,
-        ),
+        "verified_session_exclusions": verified_session_exclusions,
+        "identities": identities,
     }
 
 
@@ -622,6 +641,7 @@ def _aggregate_security_entries(
 LEGACY_SECURITY_MASTER_VERSION = 1
 SHARDED_SECURITY_MASTER_VERSION_WITHOUT_ONLINE = 2
 SHARDED_SECURITY_MASTER_VERSION_WITHOUT_AVAILABILITY_STATUS = 3
+SHARDED_SECURITY_MASTER_VERSION_WITH_SINGLE_CORRELATION_VERSION = 4
 SECURITY_MASTER_OBJECT_VERSION = 1
 SECURITY_MASTER_INVENTORY_VERSION = 1
 INVENTORY_BUCKET_PREFIX_HEX_CHARACTERS = 2
@@ -991,8 +1011,19 @@ def _validate_source(
         or not SYMBOL_PATTERN.fullmatch(source["symbol"])
     ):
         raise SecurityCorrelationError("security master contains an invalid source")
-    if source.get("correlation_version") != CORRELATION_VERSION:
+    if source.get("correlation_version") not in SUPPORTED_CORRELATION_VERSIONS:
         raise SecurityCorrelationError("security master source has an unexpected correlation version")
+    verified_session_exclusions = source.get("verified_session_exclusions")
+    if source.get("correlation_version") == CORRELATION_VERSION:
+        validate_verified_session_exclusions(
+            verified_session_exclusions,
+            source["symbol"],
+        )
+    elif verified_session_exclusions is not None:
+        validate_verified_session_exclusions(
+            verified_session_exclusions,
+            source["symbol"],
+        )
     for field_name in (
         "correlation_generation_sha256",
         "correlated_output_sha256",
@@ -1768,6 +1799,50 @@ def migrate_sharded_security_master_availability_status(
             authenticated.identities_by_master_id
         ) != len(previous.identities_by_master_id):
             raise SecurityCorrelationError("availability-status migration changed security-master counts")
+        return receipt
+
+
+def migrate_sharded_security_master_correlation_versions(
+    repository_root: Path | str,
+) -> dict[str, Any]:
+    """Migrate a version-4 master without changing any source or identity value."""
+    validate_security_master_change_log()
+    root = Path(repository_root)
+    with _SECURITY_MASTER_PUBLICATION_LOCK:
+        output_path = security_master_path(root)
+        document = _read_json_object(output_path, "security-master index")
+        if document.get("security_master_version") == SECURITY_MASTER_VERSION:
+            existing = _authenticate_optional_security_master(root)
+            if existing is None:
+                raise SecurityCorrelationError("security master is not published")
+            return {**existing.receipt, "publication_status": "cached"}
+        if (
+            document.get("security_master_version")
+            != SHARDED_SECURITY_MASTER_VERSION_WITH_SINGLE_CORRELATION_VERSION
+        ):
+            raise SecurityCorrelationError(
+                "correlation-version migration requires a version-4 sharded security master"
+            )
+        previous = _authenticate_optional_security_master(
+            root,
+            security_master_version=SHARDED_SECURITY_MASTER_VERSION_WITH_SINGLE_CORRELATION_VERSION,
+        )
+        if previous is None:
+            raise SecurityCorrelationError("version-4 sharded security master is not published")
+
+        previous_sources = [
+            deepcopy(previous.sources_by_symbol[symbol]) for symbol in previous.sources_by_symbol
+        ]
+        receipt = _publish_security_master_snapshot(root, previous_sources)
+        authenticated = _authenticate_optional_security_master(root)
+        if authenticated is None:
+            raise SecurityCorrelationError("current security master was not published")
+        if (
+            len(authenticated.sources_by_symbol) != len(previous.sources_by_symbol)
+            or len(authenticated.identities_by_master_id) != len(previous.identities_by_master_id)
+            or list(authenticated.sources_by_symbol.values()) != previous_sources
+        ):
+            raise SecurityCorrelationError("correlation-version migration changed security-master contents")
         return receipt
 
 

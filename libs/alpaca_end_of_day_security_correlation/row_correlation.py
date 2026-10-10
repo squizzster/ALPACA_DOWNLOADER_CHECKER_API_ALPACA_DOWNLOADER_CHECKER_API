@@ -5,16 +5,31 @@ from zoneinfo import ZoneInfo
 
 from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY
 
+from .current_symbol_reuse import (
+    CURRENT_SYMBOL_REUSE_RULE_NAME,
+    CurrentSymbolReuseAssessment,
+    assess_current_symbol_reuse,
+)
+from .episode_partition import PARTITION_RULE_NAME, DistinctUuidEpisodePartition
 from .errors import SecurityCorrelationError
 from .evidence import (
     TickerOwnershipInterval,
     identity_candidates_for_symbol,
 )
+from .identity_partition import OneSessionDistinctUuidTransition
 from .security_identity import security_identity_for_alpaca_assets
 from .settings import CORRELATED_BRANCH, UNCORRELATED_BRANCH
 from .terminal_fallback import (
     TERMINAL_FALLBACK_RULE_NAME,
     apply_terminal_continuous_ticker_fallback,
+)
+from .ticker_reuse_gap import (
+    COMPLETE_CURRENT_SUFFIX_RULE_NAME,
+    DATED_TERMINAL_SUFFIX_RULE_NAME,
+    INACTIVE_CURRENT_SUFFIX_RULE_NAME,
+    AdjustmentSessionConsensus,
+    TickerReuseGapAssessment,
+    assess_ticker_reuse_gap,
 )
 from .uuid_lineage import build_uuid_lineage_edges, predecessor_uuid_branch
 
@@ -33,6 +48,12 @@ class _RowDecision:
     warning_codes: tuple[str, ...] = ()
     reason_codes: tuple[str, ...] = ()
     candidates: tuple[tuple[str, str | None], ...] = ()
+    ticker_reuse_gap: TickerReuseGapAssessment | None = None
+    distinct_uuid_transition: OneSessionDistinctUuidTransition | None = None
+    distinct_uuid_episode_partition: DistinctUuidEpisodePartition | None = None
+    current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
+    historical_symbol: str | None = None
+    isolate_asset_identity: bool = False
 
     def grouping_key(self) -> tuple:
         if self.branch == CORRELATED_BRANCH:
@@ -45,6 +66,12 @@ class _RowDecision:
                 self.interval.interval_key() if self.interval is not None else None,
                 self.identity_confidence,
                 self.warning_codes,
+                self.ticker_reuse_gap,
+                self.distinct_uuid_transition,
+                self.distinct_uuid_episode_partition,
+                self.current_symbol_reuse,
+                self.historical_symbol,
+                self.isolate_asset_identity,
             )
         return (
             self.branch,
@@ -53,6 +80,12 @@ class _RowDecision:
             self.warning_codes,
             self.reason_codes,
             self.candidates,
+            self.ticker_reuse_gap,
+            self.distinct_uuid_transition,
+            self.distinct_uuid_episode_partition,
+            self.current_symbol_reuse,
+            self.historical_symbol,
+            self.isolate_asset_identity,
         )
 
 
@@ -64,6 +97,10 @@ class _RowRuleContext:
     selected_asof_identity_chain_asset_ids: frozenset[str]
     intervals: list[TickerOwnershipInterval]
     lineage: dict[str, Any]
+    ticker_reuse_gap: TickerReuseGapAssessment | None
+    distinct_uuid_transition: OneSessionDistinctUuidTransition | None
+    distinct_uuid_episode_partitions: tuple[DistinctUuidEpisodePartition, ...] = ()
+    current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -95,6 +132,25 @@ def _parse_session_date(timestamp: object, row_number: int) -> tuple[str, date]:
         raise SecurityCorrelationError(f"row {row_number}: timestamp has no timezone: {timestamp!r}")
     utc_timestamp = parsed_timestamp.astimezone(timezone.utc)
     return timestamp, utc_timestamp.astimezone(NEW_YORK_TIME_ZONE).date()
+
+
+def _parse_download_rows(rows: list[dict]) -> list[tuple[int, str, date]]:
+    parsed_rows = []
+    previous_session_date = None
+    for row_number, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise SecurityCorrelationError(f"row {row_number}: expected an object")
+        timestamp, session_date = _parse_session_date(row.get("t"), row_number)
+        if previous_session_date is not None and session_date <= previous_session_date:
+            raise SecurityCorrelationError(f"row {row_number}: session dates are not strictly increasing")
+        previous_session_date = session_date
+        parsed_rows.append((row_number, timestamp, session_date))
+    return parsed_rows
+
+
+def download_session_dates(rows: list[dict]) -> tuple[date, ...]:
+    """Return validated, ordered New York session dates for one authenticated download."""
+    return tuple(session_date for _, _, session_date in _parse_download_rows(rows))
 
 
 def _interval_matches(
@@ -252,6 +308,147 @@ def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision 
     )
 
 
+def _apply_complete_current_suffix_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    assessment = context.ticker_reuse_gap
+    if (
+        assessment is None
+        or not assessment.complete_current_suffix_eligible
+        or context.session_date < assessment.right_observed_session
+    ):
+        return None
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=assessment.current_asset_id,
+        cusip=assessment.current_asset_cusip,
+        identity_confidence="complete_current_identity_suffix",
+        ticker_reuse_gap=assessment,
+        isolate_asset_identity=True,
+    )
+
+
+def _apply_inactive_current_suffix_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    assessment = context.ticker_reuse_gap
+    if (
+        assessment is None
+        or not assessment.inactive_current_suffix_eligible
+        or context.session_date < assessment.right_observed_session
+    ):
+        return None
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=assessment.current_asset_id,
+        cusip=assessment.current_asset_cusip,
+        identity_confidence="inactive_current_identity_suffix",
+        ticker_reuse_gap=assessment,
+        isolate_asset_identity=True,
+    )
+
+
+def _apply_dated_terminal_suffix_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    assessment = context.ticker_reuse_gap
+    if (
+        assessment is None
+        or not assessment.dated_terminal_suffix_eligible
+        or context.session_date < assessment.right_observed_session
+    ):
+        return None
+    identity = assessment.dated_terminal_suffix_identity
+    if identity is None:
+        return None
+    warning_codes = (
+        ("undated_symbol_lookup_uuid_differs_from_dated_suffix_identity",)
+        if identity.undated_symbol_lookup_uuid_conflict
+        else ()
+    )
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=identity.interval.asset_id,
+        cusip=identity.interval.cusip,
+        interval=identity.interval,
+        identity_confidence="dated_terminal_identity_suffix",
+        warning_codes=warning_codes,
+        ticker_reuse_gap=assessment,
+        isolate_asset_identity=True,
+    )
+
+
+def _apply_ticker_reuse_gap_guard(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    assessment = context.ticker_reuse_gap
+    if assessment is None:
+        return None
+    candidates = (
+        ((assessment.current_asset_id, assessment.current_asset_cusip),)
+        if assessment.current_asset_id is not None
+        else ()
+    )
+    return _RowDecision(
+        branch=UNCORRELATED_BRANCH,
+        reason_codes=(
+            (
+                "prior_pricing_run_before_ticker_reuse_gap"
+                if context.session_date < assessment.right_observed_session
+                else (
+                    "active_asset_with_incomplete_right_boundary"
+                    if assessment.active_current_suffix_flagged
+                    else "post_gap_pricing_run_requires_dated_identity"
+                )
+            ),
+        ),
+        candidates=candidates,
+        ticker_reuse_gap=assessment,
+    )
+
+
+def _apply_one_session_distinct_uuid_transition_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    transition = context.distinct_uuid_transition
+    if transition is None or context.requested_symbol not in {
+        transition.predecessor.symbol,
+        transition.successor.symbol,
+    }:
+        return None
+    identity = (
+        transition.predecessor
+        if context.session_date < transition.right_observed_session
+        else transition.successor
+    )
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=identity.asset_id,
+        cusip=identity.cusip,
+        historical_symbol=identity.symbol,
+        identity_confidence="authenticated_distinct_uuid_transition",
+        distinct_uuid_transition=transition,
+        isolate_asset_identity=True,
+    )
+
+
+def _apply_current_symbol_reuse_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    assessment = context.current_symbol_reuse
+    if assessment is None:
+        return None
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=assessment.current_asset_id,
+        cusip=assessment.current_cusip,
+        historical_symbol=assessment.symbol,
+        identity_confidence="authenticated_current_symbol_reuse",
+        current_symbol_reuse=assessment,
+        isolate_asset_identity=True,
+    )
+
+
 def _apply_unresolved_uuid_candidates_rule(context: _RowRuleContext) -> _RowDecision:
     candidate_objects = identity_candidates_for_symbol(
         context.lineage,
@@ -284,6 +481,30 @@ ROW_CORRELATION_RULES = (
     RowCorrelationRule(
         name="exchange_test_symbol_exclusion",
         apply=_apply_exchange_test_symbol_exclusion_rule,
+    ),
+    RowCorrelationRule(
+        name=COMPLETE_CURRENT_SUFFIX_RULE_NAME,
+        apply=_apply_complete_current_suffix_rule,
+    ),
+    RowCorrelationRule(
+        name=INACTIVE_CURRENT_SUFFIX_RULE_NAME,
+        apply=_apply_inactive_current_suffix_rule,
+    ),
+    RowCorrelationRule(
+        name=DATED_TERMINAL_SUFFIX_RULE_NAME,
+        apply=_apply_dated_terminal_suffix_rule,
+    ),
+    RowCorrelationRule(
+        name="ticker_reuse_gap_guard",
+        apply=_apply_ticker_reuse_gap_guard,
+    ),
+    RowCorrelationRule(
+        name="one_session_distinct_uuid_transition",
+        apply=_apply_one_session_distinct_uuid_transition_rule,
+    ),
+    RowCorrelationRule(
+        name=CURRENT_SYMBOL_REUSE_RULE_NAME,
+        apply=_apply_current_symbol_reuse_rule,
     ),
     RowCorrelationRule(
         name="asof_selected_uuid_lineage_interval",
@@ -403,6 +624,11 @@ def correlate_download_rows(
     source: dict[str, Any],
     lineage: dict[str, Any],
     intervals: list[TickerOwnershipInterval],
+    *,
+    adjustment_consensus: AdjustmentSessionConsensus | None = None,
+    evidence_issues: list[dict[str, Any]] | None = None,
+    distinct_uuid_transition: OneSessionDistinctUuidTransition | None = None,
+    distinct_uuid_episode_partitions: tuple[DistinctUuidEpisodePartition, ...] = (),
 ) -> dict[str, list[dict[str, Any]]]:
     requested_symbol = source["requested_symbol"]
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
@@ -412,16 +638,26 @@ def correlate_download_rows(
         if selected_interval is not None
         else frozenset()
     )
-    correlated_rows = []
-    previous_session_date = None
+    parsed_rows = _parse_download_rows(rows)
 
-    for row_number, row in enumerate(rows, start=1):
-        if not isinstance(row, dict):
-            raise SecurityCorrelationError(f"row {row_number}: expected an object")
-        timestamp, session_date = _parse_session_date(row.get("t"), row_number)
-        if previous_session_date is not None and session_date <= previous_session_date:
-            raise SecurityCorrelationError(f"row {row_number}: session dates are not strictly increasing")
-        previous_session_date = session_date
+    ticker_reuse_gap = assess_ticker_reuse_gap(
+        tuple(session_date for _, _, session_date in parsed_rows),
+        source,
+        lineage,
+        intervals,
+        adjustment_consensus,
+        evidence_issues,
+    )
+    current_symbol_reuse = assess_current_symbol_reuse(
+        tuple(session_date for _, _, session_date in parsed_rows),
+        source,
+        lineage,
+        intervals,
+        adjustment_consensus,
+        evidence_issues,
+    )
+    correlated_rows = []
+    for row_number, timestamp, session_date in parsed_rows:
         decision = _decide_row(
             _RowRuleContext(
                 session_date=session_date,
@@ -430,8 +666,24 @@ def correlate_download_rows(
                 selected_asof_identity_chain_asset_ids=selected_identity_chain_asset_ids,
                 intervals=intervals,
                 lineage=lineage,
+                ticker_reuse_gap=ticker_reuse_gap,
+                distinct_uuid_transition=distinct_uuid_transition,
+                distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
+                current_symbol_reuse=current_symbol_reuse,
             )
         )
+        if decision.branch == CORRELATED_BRANCH and not decision.isolate_asset_identity:
+            matching_partitions = [
+                partition
+                for partition in distinct_uuid_episode_partitions
+                if decision.asset_id in partition.asset_ids
+            ]
+            if len(matching_partitions) == 1:
+                decision = replace(
+                    decision,
+                    distinct_uuid_episode_partition=matching_partitions[0],
+                    isolate_asset_identity=True,
+                )
         correlated_rows.append(
             _CorrelatedRow(
                 row_number=row_number,
@@ -459,6 +711,14 @@ def correlate_download_rows(
             "name": decision.rule_name,
         }
         segment["warnings"] = list(decision.warning_codes)
+        if decision.ticker_reuse_gap is not None:
+            segment["ticker_reuse_gap"] = decision.ticker_reuse_gap.as_report_object()
+        if decision.distinct_uuid_transition is not None:
+            segment["identity_partition"] = decision.distinct_uuid_transition.as_report_object()
+        elif decision.distinct_uuid_episode_partition is not None:
+            segment["identity_partition"] = decision.distinct_uuid_episode_partition.as_report_object()
+        elif decision.current_symbol_reuse is not None:
+            segment["identity_partition"] = decision.current_symbol_reuse.as_report_object()
         if decision.branch == CORRELATED_BRANCH:
             if decision.asset_id is None:
                 raise SecurityCorrelationError("correlated row decision has no Alpaca asset UUID")
@@ -470,21 +730,26 @@ def correlate_download_rows(
                 )
                 else "single_alpaca_asset_id"
             )
+            identity_edges = [] if decision.isolate_asset_identity else uuid_lineage_edges
+            identity_basis = (
+                PARTITION_RULE_NAME
+                if decision.distinct_uuid_episode_partition is not None
+                else decision.rule_name
+                if decision.isolate_asset_identity
+                else identity_basis
+            )
+            historical_symbol = decision.historical_symbol or (
+                decision.interval.historical_symbol if decision.interval is not None else requested_symbol
+            )
             security_identity = security_identity_for_alpaca_assets(
                 (decision.asset_id,),
-                uuid_lineage_edges,
-                tickers=(
-                    decision.interval.historical_symbol if decision.interval is not None else requested_symbol,
-                ),
+                identity_edges,
+                tickers=(historical_symbol,),
                 basis=identity_basis,
             )
             segment.update(
                 {
-                    "historical_symbol": (
-                        decision.interval.historical_symbol
-                        if decision.interval is not None
-                        else requested_symbol
-                    ),
+                    "historical_symbol": historical_symbol,
                     "canonical_security": _canonical_security(
                         security_identity.security_id,
                         decision.asset_id,

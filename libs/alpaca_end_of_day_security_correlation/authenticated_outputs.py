@@ -10,10 +10,14 @@ from .artifact_paths import (
     security_correlation_manifest_path,
     uncorrelated_pipeline_path,
 )
-from .correlation_version import CORRELATION_VERSION, validate_correlation_change_log
+from .correlation_version import SUPPORTED_CORRELATION_VERSIONS, validate_correlation_change_log
 from .errors import SecurityCorrelationError
 from .publication import correlation_generation_sha256
 from .security_identity import is_security_id, security_identity_report_is_valid
+from .session_exclusions import (
+    SESSION_EXCLUSIONS_CORRELATION_VERSION,
+    validate_verified_session_exclusions,
+)
 from .settings import MANIFEST_VERSION
 
 
@@ -58,6 +62,7 @@ def _authenticate_branch(
     output_receipt: object,
     *,
     symbol: str,
+    correlation_version: int,
     generation_sha256: str,
     expected_manifest_type: str,
 ) -> tuple[dict[str, Any], str]:
@@ -95,7 +100,7 @@ def _authenticate_branch(
     expected_identity = {
         "manifest_type": expected_manifest_type,
         "manifest_version": MANIFEST_VERSION,
-        "correlation_version": CORRELATION_VERSION,
+        "correlation_version": correlation_version,
         "symbol": symbol,
         "correlation_generation_sha256": generation_sha256,
     }
@@ -143,6 +148,10 @@ def _validate_generation(
         "correlated": _generation_branch(correlated, uncorrelated=False),
         "uncorrelated": _generation_branch(uncorrelated, uncorrelated=True),
     }
+    if receipt.get("correlation_version", 0) >= SESSION_EXCLUSIONS_CORRELATION_VERSION:
+        exclusions = receipt.get("verified_session_exclusions")
+        validate_verified_session_exclusions(exclusions, receipt.get("symbol"))
+        generation_report["verified_session_exclusions"] = exclusions
     observed_generation = correlation_generation_sha256(generation_report)
     if observed_generation != receipt.get("correlation_generation_sha256"):
         raise SecurityCorrelationError("security-correlation generation digest is inconsistent")
@@ -178,15 +187,18 @@ def _validate_partition(
             raise SecurityCorrelationError(f"source does not record SHA-256 authentication for {filename}")
         sources_by_filename[filename] = source
 
+    shared_fields = [
+        "lineage_evidence_sha256",
+        "symbol_disposition",
+        "source_downloads",
+        "ownership_interval_rule_order",
+        "row_correlation_rule_order",
+        "uuid_lineage_edges",
+    ]
+    if receipt.get("correlation_version", 0) >= SESSION_EXCLUSIONS_CORRELATION_VERSION:
+        shared_fields.append("verified_session_exclusions")
     for branch_name, document in (("correlated", correlated), ("uncorrelated", uncorrelated)):
-        for shared_field in (
-            "lineage_evidence_sha256",
-            "symbol_disposition",
-            "source_downloads",
-            "ownership_interval_rule_order",
-            "row_correlation_rule_order",
-            "uuid_lineage_edges",
-        ):
+        for shared_field in shared_fields:
             if document.get(shared_field) != receipt.get(shared_field):
                 raise SecurityCorrelationError(
                     f"{branch_name} security-correlation output has inconsistent {shared_field}"
@@ -301,7 +313,6 @@ def authenticate_security_correlation(
     expected_receipt_identity = {
         "manifest_type": "end_of_day_security_correlation",
         "manifest_version": MANIFEST_VERSION,
-        "correlation_version": CORRELATION_VERSION,
         "symbol": symbol,
     }
     for field_name, expected_value in expected_receipt_identity.items():
@@ -310,6 +321,12 @@ def authenticate_security_correlation(
                 f"security-correlation receipt {receipt_path} has unexpected {field_name}: "
                 f"{receipt.get(field_name)!r}"
             )
+    correlation_version = receipt.get("correlation_version")
+    if correlation_version not in SUPPORTED_CORRELATION_VERSIONS:
+        raise SecurityCorrelationError(
+            f"security-correlation receipt {receipt_path} has unsupported correlation_version: "
+            f"{correlation_version!r}"
+        )
     generation_sha256 = receipt.get("correlation_generation_sha256")
     if not _is_sha256(generation_sha256):
         raise SecurityCorrelationError("security-correlation receipt has an invalid generation digest")
@@ -320,6 +337,7 @@ def authenticate_security_correlation(
         correlated_pipeline_path(repository_root, symbol),
         outputs.get("correlated"),
         symbol=symbol,
+        correlation_version=correlation_version,
         generation_sha256=generation_sha256,
         expected_manifest_type="correlated_end_of_day_security_segments",
     )
@@ -327,6 +345,7 @@ def authenticate_security_correlation(
         uncorrelated_pipeline_path(repository_root, symbol),
         outputs.get("uncorrelated"),
         symbol=symbol,
+        correlation_version=correlation_version,
         generation_sha256=generation_sha256,
         expected_manifest_type="uncorrelated_end_of_day_security_segments",
     )

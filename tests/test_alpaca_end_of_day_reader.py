@@ -23,6 +23,7 @@ from libs.alpaca_end_of_day_reader import (
     run_end_of_day_reader_command,
     validate_reader_change_log,
 )
+from libs.alpaca_end_of_day_reader.history import BAR_FIELD_NAMES, _resolve_bar_candidates
 from libs.alpaca_end_of_day_security_correlation import (
     SECURITY_MASTER_VERSION,
     SecurityCorrelationError,
@@ -53,10 +54,10 @@ SECOND_ASSET_UUID = "22222222-2222-4222-8222-222222222222"
 SECOND_MASTER_ID = master_id_for_alpaca_asset_ids([SECOND_ASSET_UUID])
 
 
-def _request_identity(symbol: str = "TEST") -> dict:
+def _request_identity(symbol: str = "TEST", adjustment: str = "raw") -> dict:
     return {
         "symbol": symbol,
-        "adjustment": "raw",
+        "adjustment": adjustment,
         "feed": "sip",
         "timeframe": "1Day",
         "request_from": "2024-01-01T00:00:00Z",
@@ -127,6 +128,7 @@ def _publish_reader_fixture(
     asset_id: str = TEST_ASSET_UUID,
     name: str = "Test Security",
     conflicting_first_close: bool = False,
+    adjustment: str = "raw",
 ) -> Path:
     fixture_name = fixture_name or (
         "ten_daily_bars_one_high_below_low.json" if with_integrity_failure else "ten_valid_daily_bars.json"
@@ -134,16 +136,25 @@ def _publish_reader_fixture(
     bars = json.loads((TEST_FIXTURES_DIRECTORY / fixture_name).read_text(encoding="utf-8"))
     if conflicting_first_close:
         bars[0]["c"] = 103
-    download_path = repository_root / "data" / "end_of_day" / symbol / "raw.csv.gz"
+    filename = adjustment.replace(",", "_") + ".csv.gz"
+    download_path = repository_root / "data" / "end_of_day" / symbol / filename
     if with_integrity_failure:
         try:
-            validate_and_publish_alpaca_download(download_path, bars, _request_identity(symbol))
+            validate_and_publish_alpaca_download(
+                download_path,
+                bars,
+                _request_identity(symbol, adjustment),
+            )
         except PricingDataIntegrityError:
             pass
         else:
             raise AssertionError("test fixture did not produce its expected integrity failure")
     else:
-        validate_and_publish_alpaca_download(download_path, bars, _request_identity(symbol))
+        validate_and_publish_alpaca_download(
+            download_path,
+            bars,
+            _request_identity(symbol, adjustment),
+        )
 
     correlation_report = build_security_correlation_report(
         _lineage_report(repository_root, symbol, asset_id, name),
@@ -459,6 +470,199 @@ class EndOfDayReaderTests(unittest.TestCase):
             availability,
         )
         self.assertEqual(["TEST", "TEST.A"], identity["source_symbols"])
+
+    def test_shared_master_id_prefers_adjusted_conflicting_strict_superset_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                fixture_name="nine_daily_bars_one_market_session_missing.json",
+                adjustment="all",
+            )
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                fixture_name="nine_daily_bars_one_market_session_missing.json",
+            )
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                symbol="TEST.A",
+                asset_id=TEST_ASSET_UUID,
+            )
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                symbol="TEST.A",
+                asset_id=TEST_ASSET_UUID,
+                conflicting_first_close=True,
+                adjustment="all",
+            )
+
+            availability = get_alpaca_end_of_day_security_availability(
+                TEST_MASTER_ID,
+                repository_root=repository_root,
+            )
+            result = read_alpaca_end_of_day_security_history(
+                TEST_MASTER_ID,
+                "all",
+                repository_root=repository_root,
+            )
+
+        self.assertEqual(
+            {
+                "master_id": TEST_MASTER_ID,
+                "online": True,
+                "availability_status": "online",
+            },
+            availability,
+        )
+        self.assertEqual(10, result["bar_count"])
+        self.assertEqual("103", result["bars"][0]["close"])
+        self.assertEqual(
+            {
+                "policy": "strict_superset_then_historical_ticker",
+                "resolved_differing_overlap_count": 1,
+                "resolutions": [
+                    {
+                        "selection_rule": "strict_superset_of_correlated_session_coverage",
+                        "preferred_source_ids": ["TEST.A/all.csv.gz"],
+                        "superseded_source_ids": ["TEST/all.csv.gz"],
+                        "first_timestamp": "2024-01-02T05:00:00Z",
+                        "last_timestamp": "2024-01-02T05:00:00Z",
+                        "timestamp_count": 1,
+                    }
+                ],
+            },
+            result["source_selection"],
+        )
+
+    def test_conflicting_raw_bar_prefers_sole_historical_ticker_source(self) -> None:
+        timestamp = "2024-01-02T05:00:00Z"
+
+        def candidate(source_id: str, symbol: str, historical_symbol: str, close: str) -> dict:
+            values = {field_name: "1" for field_name in BAR_FIELD_NAMES}
+            values["timestamp"] = timestamp
+            values["close"] = close
+            return {
+                "values": values,
+                "provenance": {
+                    "source_id": source_id,
+                    "symbol": symbol,
+                    "historical_symbol": historical_symbol,
+                },
+                "integrity_error_ids": [],
+            }
+
+        bars, selection = _resolve_bar_candidates(
+            {
+                timestamp: [
+                    candidate("OLD/raw.csv.gz", "OLD", "OLD", "10"),
+                    candidate("NEW/raw.csv.gz", "NEW", "OLD", "20"),
+                ]
+            },
+            {
+                "OLD/raw.csv.gz": frozenset((timestamp,)),
+                "NEW/raw.csv.gz": frozenset((timestamp,)),
+            },
+            allow_strict_superset_selection=False,
+        )
+
+        self.assertEqual("10", bars[0]["close"])
+        self.assertEqual("historical_ticker", selection["policy"])
+        self.assertEqual(
+            "requested_symbol_matches_historical_ticker",
+            selection["resolutions"][0]["selection_rule"],
+        )
+
+    def test_conflicting_bar_rejects_multiple_historical_ticker_sources(self) -> None:
+        timestamp = "2024-01-02T05:00:00Z"
+        candidates = []
+        for source_id, symbol, close in (("OLD/raw.csv.gz", "OLD", "10"), ("NEW/raw.csv.gz", "NEW", "20")):
+            values = {field_name: "1" for field_name in BAR_FIELD_NAMES}
+            values["timestamp"] = timestamp
+            values["close"] = close
+            candidates.append(
+                {
+                    "values": values,
+                    "provenance": {
+                        "source_id": source_id,
+                        "symbol": symbol,
+                        "historical_symbol": symbol,
+                    },
+                    "integrity_error_ids": [],
+                }
+            )
+
+        with self.assertRaisesRegex(EndOfDayReaderError, "no source was preferred"):
+            _resolve_bar_candidates(
+                {timestamp: candidates},
+                {candidate["provenance"]["source_id"]: frozenset((timestamp,)) for candidate in candidates},
+                allow_strict_superset_selection=False,
+            )
+
+    def test_conflicting_bar_rejects_without_a_historical_ticker_source(self) -> None:
+        timestamp = "2024-01-02T05:00:00Z"
+        candidates = []
+        for source_id, symbol, close in (("OLD/raw.csv.gz", "OLD", "10"), ("NEW/raw.csv.gz", "NEW", "20")):
+            values = {field_name: "1" for field_name in BAR_FIELD_NAMES}
+            values["timestamp"] = timestamp
+            values["close"] = close
+            candidates.append(
+                {
+                    "values": values,
+                    "provenance": {
+                        "source_id": source_id,
+                        "symbol": symbol,
+                        "historical_symbol": "OTHER",
+                    },
+                    "integrity_error_ids": [],
+                }
+            )
+
+        with self.assertRaisesRegex(EndOfDayReaderError, "no source was preferred"):
+            _resolve_bar_candidates(
+                {timestamp: candidates},
+                {candidate["provenance"]["source_id"]: frozenset((timestamp,)) for candidate in candidates},
+                allow_strict_superset_selection=False,
+            )
+
+    def test_shared_master_id_never_prefers_a_conflicting_raw_superset_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                fixture_name="nine_daily_bars_one_market_session_missing.json",
+            )
+            _publish_reader_fixture(
+                repository_root,
+                with_integrity_failure=False,
+                symbol="TEST.A",
+                asset_id=TEST_ASSET_UUID,
+                conflicting_first_close=True,
+            )
+
+            availability = get_alpaca_end_of_day_security_availability(
+                TEST_MASTER_ID,
+                repository_root=repository_root,
+            )
+            with self.assertRaisesRegex(EndOfDayReaderError, "conflicting authenticated bars"):
+                read_alpaca_end_of_day_security_history(
+                    TEST_MASTER_ID,
+                    "raw",
+                    repository_root=repository_root,
+                )
+
+        self.assertEqual(
+            {
+                "master_id": TEST_MASTER_ID,
+                "online": False,
+                "availability_status": "offline",
+            },
+            availability,
+        )
 
     def test_rejects_a_well_formed_but_unpublished_master_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
