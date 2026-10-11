@@ -26,7 +26,7 @@ Key properties include:
 
 ### Understand and consume
 
-- [Architecture](ARCHITECTURE.md) — responsibility boundary, data flows, component ownership, and system invariants.
+- [Architecture](docs/ARCHITECTURE.md) — responsibility boundary, data flows, component ownership, and system invariants.
 - [Public API](docs/public-api.md) — supported `alpaca_end_of_day` imports, search and ticker resolution, histories,
   flat CSV export, types, errors, and snapshot behavior.
 - [Technical contracts](docs/technical-contracts.md) — source authentication, validation, identity rules, availability
@@ -37,7 +37,7 @@ Key properties include:
 - [Operations](docs/operations.md) — update, batch, read, export, cache, replacement, backup, and recovery commands.
 - [Development](docs/development.md) — code ownership, versioning rules, local verification, documentation ownership,
   and the absence of repository CI.
-- [Version tracker](VERSION_TRACKER.md) — current contract versions, unreleased work, verification status, and concise
+- [Version tracker](docs/VERSION_TRACKER.md) — current contract versions, unreleased work, verification status, and concise
   historical milestones.
 - [Agent instructions](AGENTS.md) — authoritative repository workflow and safety rules for coding agents.
 

@@ -14,27 +14,29 @@
 | Detailed authenticated reads and source conflict resolution | [`alpaca_end_of_day_reader/`](../libs/alpaca_end_of_day_reader/) |
 | Atomic writes, hashing, rule helpers, and market calendar | [`common/`](../libs/common/) |
 
-Root Python files are stable entrypoints or compatibility facades. Keep domain logic in its owner. `libs/common/`
-imports no application package, and consumer code imports no module under `libs/`.
+Root Python files are executable entrypoints, except for the supported consumer library
+[`alpaca_end_of_day.py`](../alpaca_end_of_day.py). Keep domain logic in its owner. `libs/common/` imports no application
+package, and consumer code imports no module under `libs/`.
 
 ## Versioned boundaries
 
 Every behavioral or serialized-contract change bumps its owning version and appends exactly one JSON changelog entry.
-The changelogs are arrays whose one-based position is the version; entries contain `modifications` and no explicit
-`version` key. Runtime validators require array length to equal the current constant.
+The tracked runtime changelogs live in [`artifacts/`](../artifacts/). They are arrays whose one-based position is the
+version; entries contain `modifications` and no explicit `version` key. Runtime validators require array length to
+equal the current constant.
 
 | Boundary | Version constant | Runtime changelog |
 |---|---|---|
-| Public consumer API | [`API_VERSION`](../alpaca_end_of_day.py) | [`alpaca_end_of_day_api_change_log.json`](../alpaca_end_of_day_api_change_log.json) |
-| Frozen validation and processing | [`PIPELINE_VERSION`](../libs/alpaca_end_of_day_pipeline/pipeline_version.py) | [`alpaca_end_of_day_pipeline_change_log.json`](../alpaca_end_of_day_pipeline_change_log.json) |
-| Security correlation | [`CORRELATION_VERSION`](../libs/alpaca_end_of_day_security_correlation/correlation_version.py) | [`alpaca_end_of_day_security_correlation_change_log.json`](../alpaca_end_of_day_security_correlation_change_log.json) |
-| Sharded master catalogue | [`SECURITY_MASTER_VERSION`](../libs/alpaca_end_of_day_security_correlation/security_master_version.py) | [`alpaca_security_master_change_log.json`](../alpaca_security_master_change_log.json) |
-| Warning overlays | [`WARNING_PIPELINE_VERSION`](../libs/alpaca_end_of_day_warning_pipeline/warning_pipeline_version.py) | [`alpaca_end_of_day_warning_pipeline_change_log.json`](../alpaca_end_of_day_warning_pipeline_change_log.json) |
-| Detailed internal reader | [`READER_VERSION`](../libs/alpaca_end_of_day_reader/reader_version.py) | [`alpaca_end_of_day_reader_change_log.json`](../alpaca_end_of_day_reader_change_log.json) |
+| Public consumer API | [`API_VERSION`](../alpaca_end_of_day.py) | [`alpaca_end_of_day_api_change_log.json`](../artifacts/alpaca_end_of_day_api_change_log.json) |
+| Frozen validation and processing | [`PIPELINE_VERSION`](../libs/alpaca_end_of_day_pipeline/pipeline_version.py) | [`alpaca_end_of_day_pipeline_change_log.json`](../artifacts/alpaca_end_of_day_pipeline_change_log.json) |
+| Security correlation | [`CORRELATION_VERSION`](../libs/alpaca_end_of_day_security_correlation/correlation_version.py) | [`alpaca_end_of_day_security_correlation_change_log.json`](../artifacts/alpaca_end_of_day_security_correlation_change_log.json) |
+| Sharded master catalogue | [`SECURITY_MASTER_VERSION`](../libs/alpaca_end_of_day_security_correlation/security_master_version.py) | [`alpaca_security_master_change_log.json`](../artifacts/alpaca_security_master_change_log.json) |
+| Warning overlays | [`WARNING_PIPELINE_VERSION`](../libs/alpaca_end_of_day_warning_pipeline/warning_pipeline_version.py) | [`alpaca_end_of_day_warning_pipeline_change_log.json`](../artifacts/alpaca_end_of_day_warning_pipeline_change_log.json) |
+| Detailed internal reader | [`READER_VERSION`](../libs/alpaca_end_of_day_reader/reader_version.py) | [`alpaca_end_of_day_reader_change_log.json`](../artifacts/alpaca_end_of_day_reader_change_log.json) |
 
 The lineage report uses `REPORT_VERSION` in
 [`alpaca_security_lineage/settings.py`](../libs/alpaca_security_lineage/settings.py). Supporting manifest and ID-scheme
-versions live beside their schemas. [VERSION_TRACKER.md](../VERSION_TRACKER.md) records the current matrix, pending
+versions live beside their schemas. [VERSION_TRACKER.md](VERSION_TRACKER.md) records the current matrix, pending
 changes, and concise milestones; the JSON arrays remain the exact machine-validated histories.
 
 When correlation changes, review `SUPPORTED_CORRELATION_VERSIONS` as a migration decision. Supporting an older derived
@@ -85,11 +87,11 @@ pinned; version 0.16.10 is verified in the current environment.
 |---|---|
 | Product summary and complete document index | [`README.md`](../README.md) |
 | Agent workflow and repository safety rules | [`AGENTS.md`](../AGENTS.md) |
-| Responsibility, flow, ownership, and invariants | [`ARCHITECTURE.md`](../ARCHITECTURE.md) |
+| Responsibility, flow, ownership, and invariants | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Consumer-facing Python and CLI contract | [`public-api.md`](public-api.md) |
 | Operator commands, mutation, backup, and recovery | [`operations.md`](operations.md) |
 | Schemas, evidence gates, identity rules, and artifacts | [`technical-contracts.md`](technical-contracts.md) |
-| Current versions, pending changes, history, and verification gaps | [`VERSION_TRACKER.md`](../VERSION_TRACKER.md) |
+| Current versions, pending changes, history, and verification gaps | [`VERSION_TRACKER.md`](VERSION_TRACKER.md) |
 
 Keep one explanation authoritative and link to it from other documents. The repository has no configured Markdown
 linter or link checker; documentation changes require an explicit local relative-link, anchor, and referenced-path

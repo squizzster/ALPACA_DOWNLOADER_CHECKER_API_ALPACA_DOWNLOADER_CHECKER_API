@@ -8,15 +8,17 @@ index for pending work, current compatibility, and important milestones.
 
 ### Added
 
-- Public API v1 in [`alpaca_end_of_day.py`](alpaca_end_of_day.py): online-only catalogue access, name and identifier
+- Public API v1 in [`alpaca_end_of_day.py`](../alpaca_end_of_day.py): online-only catalogue access, name and identifier
   search, dated ticker resolution, typed exact histories, snapshot generation checks, and disk-backed flat CSV export.
 - A standalone read-only catalogue audit authenticates every published source and identity shard, checks global UUID
   membership and source closure, and reports all cross-catalogue findings without changing runtime data.
+- A tracked, one-record recovery universe in [`artifacts/ticker.csv`](../artifacts/ticker.csv) captures the authenticated
+  source symbols needed to seed a fresh acquisition.
 - Correlation v9-v20: generalized stable-candidate fallback, ticker-reuse gap detection, authenticated session
   exclusions, complete and inactive current-suffix rules, dated terminal suffixes, one-session distinct-UUID
   transitions, continuous UUID episode partitioning, authenticated current-symbol reuse, and separation of ticker
   suffix allocation from authenticated UUID-lineage membership.
-- Root [agent instructions](AGENTS.md) and this tracker.
+- Root [agent instructions](../AGENTS.md) and this tracker.
 
 ### Modified
 
@@ -30,9 +32,13 @@ index for pending work, current compatibility, and important milestones.
   reserving edge suppression for explicit identity partitions.
 - The README and topic guides now distinguish the online public library from internal offline inspection, document
   company-name search and flat export, and give each architectural or operational explanation one owner.
+- Runtime changelogs now live under [`artifacts/`](../artifacts/), while architecture and version-tracking documents
+  live under this `docs/` directory.
 
 ### Removed
 
+- Removed the internal root compatibility facades `alpaca_end_of_day_pipeline.py` and
+  `us_equity_market_session_calendar.py`; repository code and tests use their owning packages under `libs/`.
 - Removed consumer guidance that imported `libs.alpaca_end_of_day_reader` or enumerated offline states. Those internal
   functions remain available to operators and pipeline evaluation; they are no longer described as application APIs.
 - Removed the obsolete statement that company-name search was outside the public contract. Current search is
@@ -44,7 +50,7 @@ Status recorded **2026-10-11 UTC** for the current working tree:
 
 - `ruff check --exclude figi_test.py .`: passed. The prescribed `ruff check .` is not green solely because the
   deliberately untracked experimental `figi_test.py` has one import-order finding; that file was left untouched.
-- `ruff format --check --exclude figi_test.py .`: passed for 105 Python files. The prescribed
+- `ruff format --check --exclude figi_test.py .`: passed for 103 Python files. The prescribed
   `ruff format --check .` likewise reports only that untracked experimental file as unformatted.
 - `git diff --check`: passed.
 - A custom documentation check validated all local links, anchors, and paths across the Git-visible Markdown files;
@@ -83,7 +89,7 @@ There is no repository CI workflow or configured Markdown/link checker. Local ve
 | Security ID scheme | 1 | 1 | SHA-256 of sorted unique Alpaca asset IDs. |
 | Verified session exclusions | 1 | absent | Introduced with correlation v12. |
 
-The exact current constants live in their owning modules. See [Development](docs/development.md#versioned-boundaries)
+The exact current constants live in their owning modules. See [Development](development.md#versioned-boundaries)
 for the version-to-file map.
 
 ## Baseline milestone
@@ -102,7 +108,7 @@ Runtime data, credentials, ticker universes, logs, and experimental files remain
 - **v1 — Unreleased:** established the online-only `DataLibrary`, typed catalogue and bars, exact and dated lookups,
   generic unavailable-ID behavior, name/identifier search, and raw-plus-all flat CSV export.
 
-Exact history: [`alpaca_end_of_day_api_change_log.json`](alpaca_end_of_day_api_change_log.json).
+Exact history: [`alpaca_end_of_day_api_change_log.json`](../artifacts/alpaca_end_of_day_api_change_log.json).
 
 ### Frozen validation pipeline
 
@@ -113,7 +119,7 @@ Exact history: [`alpaca_end_of_day_api_change_log.json`](alpaca_end_of_day_api_c
 - **v17:** added adaptive adjustment acquisition, explicit empirical aliases, and authenticated hard-link compaction.
 - **v18-v19:** defined accepted zero-activity bars, split-adjusted volume semantics, and typed invalid-symbol failures.
 
-Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](alpaca_end_of_day_pipeline_change_log.json).
+Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](../artifacts/alpaca_end_of_day_pipeline_change_log.json).
 
 ### Security correlation
 
@@ -129,7 +135,7 @@ Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](alpaca_end_of_day_
   edges only for explicit identity partitions.
 
 Exact history:
-[`alpaca_end_of_day_security_correlation_change_log.json`](alpaca_end_of_day_security_correlation_change_log.json).
+[`alpaca_end_of_day_security_correlation_change_log.json`](../artifacts/alpaca_end_of_day_security_correlation_change_log.json).
 
 ### Security master
 
@@ -138,7 +144,7 @@ Exact history:
 - **v3-v4:** persisted `online` and compact availability status, including `lineage_gap`.
 - **v5 — Unreleased:** permits supported correlation generations during incremental derived-catalogue migration.
 
-Exact history: [`alpaca_security_master_change_log.json`](alpaca_security_master_change_log.json).
+Exact history: [`alpaca_security_master_change_log.json`](../artifacts/alpaca_security_master_change_log.json).
 
 ### Internal reader
 
@@ -149,7 +155,7 @@ Exact history: [`alpaca_security_master_change_log.json`](alpaca_security_master
 - **v6-v7 — Unreleased:** added strict-superset adjusted-source selection and dated historical-ticker selection while
   keeping every remaining ambiguity fatal.
 
-Exact history: [`alpaca_end_of_day_reader_change_log.json`](alpaca_end_of_day_reader_change_log.json).
+Exact history: [`alpaca_end_of_day_reader_change_log.json`](../artifacts/alpaca_end_of_day_reader_change_log.json).
 
 ### Warning pipeline
 
@@ -157,4 +163,4 @@ Exact history: [`alpaca_end_of_day_reader_change_log.json`](alpaca_end_of_day_re
 - **v4-v6:** supported empty correlated sources, excluded accepted zero-activity rows from numerical analysis, and
   retained valid split-volume zeros.
 
-Exact history: [`alpaca_end_of_day_warning_pipeline_change_log.json`](alpaca_end_of_day_warning_pipeline_change_log.json).
+Exact history: [`alpaca_end_of_day_warning_pipeline_change_log.json`](../artifacts/alpaca_end_of_day_warning_pipeline_change_log.json).

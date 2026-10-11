@@ -208,6 +208,17 @@ manifests. Never delete one member of a pair to force a refresh.
 
 ## Backup and recovery
 
+The source checkout includes [`artifacts/ticker.csv`](../artifacts/ticker.csv), a headerless, single-record CSV of the
+sorted unique source-symbol universe captured from the authenticated master catalogue. It is the recovery seed for a
+fresh acquisition, not a replacement for frozen-data backup. Convert it to the pipeline's one-symbol-per-line input
+format before use:
+
+```bash
+tr ',' '\n' < artifacts/ticker.csv > /tmp/alpaca-restore-symbols.txt
+```
+
+Refresh the tracked snapshot deliberately whenever the authenticated source-symbol universe changes.
+
 The security-master receipt authenticates the root file's nanosecond mtime as well as its bytes and SHA-256. Use
 POSIX/PAX tar so fractional mtimes survive:
 

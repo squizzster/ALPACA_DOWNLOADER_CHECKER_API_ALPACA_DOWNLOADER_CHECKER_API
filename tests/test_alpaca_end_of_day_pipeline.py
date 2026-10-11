@@ -11,19 +11,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
-import alpaca_end_of_day_pipeline as end_of_day_pipeline
-from alpaca_end_of_day_pipeline import (
+from libs.alpaca_end_of_day_pipeline import (
     PIPELINE_VERSION,
     AlpacaDownloadIntegrityError,
     EndOfDayPipelineError,
     PricingDataIntegrityError,
     authenticate_and_revalidate_cached_download,
     download_manifest_path,
+    download_publication,
     inspect_cached_download,
     validate_and_publish_alpaca_download,
+    validate_end_of_day_bars,
     validate_pipeline_change_log,
 )
-from libs.alpaca_end_of_day_pipeline import download_publication
 
 TEST_FIXTURES_DIRECTORY = Path(__file__).with_name("fixtures")
 DOWNLOAD_MANIFEST_KEYS = frozenset(
@@ -456,7 +456,7 @@ class CliBoundaryTests(unittest.TestCase):
             completed_process = subprocess.run(
                 [
                     sys.executable,
-                    str(Path(end_of_day_pipeline.__file__).with_name("download_alpaca_end_of_day_bars.py")),
+                    str(Path(__file__).resolve().parents[1] / "download_alpaca_end_of_day_bars.py"),
                     "--symbol",
                     "TEST",
                     "--adjustment",
@@ -670,7 +670,7 @@ class CacheDecisionTests(unittest.TestCase):
 
 class ValidationTests(unittest.TestCase):
     def test_complete_fixture_has_no_failures(self):
-        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+        validation_result = validate_end_of_day_bars(
             load_fixture_bars(),
             test_download_request_identity(),
         )
@@ -678,7 +678,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_missing_session_is_not_an_identity_blind_integrity_failure(self):
         daily_bars_with_missing_session = load_fixture_bars("nine_daily_bars_one_market_session_missing.json")
-        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+        validation_result = validate_end_of_day_bars(
             daily_bars_with_missing_session,
             test_download_request_identity(),
         )
@@ -690,7 +690,7 @@ class ValidationTests(unittest.TestCase):
         closed_session_bar = copy.deepcopy(daily_bars_with_closed_session[3])
         closed_session_bar["t"] = "2024-01-06T05:00:00Z"
         daily_bars_with_closed_session.insert(4, closed_session_bar)
-        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+        validation_result = validate_end_of_day_bars(
             daily_bars_with_closed_session,
             test_download_request_identity(),
         )
@@ -704,7 +704,7 @@ class ValidationTests(unittest.TestCase):
         daily_bars_with_invalid_trade_count = load_fixture_bars(
             "ten_daily_bars_one_trade_count_above_volume.json"
         )
-        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+        validation_result = validate_end_of_day_bars(
             daily_bars_with_invalid_trade_count,
             test_download_request_identity(),
         )
@@ -725,7 +725,7 @@ class ValidationTests(unittest.TestCase):
                 bars = copy.deepcopy(load_fixture_bars())
                 bars[1].update(v=1, n=2000)
 
-                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                validation_result = validate_end_of_day_bars(
                     bars,
                     test_download_request_identity(adjustment=adjustment),
                 )
@@ -742,7 +742,7 @@ class ValidationTests(unittest.TestCase):
                 bars = copy.deepcopy(load_fixture_bars())
                 bars[1].update(v=1, n=2000)
 
-                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                validation_result = validate_end_of_day_bars(
                     bars,
                     test_download_request_identity(adjustment=adjustment),
                 )
@@ -753,7 +753,7 @@ class ValidationTests(unittest.TestCase):
         bars = copy.deepcopy(load_fixture_bars())
         bars[1].update(v=0, n=8)
 
-        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+        validation_result = validate_end_of_day_bars(
             bars,
             test_download_request_identity(adjustment="split"),
         )
@@ -766,7 +766,7 @@ class ValidationTests(unittest.TestCase):
                 bars = copy.deepcopy(load_fixture_bars())
                 bars[1].update(v=invalid_volume)
 
-                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                validation_result = validate_end_of_day_bars(
                     bars,
                     test_download_request_identity(adjustment="split"),
                 )
@@ -790,7 +790,7 @@ class ValidationTests(unittest.TestCase):
                     n=explicit_zero,
                     vw=explicit_zero,
                 )
-                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                validation_result = validate_end_of_day_bars(
                     daily_bars_with_zero_activity,
                     test_download_request_identity(),
                 )
@@ -800,7 +800,7 @@ class ValidationTests(unittest.TestCase):
         daily_bars_with_nonflat_zero_activity = copy.deepcopy(load_fixture_bars())
         daily_bars_with_nonflat_zero_activity[1].update(v=0, n=0, vw=0)
 
-        validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+        validation_result = validate_end_of_day_bars(
             daily_bars_with_nonflat_zero_activity,
             test_download_request_identity(),
         )
@@ -834,7 +834,7 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(expected_error_text=expected_error_text):
                 daily_bars_under_test = copy.deepcopy(load_fixture_bars())
                 introduce_invalid_value(daily_bars_under_test[1])
-                validation_result = end_of_day_pipeline._validate_end_of_day_bars(
+                validation_result = validate_end_of_day_bars(
                     daily_bars_under_test,
                     test_download_request_identity(),
                 )

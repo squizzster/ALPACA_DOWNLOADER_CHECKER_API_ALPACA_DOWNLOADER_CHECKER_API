@@ -203,5 +203,5 @@ snapshot.
 | `DataLibraryError` | Authentication or the public data contract failed. The two public errors above inherit from it. |
 
 The exact exported names are listed in `alpaca_end_of_day.__all__`; public API version history is tracked in
-[`alpaca_end_of_day_api_change_log.json`](../alpaca_end_of_day_api_change_log.json) and summarized in
-[`VERSION_TRACKER.md`](../VERSION_TRACKER.md).
+[`alpaca_end_of_day_api_change_log.json`](../artifacts/alpaca_end_of_day_api_change_log.json) and summarized in
+[`VERSION_TRACKER.md`](VERSION_TRACKER.md).

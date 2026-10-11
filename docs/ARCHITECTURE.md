@@ -17,8 +17,8 @@ The project deliberately separates application consumption from operator inspect
 
 | Boundary | Supported entrypoint | What it exposes |
 |---|---|---|
-| Consumer | [`alpaca_end_of_day.DataLibrary`](alpaca_end_of_day.py) | Only the authenticated online universe, public identity metadata, exact bars, search, ticker resolution, and flat export. |
-| Operator/internal | [`libs/alpaca_end_of_day_reader`](libs/alpaca_end_of_day_reader/) | Detailed provenance, validation findings, warning overlays, source selection, and offline records for pipeline evaluation or investigation. |
+| Consumer | [`alpaca_end_of_day.DataLibrary`](../alpaca_end_of_day.py) | Only the authenticated online universe, public identity metadata, exact bars, search, ticker resolution, and flat export. |
+| Operator/internal | [`libs/alpaca_end_of_day_reader`](../libs/alpaca_end_of_day_reader/) | Detailed provenance, validation findings, warning overlays, source selection, and offline records for pipeline evaluation or investigation. |
 
 A consumer cannot discover an offline identity through the public boundary. Every well-formed ID outside the opened
 online snapshot receives the same `PublicIdUnavailableError`. Internal readers remain necessary because operators must
@@ -27,7 +27,7 @@ be able to explain and repair publication failures without exposing that machine
 ## Update flow
 
 Update orchestration is owned by
-[`libs/alpaca_end_of_day_ticker_pipeline/orchestration.py`](libs/alpaca_end_of_day_ticker_pipeline/orchestration.py):
+[`libs/alpaca_end_of_day_ticker_pipeline/orchestration.py`](../libs/alpaca_end_of_day_ticker_pipeline/orchestration.py):
 
 ```text
 Alpaca bars or authenticated cache
@@ -65,18 +65,19 @@ raise `CatalogChangedError`; the caller creates a new instance to observe the ne
 
 | Boundary | Owner | Responsibility |
 |---|---|---|
-| Consumer library | [`alpaca_end_of_day.py`](alpaca_end_of_day.py) | Online-only catalogue, search, resolution, typed history, and flat CSV projection. |
-| Bar request | [`libs/download_alpaca_end_of_day_bars/`](libs/download_alpaca_end_of_day_bars/) | CLI planning, credentials, HTTP, pagination, rate limiting, and adjustment acquisition. |
-| Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](libs/alpaca_end_of_day_pipeline/) | Gzip/sidecar publication, cache state, validation, authenticated aliases, and immutable-boundary errors. |
-| Identity evidence | [`libs/alpaca_security_lineage/`](libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal and symbol disposition. |
-| Correlation and master identity | [`libs/alpaca_end_of_day_security_correlation/`](libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row partition, episode partition, master-ID derivation, and sharded catalogue publication. |
-| Advisory checks | [`libs/alpaca_end_of_day_warning_pipeline/`](libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and security-history warning overlays. |
-| Internal authenticated read | [`libs/alpaca_end_of_day_reader/`](libs/alpaca_end_of_day_reader/) | Dependency authentication, source conflict handling, detailed result, and operator status queries. |
-| Online evaluation | [`libs/alpaca_end_of_day_ticker_pipeline/online_status.py`](libs/alpaca_end_of_day_ticker_pipeline/online_status.py) | Exercise every advertised read and classify final availability. |
-| Shared primitives | [`libs/common/`](libs/common/) | Atomic writes, hashing, pure rule evaluation, and the tracked US-market calendar. |
+| Consumer library | [`alpaca_end_of_day.py`](../alpaca_end_of_day.py) | Online-only catalogue, search, resolution, typed history, and flat CSV projection. |
+| Bar request | [`libs/download_alpaca_end_of_day_bars/`](../libs/download_alpaca_end_of_day_bars/) | CLI planning, credentials, HTTP, pagination, rate limiting, and adjustment acquisition. |
+| Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](../libs/alpaca_end_of_day_pipeline/) | Gzip/sidecar publication, cache state, validation, authenticated aliases, and immutable-boundary errors. |
+| Identity evidence | [`libs/alpaca_security_lineage/`](../libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal and symbol disposition. |
+| Correlation and master identity | [`libs/alpaca_end_of_day_security_correlation/`](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row partition, episode partition, master-ID derivation, and sharded catalogue publication. |
+| Advisory checks | [`libs/alpaca_end_of_day_warning_pipeline/`](../libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and security-history warning overlays. |
+| Internal authenticated read | [`libs/alpaca_end_of_day_reader/`](../libs/alpaca_end_of_day_reader/) | Dependency authentication, source conflict handling, detailed result, and operator status queries. |
+| Online evaluation | [`libs/alpaca_end_of_day_ticker_pipeline/online_status.py`](../libs/alpaca_end_of_day_ticker_pipeline/online_status.py) | Exercise every advertised read and classify final availability. |
+| Shared primitives | [`libs/common/`](../libs/common/) | Atomic writes, hashing, pure rule evaluation, and the tracked US-market calendar. |
 
-Root Python files are stable entrypoints or compatibility facades. Domain behavior belongs in its owning library, and
-`libs/common/` imports no application package.
+Root Python files are executable entrypoints, except for the supported consumer library
+[`alpaca_end_of_day.py`](../alpaca_end_of_day.py). Domain behavior belongs in its owning library, and `libs/common/`
+imports no application package.
 
 ## Core invariants
 
@@ -97,6 +98,5 @@ Root Python files are stable entrypoints or compatibility facades. Domain behavi
 - Integrity failures preserve and describe the source rows. Advisory warnings do not alter returned values.
 - Readers never update, repair, download, or contact Alpaca.
 
-The exact evidence gates and artifact schemas live in [Technical contracts](docs/technical-contracts.md). Consumer
-semantics live in [Public API](docs/public-api.md), and operational mutation rules live in
-[Operations](docs/operations.md).
+The exact evidence gates and artifact schemas live in [Technical contracts](technical-contracts.md). Consumer
+semantics live in [Public API](public-api.md), and operational mutation rules live in [Operations](operations.md).

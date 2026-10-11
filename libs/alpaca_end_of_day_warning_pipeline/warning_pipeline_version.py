@@ -7,7 +7,7 @@ from .errors import WarningPipelineError
 
 WARNING_PIPELINE_VERSION = 6
 WARNING_PIPELINE_CHANGE_LOG_PATH = (
-    Path(__file__).resolve().parents[2] / "alpaca_end_of_day_warning_pipeline_change_log.json"
+    Path(__file__).resolve().parents[2] / "artifacts" / "alpaca_end_of_day_warning_pipeline_change_log.json"
 )
 
 

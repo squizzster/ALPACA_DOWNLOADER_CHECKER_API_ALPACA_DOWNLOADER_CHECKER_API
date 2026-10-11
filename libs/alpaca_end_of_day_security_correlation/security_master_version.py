@@ -6,7 +6,9 @@ from pathlib import Path
 from .errors import SecurityCorrelationError
 
 SECURITY_MASTER_VERSION = 5
-SECURITY_MASTER_CHANGE_LOG_PATH = Path(__file__).resolve().parents[2] / "alpaca_security_master_change_log.json"
+SECURITY_MASTER_CHANGE_LOG_PATH = (
+    Path(__file__).resolve().parents[2] / "artifacts" / "alpaca_security_master_change_log.json"
+)
 
 
 @lru_cache(maxsize=1)

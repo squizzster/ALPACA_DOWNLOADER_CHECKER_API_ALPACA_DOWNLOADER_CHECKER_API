@@ -6,7 +6,9 @@ from pathlib import Path
 from .errors import EndOfDayReaderError
 
 READER_VERSION = 7
-READER_CHANGE_LOG_PATH = Path(__file__).resolve().parents[2] / "alpaca_end_of_day_reader_change_log.json"
+READER_CHANGE_LOG_PATH = (
+    Path(__file__).resolve().parents[2] / "artifacts" / "alpaca_end_of_day_reader_change_log.json"
+)
 
 
 @lru_cache(maxsize=1)
