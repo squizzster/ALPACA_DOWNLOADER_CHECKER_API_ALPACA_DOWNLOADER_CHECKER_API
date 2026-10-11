@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -33,6 +34,8 @@ from .online_status import (
     correlated_master_ids,
     evaluate_security_online_status,
 )
+
+_SECURITY_MASTER_FINALIZATION_LOCK = threading.Lock()
 
 
 class DownloadAndValidationStageRunner(Protocol):
@@ -275,33 +278,34 @@ def run_end_of_day_ticker_pipeline(
         resolved_repository_root,
         warning_pipeline_report,
     )
-    security_master_receipt = security_master_publisher(
-        resolved_repository_root,
-        security_correlation_report,
-        security_correlation_receipt,
-        online_by_master_id=None,
-    )
     master_ids = correlated_master_ids(security_correlation_report)
-    for attempt in range(3):
-        online_evaluation = security_online_status_evaluator(
+    with _SECURITY_MASTER_FINALIZATION_LOCK:
+        security_master_receipt = security_master_publisher(
             resolved_repository_root,
-            master_ids,
+            security_correlation_report,
+            security_correlation_receipt,
+            online_by_master_id=None,
         )
-        try:
-            security_master_receipt = security_master_online_status_publisher(
+        for attempt in range(3):
+            online_evaluation = security_online_status_evaluator(
                 resolved_repository_root,
-                online_evaluation.online_by_master_id,
-                availability_status_by_master_id=(online_evaluation.availability_status_by_master_id),
-                expected_security_object_sha256_by_master_id=(
-                    online_evaluation.security_object_sha256_by_master_id
-                ),
-                expected_source_object_sha256_by_symbol=(online_evaluation.source_object_sha256_by_symbol),
+                master_ids,
             )
-        except SecurityCorrelationError as error:
-            if "changed during online evaluation" not in str(error) or attempt == 2:
-                raise
-        else:
-            break
+            try:
+                security_master_receipt = security_master_online_status_publisher(
+                    resolved_repository_root,
+                    online_evaluation.online_by_master_id,
+                    availability_status_by_master_id=(online_evaluation.availability_status_by_master_id),
+                    expected_security_object_sha256_by_master_id=(
+                        online_evaluation.security_object_sha256_by_master_id
+                    ),
+                    expected_source_object_sha256_by_symbol=(online_evaluation.source_object_sha256_by_symbol),
+                )
+            except SecurityCorrelationError as error:
+                if "changed during online evaluation" not in str(error) or attempt == 2:
+                    raise
+            else:
+                break
     security_correlation_receipt = {
         **security_correlation_receipt,
         "security_master": _security_master_summary(security_master_receipt),

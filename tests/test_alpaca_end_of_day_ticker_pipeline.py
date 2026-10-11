@@ -3,6 +3,7 @@ import json
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -948,6 +949,174 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         self.assertTrue(result.download_stage.has_pricing_data_integrity_failures)
         self.assertTrue(result.security_correlation_receipt["partition"]["row_partition_complete"])
         self.assertEqual(2, result.warning_pipeline_receipt["summary"]["warning_count"])
+
+    def test_security_master_finalization_is_serialized_between_workers(self) -> None:
+        workers_ready = threading.Barrier(2)
+        state_lock = threading.Lock()
+        first_evaluation_started = threading.Event()
+        overlapping_finalization_started = threading.Event()
+        active_finalization_thread = None
+        events = []
+
+        def resolve_authoritative_symbol(
+            submitted_symbol,
+            _api_key_id,
+            _api_secret_key,
+            *,
+            request_rate_limiter,
+        ):
+            return {
+                "submitted_symbol": submitted_symbol,
+                "authoritative_symbol": submitted_symbol,
+                "changed": False,
+                "basis": "alpaca_asset_lookup",
+                "http_status": 200,
+                "asset": {
+                    "id": f"asset-{submitted_symbol}",
+                    "class": "us_equity",
+                    "symbol": submitted_symbol,
+                },
+            }
+
+        def run_download_stage(download_plan, **_kwargs):
+            return EndOfDayDownloadStageResult(
+                symbol=download_plan.symbol,
+                requested_adjustment_modes=download_plan.adjustment_modes,
+                pricing_data_integrity_failure_count=0,
+            )
+
+        def inspect_lineage(ticker, *_args, **_kwargs):
+            return {"symbol": ticker}
+
+        def build_correlation(lineage_report, _repository_root):
+            master_id = ("a" if lineage_report["symbol"] == "FIRST" else "b") * 64
+            return {
+                "symbol": lineage_report["symbol"],
+                "correlated": {
+                    "segments": [
+                        {"canonical_security": {"security_id": master_id}},
+                    ],
+                },
+            }
+
+        def publish_correlation(_repository_root, _report):
+            return correlation_receipt()
+
+        def build_warnings(_repository_root, symbol):
+            return {"symbol": symbol}
+
+        def publish_warnings(_repository_root, _report):
+            workers_ready.wait(timeout=5)
+            return warning_pipeline_receipt()
+
+        def publish_security_master(
+            _repository_root,
+            report,
+            _receipt,
+            *,
+            online_by_master_id,
+        ):
+            nonlocal active_finalization_thread
+            self.assertIsNone(online_by_master_id)
+            thread_id = threading.get_ident()
+            with state_lock:
+                if active_finalization_thread is not None:
+                    overlapping_finalization_started.set()
+                active_finalization_thread = thread_id
+                events.append((report["symbol"], "provisional"))
+            return security_master_receipt()
+
+        def evaluate_online_status(_repository_root, master_ids):
+            thread_id = threading.get_ident()
+            with state_lock:
+                self.assertEqual(thread_id, active_finalization_thread)
+                events.append((master_ids[0][0], "evaluate"))
+            if not first_evaluation_started.is_set():
+                first_evaluation_started.set()
+                overlapping_finalization_started.wait(timeout=0.2)
+            master_id = master_ids[0]
+            return SecurityOnlineEvaluation(
+                online_by_master_id={master_id: True},
+                availability_status_by_master_id={master_id: "online"},
+                security_object_sha256_by_master_id={master_id: "s" * 64},
+                source_object_sha256_by_symbol={"SOURCE": "o" * 64},
+            )
+
+        def publish_online_status(
+            _repository_root,
+            _online_by_master_id,
+            *,
+            availability_status_by_master_id,
+            expected_security_object_sha256_by_master_id,
+            expected_source_object_sha256_by_symbol,
+        ):
+            nonlocal active_finalization_thread
+            self.assertEqual(["online"], list(availability_status_by_master_id.values()))
+            self.assertEqual(["s" * 64], list(expected_security_object_sha256_by_master_id.values()))
+            self.assertEqual({"SOURCE": "o" * 64}, expected_source_object_sha256_by_symbol)
+            thread_id = threading.get_ident()
+            with state_lock:
+                self.assertEqual(thread_id, active_finalization_thread)
+                events.append((next(iter(_online_by_master_id))[0], "online"))
+                active_finalization_thread = None
+            return security_master_receipt()
+
+        def run_pipeline(symbol, repository_root):
+            return run_end_of_day_ticker_pipeline(
+                EndOfDayDownloadPlan(
+                    symbol=symbol,
+                    adjustment_modes=("raw",),
+                    force_authenticated_replacement=False,
+                    repair_orphaned_download_pair=False,
+                ),
+                repository_root=repository_root,
+                environment={
+                    "ALPACA_API_KEY_ID": "key",
+                    "ALPACA_API_SECRET_KEY": "secret",
+                },
+                authoritative_symbol_resolver=resolve_authoritative_symbol,
+                download_and_validation_stage_runner=run_download_stage,
+                security_lineage_inspector=inspect_lineage,
+                security_correlation_report_builder=build_correlation,
+                security_correlation_publisher=publish_correlation,
+                warning_pipeline_report_builder=build_warnings,
+                warning_pipeline_publisher=publish_warnings,
+                security_online_status_evaluator=evaluate_online_status,
+                security_master_publisher=publish_security_master,
+                security_master_online_status_publisher=publish_online_status,
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(run_pipeline, symbol, repository_root) for symbol in ("FIRST", "SECOND")
+                ]
+                results = [future.result(timeout=5) for future in futures]
+
+        self.assertFalse(overlapping_finalization_started.is_set())
+        self.assertEqual({"FIRST", "SECOND"}, {result.download_stage.symbol for result in results})
+        self.assertIn(
+            events,
+            (
+                [
+                    ("FIRST", "provisional"),
+                    ("a", "evaluate"),
+                    ("a", "online"),
+                    ("SECOND", "provisional"),
+                    ("b", "evaluate"),
+                    ("b", "online"),
+                ],
+                [
+                    ("SECOND", "provisional"),
+                    ("b", "evaluate"),
+                    ("b", "online"),
+                    ("FIRST", "provisional"),
+                    ("a", "evaluate"),
+                    ("a", "online"),
+                ],
+            ),
+        )
 
     def test_alpaca_returned_symbol_is_authoritative_for_every_pipeline_stage(self) -> None:
         events = []

@@ -21,6 +21,8 @@ index for pending work, current compatibility, and important milestones.
   migration without changing IDs, availability, or frozen bindings.
 - Internal reader v6-v7 resolves adjusted overlaps only through strict-superset coverage and resolves a remaining
   disagreement only through one exact dated historical-ticker source.
+- Multi-worker ticker orchestration serializes provisional master publication, online evaluation, and final
+  availability publication as one in-process catalogue-finalization transaction.
 - The README and topic guides now distinguish the online public library from internal offline inspection, document
   company-name search and flat export, and give each architectural or operational explanation one owner.
 
@@ -54,7 +56,7 @@ The complete test command is **not green**:
 
 ```text
 python3 -W error::ResourceWarning -m unittest discover -s tests -v
-Ran 169 tests: 167 passed, 2 failed
+Ran 170 tests: 168 passed, 2 failed
 ```
 
 Both failures occur because `ticker_reuse_gap_guard` currently executes before the dated as-of UUID resolver and treats
