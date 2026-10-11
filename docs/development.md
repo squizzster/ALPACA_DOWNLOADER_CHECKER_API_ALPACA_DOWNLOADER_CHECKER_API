@@ -81,6 +81,7 @@ versions, results, and unresolved gaps belong in [VERSION_TRACKER.md](VERSION_TR
 | Product summary and complete document index | [`README.md`](../README.md) |
 | Agent workflow and repository safety rules | [`AGENTS.md`](../AGENTS.md) |
 | Responsibility, flow, ownership, and invariants | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Single execution path, ordered rule cascade, and non-divergence controls | [`PIPELINE.md`](../PIPELINE.md) |
 | Consumer-facing Python and CLI contract | [`public-api.md`](public-api.md) |
 | Operator commands, mutation, backup, and recovery | [`operations.md`](operations.md) |
 | Schemas, evidence gates, identity rules, runtime artifacts, and tracked resources | [`technical-contracts.md`](technical-contracts.md) |

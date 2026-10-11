@@ -96,48 +96,23 @@ digest for a fixed Alpaca-ID set. A UUID-less retained symbol series receives a 
 `market_data_series_id` with `is_security_identity: false`; it never enters the master catalogue and must never be used
 to join ticker reuse.
 
-## Correlation and episode rules
+### Lineage acquisition evidence
 
-Every authenticated source row must appear exactly once in the correlated or uncorrelated output. `ROW_CORRELATION_RULES`
-in [`row_correlation.py`](../libs/alpaca_end_of_day_security_correlation/row_correlation.py) is the execution-order
-authority. Earlier rules may deliberately prevent a later generic fallback from joining an unresolved boundary.
+Lineage report v4 expands a name-change search only from a complete action carrying ID, process date, old/new symbols,
+and old/new CUSIPs. Both exact CUSIP lookup records must be successful HTTP-200 `us_equity` results on a non-empty,
+non-OTC exchange; their Alpaca UUIDs and returned symbols must agree. The returned symbol must satisfy the symbol
+grammar and must not echo either endpoint CUSIP. Qualifying symbols are queried once, in deterministic order, until no
+new symbol is found. Exceeding the bounded traversal is an error, not a partial report.
 
-Rules describe evidence shapes, never named tickers. The current consequential shapes are:
+Status and tradability do not affect this historical-evidence acquisition. The resulting actions and lookups remain
+evidence for the existing ownership and UUID-lineage rules; acquisition alone does not allocate a bar or join UUIDs.
 
-- A gap of at least **60 expected US market sessions** is a ticker-reuse candidate. The guard keeps both sides
-  uncorrelated unless a preceding episode rule proves the applicable side's identity.
-- After at least **100 missing sessions**, a complete rightmost run can use the exact current-symbol UUID, non-empty
-  name, and exchange when authenticated adjustment grids agree and the same UUID has no dated evidence on the left.
-  Missing CUSIP alone does not veto this rule; conflicting CUSIPs or UUID evidence do.
-- The same rightmost shape may end before the request boundary when its exact asset status is `inactive` and its
-  observed grid is internally complete. Exact `active` status flags the incomplete suffix and leaves it offline.
-- A dated terminal rightmost run can use a different UUID when an exact CUSIP lookup and unambiguous ownership interval
-  identify it, the run is complete to the terminal boundary, and that UUID has no evidence on the left.
-- One absent expected session can separate an action-linked old ticker and new ticker when each resolves to exactly one
-  different UUID, no third UUID competes, the action date matches the boundary, and all eight adjustment grids agree.
-- Action-linked UUIDs remain separate pricing identities when each UUID has one complete, non-overlapping continuous
-  run in all eight views. A recurring UUID, overlap, missing view, undated assignment, or unresolved edge rejects the
-  partition.
-- A current symbol reused after its old occupant renamed away can publish its complete new run after at least **100
-  vacant sessions**. This requires exact different old/new UUIDs and CUSIPs, exact current name and exchange, complete
-  corporate-action coverage, all eight matching adjustment grids, dated in-run evidence for the new identity, and no
-  in-run structural action or unresolved evidence.
+## Correlation output contract
 
-Long-gap suffix rules allocate pricing rows to a proven UUID; they do not partition that UUID from authenticated
-predecessor or successor UUID lineage. UUID-lineage edges are suppressed only when the row carries explicit
-`identity_partition` evidence from a one-session transition, distinct continuous UUID episodes, or authenticated
-current-symbol reuse. Retained edges can add a predecessor or successor UUID to membership, or preserve another ticker
-carried by the same UUID. This keeps ticker-occupancy allocation separate from security-membership partitioning.
-
-The current-symbol suffix rules leave the earlier episode uncorrelated. If the same Alpaca UUID has evidence on both
-sides of a long gap, the suffix is not promoted; both sides remain unresolved until a different rule can prove the
-boundary.
-
-The terminal continuous-ticker fallback runs only after earlier rules leave the complete source uncorrelated. It can
-promote a stable, non-empty set of same-ticker candidates only when exactly one current symbol lookup anchors that set,
-all candidate names agree, ambiguous identity is the sole reason, the market calendar evaluates successfully, and no
-expected or unexpected session remains. It records the candidate set, calendar proof, and an unresolved-boundary
-warning.
+The single ordered execution path, rule registries, evidence shapes, and security-membership rules are defined in
+[`PIPELINE.md`](../PIPELINE.md). Every authenticated source row must appear exactly once in the correlated or
+uncorrelated output. Each generation records the ownership and row-rule order used, keeps ambiguity explicit, and binds
+its UUID-lineage and partition evidence. These outputs are derived manifests; they never rewrite frozen price rows.
 
 ## Session exclusions and continuity
 

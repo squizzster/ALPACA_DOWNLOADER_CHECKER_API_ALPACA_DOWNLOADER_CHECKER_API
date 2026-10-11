@@ -1,6 +1,6 @@
 import re
 
-REPORT_VERSION = 3
+REPORT_VERSION = 4
 
 ASSET_API_BASE_URL = "https://paper-api.alpaca.markets/v2/assets"
 CORPORATE_ACTIONS_API_URL = "https://data.alpaca.markets/v1/corporate-actions"

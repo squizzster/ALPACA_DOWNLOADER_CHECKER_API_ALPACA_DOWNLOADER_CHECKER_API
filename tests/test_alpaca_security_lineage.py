@@ -243,6 +243,102 @@ class HistoricalAliasIdentityClient:
         }
 
 
+class FixedPointNameChangeClient:
+    def __init__(self) -> None:
+        self.request_count = 0
+        first_name_change = {
+            "action_type": "name_change",
+            "id": "first-name-change",
+            "process_date": "2022-01-03",
+            "old_symbol": "OLD",
+            "old_cusip": "11111111A",
+            "new_symbol": "MID",
+            "new_cusip": "22222222B",
+        }
+        second_name_change = {
+            "action_type": "name_change",
+            "id": "second-name-change",
+            "process_date": "2024-01-03",
+            "old_symbol": "LIVE",
+            "old_cusip": "33333333C",
+            "new_symbol": "NEXT",
+            "new_cusip": "44444444D",
+        }
+        self.actions = {
+            "OLD": [first_name_change],
+            "MID": [first_name_change],
+            "LIVE": [second_name_change],
+            "NEXT": [second_name_change],
+            "FINAL": [],
+        }
+        live_asset = self._asset("LIVE")
+        final_asset = self._asset("FINAL")
+        self.assets = {
+            "LIVE": live_asset,
+            "FINAL": final_asset,
+            "11111111A": live_asset,
+            "22222222B": live_asset,
+            "33333333C": final_asset,
+            "44444444D": final_asset,
+        }
+
+    @staticmethod
+    def _asset(symbol: str) -> dict:
+        return {
+            "id": "one-security-id",
+            "class": "us_equity",
+            "exchange": "NASDAQ",
+            "symbol": symbol,
+            "name": "One security",
+            "status": "inactive",
+            "tradable": False,
+        }
+
+    def get_corporate_actions(self, symbol: str, start_date: str, end_date: str) -> list[dict]:
+        self.request_count += 1
+        return self.actions[symbol]
+
+    def get_asset_lookup(self, identifier: str) -> dict:
+        self.request_count += 1
+        resolved_asset = self.assets.get(identifier)
+        return {
+            "outcome": "found" if resolved_asset is not None else "not_found",
+            "http_status": 200 if resolved_asset is not None else 404,
+            "asset": resolved_asset,
+        }
+
+
+class NameChangeEvidenceClient:
+    def __init__(self, old_asset: dict, new_asset: dict) -> None:
+        self.request_count = 0
+        self.action = {
+            "action_type": "name_change",
+            "id": "candidate-name-change",
+            "process_date": "2024-01-03",
+            "old_symbol": "OLD",
+            "old_cusip": "A11111111",
+            "new_symbol": "NEW",
+            "new_cusip": "B22222222",
+        }
+        self.assets = {
+            "A11111111": old_asset,
+            "B22222222": new_asset,
+        }
+
+    def get_corporate_actions(self, symbol: str, start_date: str, end_date: str) -> list[dict]:
+        self.request_count += 1
+        return [self.action] if symbol in {"OLD", "NEW"} else []
+
+    def get_asset_lookup(self, identifier: str) -> dict:
+        self.request_count += 1
+        resolved_asset = self.assets.get(identifier)
+        return {
+            "outcome": "found" if resolved_asset is not None else "not_found",
+            "http_status": 200 if resolved_asset is not None else 404,
+            "asset": resolved_asset,
+        }
+
+
 class FakeRateLimiter:
     def __init__(self) -> None:
         self.wait_count = 0
@@ -294,6 +390,84 @@ class IdentityReportTests(unittest.TestCase):
         self.assertTrue(all(lookup["http_status"] == 200 for lookup in report["asset_lookups"]))
         self.assertTrue(all(lookup["outcome"] == "found" for lookup in report["asset_lookups"]))
         self.assertIsNone(report["symbol_disposition"]["market_data_series_identity"])
+
+    def test_same_uuid_cusip_symbol_extends_name_change_search_to_fixed_point(self) -> None:
+        local_report = {"present": True, "downloads": complete_sip_downloads(1)}
+
+        report = build_identity_report("OLD", local_report, FixedPointNameChangeClient())
+
+        self.assertEqual(["OLD", "MID", "LIVE", "NEXT", "FINAL"], report["queried_symbols"])
+        self.assertEqual(2, report["corporate_action_count"])
+        self.assertEqual(1, len(report["identities"]))
+        self.assertEqual("one-security-id", report["identities"][0]["id"])
+        self.assertEqual([], report["unresolved_cusips"])
+
+    def test_cusip_symbol_handoff_rejects_non_authoritative_evidence(self) -> None:
+        def endpoint_asset(
+            symbol: str,
+            *,
+            asset_id: str = "one-security-id",
+            asset_class: str = "us_equity",
+            exchange: str = "NASDAQ",
+        ) -> dict:
+            return {
+                "id": asset_id,
+                "class": asset_class,
+                "exchange": exchange,
+                "symbol": symbol,
+                "name": "Candidate security",
+                "status": "inactive",
+                "tradable": False,
+            }
+
+        cases = {
+            "different UUIDs": (
+                endpoint_asset("CURRENT", asset_id="old-id"),
+                endpoint_asset("CURRENT", asset_id="new-id"),
+            ),
+            "OTC": (
+                endpoint_asset("CURRENT", exchange="OTC"),
+                endpoint_asset("CURRENT", exchange="OTC"),
+            ),
+            "non-equity": (
+                endpoint_asset("CURRENT", asset_class="crypto"),
+                endpoint_asset("CURRENT", asset_class="crypto"),
+            ),
+            "different returned symbols": (
+                endpoint_asset("CURRENT"),
+                endpoint_asset("OTHER"),
+            ),
+            "missing returned symbol": (
+                endpoint_asset("CURRENT"),
+                endpoint_asset(""),
+            ),
+            "CUSIP placeholder": (
+                endpoint_asset("A11111111"),
+                endpoint_asset("A11111111"),
+            ),
+        }
+        local_report = {"present": True, "downloads": complete_sip_downloads(1)}
+
+        for label, endpoint_assets in cases.items():
+            with self.subTest(label=label):
+                report = build_identity_report(
+                    "OLD",
+                    local_report,
+                    NameChangeEvidenceClient(*endpoint_assets),
+                )
+
+                self.assertEqual(["OLD", "NEW"], report["queried_symbols"])
+
+    def test_name_change_traversal_limit_fails_closed(self) -> None:
+        endpoint_asset = FixedPointNameChangeClient._asset("CURRENT")
+
+        with mock.patch("libs.alpaca_security_lineage.lineage.MAX_NAME_CHANGE_SYMBOLS", 1):
+            with self.assertRaisesRegex(RuntimeError, "safety limit"):
+                build_identity_report(
+                    "OLD",
+                    {"present": True, "downloads": complete_sip_downloads(1)},
+                    NameChangeEvidenceClient(endpoint_asset, endpoint_asset),
+                )
 
     def test_missing_asset_with_rows_is_retained_as_a_non_security_series(self) -> None:
         local_report = {
@@ -521,7 +695,7 @@ class IdentityReportTests(unittest.TestCase):
             paths_after = list(repository_root.rglob("*"))
 
         self.assertEqual(paths_before, paths_after)
-        self.assertEqual(3, report["report_version"])
+        self.assertEqual(4, report["report_version"])
         self.assertEqual("2026-10-06T12:00:00Z", report["generated_at"])
         self.assertEqual("FB", report["symbol"])
         self.assertFalse(report["local"]["present"])

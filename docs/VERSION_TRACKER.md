@@ -8,6 +8,8 @@ index for pending work, current compatibility, and important milestones.
 
 ### Added
 
+- A root [`PIPELINE.md`](../PIPELINE.md) defines the single production path, the ordered correlation cascade, the
+  same-symbol split membership rule, and the controls that prohibit migration-specific or ticker-specific rule engines.
 - Public API v1 in [`alpaca_end_of_day`](../alpaca_end_of_day/__init__.py): online-only catalogue access, name and identifier
   search, dated ticker resolution, typed exact histories, snapshot generation checks, and disk-backed flat CSV export.
 - A standalone read-only catalogue audit authenticates every published source and identity shard, checks global UUID
@@ -16,10 +18,10 @@ index for pending work, current compatibility, and important milestones.
   source symbols needed to seed a fresh acquisition.
 - A repository layout map, six-command operator map, and separate restore-versus-rebuild procedures orient a fresh
   maintainer without duplicating implementation contracts.
-- Correlation v9-v20: generalized stable-candidate fallback, ticker-reuse gap detection, authenticated session
+- Correlation v9-v23: generalized stable-candidate fallback, ticker-reuse gap detection, authenticated session
   exclusions, complete and inactive current-suffix rules, dated terminal suffixes, one-session distinct-UUID
   transitions, continuous UUID episode partitioning, authenticated current-symbol reuse, and separation of ticker
-  suffix allocation from authenticated UUID-lineage membership.
+  suffix allocation from authenticated UUID-lineage membership, including exact same-symbol split continuity.
 - Root [agent instructions](../AGENTS.md) and this tracker.
 
 ### Modified
@@ -30,12 +32,15 @@ index for pending work, current compatibility, and important milestones.
   disagreement only through one exact dated historical-ticker source.
 - Multi-worker ticker orchestration serializes provisional master publication, online evaluation, and final
   availability publication as one in-process catalogue-finalization transaction.
-- Correlation v20 preserves authenticated predecessor and successor UUID edges for long-gap suffix assignments while
-  reserving edge suppression for explicit identity partitions.
+- Correlation v20-v23 preserves authenticated predecessor and successor UUID edges for long-gap suffix assignments,
+  reserves edge suppression for explicit identity partitions, joins exact same-symbol split UUIDs without using a
+  split to route pricing rows, resolves different-UUID ownership overlaps only when one explicit start is uniquely
+  latest, and treats overlapping labels carrying one UUID as one security claim.
 - The README now leads with the product boundary, indexes every maintained document, states the verified runtime
   requirements, and warns that a fresh clone has no readable runtime catalogue.
 - Topic guides now distinguish the online public library from internal offline inspection, document company-name
-  search and flat export, and give each architectural or operational explanation one owner.
+  search and flat export, give each architectural or operational explanation one owner, and preserve the focused-replay
+  hazards that distinguish cached rule application from an intentional data advance.
 - The tracked changelogs and recovery universe now live under [`resources/`](../resources/), renamed from the ambiguous
   `artifacts` directory. All seven files retained identical bytes, and their configured readers now use the new path.
   This source-layout change does not alter a serialized or behavioral boundary, so runtime versions are unchanged.
@@ -59,21 +64,44 @@ index for pending work, current compatibility, and important milestones.
 
 Status recorded **2026-10-11 UTC** for this handoff:
 
-- `python3 -W error::ResourceWarning -m unittest discover -s tests -v`: passed all 179 tests.
-- All six changelog validators passed at pipeline v19, correlation v20, master v5, warnings v6, reader v7, and public
+- `python3 -W error::ResourceWarning -m unittest discover -s tests -v`: passed all 191 tests.
+- All six changelog validators passed at pipeline v19, correlation v23, master v5, warnings v6, reader v7, and public
   API v1 from their new `resources/` paths. The seven renamed resource files are byte-identical to their former paths;
   `ticker.csv` remains one record containing exactly 18,092 sorted, unique authenticated source symbols.
 - All six maintained root commands returned current `--help` output matching the documented command map. They are the
   only tracked root Python files; the import-only public library resolves from `alpaca_end_of_day/__init__.py`.
-- A custom documentation check validated local links, anchors, and referenced paths across all eight maintained
-  Markdown files. The README directly links the other seven documents, and no source or documentation reference to
+- A custom documentation check validated local links, anchors, and referenced paths across all nine maintained
+  Markdown files. The README directly links the other eight documents, and no source or documentation reference to
   the former directory as a live path remains.
 - `git diff HEAD --check` passed.
-- `ruff check --exclude figi_test.py .` passed, and `ruff format --check --exclude figi_test.py .` passed for 103 files.
+- `ruff check --exclude figi_test.py .` passed, and `ruff format --check --exclude figi_test.py .` passed for 104 files.
   The prescribed unexcluded commands are not green solely because the deliberately untracked experimental
   `figi_test.py` has one import-order finding and is unformatted; that file remains untouched.
-- The public library opened generation `ceb3574445531d66bfc312cdf928d62d90b9ae21843abc637e6b186d7bc8e68b`
-  and exposed 13,103 online IDs after the resource and package relocations.
+- All 664 frozen adjustment views for the 83 split-focused source symbols authenticate. The 71 requested replays retain
+  the exclusive `2026-10-06` request boundary; the 12 data-advanced symbols retain `2026-10-10`. Their correlation
+  outputs authenticate at supported versions, including SNTI at v22. The seven evidenced split pairs each resolve to
+  exactly one public ID, including online ONMD ID
+  `693b6a276454c2ed7ac9eb53bf23bc3d1635febc57dd9c6b005f46ef73162361`.
+- The v22 focused replay authenticated all 40 frozen views for BUFF, SNTI, SPRB, STRR, and ZIVO as cache hits at the
+  exclusive `2026-10-06` boundary. BUFF, SPRB, and the current STRR identity are online through `2026-10-05`; SNTI is
+  offline with `lineage_gap`; ZIVO remains online under the existing availability contract although its frozen history
+  ends `2025-03-21`.
+- The canonical complete pipeline replayed the 200 source symbols named by the previous UUID-overlap audit at their
+  existing exclusive `2026-10-06` boundary. All 1,600 frozen adjustment views were cache hits, all 200 source
+  contributions now authenticate at correlation v22, and no force or data advance occurred. The read-only catalogue
+  audit improved from 130 duplicate-Alpaca-UUID errors and 20 active-ticker warnings to one intermediate error and no
+  warnings.
+- The v23 impact audit authenticated all 18,092 persisted lineage digests. Of 50 untraversed same-UUID returned-symbol
+  occurrences, 46 failed the OTC/missing-exchange gate and two echoed a CUSIP; only the ACY and MTMT occurrences
+  qualified, both returning MPU. Nine sources contained overlapping labels for one UUID; only ABVEW changed row
+  allocation, while GRP.U and SNMP changed provenance.
+- The canonical complete pipeline replayed only ACY, MTMT, MPU, ABVEW, GRP.U, and SNMP at their existing exclusive
+  `2026-10-06` boundary. All 48 frozen adjustment views were cache hits; no force, repair, replacement, or data advance
+  occurred. ACY, MTMT, and MPU now resolve to one online public ID
+  `ab75c2187254f39b83823f5359b3f59c37b56dfd9f454c06fd24976e17319197` with all three evidenced UUIDs.
+- The exhaustive catalogue audit passed all seven checks with zero errors and zero warnings. The public library opens
+  generation `59503660e45fc756a3319a928faababbdc13f9d3c4547f2f2f49fee9cf68d659`, containing 13,476 public IDs,
+  13,121 online IDs, 97 `lineage_gap` identities, and 258 offline identities.
 
 There is no repository CI workflow or configured Markdown/link checker. Local verification is the only automated gate.
 
@@ -83,11 +111,11 @@ There is no repository CI workflow or configured Markdown/link checker. Local ve
 |---|---:|---:|---|
 | Public consumer API | 1 | absent | New, unreleased boundary. |
 | Frozen validation pipeline | 19 | 19 | Unchanged from the Phase 1 baseline. |
-| Security correlation | 20 | 8 | Versions 8 through 20 are accepted by the current master migration path. |
+| Security correlation | 23 | 8 | Versions 8 through 23 are accepted during incremental publication. |
 | Security master | 5 | 4 | v5 adds multi-correlation-version migration support. |
 | Warning pipeline | 6 | 6 | Unchanged from the Phase 1 baseline. |
 | Detailed internal reader | 7 | 5 | v6-v7 add deterministic source-conflict selection. |
-| Lineage report | 3 | 3 | Unchanged; no separate runtime changelog. |
+| Lineage report | 4 | 3 | v4 adds bounded fixed-point discovery of an authoritative same-UUID name-change symbol. |
 | Security ID scheme | 1 | 1 | SHA-256 of sorted unique Alpaca asset IDs. |
 | Verified session exclusions | 1 | absent | Introduced with correlation v12. |
 
@@ -95,6 +123,36 @@ The exact current constants live in their owning modules. See [Development](deve
 for the version-to-file map.
 
 ## Milestones
+
+### 2026-10-11 — Correlation v23 focused replay (`Unreleased`)
+
+Lineage acquisition now follows the one valid non-OTC US-equity symbol returned by both exact same-UUID CUSIP
+endpoints of a complete name change. The existing overlap rule treats intervals carrying that same UUID as
+noncompeting and defers row provenance to the exact requested-symbol rule. A catalogue-wide read-only impact audit
+selected six source symbols; the canonical pipeline replayed only those six from cache at `2026-10-06`. The exhaustive
+catalogue audit then passed with zero errors and zero warnings.
+
+### 2026-10-11 — Catalogue UUID-closure replay (`Unreleased`)
+
+The canonical complete pipeline replayed only the 200 source symbols implicated by the 130 duplicate-UUID findings,
+using a symbol file and their existing exclusive `2026-10-06` boundary. All frozen inputs were cache hits. The replay
+removed 129 duplicate-UUID errors and all 20 active-ticker warnings; one source-local lineage mismatch across MPU,
+ACY, and MTMT remained explicit at that intermediate generation and was resolved by correlation v23.
+
+### 2026-10-11 — Correlation v22 focused replay (`Unreleased`)
+
+One rule in the existing row-correlation registry selects the overlapping authenticated ownership interval whose
+explicit start is uniquely latest, after stronger as-of lineage evidence and before the requested-symbol fallback. A
+tied or wholly undated overlap fails closed, and row routing does not join identities. The canonical pipeline replayed
+only BUFF, SNTI, SPRB, STRR, and ZIVO from a symbol file at their existing exclusive `2026-10-06` boundary; all 40
+frozen adjustment views were cache hits.
+
+### 2026-10-11 — Correlation v21 focused replay (`Unreleased`)
+
+The exact same-symbol split rule joined seven authenticated UUID pairs without routing or rewriting price rows. The
+canonical complete pipeline replayed 83 affected sources: 71 retained the exclusive `2026-10-06` request boundary and
+12 retained their already replaced `2026-10-10` boundary. All 664 frozen views were subsequently authenticated as
+cache-valid. At that intermediate generation, the later catalogue-wide UUID-closure cleanup was still pending.
 
 ### 2026-10-11 — Correlation v20 published (`Unreleased`)
 
@@ -140,8 +198,10 @@ Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](../resources/alpac
   terminal suffix rules, with authenticated venue-session exclusions.
 - **v17-v19:** added one-session distinct-UUID transitions, separate continuous UUID episodes, and the complete
   current-symbol run after authenticated ticker reuse.
-- **v20 — Unreleased:** preserves authenticated UUID lineage for long-gap suffix row assignments and suppresses lineage
-  edges only for explicit identity partitions.
+- **v20-v23 — Unreleased:** preserve authenticated UUID lineage for long-gap suffix row assignments, suppress lineage
+  edges only for explicit identity partitions, join exact same-symbol split UUIDs without using splits to route
+  pricing rows, resolve a different-UUID ownership overlap only through one uniquely latest explicit start date, and
+  treat overlapping labels carrying the same UUID as one security claim.
 
 Exact history:
 [`alpaca_end_of_day_security_correlation_change_log.json`](../resources/alpaca_end_of_day_security_correlation_change_log.json).

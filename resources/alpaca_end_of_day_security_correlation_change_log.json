@@ -127,5 +127,24 @@
       "Preserve authenticated predecessor and successor UUID lineage when complete, inactive, or dated terminal ticker-reuse suffix rules assign pricing rows to one proven UUID.",
       "Suppress UUID-lineage edges only for explicit identity partitions, keeping ticker-occupancy allocation separate from security-membership partitioning."
     ]
+  },
+  {
+    "modifications": [
+      "Treat an exact same-symbol forward or reverse split with valid rates, date, distinct old and new CUSIPs, and unique authenticated US-equity endpoint lookups as one security identity across both Alpaca UUIDs.",
+      "Retain the split effective date and endpoint CUSIPs as identity provenance without using the split action to promote or reassign pricing rows, and exclude split edges from distinct-security episode partitioning.",
+      "Suppress only the corporate-action edges certified by an explicit identity partition so an unrelated identity-preserving split remains connected without pulling a partitioned predecessor into the security."
+    ]
+  },
+  {
+    "modifications": [
+      "Resolve overlapping authenticated ownership intervals by selecting the single interval with the most recent explicit start date after stronger as-of lineage evidence and before the requested-symbol fallback.",
+      "Fail closed when overlapping claims have no explicit start date or tie for the most recent start, and keep ticker occupancy selection separate from security-identity membership."
+    ]
+  },
+  {
+    "modifications": [
+      "Follow the single listed US-equity symbol returned by both exact CUSIP endpoints of a structurally complete name change when those endpoint lookups resolve to the same Alpaca UUID, repeating to a deterministic fixed point and rejecting ambiguous, malformed, placeholder, OTC, and traversal-limit evidence.",
+      "Treat overlapping ownership intervals for one identical Alpaca UUID as noncompeting security claims so the existing exact requested-symbol interval rule decides row provenance, while retaining fail-closed overlap handling for different UUIDs."
+    ]
   }
 ]

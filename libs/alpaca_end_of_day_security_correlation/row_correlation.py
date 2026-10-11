@@ -31,9 +31,14 @@ from .ticker_reuse_gap import (
     TickerReuseGapAssessment,
     assess_ticker_reuse_gap,
 )
-from .uuid_lineage import build_uuid_lineage_edges, predecessor_uuid_branch
+from .uuid_lineage import (
+    IDENTITY_PRESERVING_SPLIT_EDGE_TYPES,
+    build_uuid_lineage_edges,
+    predecessor_uuid_branch,
+)
 
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
+LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME = "latest_dated_ownership_interval_overlapping_claims"
 
 
 @dataclass(frozen=True)
@@ -54,13 +59,6 @@ class _RowDecision:
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
     historical_symbol: str | None = None
     use_rule_identity_basis: bool = False
-
-    def has_explicit_identity_partition(self) -> bool:
-        return (
-            self.distinct_uuid_transition is not None
-            or self.distinct_uuid_episode_partition is not None
-            or self.current_symbol_reuse is not None
-        )
 
     def grouping_key(self) -> tuple:
         if self.branch == CORRELATED_BRANCH:
@@ -240,10 +238,7 @@ def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision
                 warning_codes=tuple(warning_codes),
             )
         if len(selected_matches) > 1:
-            return _RowDecision(
-                branch=UNCORRELATED_BRANCH,
-                reason_codes=("conflicting_asof_identity_intervals",),
-            )
+            return None
     return None
 
 
@@ -456,6 +451,47 @@ def _apply_current_symbol_reuse_rule(
     )
 
 
+def _apply_latest_dated_ownership_interval_rule(
+    context: _RowRuleContext,
+) -> _RowDecision | None:
+    matching_intervals = _interval_matches(context.intervals, context.session_date)
+    if len(matching_intervals) < 2:
+        return None
+    if len({interval.asset_id for interval in matching_intervals}) == 1:
+        return None
+
+    dated_intervals = [interval for interval in matching_intervals if interval.start_date_inclusive is not None]
+    if not dated_intervals:
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("overlapping_ownership_intervals_without_unique_latest_start",),
+        )
+
+    latest_start = max(
+        interval.start_date_inclusive
+        for interval in dated_intervals
+        if interval.start_date_inclusive is not None
+    )
+    latest_intervals = [
+        interval for interval in dated_intervals if interval.start_date_inclusive == latest_start
+    ]
+    if len(latest_intervals) != 1:
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("overlapping_ownership_intervals_without_unique_latest_start",),
+        )
+
+    selected_interval = latest_intervals[0]
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=selected_interval.asset_id,
+        cusip=selected_interval.cusip,
+        interval=selected_interval,
+        identity_confidence="action_supported",
+        warning_codes=("older_overlapping_ownership_claim_superseded",),
+    )
+
+
 def _apply_unresolved_uuid_candidates_rule(context: _RowRuleContext) -> _RowDecision:
     candidate_objects = identity_candidates_for_symbol(
         context.lineage,
@@ -516,6 +552,10 @@ ROW_CORRELATION_RULES = (
     RowCorrelationRule(
         name="asof_selected_uuid_lineage_interval",
         apply=_apply_asof_selected_identity_rule,
+    ),
+    RowCorrelationRule(
+        name=LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME,
+        apply=_apply_latest_dated_ownership_interval_rule,
     ),
     RowCorrelationRule(
         name="requested_symbol_dated_uuid_interval",
@@ -640,8 +680,11 @@ def correlate_download_rows(
     requested_symbol = source["requested_symbol"]
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
     uuid_lineage_edges, _ = build_uuid_lineage_edges(lineage)
+    row_routing_edges = [
+        edge for edge in uuid_lineage_edges if edge.edge_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+    ]
     selected_identity_chain_asset_ids = (
-        predecessor_uuid_branch(selected_interval.asset_id, uuid_lineage_edges)
+        predecessor_uuid_branch(selected_interval.asset_id, row_routing_edges)
         if selected_interval is not None
         else frozenset()
     )
@@ -663,6 +706,16 @@ def correlate_download_rows(
         adjustment_consensus,
         evidence_issues,
     )
+    partitioned_action_ids = {
+        action_id
+        for partition in distinct_uuid_episode_partitions
+        for action_id, _, _, _ in partition.action_edges
+    }
+    if distinct_uuid_transition is not None:
+        partitioned_action_ids.add(distinct_uuid_transition.action_id)
+    if current_symbol_reuse is not None:
+        partitioned_action_ids.add(current_symbol_reuse.vacated_action_id)
+    identity_edges = [edge for edge in uuid_lineage_edges if edge.action_id not in partitioned_action_ids]
     correlated_rows = []
     for row_number, timestamp, session_date in parsed_rows:
         decision = _decide_row(
@@ -737,7 +790,6 @@ def correlate_download_rows(
                 )
                 else "single_alpaca_asset_id"
             )
-            identity_edges = [] if decision.has_explicit_identity_partition() else uuid_lineage_edges
             identity_basis = (
                 PARTITION_RULE_NAME
                 if decision.distinct_uuid_episode_partition is not None

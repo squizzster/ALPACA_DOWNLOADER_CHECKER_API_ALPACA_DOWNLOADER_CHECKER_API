@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+IDENTITY_PRESERVING_SPLIT_EDGE_TYPES = frozenset(("forward_split", "reverse_split"))
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,102 @@ def _asset_ids_by_symbol_and_cusip(lineage: dict[str, Any]) -> dict[tuple[str, s
     return asset_ids
 
 
+def _exact_cusip_lookup_asset(lineage: dict[str, Any], cusip: str) -> dict[str, Any] | None:
+    asset_lookups = lineage.get("asset_lookups")
+    if not isinstance(asset_lookups, list):
+        return None
+    matching_lookups = [
+        lookup
+        for lookup in asset_lookups
+        if isinstance(lookup, dict) and lookup.get("lookup_kind") == "cusip" and lookup.get("lookup") == cusip
+    ]
+    if len(matching_lookups) != 1:
+        return None
+    lookup = matching_lookups[0]
+    asset = lookup.get("asset")
+    if (
+        lookup.get("found") is not True
+        or lookup.get("outcome") != "found"
+        or lookup.get("http_status") != 200
+        or not isinstance(asset, dict)
+        or asset.get("class") != "us_equity"
+        or not isinstance(asset.get("id"), str)
+        or not asset["id"]
+    ):
+        return None
+    return asset
+
+
+def _positive_rate(value: object) -> Decimal | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        rate = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not rate.is_finite() or rate <= 0:
+        return None
+    return rate
+
+
+def _identity_preserving_split_edge(
+    action: dict[str, Any],
+    lineage: dict[str, Any],
+) -> UuidLineageEdge | None:
+    action_type = action.get("action_type")
+    if action_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES:
+        return None
+    action_id = action.get("id")
+    effective_date_value = action.get("ex_date") or action.get("effective_date")
+    symbol = action.get("symbol")
+    old_cusip = action.get("old_cusip")
+    new_cusip = action.get("new_cusip")
+    if not all(
+        isinstance(value, str) and value
+        for value in (action_id, effective_date_value, symbol, old_cusip, new_cusip)
+    ):
+        return None
+    if old_cusip == new_cusip:
+        return None
+    if "new_symbol" in action and action.get("new_symbol") != symbol:
+        return None
+
+    old_rate = _positive_rate(action.get("old_rate"))
+    new_rate = _positive_rate(action.get("new_rate"))
+    if old_rate is None or new_rate is None:
+        return None
+    if action_type == "reverse_split" and old_rate <= new_rate:
+        return None
+    if action_type == "forward_split" and new_rate <= old_rate:
+        return None
+    try:
+        effective_date = date.fromisoformat(effective_date_value)
+    except ValueError:
+        return None
+
+    predecessor_asset = _exact_cusip_lookup_asset(lineage, old_cusip)
+    successor_asset = _exact_cusip_lookup_asset(lineage, new_cusip)
+    if predecessor_asset is None or successor_asset is None:
+        return None
+    if predecessor_asset.get("symbol") != symbol or successor_asset.get("symbol") != symbol:
+        return None
+    predecessor_asset_id = predecessor_asset["id"]
+    successor_asset_id = successor_asset["id"]
+    if predecessor_asset_id == successor_asset_id:
+        return None
+    return UuidLineageEdge(
+        edge_type=action_type,
+        action_id=action_id,
+        effective_date=effective_date,
+        predecessor_asset_id=predecessor_asset_id,
+        predecessor_symbol=symbol,
+        predecessor_cusip=old_cusip,
+        successor_asset_id=successor_asset_id,
+        successor_symbol=symbol,
+        successor_cusip=new_cusip,
+    )
+
+
 def _name_change_edge_candidate(action: dict[str, Any]) -> _UuidLineageEdgeCandidate | None:
     if action.get("action_type") != "name_change":
         return None
@@ -120,6 +219,10 @@ def build_uuid_lineage_edges(
     evidence_issues = []
     for action in corporate_actions:
         if not isinstance(action, dict):
+            continue
+        split_edge = _identity_preserving_split_edge(action, lineage)
+        if split_edge is not None:
+            edges.append(split_edge)
             continue
         edge_candidate = _name_change_edge_candidate(action)
         if edge_candidate is None:

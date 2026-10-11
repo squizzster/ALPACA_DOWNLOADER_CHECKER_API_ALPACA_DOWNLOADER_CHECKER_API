@@ -14,7 +14,11 @@ from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 from .authenticated_outputs import authenticate_security_correlation
 from .errors import SecurityCorrelationError
 from .frozen_downloads import read_authenticated_frozen_download
-from .uuid_lineage import UuidLineageEdge, build_uuid_lineage_edges
+from .uuid_lineage import (
+    IDENTITY_PRESERVING_SPLIT_EDGE_TYPES,
+    UuidLineageEdge,
+    build_uuid_lineage_edges,
+)
 
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
 PARTITION_RULE_NAME = "continuous_action_supported_uuid_episodes"
@@ -225,9 +229,10 @@ def assess_distinct_uuid_episode_partitions(
     edges, issues = build_uuid_lineage_edges(lineage)
     if issues:
         return ()
+    partitionable_edges = [edge for edge in edges if edge.edge_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES]
     matches = []
-    for component in _distinct_uuid_components(edges):
-        candidate_symbols = set(_component_symbols(component, edges))
+    for component in _distinct_uuid_components(partitionable_edges):
+        candidate_symbols = set(_component_symbols(component, partitionable_edges))
         candidate_symbols.add(symbol)
         sessions_by_asset_adjustment: dict[tuple[str, str], set[date]] = {}
         supporting_symbols: set[str] = set()
@@ -281,7 +286,7 @@ def assess_distinct_uuid_episode_partitions(
             continue
         match = _qualify_component(
             component,
-            edges,
+            partitionable_edges,
             sessions_by_asset_adjustment,
             supporting_symbols,
             supporting_downloads,

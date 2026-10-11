@@ -44,6 +44,9 @@ Alpaca bars or authenticated cache
 The complete pipeline publishes derived artifacts only after their inputs authenticate. Receipts are written last so a
 reader never treats a partially published generation as complete.
 
+[`PIPELINE.md`](../PIPELINE.md) is the authority for the one permitted execution path, the ordered correlation
+cascade, and the controls that prevent update or migration work from creating a second rule engine.
+
 ## Consumer flow
 
 ```text

@@ -4,10 +4,10 @@ These instructions apply to the entire repository. User instructions take preced
 
 ## Start with the boundary
 
-Read [README.md](README.md), then [Architecture](docs/ARCHITECTURE.md). Use the complete documentation index in the
-README to open the authoritative guide for the area being changed. Check `git status` before editing, preserve work
-already present, and confirm claims against current code, schemas, CLI definitions, and tests. Generated runtime data
-is evidence, not source code.
+Read [README.md](README.md), then [Architecture](docs/ARCHITECTURE.md), then [Pipeline](PIPELINE.md). Use the complete
+documentation index in the README to open the authoritative guide for the area being changed. Check `git status`
+before editing, preserve work already present, and confirm claims against current code, schemas, CLI definitions, and
+tests. Generated runtime data is evidence, not source code.
 
 The repository is a data handoff boundary. It acquires, authenticates, validates, resolves identity, publishes, and
 serves data. Downstream research or trading decisions are outside its responsibility.
@@ -47,9 +47,10 @@ serves data. Downstream research or trading decisions are outside its responsibi
 Give each explanation one home:
 
 - architecture and ownership in [ARCHITECTURE.md](docs/ARCHITECTURE.md);
+- the single execution path and ordered rule cascade in [PIPELINE.md](PIPELINE.md);
 - consumer behavior in [docs/public-api.md](docs/public-api.md);
 - operator commands and hazards in [docs/operations.md](docs/operations.md);
-- schemas, identity rules, and publication gates in
+- schemas, the identity model, artifact contracts, and publication gates in
   [docs/technical-contracts.md](docs/technical-contracts.md);
 - contributor workflow and verification in [docs/development.md](docs/development.md); and
 - versions, pending changes, milestones, and current verification gaps in

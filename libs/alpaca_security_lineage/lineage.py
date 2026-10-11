@@ -1,5 +1,6 @@
 import json
 from collections import deque
+from datetime import date
 from typing import Any
 
 from .alpaca_http import AlpacaIdentityClient
@@ -55,6 +56,69 @@ def compact_asset(asset: dict[str, Any]) -> dict[str, Any]:
     return {field_name: asset.get(field_name) for field_name in fields}
 
 
+def _authoritative_name_change_symbol(
+    action: dict[str, Any],
+    asset_lookups_by_key: dict[tuple[str, str], dict[str, Any]],
+) -> str | None:
+    if action.get("action_type") != "name_change":
+        return None
+    required = {
+        field_name: action.get(field_name)
+        for field_name in (
+            "id",
+            "process_date",
+            "old_symbol",
+            "old_cusip",
+            "new_symbol",
+            "new_cusip",
+        )
+    }
+    if not all(isinstance(value, str) and value for value in required.values()):
+        return None
+    try:
+        date.fromisoformat(required["process_date"])
+    except ValueError:
+        return None
+    if not all(SYMBOL_PATTERN.fullmatch(required[field_name]) for field_name in ("old_symbol", "new_symbol")):
+        return None
+
+    endpoint_assets = []
+    for cusip_field in ("old_cusip", "new_cusip"):
+        lookup = asset_lookups_by_key.get(("cusip", required[cusip_field]))
+        asset = lookup.get("asset") if isinstance(lookup, dict) else None
+        if (
+            not isinstance(lookup, dict)
+            or lookup.get("found") is not True
+            or lookup.get("outcome") != "found"
+            or lookup.get("http_status") != 200
+            or not isinstance(asset, dict)
+            or not isinstance(asset.get("id"), str)
+            or not asset["id"]
+            or asset.get("class") != "us_equity"
+            or not isinstance(asset.get("exchange"), str)
+            or not asset["exchange"]
+            or asset["exchange"].upper() == "OTC"
+        ):
+            return None
+        endpoint_assets.append(asset)
+
+    if len({asset["id"] for asset in endpoint_assets}) != 1:
+        return None
+    endpoint_symbols = [asset.get("symbol") for asset in endpoint_assets]
+    if not all(isinstance(endpoint_symbol, str) and endpoint_symbol for endpoint_symbol in endpoint_symbols):
+        return None
+    returned_symbols = set(endpoint_symbols)
+    if len(returned_symbols) != 1:
+        return None
+    returned_symbol = next(iter(returned_symbols))
+    if SYMBOL_PATTERN.fullmatch(returned_symbol) is None or returned_symbol in {
+        required["old_cusip"],
+        required["new_cusip"],
+    }:
+        return None
+    return returned_symbol
+
+
 def symbol_cusip_evidence(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     evidence = {}
     for action in actions:
@@ -103,38 +167,49 @@ def build_identity_report(
     queued_symbols = {symbol}
     queried_symbols = []
     actions_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    traversal_limited = False
+    asset_lookups_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def queue_symbol(candidate: str) -> None:
+        if candidate in queued_symbols:
+            return
+        if len(queued_symbols) >= MAX_NAME_CHANGE_SYMBOLS:
+            raise RuntimeError(
+                f"name-change traversal exceeded its {MAX_NAME_CHANGE_SYMBOLS}-symbol safety limit"
+            )
+        queued_symbols.add(candidate)
+        pending_symbols.append(candidate)
 
     while pending_symbols:
-        queried_symbol = pending_symbols.popleft()
-        queried_symbols.append(queried_symbol)
-        actions = client.get_corporate_actions(queried_symbol, start_date, end_date)
-        for action in actions:
-            actions_by_key[action_identity_key(action)] = action
-            for related_symbol in sorted(related_name_change_symbols(action)):
-                if related_symbol in queued_symbols:
-                    continue
-                if len(queued_symbols) >= MAX_NAME_CHANGE_SYMBOLS:
-                    traversal_limited = True
-                    continue
-                queued_symbols.add(related_symbol)
-                pending_symbols.append(related_symbol)
+        while pending_symbols:
+            queried_symbol = pending_symbols.popleft()
+            queried_symbols.append(queried_symbol)
+            queried_actions = client.get_corporate_actions(queried_symbol, start_date, end_date)
+            for action in sorted(
+                queried_actions,
+                key=lambda item: (
+                    action_date(item),
+                    str(item.get("action_type")),
+                    str(item.get("id")),
+                    json.dumps(item, sort_keys=True, separators=(",", ":")),
+                ),
+            ):
+                actions_by_key[action_identity_key(action)] = action
+                for related_symbol in sorted(related_name_change_symbols(action)):
+                    queue_symbol(related_symbol)
 
-    actions = sorted(
-        actions_by_key.values(),
-        key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
-    )
-    cusips = extract_cusips(actions)
-    asset_lookups = []
-    assets_by_id: dict[str, dict[str, Any]] = {}
-    asset_id_by_cusip = {}
-
-    for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
-        for identifier in identifiers:
-            lookup_result = client.get_asset_lookup(identifier)
-            asset = lookup_result["asset"]
-            asset_lookups.append(
-                {
+        actions = sorted(
+            actions_by_key.values(),
+            key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
+        )
+        cusips = extract_cusips(actions)
+        for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
+            for identifier in identifiers:
+                lookup_key = (lookup_kind, identifier)
+                if lookup_key in asset_lookups_by_key:
+                    continue
+                lookup_result = client.get_asset_lookup(identifier)
+                asset = lookup_result["asset"]
+                asset_lookups_by_key[lookup_key] = {
                     "lookup": identifier,
                     "lookup_kind": lookup_kind,
                     "found": asset is not None,
@@ -142,21 +217,49 @@ def build_identity_report(
                     "http_status": lookup_result["http_status"],
                     "asset": compact_asset(asset) if asset is not None else None,
                 }
-            )
-            if asset is None or not isinstance(asset.get("id"), str):
-                continue
-            asset_id = asset["id"]
-            identity = assets_by_id.setdefault(
-                asset_id,
-                {
-                    **compact_asset(asset),
-                    "lookup_symbols": set(),
-                    "lookup_cusips": set(),
-                },
-            )
-            identity[f"lookup_{lookup_kind}s"].add(identifier)
-            if lookup_kind == "cusip":
-                asset_id_by_cusip[identifier] = asset_id
+
+        authoritative_symbols = sorted(
+            {
+                authoritative_symbol
+                for action in actions
+                for authoritative_symbol in (_authoritative_name_change_symbol(action, asset_lookups_by_key),)
+                if authoritative_symbol is not None
+            }
+        )
+        for authoritative_symbol in authoritative_symbols:
+            queue_symbol(authoritative_symbol)
+
+    actions = sorted(
+        actions_by_key.values(),
+        key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
+    )
+    cusips = extract_cusips(actions)
+    asset_lookups = [
+        asset_lookups_by_key[(lookup_kind, identifier)]
+        for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips))
+        for identifier in identifiers
+    ]
+    assets_by_id: dict[str, dict[str, Any]] = {}
+    asset_id_by_cusip = {}
+
+    for lookup in asset_lookups:
+        lookup_kind = lookup["lookup_kind"]
+        identifier = lookup["lookup"]
+        asset = lookup["asset"]
+        if asset is None or not isinstance(asset.get("id"), str):
+            continue
+        asset_id = asset["id"]
+        identity = assets_by_id.setdefault(
+            asset_id,
+            {
+                **compact_asset(asset),
+                "lookup_symbols": set(),
+                "lookup_cusips": set(),
+            },
+        )
+        identity[f"lookup_{lookup_kind}s"].add(identifier)
+        if lookup_kind == "cusip":
+            asset_id_by_cusip[identifier] = asset_id
 
     identities = []
     for identity in assets_by_id.values():
@@ -209,8 +312,6 @@ def build_identity_report(
         warnings.append(
             f"The API returned evidence for {len(input_symbol_occupants)} CUSIPs occupying {symbol}."
         )
-    if traversal_limited:
-        warnings.append(f"Name-change traversal stopped at its {MAX_NAME_CHANGE_SYMBOLS}-symbol safety limit.")
     if not local_report["present"]:
         warnings.append(f"No local end-of-day directory exists for {symbol}.")
     if any(not item["stat_matches_sidecar"] for item in local_report["downloads"]):

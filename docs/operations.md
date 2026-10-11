@@ -123,10 +123,57 @@ request identity. Pin it when reproducibility or a resumed subset matters:
   --request-end 2026-10-06
 ```
 
+`--request-end` is exclusive: `2026-10-06` requests completed bars strictly before that instant, so the last ordinary
+US session is `2026-10-05`. It is not the label of the last included bar.
+
 Omit `--adjustment` to process all eight views; repeat it to select views. Correlation examines every stored gzip for
 that symbol, so after a validation-version change process all views before a partial-view update.
 
 `download_alpaca_end_of_day_bars.py` is a compatibility entrypoint for the same complete pipeline.
+
+### Focused reprocessing
+
+A narrow rule or data correction uses the canonical complete pipeline; it does not require new code or a
+full-universe run. First determine the smallest complete set of affected source symbols: start with the identities
+whose published result can change, include every source symbol already contributing rows to those identities, and
+include any source symbol carrying evidence needed to decide them. Put that closed set in a plain file, one symbol per
+line, and run:
+
+```bash
+./run_alpaca_end_of_day_ticker_pipeline.py \
+  --file path/to/affected-symbols.txt \
+  --request-end YYYY-MM-DD
+```
+
+That ordinary `--file` invocation is sufficient unless an affected symbol has a prior authenticated disposition whose
+recurring action is `skip`. Add `--include-skipped-symbols` only when the closed set deliberately includes one of those
+symbols. Repeated `--symbol` arguments always re-evaluate their symbols and do not need that flag.
+
+For a very small set, repeat `--symbol` instead of using `--file`. Omit `--adjustment` so all eight views pass through
+the normal acquisition, authentication, correlation, warning, master-publication, and availability stages. The
+pipeline authenticates reusable inputs and acquires only what its existing rules require up to the one shared request
+boundary.
+
+For a rule-only replay, `YYYY-MM-DD` must be the existing common `request_to` recorded by the authenticated bar
+manifests. Do not substitute today's date, and do not use `--force`: unchanged request identities are cache hits, after
+which the normal downstream stages apply the new rule. If the selected symbols do not share one authenticated
+boundary, stop and split or investigate the set instead of silently advancing it.
+
+A later `--request-end` changes the frozen request identity. Existing files then fail closed with
+`refresh_required`; that is a deliberate data advance and only that operation may justify `--force`. When replacing a
+dependency-connected set, use `--workers 1` so one worker cannot authenticate a related source while another worker
+is replacing its gzip/manifest pair. This serialization warning concerns replacement only; ordinary cache-backed
+focused replay may use multiple workers.
+
+Do not create a migration script, alternate builder, direct bulk publisher, or shortened pipeline for this job. Do
+not reprocess every source merely because its historical report contains the same kind of evidence. That larger set is
+useful for a read-only impact audit; execution expands beyond the affected-symbol closure only when the audit proves
+that another source can change the result.
+
+Finish the rule and its focused tests before the read-only impact audit, then freeze the affected-symbol closure before
+the replay. Correlation reports and catalogue generations bind deterministic output and provenance; changing rule code
+or ordering after a replay means the replay and final catalogue audit must be repeated. Treat the post-audit generation
+as final only after the source change itself is final.
 
 ## Narrow operator commands
 

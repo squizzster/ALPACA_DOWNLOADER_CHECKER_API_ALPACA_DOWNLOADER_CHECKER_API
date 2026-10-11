@@ -32,6 +32,8 @@ first time.
   expectations for repository agents.
 - [Architecture](docs/ARCHITECTURE.md) — responsibility boundary, data flows, repository layout, component ownership,
   and system invariants.
+- [Pipeline](PIPELINE.md) — the single production flow, ordered correlation cascade, split-identity rule, and
+  non-divergence controls.
 
 ### Consume and operate
 
@@ -110,13 +112,14 @@ export ALPACA_API_SECRET_KEY="<secret-key>"
 ./run_alpaca_end_of_day_ticker_pipeline.py \
   --symbol AAPL \
   --adaptive-adjustments \
-  --request-end 2026-10-06
+  --request-end YYYY-MM-DD
 ```
 
-Use only one multi-worker pipeline process against a repository at a time. Runtime bars, manifests, credentials,
-ad hoc ticker lists, and logs are intentionally ignored by Git. The tracked recovery seed is the deliberate exception.
-Read [Operations](docs/operations.md) before replacing, repairing, backing up, restoring, or rebuilding any frozen
-boundary.
+Choose `YYYY-MM-DD` as the intentional exclusive request boundary; it is not the last included session date. Use only
+one multi-worker pipeline process against a repository at a time. Runtime bars, manifests, credentials, ad hoc ticker
+lists, and logs are intentionally ignored by Git. The tracked recovery seed is the deliberate exception. Read
+[Operations](docs/operations.md) before replaying, advancing, replacing, repairing, backing up, restoring, or rebuilding
+any frozen boundary.
 
 Audit the complete published catalogue without credentials, network access, or writes:
 
