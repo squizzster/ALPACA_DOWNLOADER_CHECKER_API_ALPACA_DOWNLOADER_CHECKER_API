@@ -33,7 +33,7 @@ from libs.alpaca_end_of_day_security_correlation import (
 from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 API_VERSION = 1
-API_CHANGE_LOG_PATH = Path(__file__).resolve().parent / "artifacts" / "alpaca_end_of_day_api_change_log.json"
+API_CHANGE_LOG_PATH = Path(__file__).resolve().parent / "resources" / "alpaca_end_of_day_api_change_log.json"
 ADJUSTMENTS = tuple(ALPACA_ADJUSTMENT_MODES)
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",

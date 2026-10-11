@@ -2,12 +2,26 @@
 
 Run commands from the repository root. Each command's `--help` output is the option authority.
 
+## Command map
+
+| Command | Purpose | Side effects and access |
+|---|---|---|
+| [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Canonical complete pipeline for one or more symbols. | Writes runtime data and normally contacts Alpaca; credentials required. |
+| [`download_alpaca_end_of_day_bars.py`](../download_alpaca_end_of_day_bars.py) | Compatibility name for the same complete pipeline. | Same pipeline options and data effects; use the canonical command for documented `SIGHUP` handling. |
+| [`inspect_alpaca_security_lineage.py`](../inspect_alpaca_security_lineage.py) | Print local and direct-provider identity evidence for one ticker. | Read-only locally, contacts Alpaca, credentials required. |
+| [`correlate_alpaca_end_of_day_security_segments.py`](../correlate_alpaca_end_of_day_security_segments.py) | Rebuild correlation and master output for one ticker from authenticated bars and fresh lineage evidence. | Writes derived runtime data, contacts Alpaca, credentials required. |
+| [`audit_alpaca_end_of_day_catalog.py`](../audit_alpaca_end_of_day_catalog.py) | Authenticate and audit one complete published catalogue generation. | Strictly read-only; no credentials or network. |
+| [`read_alpaca_end_of_day_ticker.py`](../read_alpaca_end_of_day_ticker.py) | Read one public history or export the online universe. | Strictly read-only; no credentials or network. |
+
 ## Requirements and safety
 
 - Python 3.11, the configured and locally verified runtime target, plus IANA `America/New_York` time-zone data.
 - `pigz` for any command that publishes or replaces a frozen gzip.
 - `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` for update, lineage, or correlation work that contacts Alpaca.
 - No credentials or network access for consumer reads and exports.
+
+A fresh checkout contains code and tracked [`resources/`](../resources/), but no runtime `data/`. Restore a compatible
+runtime tree or deliberately acquire and publish one before using the public reader.
 
 Use only one multi-worker pipeline process against a repository at a time. Its lock coordinates workers inside that
 process; it does not coordinate another process or an older implementation.
@@ -130,17 +144,11 @@ that symbol, so after a validation-version change process all views before a par
 Correlation requires current validation receipts. Warning publication has a library API but no standalone command.
 These commands are operator tools and do not define the consumer contract.
 
-The catalogue audit is strictly read-only: it has no credentials, network, publication, repair, or update path. It
-authenticates the index and every inventory bucket, source shard, and identity shard; recomputes each identity from its
-bound source contributions; and runs all registered cross-catalogue checks. Those checks cover source/identity closure,
-disjoint Alpaca UUID membership, member and history projections, all advertised adjustments, concurrent online active
-ticker claims, and generation stability during the audit. Its JSON report goes to standard output.
-
-The audit is exhaustive over the published catalogue, not the complete frozen-data dependency graph. It does not reread
-every bar, correlation output, or warning output; those are authenticated by the detailed reader and the final online
-evaluation. An authentication or integrity error exits with status `1`. Investigative warnings alone produce
-`passed_with_warnings` and status `0`; argument errors use status `2`. Use `--repository-root` to inspect a restored copy
-without placing it over the live repository.
+The catalogue audit writes its JSON report to standard output. It is exhaustive over the published catalogue, not the
+complete frozen-data dependency graph; exact checks and scope are defined in
+[Technical contracts](technical-contracts.md#read-only-catalogue-audit). An authentication or integrity error exits
+with status `1`. Investigative warnings alone produce `passed_with_warnings` and status `0`; argument errors use status
+`2`. Use `--repository-root` to inspect a staged restoration without placing it over the live repository.
 
 ## Consume online data
 
@@ -208,34 +216,61 @@ manifests. Never delete one member of a pair to force a refresh.
 
 ## Backup and recovery
 
-The source checkout includes [`artifacts/ticker.csv`](../artifacts/ticker.csv), a headerless, single-record CSV of the
-sorted unique source-symbol universe captured from the authenticated master catalogue. It is the recovery seed for a
-fresh acquisition, not a replacement for frozen-data backup. Convert it to the pipeline's one-symbol-per-line input
-format before use:
+Choose between restoring an existing authenticated generation and acquiring a new one. They are different outcomes.
 
-```bash
-tr ',' '\n' < artifacts/ticker.csv > /tmp/alpaca-restore-symbols.txt
-```
+### Restore an existing generation
 
-Refresh the tracked snapshot deliberately whenever the authenticated source-symbol universe changes.
+Frozen bars, correlation outputs, warning outputs, the master catalogue, and primary evidence referenced by a verified
+session exclusion form one dependency graph. Back up the complete `data/end_of_day/` tree when the goal is to reproduce
+the existing service state; a manifest-only archive cannot recreate missing frozen or evidence files.
 
-The security-master receipt authenticates the root file's nanosecond mtime as well as its bytes and SHA-256. Use
-POSIX/PAX tar so fractional mtimes survive:
+The security-master receipt authenticates the root file's nanosecond mtime as well as its bytes and SHA-256. Use a
+POSIX/PAX archive so fractional mtimes survive:
 
 ```bash
 tar --format=posix --pax-option=delete=atime,delete=ctime \
-  -czf /path/to/security-master-backup.tar.gz \
-  data/end_of_day/json_manifests
+  -czf /path/to/alpaca-end-of-day-backup.tar.gz \
+  data/end_of_day
 ```
 
-A basic tar archive may round timestamps and fail authentication even when bytes match. Test an important backup by
-extracting it under a temporary repository root and calling
-`libs.alpaca_end_of_day_security_correlation.authenticate_security_master()` there. Never test recovery over the live
-catalogue.
+Restore into a staging copy of a compatible source revision, then audit that copy before switching consumers to it:
 
-Frozen bars, correlation outputs, warning outputs, the master catalogue, and any primary evidence referenced by a
-verified session exclusion form one dependency graph. A manifest-only backup can restore only the manifests it
-contains; it cannot recreate a missing frozen or evidence file.
+```bash
+tar -xzf /path/to/alpaca-end-of-day-backup.tar.gz \
+  -C /path/to/restored-repository
+
+./audit_alpaca_end_of_day_catalog.py \
+  --repository-root /path/to/restored-repository
+```
+
+A basic tar archive may round timestamps and fail authentication even when bytes match. Never test restoration over the
+live catalogue.
+
+### Acquire a fresh generation
+
+The source checkout includes [`resources/ticker.csv`](../resources/ticker.csv), a headerless, single-record CSV of the
+sorted unique source-symbol universe captured from the authenticated master catalogue. It includes source symbols, not
+only currently online public identities. Convert it to the pipeline's one-symbol-per-line format:
+
+```bash
+tr ',' '\n' < resources/ticker.csv > /tmp/alpaca-restore-symbols.txt
+```
+
+Running that complete list is an explicit, network-intensive rebuild. With credentials, entitlement, `pigz`, and an
+intentional exclusive request boundary, the command is:
+
+```bash
+./run_alpaca_end_of_day_ticker_pipeline.py \
+  --file /tmp/alpaca-restore-symbols.txt \
+  --workers 3 \
+  --adaptive-adjustments \
+  --request-end YYYY-MM-DD
+```
+
+This regenerates source files, manifests, correlation outputs, warnings, and the catalogue; none of those runtime files
+come from `resources/`. It is not a byte-for-byte restoration: provider data, identity evidence, and the chosen request
+boundary can produce a different authenticated generation. Refresh the tracked ticker snapshot deliberately whenever
+the authenticated source-symbol universe changes.
 
 ## Pipeline exit status
 

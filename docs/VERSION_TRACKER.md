@@ -12,8 +12,10 @@ index for pending work, current compatibility, and important milestones.
   search, dated ticker resolution, typed exact histories, snapshot generation checks, and disk-backed flat CSV export.
 - A standalone read-only catalogue audit authenticates every published source and identity shard, checks global UUID
   membership and source closure, and reports all cross-catalogue findings without changing runtime data.
-- A tracked, one-record recovery universe in [`artifacts/ticker.csv`](../artifacts/ticker.csv) captures the authenticated
+- A tracked, one-record recovery universe in [`resources/ticker.csv`](../resources/ticker.csv) captures the authenticated
   source symbols needed to seed a fresh acquisition.
+- A repository layout map, six-command operator map, and separate restore-versus-rebuild procedures orient a fresh
+  maintainer without duplicating implementation contracts.
 - Correlation v9-v20: generalized stable-candidate fallback, ticker-reuse gap detection, authenticated session
   exclusions, complete and inactive current-suffix rules, dated terminal suffixes, one-session distinct-UUID
   transitions, continuous UUID episode partitioning, authenticated current-symbol reuse, and separation of ticker
@@ -30,10 +32,13 @@ index for pending work, current compatibility, and important milestones.
   availability publication as one in-process catalogue-finalization transaction.
 - Correlation v20 preserves authenticated predecessor and successor UUID edges for long-gap suffix assignments while
   reserving edge suppression for explicit identity partitions.
-- The README and topic guides now distinguish the online public library from internal offline inspection, document
-  company-name search and flat export, and give each architectural or operational explanation one owner.
-- Runtime changelogs now live under [`artifacts/`](../artifacts/), while architecture and version-tracking documents
-  live under this `docs/` directory.
+- The README now leads with the product boundary, indexes every maintained document, states the verified runtime
+  requirements, and warns that a fresh clone has no readable runtime catalogue.
+- Topic guides now distinguish the online public library from internal offline inspection, document company-name
+  search and flat export, and give each architectural or operational explanation one owner.
+- The tracked changelogs and recovery universe now live under [`resources/`](../resources/), renamed from the ambiguous
+  `artifacts` directory. All seven files retained identical bytes, and their configured readers now use the new path.
+  This source-layout change does not alter a serialized or behavioral boundary, so runtime versions are unchanged.
 
 ### Removed
 
@@ -43,37 +48,29 @@ index for pending work, current compatibility, and important milestones.
   functions remain available to operators and pipeline evaluation; they are no longer described as application APIs.
 - Removed the obsolete statement that company-name search was outside the public contract. Current search is
   case-insensitive normalized substring matching; it is not typo-tolerant fuzzy matching.
+- Removed the duplicate component-ownership matrix from the development guide and the repeated catalogue-audit rule
+  list from operations; each now links to its authoritative architecture or technical-contract section.
 
 ## Verification status
 
-Status recorded **2026-10-11 UTC** for the current working tree:
+Status recorded **2026-10-11 UTC** for this handoff:
 
-- `ruff check --exclude figi_test.py .`: passed. The prescribed `ruff check .` is not green solely because the
-  deliberately untracked experimental `figi_test.py` has one import-order finding; that file was left untouched.
-- `ruff format --check --exclude figi_test.py .`: passed for 103 Python files. The prescribed
-  `ruff format --check .` likewise reports only that untracked experimental file as unformatted.
-- `git diff --check`: passed.
-- A custom documentation check validated all local links, anchors, and paths across the Git-visible Markdown files;
-  the README directly indexes every other maintained document.
-- All six maintained root command-line entrypoints returned current `--help` output matching the documented commands
-  and options.
-- Version/changelog validation passed for pipeline v19, correlation v20, master v5, warnings v6, reader v7, and public
-  API v1.
-- A custom secret-pattern scan found zero matches in the 115 tracked files plus the three new audit files; the
-  deliberately untracked experimental `figi_test.py` was outside this handoff scan.
-- Correlation v20 was published for the eight reports identified by the read-only comparative evaluation. Three now
-  retain their authenticated successor UUID and five retain authenticated ticker aliases carried by the same UUID.
-  Every one of their 64 frozen bar views was an authenticated cache hit at the pinned `2026-10-06` request boundary.
-  The aggregate content, size, and nanosecond-mtime digest over those bar files and sidecars remained
-  `029a245856b6e4b0b57db869dafa466a15fe1a54c78578a84d01fd163be3bd71`.
-- The post-publication read-only catalogue audit authenticated all 18,092 source shards and 13,483 identity shards
-  against generation `ceb3574445531d66bfc312cdf928d62d90b9ae21843abc637e6b186d7bc8e68b`. Duplicate-UUID errors fell from 14 to 11;
-  one concurrent online active-ticker warning remains. Source closure, member projection, history projection, and
-  snapshot stability all pass.
-- The local public snapshot exposes 13,103 online IDs. The audit itself changed no runtime data.
 - `python3 -W error::ResourceWarning -m unittest discover -s tests -v`: passed all 179 tests.
+- All six changelog validators passed at pipeline v19, correlation v20, master v5, warnings v6, reader v7, and public
+  API v1 from their new `resources/` paths. The seven renamed resource files are byte-identical to their former paths;
+  `ticker.csv` remains one record containing exactly 18,092 sorted, unique authenticated source symbols.
+- All six maintained root commands returned current `--help` output matching the documented command map.
+- A custom documentation check validated local links, anchors, and referenced paths across all eight maintained
+  Markdown files. The README directly links the other seven documents, and no source or documentation reference to
+  the former directory as a live path remains.
+- `git diff HEAD --check` passed.
+- `ruff check --exclude figi_test.py .` passed, and `ruff format --check --exclude figi_test.py .` passed for 103 files.
+  The prescribed unexcluded commands are not green solely because the deliberately untracked experimental
+  `figi_test.py` has one import-order finding and is unformatted; that file remains untouched.
+- The public library opened generation `ceb3574445531d66bfc312cdf928d62d90b9ae21843abc637e6b186d7bc8e68b`
+  and exposed 13,103 online IDs after the resource rename.
 
-There is no repository CI workflow or configured Markdown/link checker. Local verification is the current gate.
+There is no repository CI workflow or configured Markdown/link checker. Local verification is the only automated gate.
 
 ## Current version matrix
 
@@ -92,7 +89,14 @@ There is no repository CI workflow or configured Markdown/link checker. Local ve
 The exact current constants live in their owning modules. See [Development](development.md#versioned-boundaries)
 for the version-to-file map.
 
-## Baseline milestone
+## Milestones
+
+### 2026-10-11 — Correlation v20 published (`Unreleased`)
+
+Eight affected reports were republished from authenticated local inputs at the pinned `2026-10-06` request boundary;
+all 64 frozen bar views were cache hits. Three reports retained an authenticated successor UUID and five retained a
+ticker alias carried by the same UUID. The aggregate content, size, and nanosecond-mtime digest over those frozen bars
+and sidecars remained `029a245856b6e4b0b57db869dafa466a15fe1a54c78578a84d01fd163be3bd71`.
 
 ### 2026-10-09 — Phase 1 complete (`85ca700`)
 
@@ -108,7 +112,7 @@ Runtime data, credentials, ticker universes, logs, and experimental files remain
 - **v1 — Unreleased:** established the online-only `DataLibrary`, typed catalogue and bars, exact and dated lookups,
   generic unavailable-ID behavior, name/identifier search, and raw-plus-all flat CSV export.
 
-Exact history: [`alpaca_end_of_day_api_change_log.json`](../artifacts/alpaca_end_of_day_api_change_log.json).
+Exact history: [`alpaca_end_of_day_api_change_log.json`](../resources/alpaca_end_of_day_api_change_log.json).
 
 ### Frozen validation pipeline
 
@@ -119,7 +123,7 @@ Exact history: [`alpaca_end_of_day_api_change_log.json`](../artifacts/alpaca_end
 - **v17:** added adaptive adjustment acquisition, explicit empirical aliases, and authenticated hard-link compaction.
 - **v18-v19:** defined accepted zero-activity bars, split-adjusted volume semantics, and typed invalid-symbol failures.
 
-Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](../artifacts/alpaca_end_of_day_pipeline_change_log.json).
+Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](../resources/alpaca_end_of_day_pipeline_change_log.json).
 
 ### Security correlation
 
@@ -135,7 +139,7 @@ Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](../artifacts/alpac
   edges only for explicit identity partitions.
 
 Exact history:
-[`alpaca_end_of_day_security_correlation_change_log.json`](../artifacts/alpaca_end_of_day_security_correlation_change_log.json).
+[`alpaca_end_of_day_security_correlation_change_log.json`](../resources/alpaca_end_of_day_security_correlation_change_log.json).
 
 ### Security master
 
@@ -144,7 +148,7 @@ Exact history:
 - **v3-v4:** persisted `online` and compact availability status, including `lineage_gap`.
 - **v5 — Unreleased:** permits supported correlation generations during incremental derived-catalogue migration.
 
-Exact history: [`alpaca_security_master_change_log.json`](../artifacts/alpaca_security_master_change_log.json).
+Exact history: [`alpaca_security_master_change_log.json`](../resources/alpaca_security_master_change_log.json).
 
 ### Internal reader
 
@@ -155,7 +159,7 @@ Exact history: [`alpaca_security_master_change_log.json`](../artifacts/alpaca_se
 - **v6-v7 — Unreleased:** added strict-superset adjusted-source selection and dated historical-ticker selection while
   keeping every remaining ambiguity fatal.
 
-Exact history: [`alpaca_end_of_day_reader_change_log.json`](../artifacts/alpaca_end_of_day_reader_change_log.json).
+Exact history: [`alpaca_end_of_day_reader_change_log.json`](../resources/alpaca_end_of_day_reader_change_log.json).
 
 ### Warning pipeline
 
@@ -163,4 +167,4 @@ Exact history: [`alpaca_end_of_day_reader_change_log.json`](../artifacts/alpaca_
 - **v4-v6:** supported empty correlated sources, excluded accepted zero-activity rows from numerical analysis, and
   retained valid split-volume zeros.
 
-Exact history: [`alpaca_end_of_day_warning_pipeline_change_log.json`](../artifacts/alpaca_end_of_day_warning_pipeline_change_log.json).
+Exact history: [`alpaca_end_of_day_warning_pipeline_change_log.json`](../resources/alpaca_end_of_day_warning_pipeline_change_log.json).

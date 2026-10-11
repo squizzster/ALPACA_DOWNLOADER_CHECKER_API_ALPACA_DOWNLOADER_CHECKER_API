@@ -4,9 +4,10 @@ These instructions apply to the entire repository. User instructions take preced
 
 ## Start with the boundary
 
-Read [README.md](README.md), then [ARCHITECTURE.md](docs/ARCHITECTURE.md). Use the documentation index in the README to
-open the one authoritative guide for the area being changed. Confirm claims against current code, schemas, CLI
-definitions, and tests; generated runtime data is evidence, not source code.
+Read [README.md](README.md), then [Architecture](docs/ARCHITECTURE.md). Use the complete documentation index in the
+README to open the authoritative guide for the area being changed. Check `git status` before editing, preserve work
+already present, and confirm claims against current code, schemas, CLI definitions, and tests. Generated runtime data
+is evidence, not source code.
 
 The repository is a data handoff boundary. It acquires, authenticates, validates, resolves identity, publishes, and
 serves data. Downstream research or trading decisions are outside its responsibility.
@@ -32,12 +33,14 @@ serves data. Downstream research or trading decisions are outside its responsibi
   it is not part of `DataLibrary`.
 - Root Python files are executable entrypoints, except for the supported consumer library
   [`alpaca_end_of_day.py`](alpaca_end_of_day.py). Put domain behavior in the owning package identified in
-  [docs/development.md](docs/development.md#code-ownership).
+  [Architecture](docs/ARCHITECTURE.md#code-ownership).
 - Any serialized or behavioral boundary change must bump its owning version and append exactly one entry to its
   runtime-validated JSON changelog. Do not add explicit `version` keys to those arrays; array position is the version.
+- Documentation-only changes do not bump runtime versions or JSON changelogs. Record pending documentation changes
+  under `Unreleased` in [VERSION_TRACKER.md](docs/VERSION_TRACKER.md#unreleased).
 - Preserve existing worktree changes unless the task explicitly supersedes them. Keep secrets, runtime `data/`, logs,
   ad hoc ticker lists, and experimental output out of Git. The tracked recovery-universe exception is
-  [`artifacts/ticker.csv`](artifacts/ticker.csv).
+  [`resources/ticker.csv`](resources/ticker.csv).
 
 ## Documentation discipline
 

@@ -79,6 +79,24 @@ Root Python files are executable entrypoints, except for the supported consumer 
 [`alpaca_end_of_day.py`](../alpaca_end_of_day.py). Domain behavior belongs in its owning library, and `libs/common/`
 imports no application package.
 
+## Repository layout
+
+| Path | Role |
+|---|---|
+| [`alpaca_end_of_day.py`](../alpaca_end_of_day.py) | The only supported Python import for consumer applications. |
+| [Root command files](../run_alpaca_end_of_day_ticker_pipeline.py) | Thin, executable adapters for the maintained CLIs; the complete inventory is in [Operations](operations.md#command-map). |
+| [`libs/`](../libs/) | Domain implementations and operator-inspection interfaces. These are not supported consumer imports. |
+| [`tests/`](../tests/) | Unit and contract tests built around temporary repositories and HTTP doubles. |
+| `data/` | Ignored runtime state: frozen responses, receipts, correlation outputs, warnings, and the published catalogue. It is not part of a Git clone. |
+| [`resources/`](../resources/) | Tracked, machine-read project resources: runtime-validated version changelogs and the deliberate recovery-universe snapshot. It is not runtime market data. |
+| [`docs/`](.) | Maintained project guidance and version history; `README.md` and tooling-required `AGENTS.md` remain at the repository root. |
+| [`pyproject.toml`](../pyproject.toml) | Ruff configuration and the declared Python syntax target. |
+
+`resources/` travels with source control, while `data/` must be restored or regenerated before the public library can
+serve a fresh checkout. Exact runtime paths and schemas live in
+[Technical contracts](technical-contracts.md#runtime-artifact-layout); recovery choices live in
+[Operations](operations.md#backup-and-recovery).
+
 ## Core invariants
 
 - Frozen CSV bytes are never silently repaired or rewritten. An authorized publisher may atomically replace a path;

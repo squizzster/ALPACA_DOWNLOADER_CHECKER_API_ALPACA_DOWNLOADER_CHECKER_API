@@ -193,7 +193,20 @@ A reader-ready history with an unexplained expected session strictly between its
 The public library filters on `online is True` and exposes neither classification nor offline metadata. The internal
 reader can still open published offline histories for operator investigation.
 
-## Artifact layout
+## Tracked resources
+
+[`resources/`](../resources/) belongs to the source checkout and contains two kinds of machine-read input:
+
+- six JSON changelog arrays, each validated against its owning version constant; and
+- [`ticker.csv`](../resources/ticker.csv), a one-record recovery snapshot of sorted source symbols.
+
+The changelogs are exact version histories, not generated logs. Their array positions are their versions, and a file
+missing from its configured path makes the corresponding validator fail. `ticker.csv` contains no bars, identity
+membership, availability, or per-ticker validation state; it can seed a new acquisition but cannot restore an
+authenticated generation. Version workflow belongs in [Development](development.md#versioned-boundaries), and
+recovery belongs in [Operations](operations.md#backup-and-recovery).
+
+## Runtime artifact layout
 
 Per source symbol under `data/end_of_day/<SYMBOL>/`:
 

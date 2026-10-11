@@ -8,7 +8,7 @@ from .errors import EndOfDayPipelineError
 # Bump whenever validation, transformation, serialization, or pipeline ownership changes.
 PIPELINE_VERSION = 19
 PIPELINE_CHANGE_LOG_PATH = (
-    Path(__file__).resolve().parents[2] / "artifacts" / "alpaca_end_of_day_pipeline_change_log.json"
+    Path(__file__).resolve().parents[2] / "resources" / "alpaca_end_of_day_pipeline_change_log.json"
 )
 
 

@@ -6,6 +6,10 @@ Everything under `libs/` is implementation or operator-inspection machinery.
 The public library exposes only the authenticated online snapshot. The absence of an ID, ticker, name, or history does
 not disclose whether an internal offline record exists.
 
+A source checkout alone is not a readable data library: Git does not contain runtime `data/`. `DataLibrary` requires a
+compatible authenticated catalogue under `data/end_of_day/json_manifests/`; restore or publish that runtime tree first.
+See [Backup and recovery](operations.md#backup-and-recovery).
+
 ## Open a snapshot
 
 ```python
@@ -203,5 +207,5 @@ snapshot.
 | `DataLibraryError` | Authentication or the public data contract failed. The two public errors above inherit from it. |
 
 The exact exported names are listed in `alpaca_end_of_day.__all__`; public API version history is tracked in
-[`alpaca_end_of_day_api_change_log.json`](../artifacts/alpaca_end_of_day_api_change_log.json) and summarized in
+[`alpaca_end_of_day_api_change_log.json`](../resources/alpaca_end_of_day_api_change_log.json) and summarized in
 [`VERSION_TRACKER.md`](VERSION_TRACKER.md).
