@@ -3,9 +3,9 @@
 ## Find the change owner
 
 The [architecture ownership table](ARCHITECTURE.md#code-ownership) is the authority for component boundaries. Start at
-the public module or root command named by the request, then follow its imports to the owning package under `libs/`.
-Root commands stay thin; [`alpaca_end_of_day.py`](../alpaca_end_of_day.py) is the one root-level library because it is
-the supported consumer boundary.
+the public package or root command named by the request, then follow its imports to the owning package under `libs/`.
+Root commands stay thin, and every tracked root Python file is executable. The
+[`alpaca_end_of_day`](../alpaca_end_of_day/__init__.py) package is the supported consumer boundary.
 
 Tests mirror the boundary names under [`tests/`](../tests/). Add focused coverage in the owning test module, and check
 adjacent integration tests when a change crosses acquisition, correlation, publication, or read boundaries.
@@ -24,7 +24,7 @@ repository-layout changes under `Unreleased` in [VERSION_TRACKER.md](VERSION_TRA
 
 | Boundary | Version constant | Runtime changelog |
 |---|---|---|
-| Public consumer API | [`API_VERSION`](../alpaca_end_of_day.py) | [`alpaca_end_of_day_api_change_log.json`](../resources/alpaca_end_of_day_api_change_log.json) |
+| Public consumer API | [`API_VERSION`](../alpaca_end_of_day/__init__.py) | [`alpaca_end_of_day_api_change_log.json`](../resources/alpaca_end_of_day_api_change_log.json) |
 | Frozen validation and processing | [`PIPELINE_VERSION`](../libs/alpaca_end_of_day_pipeline/pipeline_version.py) | [`alpaca_end_of_day_pipeline_change_log.json`](../resources/alpaca_end_of_day_pipeline_change_log.json) |
 | Security correlation | [`CORRELATION_VERSION`](../libs/alpaca_end_of_day_security_correlation/correlation_version.py) | [`alpaca_end_of_day_security_correlation_change_log.json`](../resources/alpaca_end_of_day_security_correlation_change_log.json) |
 | Sharded master catalogue | [`SECURITY_MASTER_VERSION`](../libs/alpaca_end_of_day_security_correlation/security_master_version.py) | [`alpaca_security_master_change_log.json`](../resources/alpaca_security_master_change_log.json) |

@@ -1,6 +1,6 @@
 """Public, read-only Python library for online end-of-day market data.
 
-Consumer code should import this module and no module below ``libs``. The
+Consumer code should import this package and no module below ``libs``. The
 implementation authenticates the engine's stored artifacts, then exposes only
 the published online universe, public identities, and daily histories.
 """
@@ -32,8 +32,10 @@ from libs.alpaca_end_of_day_security_correlation import (
 )
 from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
 API_VERSION = 1
-API_CHANGE_LOG_PATH = Path(__file__).resolve().parent / "resources" / "alpaca_end_of_day_api_change_log.json"
+API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 ADJUSTMENTS = tuple(ALPACA_ADJUSTMENT_MODES)
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -58,7 +60,7 @@ FLAT_ONLINE_CSV_COLUMNS = (
     "all_adjusted_trade_count",
     "all_adjusted_vwap",
 )
-_DEFAULT_LIBRARY_PATH = Path(__file__).resolve().parent
+_DEFAULT_LIBRARY_PATH = _REPOSITORY_ROOT
 _NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
 _FLAT_CSV_SORT_CHUNK_ROWS = 100_000
 _CATALOG_CHANGED_MESSAGE = (
@@ -716,9 +718,9 @@ def _write_flat_csv_text_document(
 class DataLibrary:
     """Read one consistent snapshot of the authenticated online universe.
 
-    ``path`` is the data-engine repository root. It defaults to the directory
-    containing this module, so applications importing this checkout need no
-    path configuration. Create a new instance to observe a newer publication.
+    ``path`` is the data-engine repository root. It defaults to the parent of
+    this package, so applications importing this checkout need no path
+    configuration. Create a new instance to observe a newer publication.
     """
 
     def __init__(self, path: Path | str | None = None) -> None:

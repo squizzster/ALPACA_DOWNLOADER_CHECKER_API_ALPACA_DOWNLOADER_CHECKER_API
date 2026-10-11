@@ -24,7 +24,7 @@ belong in [Public API](public-api.md); commands and mutation hazards belong in [
 | Sharded master catalogue | [`security_master.py`](../libs/alpaca_end_of_day_security_correlation/security_master.py) |
 | Final online evaluation | [`online_status.py`](../libs/alpaca_end_of_day_ticker_pipeline/online_status.py) |
 | Warning rules | [`cross_adjustment_warnings.py`](../libs/alpaca_end_of_day_warning_pipeline/cross_adjustment_warnings.py), [`security_segment_statistics.py`](../libs/alpaca_end_of_day_warning_pipeline/security_segment_statistics.py) |
-| Public consumer projection | [`alpaca_end_of_day.py`](../alpaca_end_of_day.py) |
+| Public consumer projection | [`alpaca_end_of_day/__init__.py`](../alpaca_end_of_day/__init__.py) |
 | Detailed authenticated read | [`history.py`](../libs/alpaca_end_of_day_reader/history.py) |
 | Tracked US market sessions | [`us_market_hours.json`](../libs/common/us_market_hours.json) |
 

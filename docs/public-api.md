@@ -1,6 +1,6 @@
 # Public API
 
-[`alpaca_end_of_day.py`](../alpaca_end_of_day.py) is the only supported Python import for consumer applications.
+[`alpaca_end_of_day`](../alpaca_end_of_day/__init__.py) is the only supported Python import for consumer applications.
 Everything under `libs/` is implementation or operator-inspection machinery.
 
 The public library exposes only the authenticated online snapshot. The absence of an ID, ticker, name, or history does
@@ -23,7 +23,7 @@ print(data.online_count())
 ```
 
 `DataLibrary(path=None)` authenticates the security-master catalogue at construction. `path` is the repository root;
-it defaults to the directory containing `alpaca_end_of_day.py`. One instance stays bound to that generation.
+it defaults to the parent of the `alpaca_end_of_day` package. One instance stays bound to that generation.
 
 | Method | Result |
 |---|---|

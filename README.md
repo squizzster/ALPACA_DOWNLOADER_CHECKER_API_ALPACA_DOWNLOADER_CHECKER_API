@@ -61,7 +61,7 @@ first time.
   Consumer reads and exports require neither credentials nor network access.
 
 Tracked application code uses the Python standard library and declares no third-party Python runtime dependency. The
-repository has no package metadata or dependency lock; run scripts and import the public module from the repository
+repository has no package metadata or dependency lock; run scripts and import the public package from the repository
 root, or otherwise place the checkout on `PYTHONPATH`.
 
 ## Consumer quick start

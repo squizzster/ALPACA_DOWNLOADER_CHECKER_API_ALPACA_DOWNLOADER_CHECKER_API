@@ -14,8 +14,8 @@ serves data. Downstream research or trading decisions are outside its responsibi
 
 ## Public and internal interfaces
 
-- Consumer code imports only [`alpaca_end_of_day.py`](alpaca_end_of_day.py). Its `DataLibrary` exposes online IDs and
-  never reveals whether an unavailable ID is internally known or why it is offline.
+- Consumer code imports only the [`alpaca_end_of_day`](alpaca_end_of_day/__init__.py) package. Its `DataLibrary`
+  exposes online IDs and never reveals whether an unavailable ID is internally known or why it is offline.
 - [`read_alpaca_end_of_day_ticker.py`](read_alpaca_end_of_day_ticker.py) is a CLI client of that public library.
 - Modules under `libs/`, including `libs/alpaca_end_of_day_reader/`, are implementation and operator-inspection
   interfaces. Do not present them as supported application imports.
@@ -31,9 +31,9 @@ serves data. Downstream research or trading decisions are outside its responsibi
   set of identities affected by the rule.
 - Keep offline discovery and diagnostics outside the public API. A separate discovery product can be designed later;
   it is not part of `DataLibrary`.
-- Root Python files are executable entrypoints, except for the supported consumer library
-  [`alpaca_end_of_day.py`](alpaca_end_of_day.py). Put domain behavior in the owning package identified in
-  [Architecture](docs/ARCHITECTURE.md#code-ownership).
+- Tracked root Python files are executable entrypoints. The supported consumer library lives in
+  [`alpaca_end_of_day/`](alpaca_end_of_day/__init__.py); put all other domain behavior in the owning package identified
+  in [Architecture](docs/ARCHITECTURE.md#code-ownership).
 - Any serialized or behavioral boundary change must bump its owning version and append exactly one entry to its
   runtime-validated JSON changelog. Do not add explicit `version` keys to those arrays; array position is the version.
 - Documentation-only changes do not bump runtime versions or JSON changelogs. Record pending documentation changes

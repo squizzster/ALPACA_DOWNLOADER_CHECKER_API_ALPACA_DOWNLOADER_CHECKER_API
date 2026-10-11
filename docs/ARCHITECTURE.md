@@ -17,7 +17,7 @@ The project deliberately separates application consumption from operator inspect
 
 | Boundary | Supported entrypoint | What it exposes |
 |---|---|---|
-| Consumer | [`alpaca_end_of_day.DataLibrary`](../alpaca_end_of_day.py) | Only the authenticated online universe, public identity metadata, exact bars, search, ticker resolution, and flat export. |
+| Consumer | [`alpaca_end_of_day.DataLibrary`](../alpaca_end_of_day/__init__.py) | Only the authenticated online universe, public identity metadata, exact bars, search, ticker resolution, and flat export. |
 | Operator/internal | [`libs/alpaca_end_of_day_reader`](../libs/alpaca_end_of_day_reader/) | Detailed provenance, validation findings, warning overlays, source selection, and offline records for pipeline evaluation or investigation. |
 
 A consumer cannot discover an offline identity through the public boundary. Every well-formed ID outside the opened
@@ -65,7 +65,7 @@ raise `CatalogChangedError`; the caller creates a new instance to observe the ne
 
 | Boundary | Owner | Responsibility |
 |---|---|---|
-| Consumer library | [`alpaca_end_of_day.py`](../alpaca_end_of_day.py) | Online-only catalogue, search, resolution, typed history, and flat CSV projection. |
+| Consumer library | [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | Online-only catalogue, search, resolution, typed history, and flat CSV projection. |
 | Bar request | [`libs/download_alpaca_end_of_day_bars/`](../libs/download_alpaca_end_of_day_bars/) | CLI planning, credentials, HTTP, pagination, rate limiting, and adjustment acquisition. |
 | Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](../libs/alpaca_end_of_day_pipeline/) | Gzip/sidecar publication, cache state, validation, authenticated aliases, and immutable-boundary errors. |
 | Identity evidence | [`libs/alpaca_security_lineage/`](../libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal and symbol disposition. |
@@ -75,15 +75,15 @@ raise `CatalogChangedError`; the caller creates a new instance to observe the ne
 | Online evaluation | [`libs/alpaca_end_of_day_ticker_pipeline/online_status.py`](../libs/alpaca_end_of_day_ticker_pipeline/online_status.py) | Exercise every advertised read and classify final availability. |
 | Shared primitives | [`libs/common/`](../libs/common/) | Atomic writes, hashing, pure rule evaluation, and the tracked US-market calendar. |
 
-Root Python files are executable entrypoints, except for the supported consumer library
-[`alpaca_end_of_day.py`](../alpaca_end_of_day.py). Domain behavior belongs in its owning library, and `libs/common/`
-imports no application package.
+Tracked root Python files are executable entrypoints. The supported consumer implementation lives in
+[`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py); other domain behavior belongs in its owning library, and
+`libs/common/` imports no application package.
 
 ## Repository layout
 
 | Path | Role |
 |---|---|
-| [`alpaca_end_of_day.py`](../alpaca_end_of_day.py) | The only supported Python import for consumer applications. |
+| [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | The only supported Python import for consumer applications. |
 | [Root command files](../run_alpaca_end_of_day_ticker_pipeline.py) | Thin, executable adapters for the maintained CLIs; the complete inventory is in [Operations](operations.md#command-map). |
 | [`libs/`](../libs/) | Domain implementations and operator-inspection interfaces. These are not supported consumer imports. |
 | [`tests/`](../tests/) | Unit and contract tests built around temporary repositories and HTTP doubles. |

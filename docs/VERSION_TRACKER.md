@@ -8,7 +8,7 @@ index for pending work, current compatibility, and important milestones.
 
 ### Added
 
-- Public API v1 in [`alpaca_end_of_day.py`](../alpaca_end_of_day.py): online-only catalogue access, name and identifier
+- Public API v1 in [`alpaca_end_of_day`](../alpaca_end_of_day/__init__.py): online-only catalogue access, name and identifier
   search, dated ticker resolution, typed exact histories, snapshot generation checks, and disk-backed flat CSV export.
 - A standalone read-only catalogue audit authenticates every published source and identity shard, checks global UUID
   membership and source closure, and reports all cross-catalogue findings without changing runtime data.
@@ -39,6 +39,8 @@ index for pending work, current compatibility, and important milestones.
 - The tracked changelogs and recovery universe now live under [`resources/`](../resources/), renamed from the ambiguous
   `artifacts` directory. All seven files retained identical bytes, and their configured readers now use the new path.
   This source-layout change does not alter a serialized or behavioral boundary, so runtime versions are unchanged.
+- The public implementation now lives in [`alpaca_end_of_day/__init__.py`](../alpaca_end_of_day/__init__.py), preserving
+  the supported `from alpaca_end_of_day import ...` contract while leaving only executable command files in the root.
 
 ### Removed
 
@@ -50,6 +52,8 @@ index for pending work, current compatibility, and important milestones.
   case-insensitive normalized substring matching; it is not typo-tolerant fuzzy matching.
 - Removed the duplicate component-ownership matrix from the development guide and the repeated catalogue-audit rule
   list from operations; each now links to its authoritative architecture or technical-contract section.
+- Removed the non-CLI `alpaca_end_of_day.py` file from the repository root; its import-compatible package replacement
+  retains the same public names and default repository-root behavior.
 
 ## Verification status
 
@@ -59,7 +63,8 @@ Status recorded **2026-10-11 UTC** for this handoff:
 - All six changelog validators passed at pipeline v19, correlation v20, master v5, warnings v6, reader v7, and public
   API v1 from their new `resources/` paths. The seven renamed resource files are byte-identical to their former paths;
   `ticker.csv` remains one record containing exactly 18,092 sorted, unique authenticated source symbols.
-- All six maintained root commands returned current `--help` output matching the documented command map.
+- All six maintained root commands returned current `--help` output matching the documented command map. They are the
+  only tracked root Python files; the import-only public library resolves from `alpaca_end_of_day/__init__.py`.
 - A custom documentation check validated local links, anchors, and referenced paths across all eight maintained
   Markdown files. The README directly links the other seven documents, and no source or documentation reference to
   the former directory as a live path remains.
@@ -68,7 +73,7 @@ Status recorded **2026-10-11 UTC** for this handoff:
   The prescribed unexcluded commands are not green solely because the deliberately untracked experimental
   `figi_test.py` has one import-order finding and is unformatted; that file remains untouched.
 - The public library opened generation `ceb3574445531d66bfc312cdf928d62d90b9ae21843abc637e6b186d7bc8e68b`
-  and exposed 13,103 online IDs after the resource rename.
+  and exposed 13,103 online IDs after the resource and package relocations.
 
 There is no repository CI workflow or configured Markdown/link checker. Local verification is the only automated gate.
 
