@@ -107,5 +107,11 @@ Use only one multi-worker pipeline process against a repository at a time. Runti
 ticker universes, and logs are intentionally ignored by Git. Read [Operations](docs/operations.md) before replacing,
 repairing, backing up, or restoring any frozen boundary.
 
+Audit the complete published catalogue without credentials, network access, or writes:
+
+```bash
+./audit_alpaca_end_of_day_catalog.py
+```
+
 This is a historical end-of-day data engine. It is not an order-routing system, live quote API, brokerage client, or
 investment recommendation service, and it is not affiliated with or endorsed by Alpaca.

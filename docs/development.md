@@ -70,10 +70,10 @@ python3 -W error::ResourceWarning -m unittest discover -s tests -v
 Tests use temporary repositories and HTTP doubles. They do not require production data or live credentials. Set
 `PYTHONDONTWRITEBYTECODE=1` when a strictly non-mutating verification pass must avoid ignored bytecode caches.
 
-As of **2026-10-10**, lint, formatting, whitespace, changelog validation, secret scanning, and production-artifact
-authentication pass, but the complete unit suite is not green: 167 of 169 tests pass. The two failures and their exact
-rule-order interaction are recorded under [Verification status](../VERSION_TRACKER.md#verification-status). Do not
-hide that gap or report the branch as fully passing until it is resolved.
+As of **2026-10-11**, the Git-visible project passes lint, formatting, whitespace, changelog validation, the read-only
+production-catalogue authentication checks, and all 179 unit tests. The prescribed unexcluded Ruff commands also
+inspect the deliberately untracked `figi_test.py`, whose import order and formatting do not pass; that experimental
+file remains untouched. Do not report the unexcluded Ruff commands as green while that separate finding remains.
 
 There is no `.github/workflows/` directory and no other repository CI configuration. Local commands are therefore the
 only automated gate. Ruff is configured in [`pyproject.toml`](../pyproject.toml), but its executable version is not

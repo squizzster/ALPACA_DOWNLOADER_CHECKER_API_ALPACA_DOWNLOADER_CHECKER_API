@@ -117,6 +117,9 @@ that symbol, so after a validation-version change process all views before a par
 ## Narrow operator commands
 
 ```bash
+# Authenticate every catalogue shard and run all catalogue-wide integrity checks.
+./audit_alpaca_end_of_day_catalog.py
+
 # Read lineage evidence and print JSON. This may contact Alpaca.
 ./inspect_alpaca_security_lineage.py FB > /tmp/fb-lineage.json
 
@@ -126,6 +129,18 @@ that symbol, so after a validation-version change process all views before a par
 
 Correlation requires current validation receipts. Warning publication has a library API but no standalone command.
 These commands are operator tools and do not define the consumer contract.
+
+The catalogue audit is strictly read-only: it has no credentials, network, publication, repair, or update path. It
+authenticates the index and every inventory bucket, source shard, and identity shard; recomputes each identity from its
+bound source contributions; and runs all registered cross-catalogue checks. Those checks cover source/identity closure,
+disjoint Alpaca UUID membership, member and history projections, all advertised adjustments, concurrent online active
+ticker claims, and generation stability during the audit. Its JSON report goes to standard output.
+
+The audit is exhaustive over the published catalogue, not the complete frozen-data dependency graph. It does not reread
+every bar, correlation output, or warning output; those are authenticated by the detailed reader and the final online
+evaluation. An authentication or integrity error exits with status `1`. Investigative warnings alone produce
+`passed_with_warnings` and status `0`; argument errors use status `2`. Use `--repository-root` to inspect a restored copy
+without placing it over the live repository.
 
 ## Consume online data
 

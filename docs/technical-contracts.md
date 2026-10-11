@@ -123,6 +123,12 @@ Rules describe evidence shapes, never named tickers. The current consequential s
   corporate-action coverage, all eight matching adjustment grids, dated in-run evidence for the new identity, and no
   in-run structural action or unresolved evidence.
 
+Long-gap suffix rules allocate pricing rows to a proven UUID; they do not partition that UUID from authenticated
+predecessor or successor UUID lineage. UUID-lineage edges are suppressed only when the row carries explicit
+`identity_partition` evidence from a one-session transition, distinct continuous UUID episodes, or authenticated
+current-symbol reuse. Retained edges can add a predecessor or successor UUID to membership, or preserve another ticker
+carried by the same UUID. This keeps ticker-occupancy allocation separate from security-membership partitioning.
+
 The current-symbol suffix rules leave the earlier episode uncorrelated. If the same Alpaca UUID has evidence on both
 sides of a long gap, the suffix is not promoted; both sides remain unresolved until a different rule can prove the
 boundary.
@@ -219,6 +225,20 @@ Global catalogue under `data/end_of_day/json_manifests/`:
 `source_count` and `master_id_count` measure different object sets and need not match. Updating one symbol writes its
 new immutable source object, affected security objects and buckets, then the small roots and receipt. Unchanged shards
 are reused. Runtime `data/` is ignored by Git.
+
+### Read-only catalogue audit
+
+[`audit_alpaca_end_of_day_catalog.py`](../audit_alpaca_end_of_day_catalog.py) materializes and authenticates every source
+and identity object in one catalogue generation before applying catalogue-wide checks. In addition to the per-object
+authentication rules above, the audit requires the source contribution graph to close exactly over the published
+identities and treats an Alpaca asset UUID appearing in more than one master-ID membership set as an integrity error.
+Master-ID membership represents identity equivalence classes, so those sets must be disjoint even when one set is a
+subset of another.
+
+An open-ended active ticker claim shared by multiple online master IDs is reported separately as an investigative
+warning. Ticker ambiguity remains explicit rather than being resolved by choosing an ID. The command checks that the
+catalogue generation is unchanged at the end of the scan and never publishes, repairs, downloads, or contacts Alpaca.
+Its report is an operator diagnostic, not a persisted catalogue artifact or public API schema.
 
 ## Internal authenticated reader
 

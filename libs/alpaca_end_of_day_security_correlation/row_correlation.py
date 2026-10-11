@@ -53,7 +53,14 @@ class _RowDecision:
     distinct_uuid_episode_partition: DistinctUuidEpisodePartition | None = None
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
     historical_symbol: str | None = None
-    isolate_asset_identity: bool = False
+    use_rule_identity_basis: bool = False
+
+    def has_explicit_identity_partition(self) -> bool:
+        return (
+            self.distinct_uuid_transition is not None
+            or self.distinct_uuid_episode_partition is not None
+            or self.current_symbol_reuse is not None
+        )
 
     def grouping_key(self) -> tuple:
         if self.branch == CORRELATED_BRANCH:
@@ -71,7 +78,7 @@ class _RowDecision:
                 self.distinct_uuid_episode_partition,
                 self.current_symbol_reuse,
                 self.historical_symbol,
-                self.isolate_asset_identity,
+                self.use_rule_identity_basis,
             )
         return (
             self.branch,
@@ -85,7 +92,7 @@ class _RowDecision:
             self.distinct_uuid_episode_partition,
             self.current_symbol_reuse,
             self.historical_symbol,
-            self.isolate_asset_identity,
+            self.use_rule_identity_basis,
         )
 
 
@@ -324,7 +331,7 @@ def _apply_complete_current_suffix_rule(
         cusip=assessment.current_asset_cusip,
         identity_confidence="complete_current_identity_suffix",
         ticker_reuse_gap=assessment,
-        isolate_asset_identity=True,
+        use_rule_identity_basis=True,
     )
 
 
@@ -344,7 +351,7 @@ def _apply_inactive_current_suffix_rule(
         cusip=assessment.current_asset_cusip,
         identity_confidence="inactive_current_identity_suffix",
         ticker_reuse_gap=assessment,
-        isolate_asset_identity=True,
+        use_rule_identity_basis=True,
     )
 
 
@@ -374,7 +381,7 @@ def _apply_dated_terminal_suffix_rule(
         identity_confidence="dated_terminal_identity_suffix",
         warning_codes=warning_codes,
         ticker_reuse_gap=assessment,
-        isolate_asset_identity=True,
+        use_rule_identity_basis=True,
     )
 
 
@@ -428,7 +435,7 @@ def _apply_one_session_distinct_uuid_transition_rule(
         historical_symbol=identity.symbol,
         identity_confidence="authenticated_distinct_uuid_transition",
         distinct_uuid_transition=transition,
-        isolate_asset_identity=True,
+        use_rule_identity_basis=True,
     )
 
 
@@ -445,7 +452,7 @@ def _apply_current_symbol_reuse_rule(
         historical_symbol=assessment.symbol,
         identity_confidence="authenticated_current_symbol_reuse",
         current_symbol_reuse=assessment,
-        isolate_asset_identity=True,
+        use_rule_identity_basis=True,
     )
 
 
@@ -672,7 +679,7 @@ def correlate_download_rows(
                 current_symbol_reuse=current_symbol_reuse,
             )
         )
-        if decision.branch == CORRELATED_BRANCH and not decision.isolate_asset_identity:
+        if decision.branch == CORRELATED_BRANCH and not decision.use_rule_identity_basis:
             matching_partitions = [
                 partition
                 for partition in distinct_uuid_episode_partitions
@@ -682,7 +689,7 @@ def correlate_download_rows(
                 decision = replace(
                     decision,
                     distinct_uuid_episode_partition=matching_partitions[0],
-                    isolate_asset_identity=True,
+                    use_rule_identity_basis=True,
                 )
         correlated_rows.append(
             _CorrelatedRow(
@@ -730,12 +737,12 @@ def correlate_download_rows(
                 )
                 else "single_alpaca_asset_id"
             )
-            identity_edges = [] if decision.isolate_asset_identity else uuid_lineage_edges
+            identity_edges = [] if decision.has_explicit_identity_partition() else uuid_lineage_edges
             identity_basis = (
                 PARTITION_RULE_NAME
                 if decision.distinct_uuid_episode_partition is not None
                 else decision.rule_name
-                if decision.isolate_asset_identity
+                if decision.use_rule_identity_basis
                 else identity_basis
             )
             historical_symbol = decision.historical_symbol or (

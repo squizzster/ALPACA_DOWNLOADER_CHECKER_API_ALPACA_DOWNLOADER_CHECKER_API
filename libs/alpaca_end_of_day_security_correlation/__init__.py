@@ -11,6 +11,11 @@ from .authenticated_outputs import (
     AuthenticatedSecurityCorrelation,
     authenticate_security_correlation,
 )
+from .catalog_audit import (
+    audit_security_master_catalogue,
+    parse_catalog_audit_arguments,
+    run_catalog_audit_command,
+)
 from .command_line import parse_command_line_arguments, run_security_correlation_command
 from .correlation import (
     build_security_correlation_report,
@@ -66,6 +71,7 @@ __all__ = [
     "SECURITY_ID_SCHEME_VERSION",
     "SECURITY_MASTER_CHANGE_LOG_PATH",
     "SECURITY_MASTER_VERSION",
+    "audit_security_master_catalogue",
     "authenticate_security_master",
     "build_security_correlation_report",
     "authenticate_security_correlation",
@@ -88,6 +94,8 @@ __all__ = [
     "publish_security_master_online_status",
     "master_id_for_alpaca_asset_ids",
     "publish_security_master_update",
+    "parse_catalog_audit_arguments",
+    "run_catalog_audit_command",
     "security_master_manifest_path",
     "security_master_directory",
     "security_master_path",

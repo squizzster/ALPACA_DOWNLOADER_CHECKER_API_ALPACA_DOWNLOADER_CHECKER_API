@@ -10,9 +10,12 @@ index for pending work, current compatibility, and important milestones.
 
 - Public API v1 in [`alpaca_end_of_day.py`](alpaca_end_of_day.py): online-only catalogue access, name and identifier
   search, dated ticker resolution, typed exact histories, snapshot generation checks, and disk-backed flat CSV export.
-- Correlation v9-v19: generalized stable-candidate fallback, ticker-reuse gap detection, authenticated session
+- A standalone read-only catalogue audit authenticates every published source and identity shard, checks global UUID
+  membership and source closure, and reports all cross-catalogue findings without changing runtime data.
+- Correlation v9-v20: generalized stable-candidate fallback, ticker-reuse gap detection, authenticated session
   exclusions, complete and inactive current-suffix rules, dated terminal suffixes, one-session distinct-UUID
-  transitions, continuous UUID episode partitioning, and authenticated current-symbol reuse.
+  transitions, continuous UUID episode partitioning, authenticated current-symbol reuse, and separation of ticker
+  suffix allocation from authenticated UUID-lineage membership.
 - Root [agent instructions](AGENTS.md) and this tracker.
 
 ### Modified
@@ -23,6 +26,8 @@ index for pending work, current compatibility, and important milestones.
   disagreement only through one exact dated historical-ticker source.
 - Multi-worker ticker orchestration serializes provisional master publication, online evaluation, and final
   availability publication as one in-process catalogue-finalization transaction.
+- Correlation v20 preserves authenticated predecessor and successor UUID edges for long-gap suffix assignments while
+  reserving edge suppression for explicit identity partitions.
 - The README and topic guides now distinguish the online public library from internal offline inspection, document
   company-name search and flat export, and give each architectural or operational explanation one owner.
 
@@ -35,43 +40,32 @@ index for pending work, current compatibility, and important milestones.
 
 ## Verification status
 
-Status recorded **2026-10-10 UTC** for the current working tree:
+Status recorded **2026-10-11 UTC** for the current working tree:
 
-- `ruff check .`: passed.
-- `ruff format --check .`: passed for 102 Python files.
+- `ruff check --exclude figi_test.py .`: passed. The prescribed `ruff check .` is not green solely because the
+  deliberately untracked experimental `figi_test.py` has one import-order finding; that file was left untouched.
+- `ruff format --check --exclude figi_test.py .`: passed for 105 Python files. The prescribed
+  `ruff format --check .` likewise reports only that untracked experimental file as unformatted.
 - `git diff --check`: passed.
-- A custom documentation check validated all 114 local links, anchors, and paths across eight Git-visible Markdown
-  files; the README directly indexes all seven other maintained documents.
-- All five root command-line entrypoints returned current `--help` output matching the documented commands and options.
-- Version/changelog validation passed for pipeline v19, correlation v19, master v5, warnings v6, reader v7, and public
+- A custom documentation check validated all local links, anchors, and paths across the Git-visible Markdown files;
+  the README directly indexes every other maintained document.
+- All six maintained root command-line entrypoints returned current `--help` output matching the documented commands
+  and options.
+- Version/changelog validation passed for pipeline v19, correlation v20, master v5, warnings v6, reader v7, and public
   API v1.
-- A custom secret-pattern scan found zero matches in 115 Git-visible files.
-- All 11,040 source shards, 8,809 identity shards, 11,040 correlation outputs, and 11,040 warning outputs authenticated
-  against local generation `aaa20b07cc5ee9156d346ecc0c299a5b4a15b4e4aea827a2f2a60faf0134ce89`.
-- The local public snapshot exposed 8,782 online IDs; all eight STRC adjustment histories returned 298 rows.
-- This documentation refactor left all 107 Git-visible non-Markdown files byte-identical to its starting baseline. The
-  preceding frozen verification pass also found no size/mtime change among 351,240 runtime data files.
-
-The complete test command is **not green**:
-
-```text
-python3 -W error::ResourceWarning -m unittest discover -s tests -v
-Ran 170 tests: 168 passed, 2 failed
-```
-
-Both failures occur because `ticker_reuse_gap_guard` currently executes before the dated as-of UUID resolver and treats
-sparse unit-fixture rows as pricing episodes:
-
-- [`test_asof_selected_meta_identity_beats_unrelated_historical_meta_ticker`](tests/test_alpaca_end_of_day_security_correlation.py)
-  presents two rows separated by 502 expected sessions. The guard returns two uncorrelated episodes before the META
-  identity-chain rule runs.
-- [`test_asof_uuid_branch_routes_reused_b_ticker_to_exact_barrick_uuids`](tests/test_alpaca_end_of_day_security_correlation.py)
-  presents a final gap of 71 expected sessions. The guard likewise preempts the Barrick dated UUID routing.
-
-The implementation order is explicit in `ROW_CORRELATION_RULES` in
-[`row_correlation.py`](libs/alpaca_end_of_day_security_correlation/row_correlation.py): the gap guard is rule 5 and the
-as-of resolver is rule 8. It remains unresolved whether those sparse fixtures should model complete session grids or
-whether dated identity evidence should precede the guard. No behavior or test was changed during the verification pass.
+- A custom secret-pattern scan found zero matches in the 115 tracked files plus the three new audit files; the
+  deliberately untracked experimental `figi_test.py` was outside this handoff scan.
+- Correlation v20 was published for the eight reports identified by the read-only comparative evaluation. Three now
+  retain their authenticated successor UUID and five retain authenticated ticker aliases carried by the same UUID.
+  Every one of their 64 frozen bar views was an authenticated cache hit at the pinned `2026-10-06` request boundary.
+  The aggregate content, size, and nanosecond-mtime digest over those bar files and sidecars remained
+  `029a245856b6e4b0b57db869dafa466a15fe1a54c78578a84d01fd163be3bd71`.
+- The post-publication read-only catalogue audit authenticated all 18,092 source shards and 13,483 identity shards
+  against generation `ceb3574445531d66bfc312cdf928d62d90b9ae21843abc637e6b186d7bc8e68b`. Duplicate-UUID errors fell from 14 to 11;
+  one concurrent online active-ticker warning remains. Source closure, member projection, history projection, and
+  snapshot stability all pass.
+- The local public snapshot exposes 13,103 online IDs. The audit itself changed no runtime data.
+- `python3 -W error::ResourceWarning -m unittest discover -s tests -v`: passed all 179 tests.
 
 There is no repository CI workflow or configured Markdown/link checker. Local verification is the current gate.
 
@@ -81,7 +75,7 @@ There is no repository CI workflow or configured Markdown/link checker. Local ve
 |---|---:|---:|---|
 | Public consumer API | 1 | absent | New, unreleased boundary. |
 | Frozen validation pipeline | 19 | 19 | Unchanged from the Phase 1 baseline. |
-| Security correlation | 19 | 8 | Versions 8 through 19 are accepted by the current master migration path. |
+| Security correlation | 20 | 8 | Versions 8 through 20 are accepted by the current master migration path. |
 | Security master | 5 | 4 | v5 adds multi-correlation-version migration support. |
 | Warning pipeline | 6 | 6 | Unchanged from the Phase 1 baseline. |
 | Detailed internal reader | 7 | 5 | v6-v7 add deterministic source-conflict selection. |
@@ -131,6 +125,8 @@ Exact history: [`alpaca_end_of_day_pipeline_change_log.json`](alpaca_end_of_day_
   terminal suffix rules, with authenticated venue-session exclusions.
 - **v17-v19:** added one-session distinct-UUID transitions, separate continuous UUID episodes, and the complete
   current-symbol run after authenticated ticker reuse.
+- **v20 — Unreleased:** preserves authenticated UUID lineage for long-gap suffix row assignments and suppresses lineage
+  edges only for explicit identity partitions.
 
 Exact history:
 [`alpaca_end_of_day_security_correlation_change_log.json`](alpaca_end_of_day_security_correlation_change_log.json).

@@ -121,5 +121,11 @@
       "Assign a complete current ticker run to its exact current Alpaca UUID after authenticated evidence shows the prior occupant renamed away at least 100 market sessions earlier and dated nonstructural actions bind the later ticker and CUSIP to the new UUID.",
       "Keep the historical occupant separate and reject the rule on incomplete adjustment grids, unresolved identity evidence, competing in-run occupancy, or an in-run structural action."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve authenticated predecessor and successor UUID lineage when complete, inactive, or dated terminal ticker-reuse suffix rules assign pricing rows to one proven UUID.",
+      "Suppress UUID-lineage edges only for explicit identity partitions, keeping ticker-occupancy allocation separate from security-membership partitioning."
+    ]
   }
 ]
