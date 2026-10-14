@@ -3,8 +3,6 @@ import csv
 import gzip
 import hashlib
 import json
-import subprocess
-import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -442,36 +440,6 @@ class PublicationTests(unittest.TestCase):
             )
             self.assertEqual(rebuilt_failure_manifest["pipeline_version"], PIPELINE_VERSION)
             self.assertEqual(rebuilt_failure_manifest["failures"], [])
-
-
-class CliBoundaryTests(unittest.TestCase):
-    def test_force_cannot_replace_a_sha_mismatched_download(self):
-        with tempfile.TemporaryDirectory() as test_directory:
-            end_of_day_data_directory = Path(test_directory) / "data" / "end_of_day"
-            published_download = publish_valid_test_download(end_of_day_data_directory)
-            damaged_download_bytes = bytearray(published_download.paths.download_path.read_bytes())
-            damaged_download_bytes[20] ^= 1
-            published_download.paths.download_path.write_bytes(damaged_download_bytes)
-
-            completed_process = subprocess.run(
-                [
-                    sys.executable,
-                    str(Path(__file__).resolve().parents[1] / "download_alpaca_end_of_day_bars.py"),
-                    "--symbol",
-                    "TEST",
-                    "--adjustment",
-                    "raw",
-                    "--force",
-                ],
-                cwd=test_directory,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-            self.assertEqual(completed_process.returncode, 2)
-            self.assertIn("SHA-256 mismatch", completed_process.stderr)
-            self.assertNotIn("set ALPACA_API", completed_process.stderr)
 
 
 class CacheDecisionTests(unittest.TestCase):

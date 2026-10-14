@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import libs.alpaca_end_of_day_security_correlation.security_master as security_master_module
+import libs.alpaca_end_of_day_ticker_pipeline.online_status as online_status_module
 from libs.alpaca_end_of_day_pipeline import (
     PricingDataIntegrityError,
     validate_and_publish_alpaca_download,
@@ -222,6 +224,23 @@ class EndOfDayReaderTests(unittest.TestCase):
             authenticated.master_sha256,
             authenticated.receipt["output"]["sha256"],
         )
+
+    def test_online_evaluation_reuses_one_authenticated_master_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(repository_root, with_integrity_failure=False)
+            with patch.object(
+                online_status_module,
+                "authenticate_security_master",
+                wraps=online_status_module.authenticate_security_master,
+            ) as authenticate:
+                evaluation = evaluate_security_online_status(
+                    repository_root,
+                    [TEST_MASTER_ID],
+                )
+
+        self.assertEqual(1, authenticate.call_count)
+        self.assertTrue(evaluation.online_by_master_id[TEST_MASTER_ID])
 
     def test_public_availability_requires_clean_readable_bars_and_never_writes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

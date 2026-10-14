@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from libs.common.us_equity_market_session_calendar import (
@@ -224,6 +224,9 @@ def assess_distinct_uuid_episode_partitions(
     repository_root: Path,
     symbol: str,
     lineage: dict[str, Any],
+    *,
+    correlation_loader: Callable[[str], Any] | None = None,
+    source_rows_loader: Callable[[str, str], tuple[list[dict], str]] | None = None,
 ) -> tuple[DistinctUuidEpisodePartition, ...]:
     """Return action-linked UUID groups whose individual price episodes are continuous."""
     edges, issues = build_uuid_lineage_edges(lineage)
@@ -241,7 +244,11 @@ def assess_distinct_uuid_episode_partitions(
         component_invalid = False
         for candidate_symbol in sorted(candidate_symbols):
             try:
-                correlation = authenticate_security_correlation(repository_root, candidate_symbol)
+                correlation = (
+                    authenticate_security_correlation(repository_root, candidate_symbol)
+                    if correlation_loader is None
+                    else correlation_loader(candidate_symbol)
+                )
             except (OSError, SecurityCorrelationError):
                 continue
             relevant_segments = [
@@ -263,17 +270,22 @@ def assess_distinct_uuid_episode_partitions(
                     break
                 filename = segment["data_file"]
                 if filename not in rows_by_filename:
-                    authenticated = read_authenticated_frozen_download(
-                        repository_root,
-                        f"data/end_of_day/{candidate_symbol}",
-                        {"file": filename},
-                    )
                     source = correlation.sources_by_filename[filename]
-                    if authenticated.manifest.get("sha256") != source.get("download_sha256"):
+                    if source_rows_loader is None:
+                        authenticated = read_authenticated_frozen_download(
+                            repository_root,
+                            f"data/end_of_day/{candidate_symbol}",
+                            {"file": filename},
+                        )
+                        source_rows = authenticated.rows
+                        source_sha256 = authenticated.manifest.get("sha256")
+                    else:
+                        source_rows, source_sha256 = source_rows_loader(candidate_symbol, filename)
+                    if source_sha256 != source.get("download_sha256"):
                         component_invalid = True
                         break
-                    rows_by_filename[filename] = authenticated.rows
-                    supporting_downloads.add((candidate_symbol, filename, authenticated.manifest["sha256"]))
+                    rows_by_filename[filename] = source_rows
+                    supporting_downloads.add((candidate_symbol, filename, source_sha256))
                 asset_id = segment["canonical_security"]["alpaca_asset_id"]
                 adjustment = segment["adjustment"]
                 selected_rows = rows_by_filename[filename][segment["row_start"] - 1 : segment["row_end"]]

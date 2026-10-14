@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from libs.common.us_equity_market_session_calendar import (
@@ -271,6 +271,11 @@ def _assess_candidate(
 def assess_one_session_distinct_uuid_transition(
     repository_root: Path,
     lineage: dict[str, Any],
+    *,
+    authenticated_symbol_sessions: Callable[
+        [str], tuple[tuple[date, ...], tuple[tuple[str, str, str], ...]] | None
+    ]
+    | None = None,
 ) -> OneSessionDistinctUuidTransition | None:
     """Resolve one absent session between two exact, distinct ticker UUIDs."""
     matches = []
@@ -279,7 +284,11 @@ def assess_one_session_distinct_uuid_transition(
         supporting_downloads = []
         for identity in (candidate.predecessor, candidate.successor):
             try:
-                authenticated = _authenticated_symbol_sessions(repository_root, identity.symbol)
+                authenticated = (
+                    _authenticated_symbol_sessions(repository_root, identity.symbol)
+                    if authenticated_symbol_sessions is None
+                    else authenticated_symbol_sessions(identity.symbol)
+                )
             except (KeyError, OSError, SecurityCorrelationError, TypeError, ValueError):
                 authenticated = None
             if authenticated is None:

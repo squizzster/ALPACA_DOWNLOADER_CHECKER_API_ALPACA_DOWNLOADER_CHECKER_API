@@ -1,0 +1,12 @@
+[
+  {
+    "modifications": [
+      "Introduce a compact v6 warning envelope that binds the validation and correlation generations and owns only advisory warning outputs."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind each warning generation to the trusted monthly pricing-source generation whose rows the warning transformation consumes directly."
+    ]
+  }
+]

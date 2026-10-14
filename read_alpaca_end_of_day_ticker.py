@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """Command-line client for the public Alpaca end-of-day data library."""
 
 import argparse

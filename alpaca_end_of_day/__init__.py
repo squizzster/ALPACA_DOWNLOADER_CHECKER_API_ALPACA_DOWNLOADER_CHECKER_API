@@ -1,8 +1,8 @@
-"""Public, read-only Python library for online end-of-day market data.
+"""Public, read-only Python library for published end-of-day market data.
 
 Consumer code should import this package and no module below ``libs``. The
-implementation authenticates the engine's stored artifacts, then exposes only
-the published online universe, public identities, and daily histories.
+pipeline has already checked its published boundaries; this consumer reads the
+resulting online universe, public identities, and daily histories.
 """
 
 from __future__ import annotations
@@ -22,13 +22,17 @@ from typing import Any, BinaryIO, TextIO
 from zoneinfo import ZoneInfo
 
 from libs.alpaca_end_of_day_reader import EndOfDayReaderError
-from libs.alpaca_end_of_day_reader import (
-    read_alpaca_end_of_day_security_history as _read_authenticated_history,
-)
 from libs.alpaca_end_of_day_security_correlation import (
     SecurityCorrelationError,
-    authenticate_security_master,
     is_master_id,
+)
+from libs.alpaca_end_of_day_v6.catalogue import load_catalogue
+from libs.alpaca_end_of_day_v6.errors import V6Error
+from libs.alpaca_end_of_day_v6.reader import (
+    PublishedHistoryInputs,
+)
+from libs.alpaca_end_of_day_v6.reader import (
+    read_v6_history as _read_published_history,
 )
 from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
@@ -727,8 +731,8 @@ class DataLibrary:
         _validate_api_change_log()
         self._path = _DEFAULT_LIBRARY_PATH if path is None else Path(path)
         try:
-            self._master = authenticate_security_master(self._path)
-        except SecurityCorrelationError as error:
+            self._master = load_catalogue(self._path)
+        except (SecurityCorrelationError, V6Error) as error:
             raise DataLibraryError(f"cannot open the authenticated data catalog: {error}") from error
         generation = self._master.receipt.get("security_master_generation_sha256")
         published_at = self._master.receipt.get("created_at")
@@ -745,11 +749,12 @@ class DataLibrary:
         self._generation = generation
         self._securities: tuple[Security, ...] | None = None
         self._ticker_resolutions: dict[str, tuple[TickerResolution, ...]] | None = None
+        self._history_inputs = PublishedHistoryInputs()
 
     def _assert_current_generation(self) -> None:
         try:
-            current_master = authenticate_security_master(self._path)
-        except SecurityCorrelationError as error:
+            current_master = load_catalogue(self._path)
+        except (SecurityCorrelationError, V6Error) as error:
             raise DataLibraryError(f"cannot authenticate the current data catalog: {error}") from error
         current_generation = current_master.receipt.get("security_master_generation_sha256")
         if current_generation != self._generation:
@@ -786,8 +791,8 @@ class DataLibrary:
                     securities.append(security)
                     for resolution in _ticker_resolutions_from_record(record, security):
                         ticker_resolutions.setdefault(resolution.ticker.upper(), []).append(resolution)
-        except SecurityCorrelationError as error:
-            raise DataLibraryError(f"cannot authenticate the online security catalog: {error}") from error
+        except (SecurityCorrelationError, V6Error) as error:
+            raise DataLibraryError(f"cannot read the online security catalog: {error}") from error
         self._ticker_resolutions = {
             ticker: tuple(
                 sorted(
@@ -849,9 +854,9 @@ class DataLibrary:
         canonical_id = _canonical_public_id(public_id)
         try:
             record = self._master.identities_by_master_id.get(canonical_id)
-        except SecurityCorrelationError as error:
-            raise DataLibraryError(f"cannot authenticate security {canonical_id}: {error}") from error
-        if record is None:
+        except (SecurityCorrelationError, V6Error) as error:
+            raise DataLibraryError(f"cannot read security {canonical_id}: {error}") from error
+        if record is None or record.get("online") is not True:
             raise PublicIdUnavailableError("public ID is not available")
         return _security_from_record(record)
 
@@ -894,9 +899,9 @@ class DataLibrary:
                         )
                     try:
                         record = self._master.identities_by_master_id[security.public_id]
-                    except (KeyError, SecurityCorrelationError) as error:
+                    except (KeyError, SecurityCorrelationError, V6Error) as error:
                         raise DataLibraryError(
-                            f"cannot authenticate online security {security.public_id} for CSV export"
+                            f"cannot read online security {security.public_id} for CSV export"
                         ) from error
                     timeline = _IdentityTimeline(record, security)
                     raw_history = self.get_history(
@@ -1007,36 +1012,28 @@ class DataLibrary:
         security = self.get_security(canonical_id)
 
         try:
-            result = _read_authenticated_history(
+            result = _read_published_history(
                 canonical_id,
                 adjustment,
                 repository_root=self._path,
+                master=self._master,
+                inputs=self._history_inputs,
             )
-        except EndOfDayReaderError as error:
+        except (EndOfDayReaderError, SecurityCorrelationError, V6Error) as error:
             self._assert_current_generation()
             raise DataLibraryError(f"cannot read security history: {error}") from error
 
         try:
             generation = result["provenance"]["security_master"]["security_master_generation_sha256"]
             if not isinstance(generation, str) or not generation:
-                raise DataLibraryError("authenticated history has no data generation")
+                raise DataLibraryError("published history has no data generation")
             if generation != self._generation:
                 raise CatalogChangedError(_CATALOG_CHANGED_MESSAGE)
-            if result["availability"]["online"] is not True:
-                raise DataLibraryError("an online public history became unavailable")
-            if result["integrity"]["error_count"] != 0:
-                raise DataLibraryError("an online history contains integrity errors")
-            result_security = _security_from_record(result["security"])
             all_bars = tuple(_daily_bar_from_record(bar) for bar in result["bars"])
-            if result["bar_count"] != len(all_bars):
-                raise DataLibraryError("authenticated history has an inconsistent bar count")
         except DataLibraryError:
             raise
         except (KeyError, TypeError) as error:
-            raise DataLibraryError("authenticated history does not satisfy the public contract") from error
-
-        if result_security != security:
-            raise DataLibraryError("authenticated history identity does not match the public catalog")
+            raise DataLibraryError("published history does not satisfy the public contract") from error
 
         bars = tuple(
             bar

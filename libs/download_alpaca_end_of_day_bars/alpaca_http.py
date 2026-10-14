@@ -61,12 +61,14 @@ def request_alpaca_daily_bars(
     api_secret_key: str,
     request_end_timestamp: str,
     rate_limiter: AlpacaRequestRateLimiter,
+    *,
+    request_start_timestamp: str = EARLIEST_REQUEST_TIMESTAMP,
 ) -> list[dict]:
     query_parameters = urllib.parse.urlencode(
         {
             "symbols": symbol,
             "timeframe": ALPACA_BAR_TIMEFRAME,
-            "start": EARLIEST_REQUEST_TIMESTAMP,
+            "start": request_start_timestamp,
             "end": request_end_timestamp,
             "feed": ALPACA_DATA_FEED,
             "adjustment": adjustment_mode,

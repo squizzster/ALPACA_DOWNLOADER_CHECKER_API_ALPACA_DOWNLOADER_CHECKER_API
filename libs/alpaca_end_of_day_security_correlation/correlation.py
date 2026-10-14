@@ -56,6 +56,13 @@ def _interval_report_object(interval) -> dict[str, Any]:
 def build_security_correlation_report(
     lineage_report: dict[str, Any],
     repository_root: Path,
+    *,
+    authenticated_download_reader: Callable[..., Any] = read_authenticated_frozen_download,
+    verified_session_exclusions_reader: Callable[..., dict[str, Any]] = (read_verified_session_exclusions),
+    authenticated_symbol_sessions: Callable[..., Any] | None = None,
+    correlation_loader: Callable[[str], Any] | None = None,
+    source_rows_loader: Callable[[str, str], tuple[list[dict], str]] | None = None,
+    assess_episode_partitions: bool = True,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
     if not isinstance(lineage_report, dict):
@@ -69,7 +76,7 @@ def build_security_correlation_report(
     intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
     uuid_lineage_edges, uuid_lineage_issues = build_uuid_lineage_edges(lineage)
     evidence_issues.extend(uuid_lineage_issues)
-    verified_session_exclusions = read_verified_session_exclusions(
+    verified_session_exclusions = verified_session_exclusions_reader(
         repository_root,
         symbol,
     )
@@ -125,7 +132,7 @@ def build_security_correlation_report(
         (item for item in local_downloads if isinstance(item, dict)),
         key=lambda item: str(item.get("file")),
     ):
-        authenticated_download = read_authenticated_frozen_download(
+        authenticated_download = authenticated_download_reader(
             repository_root,
             symbol_directory,
             local_download,
@@ -151,16 +158,23 @@ def build_security_correlation_report(
     distinct_uuid_transition = assess_one_session_distinct_uuid_transition(
         repository_root,
         lineage,
+        authenticated_symbol_sessions=authenticated_symbol_sessions,
     )
     if distinct_uuid_transition is not None and symbol not in {
         distinct_uuid_transition.predecessor.symbol,
         distinct_uuid_transition.successor.symbol,
     }:
         distinct_uuid_transition = None
-    distinct_uuid_episode_partitions = assess_distinct_uuid_episode_partitions(
-        repository_root,
-        symbol,
-        lineage,
+    distinct_uuid_episode_partitions = (
+        assess_distinct_uuid_episode_partitions(
+            repository_root,
+            symbol,
+            lineage,
+            correlation_loader=correlation_loader,
+            source_rows_loader=source_rows_loader,
+        )
+        if assess_episode_partitions
+        else ()
     )
 
     for authenticated_download, source, _ in authenticated_work_items:

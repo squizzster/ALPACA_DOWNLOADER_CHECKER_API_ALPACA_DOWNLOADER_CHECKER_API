@@ -207,6 +207,84 @@ def _same_ticker_stock_merger_edge_candidate(
     return candidate
 
 
+def _immediately_superseded_name_change_action_ids(
+    corporate_actions: list[Any],
+    asset_ids_by_symbol_and_cusip: dict[tuple[str, str], set[str]],
+) -> tuple[frozenset[str], list[dict[str, Any]]]:
+    """Reject a different-UUID edge corrected by a next-day same-UUID rename."""
+    candidates_by_predecessor: dict[
+        tuple[str, str],
+        list[_UuidLineageEdgeCandidate],
+    ] = {}
+    for action in corporate_actions:
+        if not isinstance(action, dict):
+            continue
+        candidate = _name_change_edge_candidate(action)
+        if candidate is None:
+            continue
+        predecessor = (candidate.predecessor_symbol, candidate.predecessor_cusip)
+        candidates_by_predecessor.setdefault(predecessor, []).append(candidate)
+
+    superseded_action_ids = set()
+    evidence_issues = []
+    for (predecessor_symbol, predecessor_cusip), candidates in sorted(candidates_by_predecessor.items()):
+        predecessor_asset_ids = asset_ids_by_symbol_and_cusip.get(
+            (predecessor_symbol, predecessor_cusip),
+            set(),
+        )
+        if len(predecessor_asset_ids) != 1:
+            continue
+        predecessor_asset_id = next(iter(predecessor_asset_ids))
+        resolved_successors = []
+        for candidate in candidates:
+            successor_asset_ids = asset_ids_by_symbol_and_cusip.get(
+                (candidate.successor_symbol, candidate.successor_cusip),
+                set(),
+            )
+            if len(successor_asset_ids) != 1:
+                continue
+            try:
+                effective_date = date.fromisoformat(candidate.effective_date)
+            except ValueError:
+                continue
+            resolved_successors.append((candidate, next(iter(successor_asset_ids)), effective_date))
+        for earlier, earlier_asset_id, earlier_date in resolved_successors:
+            if earlier_asset_id == predecessor_asset_id:
+                continue
+            superseding = [
+                (later, later_asset_id, later_date)
+                for later, later_asset_id, later_date in resolved_successors
+                if later_asset_id == predecessor_asset_id and (later_date - earlier_date).days == 1
+            ]
+            if len(superseding) != 1:
+                continue
+            later, later_asset_id, _ = superseding[0]
+            superseded_action_ids.add(earlier.action_id)
+            evidence_issues.append(
+                {
+                    "reason_code": "name_change_uuid_edge_immediately_superseded",
+                    "predecessor": {
+                        "symbol": predecessor_symbol,
+                        "cusip": predecessor_cusip,
+                        "alpaca_asset_id": predecessor_asset_id,
+                    },
+                    "rejected_action_id": earlier.action_id,
+                    "rejected_successor": {
+                        "symbol": earlier.successor_symbol,
+                        "cusip": earlier.successor_cusip,
+                        "alpaca_asset_id": earlier_asset_id,
+                    },
+                    "superseding_action_id": later.action_id,
+                    "superseding_successor": {
+                        "symbol": later.successor_symbol,
+                        "cusip": later.successor_cusip,
+                        "alpaca_asset_id": later_asset_id,
+                    },
+                }
+            )
+    return frozenset(superseded_action_ids), evidence_issues
+
+
 def build_uuid_lineage_edges(
     lineage: dict[str, Any],
 ) -> tuple[list[UuidLineageEdge], list[dict[str, Any]]]:
@@ -216,7 +294,10 @@ def build_uuid_lineage_edges(
 
     asset_ids_by_symbol_and_cusip = _asset_ids_by_symbol_and_cusip(lineage)
     edges = []
-    evidence_issues = []
+    superseded_name_change_action_ids, evidence_issues = _immediately_superseded_name_change_action_ids(
+        corporate_actions,
+        asset_ids_by_symbol_and_cusip,
+    )
     for action in corporate_actions:
         if not isinstance(action, dict):
             continue
@@ -228,6 +309,11 @@ def build_uuid_lineage_edges(
         if edge_candidate is None:
             edge_candidate = _same_ticker_stock_merger_edge_candidate(action)
         if edge_candidate is None:
+            continue
+        if (
+            edge_candidate.edge_type == "name_change"
+            and edge_candidate.action_id in superseded_name_change_action_ids
+        ):
             continue
         predecessor_asset_ids = asset_ids_by_symbol_and_cusip.get(
             (edge_candidate.predecessor_symbol, edge_candidate.predecessor_cusip),

@@ -7,6 +7,7 @@ from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from .authenticated_inputs import load_warning_pipeline_inputs
 from .cross_adjustment_warnings import build_cross_adjustment_warnings
+from .models import WarningPipelineInputs
 from .security_segment_statistics import validate_security_segment_statistics
 from .settings import DEFAULT_CONFIGURATION, WarningPipelineConfiguration
 from .warning_pipeline_version import (
@@ -20,10 +21,13 @@ def build_warning_pipeline_report(
     symbol: str,
     *,
     configuration: WarningPipelineConfiguration = DEFAULT_CONFIGURATION,
+    inputs: WarningPipelineInputs | None = None,
 ) -> dict[str, Any]:
     """Build warning overlays without altering any upstream artifact."""
     validate_warning_pipeline_change_log()
-    inputs = load_warning_pipeline_inputs(repository_root, symbol)
+    inputs = load_warning_pipeline_inputs(repository_root, symbol) if inputs is None else inputs
+    if inputs.symbol != symbol:
+        raise ValueError("warning-pipeline inputs do not match the requested symbol")
     cross_adjustment = build_cross_adjustment_warnings(inputs.download_views, configuration)
     security_segment_statistics = validate_security_segment_statistics(inputs, configuration)
     correlation_receipt = inputs.correlation.receipt

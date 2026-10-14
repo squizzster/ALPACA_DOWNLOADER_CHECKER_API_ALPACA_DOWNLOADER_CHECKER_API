@@ -1,0 +1,12 @@
+[
+  {
+    "modifications": [
+      "Introduce a compact v6 correlation envelope that binds immediate pricing, validation, and lineage generations while preserving whole-view row ordinals for the existing correlation rules."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish the correlation-owned UUID edges, ticker ownership intervals, evidence issues, and verified session exclusions in the per-symbol receipt so downstream identity stages consume only completed disk boundaries."
+    ]
+  }
+]

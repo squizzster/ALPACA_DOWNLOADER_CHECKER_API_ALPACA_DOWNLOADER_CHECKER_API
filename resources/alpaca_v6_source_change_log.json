@@ -1,0 +1,12 @@
+[
+  {
+    "modifications": [
+      "Introduce the native v6 monthly pricing-source boundary with ticker/year/month partitioning, deterministic gzip payloads, one physical file per distinct monthly view, direct exact-copy aliases, structural ticker inventories, full SHA-256 authentication, and no dependency on an earlier data layout."
+    ]
+  },
+  {
+    "modifications": [
+      "Add selected-month replacement for an existing symbol so an in-month refresh rewrites only changed monthly payloads and its month receipt, while a new month additionally updates only that symbol's structural inventory."
+    ]
+  }
+]

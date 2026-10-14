@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from functools import cached_property
 from typing import Any
 
 ACCEPTED_ZERO_ACTIVITY_BAR_REASON = "accepted_zero_activity_bar"
@@ -45,7 +46,7 @@ class DownloadValidationView:
     bars_by_row_number: dict[int, AnalyzableDailyBar]
     excluded_rows: tuple[dict[str, Any], ...]
 
-    @property
+    @cached_property
     def bars_by_timestamp(self) -> dict[datetime, AnalyzableDailyBar]:
         return {bar.timestamp: bar for bar in self.bars_by_row_number.values()}
 

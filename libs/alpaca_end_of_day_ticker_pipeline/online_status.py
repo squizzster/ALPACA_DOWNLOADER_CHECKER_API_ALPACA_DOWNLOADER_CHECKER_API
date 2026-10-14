@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 from libs.alpaca_end_of_day_pipeline import (
@@ -13,7 +13,9 @@ from libs.alpaca_end_of_day_pipeline import (
 )
 from libs.alpaca_end_of_day_reader import (
     EndOfDayReaderError,
-    read_alpaca_end_of_day_security_history,
+)
+from libs.alpaca_end_of_day_reader.history import (
+    _read_alpaca_end_of_day_security_history_from_master,
 )
 from libs.alpaca_end_of_day_security_correlation import (
     LINEAGE_GAP_AVAILABILITY_STATUS,
@@ -437,19 +439,19 @@ def correlated_master_ids(correlation_report: dict[str, Any]) -> list[str]:
     return sorted(master_ids)
 
 
-def evaluate_security_online_status(
-    repository_root: Path | str,
+def evaluate_security_online_status_view(
     master_ids: Iterable[str],
+    *,
+    master: object,
+    history_reader: Callable[[str, str], dict[str, Any]],
+    lineage_evidence_reader: Callable[[dict[str, Any]], tuple[tuple[dict[str, Any], ...], frozenset[str]]],
+    security_object_sha256: Callable[[str], str],
+    source_object_sha256: Callable[[str], str],
 ) -> SecurityOnlineEvaluation:
-    """Exercise the public reader and compute final status at the master-ID boundary."""
-    root = Path(repository_root)
+    """Apply the established availability rules to an authenticated reader view."""
     selected_master_ids = sorted(set(master_ids))
     if any(not is_master_id(master_id) for master_id in selected_master_ids):
         raise ValueError("online evaluation requires valid master IDs")
-    try:
-        master = authenticate_security_master(root)
-    except SecurityCorrelationError as error:
-        raise EndOfDayReaderError(f"cannot authenticate security master: {error}") from error
 
     online_by_master_id = {}
     availability_status_by_master_id = {}
@@ -458,14 +460,14 @@ def evaluate_security_online_status(
     for master_id in selected_master_ids:
         try:
             identity = master.identities_by_master_id[master_id]
-            security_digests[master_id] = master.identities_by_master_id.object_descriptor(master_id)["sha256"]
+            security_digests[master_id] = security_object_sha256(master_id)
         except (KeyError, SecurityCorrelationError) as error:
             raise EndOfDayReaderError(
                 f"cannot evaluate unpublished or unauthenticated master ID {master_id}: {error}"
             ) from error
         for symbol in identity["source_symbols"]:
             try:
-                source_digests[symbol] = master.sources_by_symbol.object_descriptor(symbol)["sha256"]
+                source_digests[symbol] = source_object_sha256(symbol)
             except (KeyError, SecurityCorrelationError) as error:
                 raise EndOfDayReaderError(
                     f"cannot evaluate master ID {master_id} with source {symbol}: {error}"
@@ -477,11 +479,7 @@ def evaluate_security_online_status(
         results_by_adjustment = {}
         for adjustment in adjustments if reader_ready else ():
             try:
-                result = read_alpaca_end_of_day_security_history(
-                    master_id,
-                    adjustment,
-                    repository_root=root,
-                )
+                result = history_reader(master_id, adjustment)
             except (EndOfDayReaderError, OSError, KeyError, TypeError, ValueError):
                 reader_ready = False
                 break
@@ -503,11 +501,7 @@ def evaluate_security_online_status(
             )
             if raw_has_gap and not raw_has_invalid_session:
                 try:
-                    lineage_receipts, raw_source_session_dates = _authenticated_lineage_evidence_for_identity(
-                        root,
-                        master,
-                        identity,
-                    )
+                    lineage_receipts, raw_source_session_dates = lineage_evidence_reader(identity)
                 except (
                     EndOfDayPipelineError,
                     KeyError,
@@ -556,4 +550,35 @@ def evaluate_security_online_status(
         availability_status_by_master_id=availability_status_by_master_id,
         security_object_sha256_by_master_id=security_digests,
         source_object_sha256_by_symbol=source_digests,
+    )
+
+
+def evaluate_security_online_status(
+    repository_root: Path | str,
+    master_ids: Iterable[str],
+) -> SecurityOnlineEvaluation:
+    """Exercise the public reader and compute final status at the master-ID boundary."""
+    root = Path(repository_root)
+    try:
+        master = authenticate_security_master(root)
+    except SecurityCorrelationError as error:
+        raise EndOfDayReaderError(f"cannot authenticate security master: {error}") from error
+    return evaluate_security_online_status_view(
+        master_ids,
+        master=master,
+        history_reader=lambda master_id, adjustment: _read_alpaca_end_of_day_security_history_from_master(
+            master_id,
+            adjustment,
+            repository_root=root,
+            master=master,
+        ),
+        lineage_evidence_reader=lambda identity: _authenticated_lineage_evidence_for_identity(
+            root,
+            master,
+            identity,
+        ),
+        security_object_sha256=lambda master_id: master.identities_by_master_id.object_descriptor(master_id)[
+            "sha256"
+        ],
+        source_object_sha256=lambda symbol: master.sources_by_symbol.object_descriptor(symbol)["sha256"],
     )

@@ -23,6 +23,7 @@ from alpaca_end_of_day import (
     _IdentityTimeline,
 )
 from libs.alpaca_end_of_day_pipeline import validate_and_publish_alpaca_download
+from libs.alpaca_end_of_day_reader import read_alpaca_end_of_day_security_history
 from libs.alpaca_end_of_day_security_correlation import authenticate_security_master
 from read_alpaca_end_of_day_ticker import (
     parse_command_line_arguments,
@@ -68,6 +69,30 @@ def _publish_raw_and_all_fixture(
 
 
 class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These fixtures exercise the public transformation contract with the
+        # established synthetic logical inputs. Native v6 storage/readback is
+        # covered by the v6 boundary integration tests.
+        self.catalogue_patcher = patch(
+            "alpaca_end_of_day.load_catalogue",
+            side_effect=authenticate_security_master,
+        )
+
+        def read_established_history(*args, master=None, inputs=None, **kwargs):
+            del master, inputs
+            return read_alpaca_end_of_day_security_history(*args, **kwargs)
+
+        self.history_patcher = patch(
+            "alpaca_end_of_day._read_published_history",
+            side_effect=read_established_history,
+        )
+        self.catalogue_reader = self.catalogue_patcher.start()
+        self.history_reader = self.history_patcher.start()
+
+    def tearDown(self) -> None:
+        self.history_patcher.stop()
+        self.catalogue_patcher.stop()
+
     def test_public_api_version_has_one_changelog_entry_per_version(self) -> None:
         entries = json.loads(API_CHANGE_LOG_PATH.read_text(encoding="utf-8"))
         self.assertEqual(API_VERSION, len(entries))
@@ -114,6 +139,24 @@ class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
             with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
                 data.get_history("f" * 64)
 
+    def test_get_security_does_not_expose_an_offline_catalogue_identity(self) -> None:
+        offline_master = SimpleNamespace(
+            receipt={
+                "security_master_generation_sha256": "published-generation",
+                "created_at": "2026-10-13T00:00:00Z",
+            },
+            identities_by_master_id={
+                TEST_MASTER_ID: {
+                    "master_id": TEST_MASTER_ID,
+                    "online": False,
+                }
+            },
+        )
+        with patch("alpaca_end_of_day.load_catalogue", return_value=offline_master):
+            data = DataLibrary(Path("unused"))
+            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
+                data.get_security(TEST_MASTER_ID)
+
     def test_history_uses_exact_types_and_inclusive_session_dates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository_root = Path(temporary_directory)
@@ -140,6 +183,20 @@ class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
         self.assertNotIn("online", json.dumps(serialized))
         self.assertNotIn("provenance", serialized)
         self.assertNotIn("integrity", serialized)
+
+    def test_history_calls_reuse_the_open_catalogue_and_reader_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_raw_and_all_fixture(repository_root)
+            data = DataLibrary(repository_root)
+
+            data.get_history(TEST_MASTER_ID, "raw")
+            data.get_history(TEST_MASTER_ID, "all")
+
+        first, second = self.history_reader.call_args_list[-2:]
+        self.assertIs(data._master, first.kwargs["master"])
+        self.assertIs(data._master, second.kwargs["master"])
+        self.assertIs(first.kwargs["inputs"], second.kwargs["inputs"])
 
     def test_ticker_resolution_preserves_reuse_across_public_ids_and_dates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -183,7 +240,7 @@ class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
                 },
             )
 
-            with patch("alpaca_end_of_day.authenticate_security_master", return_value=public_master):
+            with patch("alpaca_end_of_day.load_catalogue", return_value=public_master):
                 data = DataLibrary(repository_root)
                 all_resolutions = data.resolve_ticker("shared")
                 first_date = data.resolve_ticker("SHARED", on="2024-01-05")

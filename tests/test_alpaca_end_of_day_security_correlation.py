@@ -1901,6 +1901,100 @@ class RowCorrelationTests(unittest.TestCase):
             current_segment["canonical_security"],
         )
 
+    def test_name_change_membership_rejects_immediately_superseded_uuid_edge(self) -> None:
+        lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+        predecessor = ("predecessor-id", "OLD", "111111111", "Predecessor")
+        add_name_change_edge(
+            lineage,
+            action_id="first-transition",
+            process_date="2026-10-08",
+            predecessor=predecessor,
+            successor=("first-successor-id", "FIRST", "222222222", "First successor"),
+        )
+        add_name_change_edge(
+            lineage,
+            action_id="second-transition",
+            process_date="2026-10-09",
+            predecessor=predecessor,
+            successor=("predecessor-id", "FINAL", "111111111", "Predecessor"),
+        )
+
+        edges, issues = build_uuid_lineage_edges(lineage)
+
+        self.assertEqual(["second-transition"], [edge.action_id for edge in edges])
+        self.assertEqual(
+            [
+                {
+                    "reason_code": "name_change_uuid_edge_immediately_superseded",
+                    "predecessor": {
+                        "symbol": "OLD",
+                        "cusip": "111111111",
+                        "alpaca_asset_id": "predecessor-id",
+                    },
+                    "rejected_action_id": "first-transition",
+                    "rejected_successor": {
+                        "symbol": "FIRST",
+                        "cusip": "222222222",
+                        "alpaca_asset_id": "first-successor-id",
+                    },
+                    "superseding_action_id": "second-transition",
+                    "superseding_successor": {
+                        "symbol": "FINAL",
+                        "cusip": "111111111",
+                        "alpaca_asset_id": "predecessor-id",
+                    },
+                }
+            ],
+            issues,
+        )
+
+    def test_name_change_membership_keeps_distant_successors(self) -> None:
+        lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+        predecessor = ("predecessor-id", "OLD", "111111111", "Predecessor")
+        add_name_change_edge(
+            lineage,
+            action_id="first-transition",
+            process_date="2026-10-08",
+            predecessor=predecessor,
+            successor=("first-successor-id", "FIRST", "222222222", "First successor"),
+        )
+        add_name_change_edge(
+            lineage,
+            action_id="later-transition",
+            process_date="2026-11-09",
+            predecessor=predecessor,
+            successor=("predecessor-id", "FINAL", "111111111", "Predecessor"),
+        )
+
+        edges, issues = build_uuid_lineage_edges(lineage)
+
+        self.assertEqual([], issues)
+        self.assertEqual(2, len(edges))
+
+    def test_name_change_membership_allows_successor_aliases_for_one_uuid(self) -> None:
+        lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+        predecessor = ("predecessor-id", "OLD", "111111111", "Predecessor")
+        add_name_change_edge(
+            lineage,
+            action_id="first-transition",
+            process_date="2026-10-08",
+            predecessor=predecessor,
+            successor=("successor-id", "NEW.W", "222222222", "Successor"),
+        )
+        add_name_change_edge(
+            lineage,
+            action_id="second-transition",
+            process_date="2026-10-09",
+            predecessor=predecessor,
+            successor=("successor-id", "NEWW", "222222222", "Successor"),
+        )
+
+        edges, issues = build_uuid_lineage_edges(lineage)
+
+        self.assertEqual([], issues)
+        self.assertEqual(2, len(edges))
+        self.assertEqual({"successor-id"}, {edge.successor_asset_id for edge in edges})
+
     def test_same_symbol_reverse_split_preserves_identity_without_reassigning_rows(self) -> None:
         lineage = same_symbol_split_lineage()
         intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
@@ -2431,7 +2525,7 @@ class RowCorrelationTests(unittest.TestCase):
 class CorrelationPublicationTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
         self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
-        self.assertEqual(frozenset(range(8, 24)), SUPPORTED_CORRELATION_VERSIONS)
+        self.assertEqual(frozenset(range(8, 25)), SUPPORTED_CORRELATION_VERSIONS)
 
     def test_concurrent_security_master_updates_preserve_every_symbol(self) -> None:
         def source_contribution(

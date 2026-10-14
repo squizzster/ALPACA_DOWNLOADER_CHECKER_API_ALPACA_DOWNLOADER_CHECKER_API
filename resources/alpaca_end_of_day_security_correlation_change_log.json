@@ -146,5 +146,10 @@
       "Follow the single listed US-equity symbol returned by both exact CUSIP endpoints of a structurally complete name change when those endpoint lookups resolve to the same Alpaca UUID, repeating to a deterministic fixed point and rejecting ambiguous, malformed, placeholder, OTC, and traversal-limit evidence.",
       "Treat overlapping ownership intervals for one identical Alpaca UUID as noncompeting security claims so the existing exact requested-symbol interval rule decides row provenance, while retaining fail-closed overlap handling for different UUIDs."
     ]
+  },
+  {
+    "modifications": [
+      "Reject a name-change UUID-membership edge when the same exact predecessor receives a next-day corrective rename that preserves its Alpaca UUID, retaining the supersession as evidence instead of joining the unrelated successor security."
+    ]
   }
 ]

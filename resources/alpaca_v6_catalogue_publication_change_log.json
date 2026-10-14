@@ -1,0 +1,12 @@
+[
+  {
+    "modifications": [
+      "Introduce the v6 reader-visible catalogue publication receipt, written last and bound to current correlation and availability generations with bounded reclamation of unreachable catalogue objects."
+    ]
+  },
+  {
+    "modifications": [
+      "Apply affected-closure candidates as bounded shard replacements over a trusted base catalogue, preserving unrelated sources and identities without reading or rewriting their objects."
+    ]
+  }
+]

@@ -1,7 +1,7 @@
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from libs.alpaca_end_of_day_pipeline import (
     CSV_COLUMN_ALPACA_FIELD_PAIRS,
@@ -103,6 +103,11 @@ def _authenticated_correlations(
     repository_root: Path,
     master: AuthenticatedSecurityMaster,
     master_identity: dict[str, Any],
+    *,
+    correlation_authenticator: Callable[[Path, str], AuthenticatedSecurityCorrelation] = (
+        authenticate_security_correlation
+    ),
+    validate_master_bindings: bool = True,
 ) -> list[tuple[str, AuthenticatedSecurityCorrelation]]:
     correlations = []
     master_id = master_identity["master_id"]
@@ -111,12 +116,13 @@ def _authenticated_correlations(
         if source is None:
             raise EndOfDayReaderError(f"security master has no source record for published symbol {symbol!r}")
         try:
-            correlation = authenticate_security_correlation(repository_root, symbol)
+            correlation = correlation_authenticator(repository_root, symbol)
         except SecurityCorrelationError as error:
             raise EndOfDayReaderError(
                 f"cannot authenticate security correlation for {symbol}: {error}"
             ) from error
-        _validate_correlation_master_binding(correlation, source, master_id)
+        if validate_master_bindings:
+            _validate_correlation_master_binding(correlation, source, master_id)
         correlations.append((symbol, correlation))
     return correlations
 
@@ -140,11 +146,15 @@ def _matching_segments(
 def _authenticate_warning_outputs(
     repository_root: Path,
     correlations_by_symbol: dict[str, AuthenticatedSecurityCorrelation],
+    *,
+    warning_authenticator: Callable[
+        [Path, str, AuthenticatedSecurityCorrelation], AuthenticatedWarningPipelineOutputs
+    ] = authenticate_warning_pipeline_outputs,
 ) -> dict[str, AuthenticatedWarningPipelineOutputs]:
     outputs = {}
     for symbol, correlation in sorted(correlations_by_symbol.items()):
         try:
-            outputs[symbol] = authenticate_warning_pipeline_outputs(
+            outputs[symbol] = warning_authenticator(
                 repository_root,
                 symbol,
                 correlation,
@@ -578,27 +588,41 @@ def _attach_warning_ids(bars: list[dict[str, Any]], warnings: list[dict[str, Any
             bars_by_timestamp[timestamp]["warning_ids"].append(warning["warning_id"])
 
 
-def read_alpaca_end_of_day_security_history(
+def _read_alpaca_end_of_day_security_history_from_master(
     master_id: str,
     adjustment_type: str,
     *,
-    repository_root: Path | str | None = None,
+    repository_root: Path,
+    master: AuthenticatedSecurityMaster,
+    correlation_authenticator: Callable[[Path, str], AuthenticatedSecurityCorrelation] = (
+        authenticate_security_correlation
+    ),
+    warning_authenticator: Callable[
+        [Path, str, AuthenticatedSecurityCorrelation], AuthenticatedWarningPipelineOutputs
+    ] = authenticate_warning_pipeline_outputs,
+    source_reader: Callable[
+        [Path, str, dict[str, Any]], tuple[list[dict[str, str]], dict[str, Any], str]
+    ] = _read_authenticated_source,
+    integrity_failure_reader: Callable[
+        [Path, str, dict[str, Any]], dict[str, Any] | None
+    ] = _current_integrity_failure,
+    trust_published_inputs: bool = False,
 ) -> dict[str, Any]:
-    """Return one authenticated master-ID adjustment history without mutating local data."""
-    validate_reader_change_log()
+    """Apply the reader contract against one already-authenticated master snapshot."""
     canonical_id = _canonical_master_id(master_id)
     selected_type = _validated_adjustment_type(adjustment_type)
-    root = Path.cwd() if repository_root is None else Path(repository_root)
-
-    try:
-        master = authenticate_security_master(root)
-    except SecurityCorrelationError as error:
-        raise EndOfDayReaderError(f"cannot authenticate security master: {error}") from error
+    root = repository_root
     master_identity = master.identities_by_master_id.get(canonical_id)
     if master_identity is None:
         raise EndOfDayReaderError(f"master ID is not published: {canonical_id}")
 
-    correlations = _authenticated_correlations(root, master, master_identity)
+    correlations = _authenticated_correlations(
+        root,
+        master,
+        master_identity,
+        correlation_authenticator=correlation_authenticator,
+        validate_master_bindings=not trust_published_inputs,
+    )
     matching_segments = _matching_segments(correlations, canonical_id, selected_type)
     if not matching_segments:
         raise EndOfDayReaderError(
@@ -606,7 +630,11 @@ def read_alpaca_end_of_day_security_history(
         )
 
     correlations_by_symbol = {symbol: correlation for symbol, correlation, _ in matching_segments}
-    warnings_by_symbol = _authenticate_warning_outputs(root, correlations_by_symbol)
+    warnings_by_symbol = _authenticate_warning_outputs(
+        root,
+        correlations_by_symbol,
+        warning_authenticator=warning_authenticator,
+    )
     segments_by_source: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     correlation_by_source: dict[tuple[str, str], AuthenticatedSecurityCorrelation] = {}
     for symbol, correlation, segment in matching_segments:
@@ -628,15 +656,16 @@ def read_alpaca_end_of_day_security_history(
         source_id = f"{symbol}/{filename}"
         ranges = _source_ranges(segments)
         symbol_directory = root / "data" / "end_of_day" / symbol
-        rows, download_manifest, pipeline_state = _read_authenticated_source(root, symbol, source)
-        _validate_segments_against_authenticated_source(
-            segments,
-            source,
-            download_manifest,
-            pipeline_state,
-            rows,
-        )
-        failure = _current_integrity_failure(symbol_directory, symbol, source)
+        rows, download_manifest, pipeline_state = source_reader(root, symbol, source)
+        if not trust_published_inputs:
+            _validate_segments_against_authenticated_source(
+                segments,
+                source,
+                download_manifest,
+                pipeline_state,
+                rows,
+            )
+        failure = integrity_failure_reader(symbol_directory, symbol, source)
         source_errors, error_ids_by_row = _integrity_errors_for_source(source_id, failure, ranges)
         integrity_errors.extend(source_errors)
         selected_timestamps = set()
@@ -779,6 +808,27 @@ def read_alpaca_end_of_day_security_history(
             "warning_generations": warning_generations,
         },
     }
+
+
+def read_alpaca_end_of_day_security_history(
+    master_id: str,
+    adjustment_type: str,
+    *,
+    repository_root: Path | str | None = None,
+) -> dict[str, Any]:
+    """Return one authenticated master-ID adjustment history without mutating local data."""
+    validate_reader_change_log()
+    root = Path.cwd() if repository_root is None else Path(repository_root)
+    try:
+        master = authenticate_security_master(root)
+    except SecurityCorrelationError as error:
+        raise EndOfDayReaderError(f"cannot authenticate security master: {error}") from error
+    return _read_alpaca_end_of_day_security_history_from_master(
+        master_id,
+        adjustment_type,
+        repository_root=root,
+        master=master,
+    )
 
 
 read_alpaca_end_of_day_ticker = read_alpaca_end_of_day_security_history
