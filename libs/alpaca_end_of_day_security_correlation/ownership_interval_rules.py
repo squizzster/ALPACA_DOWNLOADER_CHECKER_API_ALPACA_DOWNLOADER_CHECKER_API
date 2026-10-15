@@ -215,7 +215,7 @@ def _later_start(left: date | None, right: date | None) -> date | None:
     return max(left, right)
 
 
-def _earlier_end(left: date | None, right: date | None) -> date | None:
+def _earlier_known_date(left: date | None, right: date | None) -> date | None:
     if left is None:
         return right
     if right is None:
@@ -232,7 +232,7 @@ def _constrain_or_append_interval(
         if interval.identity_key() != constraint.identity_key():
             continue
         combined_start = _later_start(interval.start_date_inclusive, constraint.start_date_inclusive)
-        combined_end = _earlier_end(interval.end_date_exclusive, constraint.end_date_exclusive)
+        combined_end = _earlier_known_date(interval.end_date_exclusive, constraint.end_date_exclusive)
         if combined_start is None or combined_end is None or combined_start < combined_end:
             overlapping_indexes.append(index)
 
@@ -248,11 +248,14 @@ def _constrain_or_append_interval(
         historical_symbol=existing_interval.historical_symbol,
         cusip=existing_interval.cusip,
         asset_id=existing_interval.asset_id,
-        start_date_inclusive=_later_start(
+        # An arrival cannot erase an earlier positively dated occurrence of
+        # this exact symbol/CUSIP/UUID episode. Overlap is checked above: this
+        # does not bridge recurrence or choose between different securities.
+        start_date_inclusive=_earlier_known_date(
             existing_interval.start_date_inclusive,
             constraint.start_date_inclusive,
         ),
-        end_date_exclusive=_earlier_end(
+        end_date_exclusive=_earlier_known_date(
             existing_interval.end_date_exclusive,
             constraint.end_date_exclusive,
         ),

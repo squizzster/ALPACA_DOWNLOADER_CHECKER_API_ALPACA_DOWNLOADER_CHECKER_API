@@ -46,6 +46,12 @@ validators use the JSON changelog arrays under `resources/`; array position is t
 
 ### Modified
 
+- Correlation transform v26 preserves an existing positively dated ownership start when the same ticker/CUSIP/UUID
+  episode has later overlapping arrival evidence. The existing as-of rule prefers a unique explicitly started
+  interval for the exact selected UUID before broader predecessor competition. Registry order, ambiguity vetoes,
+  identity-edge rules and the membership-hash contract are retained; no datastore or pricing change.
+- Documentation records the full stored-source impact, including additional dependency changes and unresolved
+  predecessor conflicts, separately from the earlier retained-versus-current comparison.
 - Documentation-only checkpoint records the completed live 50-seed lineage run and separates attribution differences,
   membership-only differences and empty histories; detailed runtime reports remain ignored and no verdict is implied.
 - Correlation transform v25 scopes latest-start competition to the requested historical label, after stronger
@@ -87,6 +93,31 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+Correlation v26 verification, **2026-10-15 UTC**:
+
+- Actual implementation replay covered all 256 published standalone sources in 51 dependency groups, including all 50 selected
+  seeds: 2,060,656 observations across eight adjustment views. All groups reached the established three-pass fixed
+  point, and its impact matched the prior candidate replay exactly. All eight views agree on every changed span.
+- `ruff check .`, `ruff format --check .` (144 files), `git diff --check`, and 189 local documentation links/anchors:
+  passed. Full `python3.11 -B -W error::ResourceWarning -m unittest discover -s tests -v`: **394 tests passed**,
+  including 12 new regressions for positive starts, exact entity selection, vetoes, precedence and fixed-point membership.
+- Eight source labels change: BNT, DOC, ECDA, EFHT, JTAI, OXAC, INBX and METC. Counts per view: 1,095 unresolved
+  observations resolve, 484 resolved observations change attribution, 2,797 change membership only, and 405 become
+  unresolved. Changed spans involve 10 membership IDs; the remaining 248 sources retain their ticker/UUID/membership
+  assignments. Four changed labels are selected seeds; BNT, EFHT, METC and OXAC are dependencies.
+- DOC resolves 1,086 PEAK sessions and corrects the UUID on 479 later DOC sessions. INBX resolves the one INXB
+  session and corrects the UUID on the following two sessions. ECDA resolves six sessions; preserving its first
+  dated arrival removes the artificial gap that had split EFHT/ECDA membership in the next cascade pass.
+- The same repeated-arrival shape corrects three JTAI UUID assignments, rejoins OXAC/JTAI membership, and resolves
+  two METC sessions. BNT's 405 sessions from 2023-01-20 through 2024-08-29 expose concurrent BNRE/BNRE.A predecessor
+  claims after preserving BNRE's earlier dated start; they remain unresolved rather than choosing a branch.
+- ALTM's 760 disputed sessions remain unresolved. BTN, FB/META and the ASCA/MDGS/PBTS membership-growth controls
+  are unchanged. This validates deterministic use of captured evidence, not every provider fact independently.
+- The replay uses trusted stored pricing and normalized evidence in memory. No API calls, data copies, pricing or
+  lineage publication, notice consumption, or public availability calculation occurs. Online/offline transitions
+  are not evaluated: the standalone lineage boundary does not publish the public catalogue. Existing runtime
+  receipts remain on their prior versions until normal reprocessing; ignored impact reports are not publications.
 
 Completed live 50-seed lineage run, **2026-10-15 UTC**, correlation v25:
 
@@ -297,7 +328,7 @@ complete current-store audit coverage.
 | Availability | 1 | Per-candidate online/offline decision. |
 | Catalogue publication | 2 | Snapshot and bounded affected-closure catalogue selection. |
 | Validation transform | 19 | Established daily-bar and dataset rules. |
-| Correlation transform | 25 | Source-scoped ownership competition and fail-closed predecessor ambiguity. |
+| Correlation transform | 26 | Preserve dated episode starts; prefer exact as-of UUID before predecessor competition. |
 | Catalogue engine | 5 | Content-addressed source/security objects and inventories. |
 | Warning transform | 6 | Established advisory rules. |
 | Detailed history transform | 7 | Established source-selection and history assembly semantics. |

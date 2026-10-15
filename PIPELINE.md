@@ -239,6 +239,10 @@ ownership registry, in this order:
 These rules establish dated ticker/CUSIP/UUID intervals. They do not by themselves join every related UUID into one
 security.
 
+Overlapping evidence for the exact same ticker/CUSIP/UUID episode preserves its earliest explicit start and earliest
+explicit end. A later repeated arrival cannot erase an already dated beginning. Unknown dates do not erase known
+dates; separate or touching episodes remain separate, and a constraint overlapping multiple episodes is rejected.
+
 ### 2. Row allocation
 
 `ROW_CORRELATION_RULES` in
@@ -274,8 +278,10 @@ Consequential gates include:
   eight views. Recurrence, overlap, a missing view, or ambiguity vetoes the partition.
 - Current-symbol reuse requires the old occupant to have renamed away at least 100 sessions earlier, exact current
   identity evidence, complete matching grids, and no competing structural evidence.
-- An as-of-selected successor with concurrent different-UUID predecessor intervals remains unresolved; neither
-  latest-start nor requested-label fallback may choose a predecessor branch. Same-UUID aliases still defer.
+- Within the as-of rule, one explicitly started interval for the exact selected UUID takes precedence over other
+  connected predecessor branches. `asof` selects the entity, not historical adjustment values. Without that exact
+  dated match, concurrent different-UUID predecessors remain unresolved; neither latest-start nor requested-label
+  fallback may choose a branch. An undated start or multiple exact-UUID aliases gains no new preference.
 - After stronger rules, latest-start competition is restricted to occupants of the requested historical label.
   Another label's later start cannot supersede that occupant. A tie or wholly undated same-label overlap fails closed;
   competing branches with no matching source-label interval also remain unresolved rather than reaching an undated

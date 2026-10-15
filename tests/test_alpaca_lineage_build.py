@@ -18,6 +18,7 @@ from libs.alpaca_lineage_build.command_line import build_parser, main
 from libs.alpaca_lineage_build.contract import validate_version
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.reader import read_lineage
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.storage import initialize_store, ticker_lock
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
@@ -166,6 +167,51 @@ class LineageBuildTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "unchanged")
         self.assertEqual(client.request_count, 0)
         self.assertEqual(before, snapshot(self.root))
+
+    def test_repeated_arrival_does_not_create_false_cross_source_identity_partition(self):
+        # A later duplicate transition must not manufacture an unresolved gap
+        # and then let the next cascade pass split the accepted UUID membership.
+        before = calendar_bars("2022-12-08", "2023-12-13")
+        after = calendar_bars("2023-12-13", "2023-12-22")
+        self.download("OLD", end="2024-01-01", bars=before)
+        self.download("NEW", end="2024-01-01", bars=before + after)
+        old, new = asset("OLD"), asset("NEW")
+        client = IdentityClient(
+            {"OLD": old, "NEW": new, "111111111": old, "222222222": new},
+            [
+                {
+                    "action_type": "name_change",
+                    "id": day,
+                    "process_date": day,
+                    "old_symbol": "OLD",
+                    "new_symbol": "NEW",
+                    "old_cusip": "111111111",
+                    "new_cusip": "222222222",
+                }
+                for day in ("2023-12-13", "2023-12-21")
+            ],
+        )
+        pricing_before = snapshot(self.store / "end_of_day/pricing")
+        result = self.run_build(["NEW"], client=client)
+        self.assertEqual(["NEW", "OLD"], result["results"][0]["processed"])
+        self.assertEqual(pricing_before, snapshot(self.store / "end_of_day/pricing"))
+        expected_id = security_id_for_alpaca_asset_ids([old["id"], new["id"]])
+        for symbol in ("OLD", "NEW"):
+            self.assertEqual(0, self.receipt(symbol)["unresolved_rows"])
+            for adjustment in ADJUSTMENTS:
+                segments = self.assignments(symbol, adjustment)
+                self.assertEqual(
+                    len(before) + (len(after) if symbol == "NEW" else 0), sum(s["row_count"] for s in segments)
+                )
+                for segment in segments:
+                    historical = "OLD" if segment["to"] < "2023-12-13" else "NEW"
+                    self.assertEqual(historical, segment["historical_symbol"])
+                    self.assertEqual(historical + "-id", segment["canonical_security"]["alpaca_asset_id"])
+                    self.assertEqual(expected_id, segment["security_identity"]["security_id"])
+            self.assertFalse(self.notice(symbol).exists())
+        published = snapshot(self.root)
+        self.run_build(["NEW"], client=client)
+        self.assertEqual(published, snapshot(self.root))
 
     def test_normal_lineage_trusts_pricing_without_calling_authenticators(self):
         self.download()

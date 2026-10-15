@@ -201,15 +201,23 @@ def _selected_asof_interval(
 
 def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision | None:
     if context.selected_asof_interval is not None:
+        selected_asset_ids = context.selected_asof_identity_chain_asset_ids
         selected_matches = _interval_matches(
             context.intervals,
             context.session_date,
         )
-        selected_matches = [
+        selected_matches = [interval for interval in selected_matches if interval.asset_id in selected_asset_ids]
+        exact_matches = [
             interval
             for interval in selected_matches
-            if interval.asset_id in context.selected_asof_identity_chain_asset_ids
+            if interval.asset_id == context.selected_asof_interval.asset_id
         ]
+        if len(exact_matches) == 1 and exact_matches[0].start_date_inclusive is not None:
+            # asof selects an entity, not a price vintage. Its exact dated UUID
+            # outranks another predecessor branch connected only by a later
+            # action. Undated starts and competing aliases gain no preference.
+            selected_matches = exact_matches
+            selected_asset_ids = frozenset((context.selected_asof_interval.asset_id,))
         selected_interval = _unique_interval_or_none(selected_matches)
         if selected_interval is not None:
             requested_symbol_matches = _interval_matches(
@@ -218,8 +226,7 @@ def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision
                 historical_symbol=context.requested_symbol,
             )
             competing_requested_symbol_occupant = any(
-                interval.asset_id not in context.selected_asof_identity_chain_asset_ids
-                for interval in requested_symbol_matches
+                interval.asset_id not in selected_asset_ids for interval in requested_symbol_matches
             )
             warning_codes = []
             if (

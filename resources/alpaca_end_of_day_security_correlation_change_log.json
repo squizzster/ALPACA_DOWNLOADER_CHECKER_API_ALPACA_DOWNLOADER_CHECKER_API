@@ -159,5 +159,12 @@
       "Do not infer an undated reused-label occupant's beginning from another occupant's ending; leave the requested-symbol fallback unresolved unless stronger rules or an explicit start establish ownership.",
       "Retain same-label ambiguity vetoes and existing split-only membership semantics: accepted later split evidence may change the membership-derived ID without changing historical ticker or Alpaca UUID attribution."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve the earliest positively dated start when overlapping ownership evidence describes the same symbol, CUSIP and Alpaca UUID episode; retain the earliest explicit end and refuse to bridge separate episodes or merge different identities.",
+      "Within the existing as-of row rule, prefer one explicitly started interval for the exact selected entity UUID over connected predecessor branches; keep earlier reuse/exclusion rules and fail-closed handling of undated or ambiguous claims.",
+      "Evaluate the complete cross-source fixed-point cascade, including resulting episode partitions and membership hashes, without changing pricing, identity-edge rules, datastore layout or the public-ID scheme."
+    ]
   }
 ]
