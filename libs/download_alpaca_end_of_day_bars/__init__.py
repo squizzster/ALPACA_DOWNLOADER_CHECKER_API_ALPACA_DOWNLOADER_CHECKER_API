@@ -4,7 +4,12 @@ from .adaptive_adjustments import (
     AdaptiveAdjustmentDecision,
     decide_adaptive_adjustment_downloads,
 )
-from .alpaca_http import AlpacaRequestRateLimiter, rate_limit_delay_seconds, request_alpaca_daily_bars
+from .alpaca_http import (
+    AlpacaRequestRateLimiter,
+    rate_limit_delay_seconds,
+    request_alpaca_daily_bars,
+    request_alpaca_daily_bars_batch,
+)
 from .command_line import (
     create_end_of_day_download_argument_parser,
     end_of_day_download_plan_from_command_line,
@@ -44,6 +49,7 @@ __all__ = [
     "parse_command_line_arguments",
     "rate_limit_delay_seconds",
     "request_alpaca_daily_bars",
+    "request_alpaca_daily_bars_batch",
     "run_end_of_day_download_command",
     "run_end_of_day_download_stage",
 ]

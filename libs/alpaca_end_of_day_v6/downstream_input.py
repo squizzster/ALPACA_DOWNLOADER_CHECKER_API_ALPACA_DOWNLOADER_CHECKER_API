@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Mapping
 
 from libs.alpaca_end_of_day_pipeline import PIPELINE_VERSION
+from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
 from libs.alpaca_end_of_day_security_correlation.row_correlation import (
     download_session_dates,
 )
@@ -311,7 +312,7 @@ def episode_partition_loaders(
     def load_correlation(symbol: str):
         report = preliminary_by_symbol.get(symbol)
         if report is None:
-            raise V6Error(f"no current preliminary correlation for {symbol}")
+            raise SecurityCorrelationError(f"no current preliminary correlation for {symbol}")
         return SimpleNamespace(
             correlated=report["correlated"],
             sources_by_filename={source["data_file"]: source for source in report["source_downloads"]},

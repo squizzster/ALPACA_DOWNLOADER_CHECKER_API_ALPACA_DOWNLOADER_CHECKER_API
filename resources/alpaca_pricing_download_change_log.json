@@ -1,0 +1,32 @@
+[
+  {
+    "modifications": [
+      "Introduce independent ticker-only pricing acquisition with exact decimal JSON conversion, complete pagination, completed-years/current-year/current-month boundaries, month-authoritative overlap, rollover consolidation, explicit full refresh, and interruption-safe publication without identity or lineage processing."
+    ]
+  },
+  {
+    "modifications": [
+      "Check the first and last effective stored session in all eight adjustment views against live bars using the update's symbol-mapping date; deduplicate a single-session history, retain normal incremental publication on exact value matches, and acquire and verify a complete historical replacement on any mismatch. Preserve existing data on request failure or an empty replacement of a nonempty view, and continue accepting the unchanged v1 store layout without copies or migration."
+    ]
+  },
+  {
+    "modifications": [
+      "Split end_of_day into pricing/<ticker> and manifests/<ticker>; atomically publish one pending update.json containing inclusive from/to session dates with the verified pricing transaction. New incremental notices cover only actually changed sessions, not the request window or unchanged later rows; extend unconsumed ranges, replace with the entire range on full refresh, and create no notice for unchanged data. Downloader and consumer use the same process-independent exclusive ticker lock; only successful durable consumption removes the pending notice and its ticker directory."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish one source-bound first/last-session validator per ticker in the existing layout; trust it for endpoint probes without reopening cold payloads, bootstrap older sources once, and recheck the candidate first session after acquisition with one bounded full-refresh restart. Full replacement invalidates old, new, and pending date extents including removed sessions. Add repeated symbol, CSV/line file, tracked-universe, non-truncating from-date, inclusive to-date, and force-download CLI options with per-ticker batch failure isolation; preserve explicit exclusive request-end and refresh-all aliases. Force reacquires after recovery and can replace damaged owned payloads while trusting intact receipts. Make initial store publication atomic and retry transient transport failures without adding durable stores or audit trees."
+    ]
+  },
+  {
+    "modifications": [
+      "Run at most three ticker workers, each owning one complete ticker acquisition/publication boundary. Share one thread-safe, smoothly paced 199-request-per-rolling-minute budget across all requests, probes, pages, and retries, with a shared cooldown honoring numeric or HTTP-date Retry-After responses, including exhausted 429 attempts. Add --workers 1/2/3 (default 3), bounded ticker scheduling, completion progress, and input-ordered batch summaries. Keep the v3 datastore layout and existing ticker locks/handoff unchanged, and accept v4 source validators without re-reading cold payloads."
+    ]
+  },
+  {
+    "modifications": [
+      "Add trusted published-boundary and effective-view loaders for the standalone lineage handoff. Ordinary locked consumption trusts producer-approved receipts and exact-copy aliases without recalculating payload or logical digests; explicit authentication remains separate. Preserve the v3 layout, ticker lock/notice protocol, and readability of v1-v5 pricing boundaries and validators."
+    ]
+  }
+]

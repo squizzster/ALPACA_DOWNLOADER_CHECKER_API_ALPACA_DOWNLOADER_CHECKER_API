@@ -71,6 +71,26 @@ class AlpacaIdentityClient:
         }
         self.rate_limiter = rate_limiter or AlpacaIdentityRequestRateLimiter()
         self.request_count = 0
+        self._seeded_asset_lookups: dict[str, dict[str, Any]] = {}
+
+    def seed_asset_lookup(
+        self,
+        identifier: str,
+        *,
+        asset: dict[str, Any] | None,
+        http_status: int,
+    ) -> None:
+        """Consume a prior provider lookup as this client's identical lookup result."""
+        if identifier in self._seeded_asset_lookups:
+            raise ValueError(f"asset lookup was seeded twice: {identifier}")
+        if (asset is None and http_status != 404) or (asset is not None and http_status != 200):
+            raise ValueError(f"asset lookup seed has an incoherent HTTP status: {identifier}")
+        self._seeded_asset_lookups[identifier] = {
+            "outcome": "not_found" if asset is None else "found",
+            "http_status": http_status,
+            "asset": asset,
+        }
+        self.request_count += 1
 
     def request_json(self, url: str, *, allow_not_found: bool = False) -> dict[str, Any] | None:
         http_request = urllib.request.Request(url, headers=self.headers)
@@ -114,6 +134,9 @@ class AlpacaIdentityClient:
 
     def get_asset_lookup(self, identifier: str) -> dict[str, Any]:
         """Return an asset plus the explicit HTTP outcome used as evidence."""
+        seeded = self._seeded_asset_lookups.pop(identifier, None)
+        if seeded is not None:
+            return seeded
         encoded_identifier = urllib.parse.quote(identifier, safe="")
         asset = self.request_json(
             f"{ASSET_API_BASE_URL}/{encoded_identifier}",

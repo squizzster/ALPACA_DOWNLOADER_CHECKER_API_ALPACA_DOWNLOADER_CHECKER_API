@@ -1,0 +1,7 @@
+[
+  {
+    "modifications": [
+      "Introduced an immutable provider-only run identity, per-label resolution and outcome checkpoints, exact universe accounting, a completion receipt bound to the full boundary and public-reader audit, and rollback-safe activation that retains the prior public store."
+    ]
+  }
+]

@@ -9,6 +9,7 @@ boundary.
 from __future__ import annotations
 
 import calendar
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,6 +29,7 @@ from libs.download_alpaca_end_of_day_bars.settings import (
 
 from .common import (
     canonical_sha256,
+    durability_batch,
     read_json_object,
     replace_json,
     safe_child,
@@ -488,78 +490,82 @@ def publish_validation(
     rebuilt_months: dict[str, dict[str, Any]] = {}
     previous_descriptor: dict[str, Any] | None = None
     previous_placement: str | None = None
-    for placement, parts, source_receipt in _source_months(source):
-        predecessor_digest = (
-            previous_descriptor["month_result_sha256"] if previous_descriptor is not None else None
-        )
-        old_descriptor = prior_by_placement.get(placement)
-        if (
-            old_descriptor is not None
-            and old_descriptor.get("source_month_receipt_sha256") == source_receipt
-            and old_descriptor.get("predecessor_month_result_sha256") == predecessor_digest
-        ):
-            descriptor = old_descriptor
-        else:
+    durability = durability_batch() if prior is None else nullcontext()
+    with durability:
+        for placement, parts, source_receipt in _source_months(source):
+            predecessor_digest = (
+                previous_descriptor["month_result_sha256"] if previous_descriptor is not None else None
+            )
+            old_descriptor = prior_by_placement.get(placement)
             if (
                 old_descriptor is not None
                 and old_descriptor.get("source_month_receipt_sha256") == source_receipt
+                and old_descriptor.get("predecessor_month_result_sha256") == predecessor_digest
             ):
-                trusted = _trusted_month_document(directory, old_descriptor, symbol)
-                month = trusted.get("month")
-                month_result_sha256 = trusted.get("month_result_sha256")
-                if not isinstance(month, dict) or not _is_sha256(month_result_sha256):
-                    raise V6Error(f"prior validation month result is malformed: {symbol}/{placement}")
+                descriptor = old_descriptor
             else:
-                month, month_result_sha256 = _month_result(
-                    source,
-                    placement,
-                    parts,
-                    source_receipt,
-                )
-
-            predecessor = None
-            seam = None
-            if previous_descriptor is not None and previous_placement is not None:
-                previous_month = rebuilt_months.get(previous_placement)
-                if previous_month is None:
-                    previous_document = _trusted_month_document(
-                        directory,
-                        previous_descriptor,
-                        symbol,
+                if (
+                    old_descriptor is not None
+                    and old_descriptor.get("source_month_receipt_sha256") == source_receipt
+                ):
+                    trusted = _trusted_month_document(directory, old_descriptor, symbol)
+                    month = trusted.get("month")
+                    month_result_sha256 = trusted.get("month_result_sha256")
+                    if not isinstance(month, dict) or not _is_sha256(month_result_sha256):
+                        raise V6Error(f"prior validation month result is malformed: {symbol}/{placement}")
+                else:
+                    month, month_result_sha256 = _month_result(
+                        source,
+                        placement,
+                        parts,
+                        source_receipt,
                     )
-                    previous_month = previous_document.get("month")
-                if not isinstance(previous_month, dict):
-                    raise V6Error(f"prior validation month result is malformed: {symbol}/{previous_placement}")
-                predecessor = {
-                    "placement": previous_placement,
-                    "source_month_receipt_sha256": previous_descriptor["source_month_receipt_sha256"],
-                    "month_result_sha256": predecessor_digest,
-                }
-                seam = _predecessor_seam(
-                    previous_placement,
-                    previous_month,
-                    placement,
-                    month,
-                )
-            document = _month_document(
-                symbol=symbol,
-                placement=placement,
-                source_month_receipt_sha256=source_receipt,
-                month=month,
-                month_result_sha256=month_result_sha256,
-                predecessor=predecessor,
-                predecessor_seam=seam,
-            )
-            relative = _month_relative_path(placement)
-            month_path = directory / relative
-            replace_json(month_path, document)
-            descriptor = _month_descriptor(document, relative, month_path)
-            _validate_month_output(symbol, descriptor, document, month_path)
-            rebuilt_months[placement] = month
 
-        descriptors.append(descriptor)
-        previous_descriptor = descriptor
-        previous_placement = placement
+                predecessor = None
+                seam = None
+                if previous_descriptor is not None and previous_placement is not None:
+                    previous_month = rebuilt_months.get(previous_placement)
+                    if previous_month is None:
+                        previous_document = _trusted_month_document(
+                            directory,
+                            previous_descriptor,
+                            symbol,
+                        )
+                        previous_month = previous_document.get("month")
+                    if not isinstance(previous_month, dict):
+                        raise V6Error(
+                            f"prior validation month result is malformed: {symbol}/{previous_placement}"
+                        )
+                    predecessor = {
+                        "placement": previous_placement,
+                        "source_month_receipt_sha256": previous_descriptor["source_month_receipt_sha256"],
+                        "month_result_sha256": predecessor_digest,
+                    }
+                    seam = _predecessor_seam(
+                        previous_placement,
+                        previous_month,
+                        placement,
+                        month,
+                    )
+                document = _month_document(
+                    symbol=symbol,
+                    placement=placement,
+                    source_month_receipt_sha256=source_receipt,
+                    month=month,
+                    month_result_sha256=month_result_sha256,
+                    predecessor=predecessor,
+                    predecessor_seam=seam,
+                )
+                relative = _month_relative_path(placement)
+                month_path = directory / relative
+                replace_json(month_path, document)
+                descriptor = _month_descriptor(document, relative, month_path)
+                _validate_month_output(symbol, descriptor, document, month_path)
+                rebuilt_months[placement] = month
+
+            descriptors.append(descriptor)
+            previous_descriptor = descriptor
+            previous_placement = placement
 
     request = request_identity(symbol, ALPACA_ADJUSTMENT_MODES[0], request_end_timestamp)
     request.pop("adjustment")

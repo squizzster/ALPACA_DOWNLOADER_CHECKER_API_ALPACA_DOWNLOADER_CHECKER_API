@@ -14,6 +14,7 @@ from libs.alpaca_end_of_day_security_correlation import (
     security_id_for_alpaca_asset_ids,
 )
 from libs.alpaca_end_of_day_security_correlation.artifact_paths import security_master_directory
+from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
 from libs.alpaca_end_of_day_v6 import (
     authenticate_monthly_source,
     initialize_v6_store,
@@ -44,6 +45,7 @@ from libs.alpaca_end_of_day_v6.correlation import (
 from libs.alpaca_end_of_day_v6.downstream_input import (
     build_downstream_pricing_input,
     empty_verified_session_exclusions,
+    episode_partition_loaders,
 )
 from libs.alpaca_end_of_day_v6.errors import V6Error
 from libs.alpaca_end_of_day_v6.lineage import (
@@ -163,6 +165,11 @@ def _availability_report(candidate) -> dict:
 
 
 class NativeV6MonthlySourceTests(unittest.TestCase):
+    def test_missing_preliminary_episode_support_fails_closed(self) -> None:
+        load_correlation, _load_rows = episode_partition_loaders(Path("unused"), {})
+        with self.assertRaises(SecurityCorrelationError):
+            load_correlation("RELATED")
+
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name) / "data_vtest"

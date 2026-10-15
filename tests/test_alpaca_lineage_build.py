@@ -1,0 +1,676 @@
+import copy
+import io
+import json
+import multiprocessing
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import date
+from pathlib import Path
+from unittest.mock import patch
+
+from test_alpaca_pricing_download import FakeClient, bar, snapshot
+from test_alpaca_security_lineage import FakeIdentityClient
+
+from libs.alpaca_end_of_day_security_correlation.security_identity import security_id_for_alpaca_asset_ids
+from libs.alpaca_lineage_build import storage
+from libs.alpaca_lineage_build.command_line import build_parser, main
+from libs.alpaca_lineage_build.contract import validate_version
+from libs.alpaca_lineage_build.pipeline import run_lineage
+from libs.alpaca_lineage_build.reader import read_lineage
+from libs.alpaca_pricing_download.download import download_pricing
+from libs.alpaca_pricing_download.storage import initialize_store, ticker_lock
+from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
+
+
+def asset(symbol, identity=None):
+    return {
+        "id": identity or symbol + "-id",
+        "symbol": symbol,
+        "class": "us_equity",
+        "exchange": "NASDAQ",
+        "name": symbol + " company",
+        "status": "active",
+        "tradable": True,
+    }
+
+
+class IdentityClient:
+    def __init__(self, assets=None, actions=()):
+        self.assets = assets if assets is not None else {"GOOG": asset("GOOG")}
+        self.actions = list(actions)
+        self.calls = []
+        self.request_count = 0
+
+    def get_corporate_actions(self, symbol, start, end):
+        self.calls.append((symbol, start, end))
+        self.request_count += 1
+        return [
+            copy.deepcopy(item)
+            for item in self.actions
+            if symbol in (value for key, value in item.items() if key.endswith("symbol"))
+            and start <= item["process_date"] <= end
+        ]
+
+    def get_asset_lookup(self, identifier):
+        self.request_count += 1
+        value = self.assets.get(identifier)
+        return {
+            "outcome": "found" if value else "not_found",
+            "http_status": 200 if value else 404,
+            "asset": copy.deepcopy(value),
+        }
+
+
+def calendar_bars(start, end):
+    return [bar(day) for day in expected_market_session_coverage(start, end).session_dates]
+
+
+def lineage_worker(store, ready, entered, release):
+    class BlockingIdentity(IdentityClient):
+        def get_corporate_actions(self, *args):
+            entered.set()
+            if not release.wait(15):
+                raise RuntimeError("test release timed out")
+            return super().get_corporate_actions(*args)
+
+    ready.set()
+    result = run_lineage(store, ["GOOG"], identity_client=BlockingIdentity())
+    if result["failed"]:
+        raise RuntimeError(result)
+
+
+class LineageBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1))
+        )
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.store = Path(self.temporary.name) / "store"
+        self.root = self.store / "end_of_day/lineage"
+        self.bars = [bar(day) for day in ("2016-01-04", "2025-12-31", "2026-01-02", "2026-09-30", "2026-10-01")]
+
+    def download(self, symbol="GOOG", end="2026-10-14", bars=None, **kwargs):
+        return download_pricing(
+            self.store, symbol, end, client=FakeClient(self.bars if bars is None else bars), **kwargs
+        )
+
+    def run_build(self, symbols=None, client=None, **kwargs):
+        result = run_lineage(self.store, symbols, identity_client=client or IdentityClient(), **kwargs)
+        self.assertEqual(result["failed"], 0, result)
+        return result
+
+    def receipt(self, symbol="GOOG"):
+        return storage.read_receipt(self.root, symbol, storage.read_index(self.root))
+
+    def notice(self, symbol="GOOG"):
+        return self.store / f"end_of_day/manifests/{symbol}/update.json"
+
+    def assignments(self, symbol="GOOG", adjustment="raw"):
+        receipt = self.receipt(symbol)
+        boundaries = storage.read_boundaries(self.root, receipt)
+        segments = []
+        for kind in ("completed_years", "current_year", "current_month"):
+            selected = next(item for item in boundaries[kind]["adjustments"] if item["adjustment"] == adjustment)
+            segments.extend(
+                segment
+                for segment in selected["segments"]
+                if kind != "current_year" or segment["from"][:7] < receipt["anchor_month"]
+            )
+        return segments
+
+    def test_initial_publication_is_three_boundaries_without_price_copies(self):
+        self.download()
+        before = snapshot(self.store / "end_of_day/pricing")
+        result = self.run_build()
+        self.assertEqual(result["workers"], 1)
+        self.assertEqual(before, snapshot(self.store / "end_of_day/pricing"))
+        self.assertFalse(self.notice().exists())
+        self.assertEqual(
+            set(snapshot(self.root)),
+            {
+                "index.sqlite3",
+                "GOOG/lineage.manifest.json",
+                "GOOG/completed_years.manifest.json",
+                "GOOG/2026/year.manifest.json",
+                "GOOG/2026/Oct/month.manifest.json",
+            },
+        )
+        receipt = self.receipt()
+        self.assertEqual(receipt["source_rows"], 8 * len(self.bars))
+        self.assertTrue(receipt["row_partition_complete"])
+        self.assertEqual(sum(segment["row_count"] for segment in self.assignments()), len(self.bars))
+        self.assertNotIn('"open"', json.dumps(receipt))
+
+    def test_daily_append_retains_cold_and_year_and_resumes_metadata_month(self):
+        self.bars = [bar("2016-01-04")] + calendar_bars("2025-12-31", "2026-10-14")
+        self.download()
+        self.run_build()
+        before = snapshot(self.root)
+        self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
+        client = IdentityClient()
+        self.run_build(client=client)
+        after = snapshot(self.root)
+        for filename in ("GOOG/completed_years.manifest.json", "GOOG/2026/year.manifest.json"):
+            self.assertTrue(before[filename] == after[filename], filename)
+        self.assertEqual(client.calls, [("GOOG", "2026-10-01", "2026-10-15")])
+        self.assertEqual(sum(item["row_count"] for item in self.assignments()), len(self.bars) + 1)
+
+    def test_unchanged_selected_source_has_no_requests_or_writes(self):
+        self.download()
+        self.run_build()
+        before = snapshot(self.root)
+        client = IdentityClient()
+        result = self.run_build(["GOOG"], client=client)
+        self.assertEqual(result["results"][0]["status"], "unchanged")
+        self.assertEqual(client.request_count, 0)
+        self.assertEqual(before, snapshot(self.root))
+
+    def test_normal_lineage_trusts_pricing_without_calling_authenticators(self):
+        self.download()
+        with (
+            patch("libs.alpaca_pricing_download.storage.read_boundary", side_effect=AssertionError("audit")),
+            patch("libs.alpaca_pricing_download.storage.boundary_document", side_effect=AssertionError("audit")),
+            patch("libs.alpaca_pricing_download.storage.digest", side_effect=AssertionError("rehash")),
+        ):
+            self.run_build()
+
+    def test_simple_continuation_never_opens_cold_prices_or_recalculates_old_rows(self):
+        self.bars = calendar_bars("2025-12-01", "2026-10-14")
+        self.download()
+        self.run_build()
+        before = snapshot(self.root)
+        self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
+        original = Path.read_bytes
+
+        def read_bytes(path):
+            if path.suffix == ".gz" and path.parent.name != "Oct":
+                self.fail("approved cold pricing was reopened")
+            return original(path)
+
+        from libs.alpaca_lineage_build import transform
+
+        correlate = transform.build_security_correlation_report
+
+        def check_rows(*args, **kwargs):
+            reader = kwargs["authenticated_download_reader"]
+            for descriptor in args[0]["local"]["downloads"]:
+                rows = reader(None, None, descriptor).rows
+                self.assertTrue(all(row["t"].startswith("2026-10") for row in rows))
+            return correlate(*args, **kwargs)
+
+        with (
+            patch.object(Path, "read_bytes", read_bytes),
+            patch.object(transform, "build_security_correlation_report", side_effect=check_rows),
+        ):
+            result = self.run_build()
+        self.assertTrue(result["results"][0]["reused_closed_boundaries"])
+        after = snapshot(self.root)
+        for name in ("GOOG/completed_years.manifest.json", "GOOG/2026/year.manifest.json"):
+            self.assertTrue(before[name] == after[name], name)
+        self.assertEqual(sum(item["row_count"] for item in self.assignments()), len(self.bars) + 1)
+
+    def test_month_and_year_rollover_retire_only_superseded_lineage_boundaries(self):
+        self.download()
+        self.run_build()
+        self.download(end="2026-11-03", bars=self.bars + [bar("2026-11-02")])
+        self.run_build()
+        self.assertFalse((self.root / "GOOG/2026/Oct").exists())
+        self.assertTrue((self.root / "GOOG/2026/Nov/month.manifest.json").exists())
+        self.download(end="2027-01-05", bars=self.bars + [bar("2026-11-02"), bar("2027-01-04")])
+        self.run_build()
+        self.assertFalse((self.root / "GOOG/2026").exists())
+        self.assertTrue((self.root / "GOOG/2027/Jan/month.manifest.json").exists())
+        self.assertEqual(sum(item["row_count"] for item in self.assignments()), len(self.bars) + 2)
+
+    def test_force_refresh_deletions_remove_old_assignments(self):
+        self.download()
+        self.run_build()
+        self.download(bars=[bar("2026-10-01")], refresh_all=True)
+        self.run_build()
+        self.assertEqual(self.receipt()["source_rows"], 8)
+        self.assertEqual([item["from"] for item in self.assignments()], ["2026-10-01"])
+        self.download(bars=[], refresh_all=True)
+        self.run_build()
+        self.assertEqual(self.assignments(), [])
+        self.assertFalse(self.notice().exists())
+
+    def test_metadata_only_refresh_can_correct_old_boundaries(self):
+        self.download()
+        self.run_build()
+        before = snapshot(self.root)
+        client = IdentityClient({"GOOG": asset("GOOG", "corrected-id")})
+        self.run_build(["GOOG"], client=client, refresh=True)
+        self.assertEqual(client.calls, [("GOOG", "2016-01-01", "2026-10-14")])
+        self.assertNotEqual(
+            before["GOOG/completed_years.manifest.json"][0],
+            snapshot(self.root)["GOOG/completed_years.manifest.json"][0],
+        )
+        self.assertFalse(self.notice().exists())
+
+    def test_failure_does_not_consume_notice_and_other_tickers_continue(self):
+        self.download()
+        self.download("OTHER")
+        client = IdentityClient({"GOOG": asset("GOOG"), "OTHER": asset("OTHER")})
+        original = client.get_corporate_actions
+
+        def acquire(symbol, start, end):
+            if symbol == "GOOG":
+                raise RuntimeError("identity unavailable")
+            return original(symbol, start, end)
+
+        client.get_corporate_actions = acquire
+        result = run_lineage(self.store, ["GOOG", "OTHER"], identity_client=client)
+        self.assertEqual(result["failed"], 1)
+        self.assertTrue(self.notice().exists())
+        self.assertFalse(self.notice("OTHER").exists())
+
+    def test_missing_pricing_is_delegated_outside_locks_then_notice_is_consumed(self):
+        self.download()
+        action = {
+            "action_type": "name_change",
+            "id": "rename",
+            "process_date": "2026-09-01",
+            "old_symbol": "OLD",
+            "new_symbol": "GOOG",
+            "old_cusip": "111111111",
+            "new_cusip": "111111111",
+        }
+        client = IdentityClient(
+            {"GOOG": asset("GOOG"), "OLD": asset("GOOG"), "111111111": asset("GOOG")}, [action]
+        )
+        requested = []
+
+        def acquire(store, symbol, end, **kwargs):
+            # A nonblocking separate descriptor must acquire the source lock here.
+            import fcntl
+
+            with (self.store / "end_of_day/pricing/GOOG/.download.lock").open("rb") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            requested.append(symbol)
+            result = download_pricing(store, symbol, end, **kwargs)
+            self.assertTrue(self.notice(symbol).exists())
+            return result
+
+        with patch("libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=acquire):
+            result = self.run_build(["GOOG"], client=client, pricing_client=FakeClient(self.bars))
+        self.assertEqual(requested, ["OLD"])
+        self.assertEqual(result["results"][0]["processed"], ["GOOG", "OLD"])
+        self.assertFalse(self.notice("OLD").exists())
+        self.assertFalse(self.notice().exists())
+
+    def test_missing_pricing_without_downloader_retains_notice(self):
+        self.download()
+        client = IdentityClient({"GOOG": asset("NEW")})
+        result = run_lineage(self.store, ["GOOG"], identity_client=client)
+        self.assertEqual(result["results"][0]["status"], "waiting_for_pricing")
+        self.assertEqual(list(result["results"][0]["required"]), ["NEW"])
+        self.assertTrue(self.notice().exists())
+
+    def test_missing_seed_uses_downloader_defaults_outside_locks_then_consumes_notice(self):
+        initialize_store(self.store)
+        pricing_root = self.store / "end_of_day/pricing/META"
+        pricing_root.mkdir(parents=True)
+        with ticker_lock(pricing_root, exclusive=True):
+            pass  # A prior failed acquisition may have left only its stable lock.
+        requested = []
+
+        def acquire(store, symbol, end, **kwargs):
+            import fcntl
+
+            with (pricing_root / ".download.lock").open("rb") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            requested.append((symbol, end, kwargs["from_date"]))
+            result = download_pricing(store, symbol, end, **kwargs)
+            self.assertTrue(self.notice(symbol).exists())
+            return result
+
+        with patch("libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=acquire):
+            result = self.run_build(
+                ["META"], client=IdentityClient({"META": asset("META")}), pricing_client=FakeClient(self.bars)
+            )
+        self.assertEqual(requested, [("META", None, None)])
+        self.assertEqual(result["results"][0]["pricing_acquisition_waves"], 1)
+        self.assertEqual(result["results"][0]["acknowledged"], ["META"])
+        self.assertEqual(self.receipt("META")["processed_through"], "2030-01-01T00:00:00Z")
+        self.assertFalse(self.notice("META").exists())
+
+    def test_missing_seed_without_downloader_waits_without_identity_calls_or_notices(self):
+        initialize_store(self.store)
+        client = IdentityClient()
+        with patch("libs.alpaca_lineage_build.pipeline.download_pricing") as downloader:
+            result = run_lineage(self.store, ["META"], identity_client=client)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["results"][0]["status"], "waiting_for_pricing")
+        self.assertEqual(result["results"][0]["required"], {"META": {"from": None, "end_exclusive": None}})
+        self.assertEqual(client.request_count, 0)
+        downloader.assert_not_called()
+        self.assertFalse(self.notice("META").exists())
+        self.assertFalse((self.store / "end_of_day/pricing/META").exists())
+
+    def test_missing_seed_failure_does_not_stop_other_tickers(self):
+        self.download()
+        with patch(
+            "libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=RuntimeError("unavailable")
+        ):
+            result = run_lineage(
+                self.store, ["META", "GOOG"], identity_client=IdentityClient(), pricing_client=FakeClient([])
+            )
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual([item["status"] for item in result["results"]], ["failed", "processed"])
+        self.assertFalse(self.notice().exists())
+        self.assertIsNone(self.receipt("META"))
+
+    def test_missing_seed_acquisition_is_bounded(self):
+        initialize_store(self.store)
+        client = IdentityClient()
+        with patch("libs.alpaca_lineage_build.pipeline.download_pricing", return_value={}) as downloader:
+            result = run_lineage(self.store, ["META"], identity_client=client, pricing_client=FakeClient([]))
+        self.assertEqual(downloader.call_count, 3)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(client.request_count, 0)
+
+    def test_empty_seed_is_published_once_and_not_requested_again(self):
+        initialize_store(self.store)
+        client = IdentityClient({"META": asset("META")})
+        pricing = FakeClient([])
+        result = self.run_build(["META"], client=client, pricing_client=pricing)
+        self.assertEqual(result["results"][0]["pricing_acquisition_waves"], 1)
+        self.assertEqual(self.receipt("META")["source_rows"], 0)
+        before = len(pricing.calls)
+        result = self.run_build(["META"], client=client, pricing_client=pricing)
+        self.assertEqual(result["results"][0]["status"], "unchanged")
+        self.assertEqual(len(pricing.calls), before)
+
+    def test_cli_acquires_meta_then_related_prices_before_lineage_publication(self):
+        initialize_store(self.store)
+        prices = {
+            "META": calendar_bars("2021-07-01", "2026-10-14"),
+            "FB": calendar_bars("2021-07-01", "2022-06-09") + calendar_bars("2025-06-26", "2026-10-14"),
+            "METV": calendar_bars("2021-07-01", "2026-10-14"),
+        }
+        clients = {symbol: FakeClient(rows) for symbol, rows in prices.items()}
+        requested = []
+
+        class PricingClient:
+            def fetch(self, symbol, *args, **kwargs):
+                return clients[symbol].fetch(symbol, *args, **kwargs)
+
+        def acquire(store, symbol, end, **kwargs):
+            requested.append((symbol, end, kwargs["from_date"]))
+            return download_pricing(store, symbol, end, **kwargs)
+
+        output = io.StringIO()
+        with (
+            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2026, 10, 14)),
+            patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"}),
+            patch("libs.alpaca_lineage_build.command_line.BarsClient", return_value=PricingClient()),
+            patch(
+                "libs.alpaca_lineage_build.command_line.AlpacaIdentityClient", return_value=FakeIdentityClient()
+            ),
+            patch("libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=acquire),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(main(["--store", str(self.store), "-s", "META"]), 0, output.getvalue())
+        self.assertEqual(
+            requested,
+            [("META", None, None), ("FB", "2026-10-14", "2016-01-01"), ("METV", "2026-10-14", "2016-01-01")],
+        )
+        result = json.loads(output.getvalue())["results"][0]
+        self.assertEqual(result["pricing_acquisition_waves"], 2)
+        self.assertEqual(result["processed"], ["FB", "META", "METV"])
+        self.assertEqual(result["acknowledged"], ["FB", "META", "METV"])
+        for symbol in prices:
+            self.assertFalse(self.notice(symbol).exists())
+        meta = [item for item in self.assignments("META") if item["branch"] == "correlated"]
+        self.assertEqual({item["historical_symbol"] for item in meta}, {"FB", "META"})
+        self.assertEqual(
+            {item["security_identity"]["security_id"] for item in meta},
+            {security_id_for_alpaca_asset_ids(["meta-id"])},
+        )
+
+    def test_v1_publication_recovers_and_upgrades_without_reacquiring_prices(self):
+        from libs.alpaca_lineage_build import transform
+
+        self.download()
+        with (
+            patch.object(storage, "VERSION", 1),
+            patch.object(transform, "VERSION", 1),
+            patch.object(storage, "_acknowledge", side_effect=OSError("crash")),
+        ):
+            result = run_lineage(self.store, identity_client=IdentityClient())
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(self.receipt()["schema_version"], 1)
+        before = snapshot(self.store / "end_of_day/pricing")
+        with patch(
+            "libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=AssertionError("download")
+        ):
+            result = self.run_build(["GOOG"], refresh=True)
+        self.assertTrue(result["recovered"])
+        self.assertEqual(self.receipt()["schema_version"], 2)
+        self.assertEqual(before, snapshot(self.store / "end_of_day/pricing"))
+        self.assertFalse(self.notice().exists())
+
+    def test_new_related_notice_reprocesses_previously_acknowledged_source(self):
+        self.download()
+        self.download("OLD")
+        action = {
+            "action_type": "name_change",
+            "id": "rename",
+            "process_date": "2022-06-09",
+            "old_symbol": "OLD",
+            "new_symbol": "GOOG",
+            "old_cusip": "111111111",
+            "new_cusip": "111111111",
+        }
+        client = IdentityClient(
+            {"GOOG": asset("GOOG"), "OLD": asset("GOOG"), "111111111": asset("GOOG")}, [action]
+        )
+        self.run_build(["GOOG"], client=client)
+        self.assertFalse(self.notice().exists())
+        self.download("OLD", refresh_all=True)
+        result = self.run_build(client=client)
+        self.assertEqual(result["results"][0]["processed"], ["GOOG", "OLD"])
+        self.assertEqual(result["results"][0]["acknowledged"], ["OLD"])
+
+    def test_publish_failure_recovers_before_ack_without_reacquiring_metadata(self):
+        self.download()
+        with patch.object(storage, "_install", side_effect=OSError("disk failed")):
+            result = run_lineage(self.store, identity_client=IdentityClient())
+        self.assertEqual(result["failed"], 1)
+        self.assertTrue(self.notice().exists())
+        client = IdentityClient()
+        result = self.run_build(client=client)
+        self.assertTrue(result["recovered"])
+        self.assertEqual(client.request_count, 0)
+        self.assertFalse(self.notice().exists())
+        self.assertFalse((self.root / ".pending.json").exists())
+
+    def test_ack_failure_is_idempotently_recovered(self):
+        self.download()
+        with patch.object(storage, "acknowledge_update", side_effect=OSError("interrupted ack")):
+            result = run_lineage(self.store, identity_client=IdentityClient())
+        self.assertEqual(result["failed"], 1)
+        before = snapshot(self.root / "GOOG")
+        self.run_build()
+        self.assertEqual(before, snapshot(self.root / "GOOG"))
+        self.assertFalse(self.notice().exists())
+
+    def test_recovery_does_not_ack_newer_pricing_with_identical_notice_dates(self):
+        self.download()
+        with patch.object(storage, "_acknowledge", side_effect=OSError("crash")):
+            run_lineage(self.store, identity_client=IdentityClient())
+        self.download(bars=[{**item, "c": 42} for item in self.bars], refresh_all=True)
+        with storage.writer_lock(self.store) as root:
+            storage.recover(self.store, root)
+        self.assertTrue(self.notice().exists())
+        self.run_build()
+        self.assertFalse(self.notice().exists())
+
+    def test_fb_meta_rename_and_reused_fb_remain_distinct(self):
+        prices = {
+            "META": calendar_bars("2021-07-01", "2026-10-14"),
+            "FB": calendar_bars("2021-07-01", "2022-06-09") + calendar_bars("2025-06-26", "2026-10-14"),
+            "METV": calendar_bars("2021-07-01", "2026-10-14"),
+        }
+        for symbol, bars in prices.items():
+            self.download(symbol, bars=bars)
+        client = FakeIdentityClient()
+        self.run_build(["META"], client=client)
+        meta = [item for item in self.assignments("META") if item["branch"] == "correlated"]
+        fb = [item for item in self.assignments("FB") if item["branch"] == "correlated"]
+        self.assertEqual({item["historical_symbol"] for item in meta}, {"FB", "META"})
+        self.assertEqual(
+            {item["security_identity"]["security_id"] for item in meta},
+            {security_id_for_alpaca_asset_ids(["meta-id"])},
+        )
+        self.assertEqual(
+            {item["security_identity"]["security_id"] for item in fb},
+            {security_id_for_alpaca_asset_ids(["fb-etf-id"])},
+        )
+        self.assertTrue(all(item["from"] >= "2025-06-26" for item in fb))
+
+    def test_only_one_lineage_worker_and_ticker_lock_blocks_provider_calls(self):
+        self.download()
+        ctx = multiprocessing.get_context("fork")
+        ready, entered, release = ctx.Event(), ctx.Event(), ctx.Event()
+        worker = ctx.Process(target=lineage_worker, args=(str(self.store), ready, entered, release))
+        with ticker_lock(self.store / "end_of_day/pricing/GOOG", exclusive=True):
+            worker.start()
+            self.assertTrue(ready.wait(5))
+            self.assertFalse(entered.wait(0.2))
+        self.assertTrue(entered.wait(5))
+        ready2, entered2, release2 = ctx.Event(), ctx.Event(), ctx.Event()
+        second = ctx.Process(target=lineage_worker, args=(str(self.store), ready2, entered2, release2))
+        second.start()
+        try:
+            self.assertTrue(ready2.wait(5))
+            self.assertFalse(entered2.wait(0.2))
+            release.set()
+            release2.set()
+            worker.join(15)
+            second.join(15)
+            self.assertEqual(worker.exitcode, 0)
+            self.assertEqual(second.exitcode, 0)
+        finally:
+            for process in (worker, second):
+                if process.is_alive():
+                    process.terminate()
+                process.join(5)
+                process.close()
+
+    def test_cli_selection_and_one_worker_constraint(self):
+        validate_version()
+        parser = build_parser()
+        self.assertEqual(parser.parse_args(["--store", "example"]).workers, 1)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--store", "example", "--workers", "2"])
+        output = io.StringIO()
+        with (
+            patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"}),
+            patch("libs.alpaca_lineage_build.command_line.run_lineage", return_value={"failed": 0}) as run,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(
+                main(["--store", "example", "-s", "GOOG", "--no-download", "--refresh-metadata"]), 0
+            )
+        self.assertEqual(run.call_args.args, (Path("example"), ["GOOG"]))
+        self.assertIsNone(run.call_args.kwargs["pricing_client"])
+        self.assertTrue(run.call_args.kwargs["refresh"])
+
+    def test_full_refresh_does_not_read_other_runtime_store(self):
+        self.download()
+        with patch(
+            "libs.alpaca_security_lineage.local_downloads.inspect_local_downloads",
+            side_effect=AssertionError("legacy path"),
+        ):
+            self.run_build(["GOOG"], refresh=True)
+
+    def test_lineage_handoff_trusts_assignments_and_rejects_changed_input_generation(self):
+        self.download()
+        self.run_build()
+        from libs.alpaca_lineage_build import pipeline
+
+        with (
+            patch.object(pipeline, "correlate", side_effect=AssertionError("repeated identity rules")),
+            patch(
+                "libs.alpaca_pricing_download.handoff.load_published_views",
+                side_effect=AssertionError("pricing read"),
+            ),
+        ):
+            result = read_lineage(self.store, "GOOG")
+        self.assertEqual(sum(item["row_count"] for item in result["adjustments"]["raw"]), len(self.bars))
+        self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
+        with self.assertRaisesRegex(RuntimeError, "awaits changed pricing"):
+            read_lineage(self.store, "GOOG")
+
+    def test_partial_group_publication_blocks_handoff_and_recovery_finishes_it(self):
+        self.download()
+        original = storage.atomic_json
+
+        def interrupted(path, document):
+            if path.name == "lineage.manifest.json":
+                raise OSError("interrupted after boundary files")
+            return original(path, document)
+
+        with patch.object(storage, "atomic_json", side_effect=interrupted):
+            result = run_lineage(self.store, identity_client=IdentityClient())
+        self.assertEqual(result["failed"], 1)
+        with self.assertRaisesRegex(RuntimeError, "publication incomplete"):
+            read_lineage(self.store, "GOOG")
+        self.run_build()
+        self.assertTrue(read_lineage(self.store, "GOOG")["receipt"]["row_partition_complete"])
+
+    def test_missing_dependency_acquisition_is_bounded_and_retains_pending_work(self):
+        self.download()
+        client = IdentityClient({"GOOG": asset("NEW")})
+        with patch("libs.alpaca_lineage_build.pipeline.download_pricing", return_value={}) as downloader:
+            result = run_lineage(self.store, ["GOOG"], identity_client=client, pricing_client=FakeClient([]))
+        self.assertEqual(downloader.call_count, 3)
+        self.assertEqual(result["failed"], 1)
+        self.assertTrue(self.notice().exists())
+
+    def test_empty_published_dependency_is_not_requested_again(self):
+        self.download()
+        client = IdentityClient({"GOOG": asset("NEW"), "NEW": asset("NEW")})
+        result = self.run_build(["GOOG"], client=client, pricing_client=FakeClient([]))
+        self.assertEqual(result["results"][0]["pricing_acquisition_waves"], 1)
+        self.assertEqual(self.receipt("NEW")["source_rows"], 0)
+        self.assertFalse(self.notice().exists())
+
+    def test_conflicting_action_identity_fails_without_assigning_or_acknowledging(self):
+        self.download()
+        event = {
+            "action_type": "name_change",
+            "id": "conflicting",
+            "process_date": "2026-09-01",
+            "old_symbol": "OLD",
+            "new_symbol": "GOOG",
+            "old_cusip": "111111111",
+            "new_cusip": "111111111",
+        }
+        client = IdentityClient(actions=[event, {**event, "process_date": "2026-09-02"}])
+        result = run_lineage(self.store, identity_client=client)
+        self.assertEqual(result["failed"], 1)
+        self.assertIn("conflicting corporate-action", result["results"][0]["error"])
+        self.assertTrue(self.notice().exists())
+
+    def test_delegation_reloads_the_latest_notice_after_reacquiring_locks(self):
+        self.download()
+        client = IdentityClient({"GOOG": asset("NEW"), "NEW": asset("NEW")})
+        count = 0
+
+        def acquire(store, symbol, end, **kwargs):
+            nonlocal count
+            count += 1
+            if count == 1:
+                self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
+            return download_pricing(store, symbol, end, **kwargs)
+
+        with patch("libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=acquire):
+            self.run_build(["GOOG"], client=client, pricing_client=FakeClient(self.bars + [bar("2026-10-14")]))
+        self.assertEqual(self.receipt()["processed_through"], "2026-10-15T00:00:00Z")
+        self.assertEqual(self.receipt("NEW")["processed_through"], "2026-10-15T00:00:00Z")
+        self.assertFalse(self.notice().exists())
+        self.assertFalse(self.notice("NEW").exists())

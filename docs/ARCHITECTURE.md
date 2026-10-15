@@ -2,122 +2,258 @@
 
 ## Responsibility boundary
 
-This repository is the acquisition, integrity, identity, publication, and read boundary for its data. It downloads
-provider data, preserves and authenticates source artifacts, checks pricing and session integrity, resolves security
-identity, publishes the histories that satisfy the read contract, and serves them to downstream consumers. Its
-responsibility ends at that handoff.
+This repository acquires provider data, publishes isolated evidence boundaries, validates price and session integrity,
+resolves security identity, evaluates availability, and serves one online-only catalogue. Its responsibility ends at
+that data handoff. Research, screening, modelling, trading policy, and investment decisions belong to consumers.
 
-A publication result is a statement about data readiness. It is not a judgment about a security, its investment value,
-or its suitability for any strategy. Trading, research, screening, modelling, and policy decisions belong to consumers
-and never feed back into publication eligibility.
+The combined catalogue workflow uses `data_vtest/`; the standalone downloader uses an explicit destination, currently
+`data_pricing/` for focused development. The older `data/end_of_day/` tree is retained evidence, not a fallback for either
+workflow or `alpaca_end_of_day.DataLibrary`.
 
-## Two read boundaries
+## Producer and consumer boundaries
 
-The project deliberately separates application consumption from operator inspection:
+The standalone pricing producer is independent of the existing combined catalogue workflow:
 
-| Boundary | Supported entrypoint | What it exposes |
+| Role | Supported entrypoint | Contract |
 |---|---|---|
-| Consumer | [`alpaca_end_of_day.DataLibrary`](../alpaca_end_of_day/__init__.py) | Only the authenticated online universe, public identity metadata, exact bars, search, ticker resolution, and flat export. |
-| Operator/internal | [`libs/alpaca_end_of_day_reader`](../libs/alpaca_end_of_day_reader/) | Detailed provenance, validation findings, warning overlays, source selection, and offline records for pipeline evaluation or investigation. |
+| Standalone pricing downloader | [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Acquire exact ticker-labelled pricing, publish compact source boundaries and pending dates, and stop; no identity or catalogue dependency. |
+| Standalone lineage | [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | One worker consumes pending pricing, acquires identity evidence, applies the established rules, and publishes chronological assignments before acknowledgement. |
+| Producer | [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Own the complete acquisition-to-catalogue cascade and publish receipts last. |
+| Clean-room constructor | [`build_alpaca_end_of_day_clean_room.py`](../build_alpaca_end_of_day_clean_room.py) | Schedule the same cascade as bounded canonical-symbol transactions using only the fixed universe, provider responses, and repository contracts; checkpoint exact accounting; audit before activation. |
+| Consumer | [`alpaca_end_of_day.DataLibrary`](../alpaca_end_of_day/__init__.py) | Trust one completed catalogue generation and expose only online public identities and exact histories. |
+| Explicit auditor | Boundary-specific internal `authenticate_*` functions, composed by the clean-room constructor | Re-hash every owned boundary, verify global membership and generation closure, and exercise every online adjustment through the public library without repairing it. |
 
-A consumer cannot discover an offline identity through the public boundary. Every well-formed ID outside the opened
-online snapshot receives the same `PublicIdUnavailableError`. Internal readers remain necessary because operators must
-be able to explain and repair publication failures without exposing that machinery as an application contract.
+Consumer code imports only `alpaca_end_of_day`. Modules under `libs/` are implementation interfaces. An unavailable
+public ID always receives the same response; the public boundary never reveals whether an offline or internal identity
+exists.
+
+## Boundary graph
+
+The standalone path is:
+
+```text
+ticker REST bars -> exact transformed pricing -> pending from/to dates -> standalone lineage
+                   end_of_day/pricing/<TICKER>   end_of_day/manifests/<TICKER>
+```
+
+Downloader and lineage share per-ticker locks, not calculation ownership. The downloader owns prices; lineage owns
+normalized identity evidence and dated assignments using the existing rule registries. Missing prices are delegated
+to the downloader outside pricing locks. Neither standalone command publishes the public catalogue. The downloader
+imports no identity, lineage, validation, or combined-pipeline package. Consolidation changes
+storage ownership, not price values or security ownership; see the
+[standalone contract](technical-contracts.md#standalone-pricing-source-contract).
+
+The standalone execution boundary is **one worker, one ticker transaction**: a worker owns its ticker from lock
+acquisition through all probes, adjustment downloads, and publication. At most three workers run concurrently;
+only the in-memory request budget/cooldown is shared across tickers. Workers never split one ticker's adjustments.
+
+The lineage twin has one worker across processes and the same three chronological boundaries, including the
+month-over-year overlay. A small dependency index expands only the affected connected sources; relationship does not
+itself prove security identity. It acquires the complete pricing lock set in sorted order, publishes the group's
+lineage durably, then acknowledges notices. Approved upstream values are consumed without re-audit. A safe
+single-identity continuation reuses closed assignments and opens only the month; context-dependent cases recalculate
+the affected chronology using the established rules. Exact gates belong to the
+[standalone lineage contract](technical-contracts.md#standalone-lineage-contract).
+
+The existing combined catalogue workflow remains:
+
+```text
+Alpaca bars                         Alpaca identity evidence
+    |                                        |
+    v                                        v
+monthly source -> validation -----------> lineage
+       \              \                     /
+        \              +----> correlation <-+
+         \                       |
+          +--------------------> warnings
+                                  |
+correlation + lineage -> identity candidate
+                                  |
+candidate + histories + warnings + lineage -> availability
+                                  |
+candidate + availability -> content-addressed catalogue
+                                  |
+                                  v
+                          online public library
+```
+
+Each arrow crosses a receipt-defined handoff. The receiving stage consumes the result already calculated by the owner;
+it does not re-run the owner's rules. The complete cascade and its reuse decisions are specified in
+[Pipeline](../PIPELINE.md). Exact generation bindings and artifact schemas are specified in
+[Technical contracts](technical-contracts.md).
+
+## Trust model
+
+In the existing combined cascade, trust is established at publication and consumed by identity, not repeatedly reconstructed:
+
+1. The owner calculates a boundary output.
+2. The owner validates the output it is about to publish.
+3. The owner writes the selecting receipt last.
+4. A normal downstream stage uses a trusted loader, checks that the receipt names the expected immediate inputs, and
+   consumes the published result without re-hashing it or repeating its calculation.
+5. An explicit authenticator may later re-hash the complete boundary for audit.
+
+This split is deliberate. If validation, correlation, or the public reader independently recalculated source digests
+and upstream decisions, those stages would no longer be isolated and identical work would have multiple owners.
+
+Identical immediate-input generations select the existing downstream publication. A changed generation invalidates
+only the dependent boundary and its required closure. Current exceptions and recalculation granularity are recorded in
+the [reuse matrix](technical-contracts.md#reuse-and-recomputation-matrix); notably, selected lineage evidence is
+reacquired before semantic equality can be known.
+
+The clean-room scheduler adds durable trust between transactions. It records a submitted-label resolution before
+price acquisition, records one terminal outcome for every universe position, and never runs a second acquisition for
+an already-owned canonical symbol. After an interruption it explicitly authenticates a completed source, validation,
+or lineage boundary and resumes at the first missing owner. A later source may invalidate correlation for an identity
+closure; recalculating that affected closure is required work, while unrelated sources remain unopened by the
+catalogue delta.
+
+## Silo ownership
+
+The following silos belong to the existing combined cascade:
+
+| Silo | Owns | Does not own |
+|---|---|---|
+| Monthly source | Month placement, deterministic gzip bytes, exact-copy aliases, and structural inventories. | Price/session validation or identity. |
+| Validation | Row rules, observed sessions, and adjacent-month seams. | Lineage, allocation, warnings, or availability. |
+| Lineage | Normalized provider identity and corporate-action evidence. | Row ownership or security membership decisions. |
+| Correlation | Dated ownership, exhaustive row allocation, UUID edges, identity partitions, and evidence issues. | Online status or source mutation. |
+| Warnings | Advisory cross-view and segment findings. | Data repair or publication eligibility. |
+| Identity candidate | Snapshot or affected-closure aggregation with provisional offline state. | Acquisition, correlation, or availability. |
+| Availability | Whether every advertised published read succeeds and continuity is explained. | Membership or value changes. |
+| Catalogue | Content-addressed persistence and atomic selection of already-made decisions. | Domain-rule evaluation. |
+| Public library | Online filtering, typed values, search, resolution, and snapshot consistency. | Offline discovery, diagnosis, repair, or network access. |
+
+No stage writes another stage's directory. A later stage may read an upstream published value when that value is one of
+its declared inputs, but it cannot change or reinterpret the upstream output.
+
+## Publication isolation
+
+Standalone pricing uses the [per-ticker publication and acknowledgement protocol](technical-contracts.md#locking-publication-and-consumption).
+Normal handoff readers trust published pricing receipts and aliases; explicit pricing authentication remains separate.
+Downloader endpoint probes trust a small source-bound validator; they do not reopen cold gzip data on ordinary updates.
+
+The combined store has one stable `.publication.lock`. The pipeline holds it exclusively from the start of the mutation
+transaction through final catalogue publication. Public catalogue and history reads hold it shared. The writer also
+publishes `.publication.pending.json`; an interrupted transaction retains that marker, and readers fail closed until a
+complete rerun succeeds.
+
+Source months have an additional per-symbol lock and are installed through staged directory replacement. Regular files
+use same-directory temporary files, `fsync`, and `os.replace`. Boundary receipts and the reader-visible catalogue
+receipt are written only after their owned outputs validate.
+
+The focused producer's lock scope includes provider requests and therefore blocks readers for its complete cohort.
+The clean-room constructor instead targets an isolated store and opens one complete transaction per canonical symbol;
+no transaction retains the full universe in memory. Failed pricing validation is a terminal, authenticated source and
+validation outcome that never enters lineage or the catalogue and does not leave a recovery marker. Any other
+unresolved failure stops the scheduler after bounded retries, retaining its exact checkpoints for a later resume.
+
+Activation occurs only after the isolated store passes complete authentication and every online history reads through
+the public API facade. The prior `data_vtest/` directory is renamed to an ignored recovery path, the audited directory
+is renamed into place on the same filesystem, and a public-library smoke check must select the audited generation. A
+failed smoke check rolls the rename back. Operations permit only one producer or activator at a time.
 
 ## Update flow
 
-Update orchestration is owned by
-[`libs/alpaca_end_of_day_ticker_pipeline/orchestration.py`](../libs/alpaca_end_of_day_ticker_pipeline/orchestration.py):
+The canonical orchestrator is
+[`pipeline.py`](../libs/alpaca_end_of_day_v6/pipeline.py). At a high level it:
 
 ```text
-Alpaca bars or authenticated cache
-  -> frozen source publication and hard integrity validation
-  -> asset and corporate-action evidence
-  -> symbol disposition
-  -> exhaustive correlated / uncorrelated row partition
-  -> advisory warning overlays
-  -> authenticated internal reads of every advertised adjustment
-  -> online and availability evaluation
-  -> sharded, digest-bound master catalogue
+resolve every submitted label
+  -> open one exclusive publication transaction
+  -> acquire and publish selected monthly source ranges
+  -> publish or reuse monthly validation
+  -> acquire and publish normalized lineage evidence
+  -> retain the complete downstream publication when all generations still match
+  -> otherwise run correlation to a fixed point
+  -> publish warnings
+  -> publish a private identity candidate
+  -> evaluate availability through published history reads
+  -> incrementally publish catalogue objects
+  -> write the reader-visible catalogue receipt last
 ```
 
-The complete pipeline publishes derived artifacts only after their inputs authenticate. Receipts are written last so a
-reader never treats a partially published generation as complete.
-
-[`PIPELINE.md`](../PIPELINE.md) is the authority for the one permitted execution path, the ordered correlation
-cascade, and the controls that prevent update or migration work from creating a second rule engine.
+For an existing catalogue, processing expands submitted canonical symbols to their current source/identity closure.
+Only submitted canonical symbols reacquire bars and lineage; unchanged supporting symbols are loaded from their
+published boundaries. Catalogue delta publication preserves unrelated objects and identities.
 
 ## Consumer flow
 
 ```text
 DataLibrary construction
-  -> authenticate one security-master generation
-  -> expose only identity shards with online = true
+  -> acquire the shared publication lock
+  -> reject an incomplete publication marker
+  -> select one reader-visible catalogue receipt
+  -> lazily expose only identities with online = true
 
 public ID + adjustment + optional dates
-  -> authenticate selected identity and source dependencies
-  -> read exact frozen values through the internal reader
-  -> require the same catalogue generation and online state
-  -> project a small typed consumer result
+  -> reacquire the shared lock
+  -> require the same security-master generation
+  -> load published correlation, warning, and monthly source views
+  -> assemble the requested exact history
+  -> project typed public values
 ```
 
-`DataLibrary` is bound to the generation opened at construction. A concurrent publication causes a history read to
-raise `CatalogChangedError`; the caller creates a new instance to observe the new snapshot.
+Ordinary consumer reads do not run the explicit digest audit path. `DataLibrary` stays bound to the selected
+security-master generation; if publication changes, a history call raises `CatalogChangedError` and the caller opens a
+new instance.
 
 ## Code ownership
 
 | Boundary | Owner | Responsibility |
 |---|---|---|
-| Consumer library | [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | Online-only catalogue, search, resolution, typed history, and flat CSV projection. |
-| Bar request | [`libs/download_alpaca_end_of_day_bars/`](../libs/download_alpaca_end_of_day_bars/) | CLI planning, credentials, HTTP, pagination, rate limiting, and adjustment acquisition. |
-| Frozen source and hard integrity | [`libs/alpaca_end_of_day_pipeline/`](../libs/alpaca_end_of_day_pipeline/) | Gzip/sidecar publication, cache state, validation, authenticated aliases, and immutable-boundary errors. |
-| Identity evidence | [`libs/alpaca_security_lineage/`](../libs/alpaca_security_lineage/) | Read-only Alpaca asset and corporate-action traversal and symbol disposition. |
-| Correlation and master identity | [`libs/alpaca_end_of_day_security_correlation/`](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row partition, episode partition, master-ID derivation, and sharded catalogue publication. |
-| Advisory checks | [`libs/alpaca_end_of_day_warning_pipeline/`](../libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and security-history warning overlays. |
-| Internal authenticated read | [`libs/alpaca_end_of_day_reader/`](../libs/alpaca_end_of_day_reader/) | Dependency authentication, source conflict handling, detailed result, and operator status queries. |
-| Online evaluation | [`libs/alpaca_end_of_day_ticker_pipeline/online_status.py`](../libs/alpaca_end_of_day_ticker_pipeline/online_status.py) | Exercise every advertised read and classify final availability. |
-| Shared primitives | [`libs/common/`](../libs/common/) | Atomic writes, hashing, pure rule evaluation, and the tracked US-market calendar. |
+| Standalone pricing | [`libs/alpaca_pricing_download/`](../libs/alpaca_pricing_download/) | Batch CLI, ticker REST requests, exact conversion, source-bound endpoint validator, three pricing boundaries, recoverable publication, and locked pending-date handoff; no security identity work. |
+| Standalone lineage | [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/) | One-worker CLI, chronological evidence resumption, trusted pricing adapter, affected dependency closure, existing identity transforms, twin assignment boundaries, and publish-before-acknowledge recovery. |
+| Consumer library | [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | Online-only catalogue, search, ticker resolution, typed history, and flat export. |
+| Complete monthly orchestration | [`pipeline.py`](../libs/alpaca_end_of_day_v6/pipeline.py) | Stage order, transaction, reuse selection, fixed-point execution, and final publication. |
+| Clean-room scheduling and audit | [`libs/alpaca_end_of_day_clean_room/`](../libs/alpaca_end_of_day_clean_room/) | Immutable run identity, resolution/outcome checkpoints, canonical deduplication, bounded retries, exhaustive audit, and rollback-safe activation. |
+| Monthly source | [`source.py`](../libs/alpaca_end_of_day_v6/source.py) | Month partitioning, deterministic gzip payloads, exact-copy aliases, inventory, and explicit authentication. |
+| Validation | [`validation.py`](../libs/alpaca_end_of_day_v6/validation.py) | Incremental month validation, predecessor seams, and ticker summary. |
+| Lineage source | [`lineage.py`](../libs/alpaca_end_of_day_v6/lineage.py) | Current normalized asset and corporate-action evidence. |
+| Correlation envelope | [`correlation.py`](../libs/alpaca_end_of_day_v6/correlation.py) | Adapt trusted monthly inputs to the sole correlation transform and publish its exhaustive partition. |
+| Warning envelope | [`warnings.py`](../libs/alpaca_end_of_day_v6/warnings.py) | Adapt trusted inputs to advisory warning transforms and publish compact outputs. |
+| Candidate, availability, catalogue | [`catalogue.py`](../libs/alpaca_end_of_day_v6/catalogue.py) | Closed candidate construction, read-based availability, delta catalogue publication, and retention. |
+| Published history adapter | [`reader.py`](../libs/alpaca_end_of_day_v6/reader.py) | Assemble trusted monthly rows through established history semantics. |
+| Ordered identity transforms | [`libs/alpaca_end_of_day_security_correlation/`](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row rules, UUID membership, master IDs, and content-addressed catalogue engine. |
+| Established validation transform | [`libs/alpaca_end_of_day_pipeline/`](../libs/alpaca_end_of_day_pipeline/) | Bar and dataset rule implementation used inside the monthly validation owner. |
+| Established warning transforms | [`libs/alpaca_end_of_day_warning_pipeline/`](../libs/alpaca_end_of_day_warning_pipeline/) | Cross-adjustment and security-history advisory algorithms. |
+| Shared primitives | [`libs/common/`](../libs/common/) | Market calendar and dependency-neutral helpers. |
 
-Tracked root Python files are executable entrypoints. The supported consumer implementation lives in
-[`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py); other domain behavior belongs in its owning library, and
-`libs/common/` imports no application package.
+Tracked root Python files are executable adapters. The supported consumer implementation lives in
+`alpaca_end_of_day/`; other application behavior belongs in the owning internal package.
 
-## Repository layout
+## Repository and runtime layout
 
 | Path | Role |
 |---|---|
-| [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | The only supported Python import for consumer applications. |
-| [Root command files](../run_alpaca_end_of_day_ticker_pipeline.py) | Thin, executable adapters for the maintained CLIs; the complete inventory is in [Operations](operations.md#command-map). |
-| [`libs/`](../libs/) | Domain implementations and operator-inspection interfaces. These are not supported consumer imports. |
-| [`tests/`](../tests/) | Unit and contract tests built around temporary repositories and HTTP doubles. |
-| `data/` | Ignored runtime state: frozen responses, receipts, correlation outputs, warnings, and the published catalogue. It is not part of a Git clone. |
-| [`resources/`](../resources/) | Tracked, machine-read project resources: runtime-validated version changelogs and the deliberate recovery-universe snapshot. It is not runtime market data. |
-| [`docs/`](.) | Maintained project guidance and version history; `README.md` and tooling-required `AGENTS.md` remain at the repository root. |
-| [`pyproject.toml`](../pyproject.toml) | Ruff configuration and the declared Python syntax target. |
-
-`resources/` travels with source control, while `data/` must be restored or regenerated before the public library can
-serve a fresh checkout. Exact runtime paths and schemas live in
-[Technical contracts](technical-contracts.md#runtime-artifact-layout); recovery choices live in
-[Operations](operations.md#backup-and-recovery).
+| [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | Only supported Python import for consumer applications. |
+| [Root command files](../run_alpaca_end_of_day_ticker_pipeline.py) | Executable adapters; exact current status is in [Operations](operations.md#command-map). |
+| [`libs/`](../libs/) | Boundary implementations and transforms; not supported consumer imports. |
+| [`tests/`](../tests/) | Unit and contract tests using temporary stores and HTTP doubles. |
+| `data_pricing/` | Ignored standalone pricing development store; independent of the catalogue. |
+| `data_vtest/` | Ignored combined-pipeline store selected by the public library. |
+| `data_clean_room/` | Ignored provider-only staging store used by the clean-room constructor before activation. |
+| `data_previous_public_*/` | Ignored retained pre-activation public store; recovery evidence, never an input to construction. |
+| `data/` | Ignored legacy runtime tree; not selected by the current public library. |
+| [`resources/`](../resources/) | Runtime-validated changelogs and the tracked recovery-symbol snapshot. |
+| [`docs/`](.) | Maintained architecture, contract, public, operational, development, and status guidance. |
 
 ## Core invariants
 
-- Frozen CSV bytes are never silently repaired or rewritten. An authorized publisher may atomically replace a path;
-  authenticated byte-identical views may share an inode while retaining distinct provenance manifests.
-- Every source row appears exactly once in the correlated or uncorrelated branch. Ambiguity remains explicit.
-- A ticker is a dated label, not permanent identity. Rules operate on generic authenticated evidence and never on a
-  hard-coded ticker exception.
-- A public/master ID is the SHA-256 digest of sorted unique Alpaca asset-ID membership. Descriptive metadata helps
-  establish membership but does not change the digest for a fixed member set.
-- A UUID-less market-data series may receive a non-security series ID for retention, but it never enters the master
-  catalogue.
-- Online means that the published identity has bars, every selected dependency authenticates, every advertised
-  adjustment reads successfully, and no integrity error, source conflict, or unresolved session/identity boundary
-  remains. Provider `active` or `tradable` metadata does not define online status.
-- Verified venue suspensions and tightly evidenced same-security rename boundaries may explain otherwise missing
-  sessions. Unexplained internal sessions keep an identity offline.
-- Integrity failures preserve and describe the source rows. Advisory warnings do not alter returned values.
-- Readers never update, repair, download, or contact Alpaca.
+- A fact is calculated by one owning boundary and consumed downstream through its published generation.
+- Ordinary catalogue consumption does not repeat publication authentication or upstream domain calculations.
+- Identical complete input generations retain the existing downstream publication.
+- Combined-source updates touch selected months; standalone updates preserve cold/year payloads unless rollover or full refresh requires replacement.
+- Every source row is represented exactly once in the correlated or uncorrelated branch.
+- A ticker is a dated label; ambiguity is explicit and no rule hard-codes a ticker exception.
+- Public IDs are SHA-256 digests of sorted unique Alpaca asset-ID membership.
+- Availability can reject a resolved identity but cannot change its membership or values.
+- Warning findings are advisory and cannot change returned values or online state.
+- The public library exposes only the selected online snapshot and never discovers offline identities.
+- An interrupted publication blocks reads until a complete recovery run publishes the final receipt.
+- A clean-room run accounts for every ordered input label and calculates each resolved canonical source at most once.
+- Clean-room construction never reads another runtime store; activation only locks and renames the prior public store.
+- Public readers never update, repair, acquire, or contact Alpaca; the internal handoff only acknowledges pending work.
 
-The exact evidence gates and artifact schemas live in [Technical contracts](technical-contracts.md). Consumer
-semantics live in [Public API](public-api.md), and operational mutation rules live in [Operations](operations.md).
+The exact artifact and trust contracts live in [Technical contracts](technical-contracts.md), consumer semantics in
+[Public API](public-api.md), and operational mutation rules in [Operations](operations.md).

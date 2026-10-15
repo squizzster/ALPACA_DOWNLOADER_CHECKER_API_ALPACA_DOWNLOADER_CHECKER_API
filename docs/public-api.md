@@ -3,12 +3,15 @@
 [`alpaca_end_of_day`](../alpaca_end_of_day/__init__.py) is the only supported Python import for consumer applications.
 Everything under `libs/` is implementation or operator-inspection machinery.
 
-The public library exposes only the authenticated online snapshot. The absence of an ID, ticker, name, or history does
-not disclose whether an internal offline record exists.
+The public library exposes only the producer-validated online snapshot selected by the current publication receipt.
+Ordinary reads trust completed boundary receipts; they do not re-hash every catalogue object or monthly payload. The
+absence of an ID, ticker, name, or history does not disclose whether an internal offline record exists.
 
-A source checkout alone is not a readable data library: Git does not contain runtime `data/`. `DataLibrary` requires a
-compatible authenticated catalogue under `data/end_of_day/json_manifests/`; restore or publish that runtime tree first.
-See [Backup and recovery](operations.md#backup-and-recovery).
+A source checkout alone is not a readable data library: Git does not contain the runtime `data_vtest/` store.
+`DataLibrary` requires a compatible completed catalogue there; it does not probe or fall back to the legacy
+`data/end_of_day/` tree. See [Backup and recovery](operations.md#backup-and-recovery).
+The standalone pricing/lineage twins are producer boundaries, not an additional `DataLibrary` store format. Their
+internal handoff readers under `libs/` are not supported application imports.
 
 ## Open a snapshot
 
@@ -22,8 +25,11 @@ print(catalog.generation)
 print(data.online_count())
 ```
 
-`DataLibrary(path=None)` authenticates the security-master catalogue at construction. `path` is the repository root;
-it defaults to the parent of the `alpaca_end_of_day` package. One instance stays bound to that generation.
+`DataLibrary(path=None)` acquires the shared publication lock, rejects an incomplete publication marker, and selects
+the published security-master catalogue at construction. `path` is the repository root; it defaults to the parent of
+the `alpaca_end_of_day` package. One instance stays bound to that generation. This is the trusted consumption path,
+not the explicit boundary-audit path described in
+[Technical contracts](technical-contracts.md#trust-operations).
 
 | Method | Result |
 |---|---|
@@ -192,10 +198,11 @@ authentication, contract, and I/O errors use status 1.
 
 ## Snapshot consistency
 
-Identity and catalogue calls use the generation opened by one `DataLibrary`. A history read authenticates its detailed
-dependencies and compares their master generation with the opened snapshot. If publication changed meanwhile, the
-library raises `CatalogChangedError` rather than combining generations. Create a new `DataLibrary` to read the newer
-snapshot.
+Identity and catalogue calls use the security-master generation opened by one `DataLibrary`. A history read reacquires
+the shared publication lock, checks that the current catalogue still selects that generation, and consumes trusted
+published correlation, warning, and monthly-source boundaries. It does not repeat their publication-time digest
+audits or domain calculations. If publication changed meanwhile, the library raises `CatalogChangedError` rather than
+combining generations. Create a new `DataLibrary` to read the newer snapshot.
 
 ## Errors
 

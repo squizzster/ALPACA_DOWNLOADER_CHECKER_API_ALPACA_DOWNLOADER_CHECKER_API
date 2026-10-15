@@ -1,51 +1,230 @@
-# The single data pipeline
+# Pricing acquisition and the existing catalogue pipeline
 
-This repository has one production data path. Acquisition, cached replay, focused repair, and future incremental
-updates must all converge on the same authenticated inputs, the same correlation builder, the same ordered rule
-registries, and the same publication gates. A second correlation builder, migration-only rule engine, or ticker-specific
-update path is not permitted.
+The standalone [`download_alpaca_pricing.py`](download_alpaca_pricing.py) owns pricing-only acquisition. It never calls
+the existing catalogue pipeline, and its successful publication does not depend on lineage or identity resolution.
 
-The canonical complete entrypoint is [`run_alpaca_end_of_day_ticker_pipeline.py`](run_alpaca_end_of_day_ticker_pipeline.py).
-[`download_alpaca_end_of_day_bars.py`](download_alpaca_end_of_day_bars.py) is only a compatibility name for that same
-orchestrator. Narrow operator commands may inspect or republish one boundary, but they do not own alternative rules.
+The existing combined calculation path is the monthly acquisition-to-catalogue cascade invoked directly by
+[`run_alpaca_end_of_day_ticker_pipeline.py`](run_alpaca_end_of_day_ticker_pipeline.py) and scheduled as bounded
+transactions by [`build_alpaca_end_of_day_clean_room.py`](build_alpaca_end_of_day_clean_room.py).
+[`download_alpaca_end_of_day_bars.py`](download_alpaca_end_of_day_bars.py) is a compatibility executable for the same
+focused orchestrator. Those older commands remain coupled; the new standalone command is a separate pricing entrypoint,
+not an alternate identity-rule engine. The public catalogue reader is not yet connected to its compact source format.
 
-## One ordered flow
+## Standalone pricing execution
 
-[`run_end_of_day_ticker_pipeline`](libs/alpaca_end_of_day_ticker_pipeline/orchestration.py) owns the stage order:
+1. Select and deduplicate repeated symbols, a CSV/line file, or the tracked universe. Freeze one request end and run
+   at most three ticker workers. One worker owns one entire ticker transaction through steps 2–8; adjustments are not
+   separate jobs. All workers share one paced 199-request-per-rolling-minute budget and HTTP retry cooldown.
+   Ticker failures are reported and do not stop the remaining batch; final results retain input order.
+2. Take the ticker's exclusive lock and finish interrupted publication. Reject backwards ends and any `FROM` that
+   excludes stored observations, including on force. Recovering an old request does not suppress explicit force.
+3. Before ordinary acquisition, compare live first/last sessions with the published validator in all eight views,
+   using the update's symbol-mapping date. Older sources bootstrap the validator once from their stored pricing.
+4. Initial acquisition, empty history, endpoint mismatch, earlier `FROM`, or force selects full acquisition from the
+   retained history start (default 2016). Otherwise request the stored active month through the new end.
+5. Fetch all eight adjustments, exhaust pagination, parse decimal numbers without binary-float conversion, and check
+   field shape, requested range, and strict timestamp ordering. Do not evaluate market validity or security identity.
+6. Check acquired endpoint overlap without further requests, then re-request only the candidate first session per
+   nonempty view. A mismatch restarts as full acquisition once; continued instability fails without publishing.
+   During an ordinary in-month update, rebuild only the current-month pricing boundary, validator, and source receipt.
+   On month rollover, replace the previous active month's overlap in the year snapshot with its finalized response,
+   incorporate newly acquired rows, and publish the new year snapshot and current month. On year rollover, merge the
+   completed portion into the single completed-years boundary exactly once.
+7. Calculate pending work from actually changed session dates, extending any unconsumed range. Full replacement
+   covers old, new, and pending date extents, including removed sessions. Force is also a clean replacement; no clipped
+   edges are retained. An unchanged ordinary acquisition creates no new work notice.
+8. Verify the CSV/gzip round trip, stage only changed files, and journal publication. Install pricing with its source
+   receipt last, retire superseded partitions, publish the pending notice, clear the journal, and release the lock.
 
-1. Resolve the submitted label to Alpaca's authoritative US-equity symbol.
-2. Acquire or authenticate all eight adjustment views at one shared exclusive request-end boundary.
-3. Hard-validate and freeze the source responses.
-4. Acquire authenticated asset and corporate-action lineage evidence.
-5. Call the sole correlation builder,
-   [`build_security_correlation_report`](libs/alpaca_end_of_day_security_correlation/correlation.py).
-6. Publish the exhaustive correlated and uncorrelated row partition.
-7. Build and publish advisory warning overlays.
-8. Publish the affected source contribution provisionally offline.
-9. Read every advertised adjustment through the authenticated reader, evaluate availability, and publish final online
-   status.
-10. Make the new digest-bound master generation visible.
+The year snapshot includes the active month as observed at initial acquisition or consolidation; subsequent month
+updates do not rewrite it. Consumption replaces its overlapping month rather than appending duplicate observations.
+Once the validator exists, ordinary endpoint checks do not read cold/year gzip payloads. Rollover reads the boundaries
+it consolidates. Matching in-month updates do not rewrite completed-years or year payloads.
+The standalone lineage consumer holds the same exclusive lock through durable processing and acknowledgement. Exact date-range,
+locking, and overlap semantics live in
+[Technical contracts](docs/technical-contracts.md#standalone-pricing-source-contract).
 
-A multi-symbol run may execute independent acquisition work concurrently, but security-master finalization is
-serialized. Every selected symbol in one run has the same requested end date; the update contract does not support
-multiple per-symbol end dates.
+## Standalone lineage execution
 
-### Lineage acquisition boundary
+1. Take the single lineage-worker lock and finish any interrupted publication. Select pending notices, explicit
+   symbols/file, or all locally published sources; changed rule/calendar versions also invalidate their prior results.
+2. Expand the dependency closure through old relationships and UUID evidence. Lock known pricing inputs in sorted
+   order. Trust completed pricing receipts; reject an incomplete pricing transaction without repairing it. A missing
+   starting ticker takes the same downloader handoff as step 4; absent a published range, use downloader defaults.
+3. Resume corporate-action acquisition from the previously active month, retaining earlier normalized evidence;
+   refresh asset/CUSIP lookups. First acquisition, older invalidation, changed rules, or `--refresh-metadata` acquires
+   the full evidence range. Discover newly related labels to a bounded fixed point.
+4. If related pricing is missing or has insufficient request coverage, release pricing locks and delegate to the
+   downloader. Then reacquire the full lock set and reload the latest notices and inputs. Published empty responses
+   are acquired evidence, not missing downloads. No separate request queue is created.
+5. Reuse approved closed single-identity assignments when their input/evidence/continuity gates hold; calculate only
+   the active month. Otherwise run the established preliminary, cross-source and fixed-point correlation passes over
+   the affected chronology. Do not repeat pricing authentication or market-price validation.
+6. Publish completed-years, year snapshot and authoritative month assignments. Preserve unchanged receipts; retire
+   consolidated month/year files. Ambiguous rows remain explicitly unassigned; dependency relationships never merge IDs.
+7. Install the affected group under a recoverable transaction, update its small dependency index, then acknowledge
+   exactly the handled pricing notices. A crash may repeat acknowledgement but cannot consume a newer generation.
 
-Stage 4 follows valid old and new symbols named by a corporate action. A structurally complete name change may expose
-one further label: when exact HTTP-200 lookups of both endpoint CUSIPs return US equities on a non-OTC exchange, both
-assets carry the same Alpaca UUID, and both return the same single valid symbol, that returned symbol is added to the
-same lineage search. A CUSIP echoed as a symbol is not a label. The search repeats to a deterministic fixed point.
+No public catalogue is produced. The [lineage contract](docs/technical-contracts.md#standalone-lineage-contract)
+defines the trust boundary, bounded work, chronological reuse and internal downstream handoff.
+
+The existing combined cascade below has one calculation owner per boundary. A downstream stage consumes a trusted completed boundary, never
+repeats that boundary's rule calculation, and never writes its artifacts. Publication-time authentication and ordinary
+trusted consumption are distinct operations; the exact contract is in
+[Technical contracts](docs/technical-contracts.md#trust-operations).
+
+## One ordered execution path
+
+The [canonical monthly orchestrator](libs/alpaca_end_of_day_v6/pipeline.py) currently owns this exact order:
+
+1. Validate credentials and freeze one exclusive request end and one month-opening request start.
+2. Normalize and deduplicate submitted labels.
+3. Resolve every submitted label through exact Alpaca asset lookup before opening the write transaction.
+4. Initialize or verify the sole monthly store and acquire its exclusive publication lock.
+5. Publish the recovery marker.
+6. Expand canonical symbols to the current source/identity closure when a catalogue already exists.
+7. For each submitted canonical symbol, request all eight adjustment views sequentially and publish either its first
+   complete monthly source or the explicitly selected replacement months.
+8. Publish or reuse validation for every submitted canonical symbol and load the trusted validation boundary for
+   every processing symbol. A failed validation stops the focused command; the clean-room outcome policy described
+   below terminates that canonical input without admitting it.
+9. Build trusted downstream pricing views, acquire current lineage for submitted canonical symbols, and load trusted
+   lineage for every processing symbol.
+10. If source, validation, lineage, correlation, warning, candidate, availability, and catalogue receipt identities all
+    still form one current chain, retain the complete downstream publication and skip steps 11–15.
+11. Run correlation over the processing set three times: preliminary, cross-symbol, and fixed-point confirmation. The
+    second and final reports must match. Publish correlation for every processing symbol.
+12. Build and publish advisory warnings for every processing symbol.
+13. Publish a private identity candidate: a full snapshot for the first catalogue or a closed affected candidate over
+    the current catalogue base.
+14. Exercise all advertised histories, bind the warning set, and publish exactly one availability decision per
+    candidate identity.
+15. Publish changed content-addressed source/security objects, affected inventory buckets and roots, retention state,
+    and finally the reader-visible catalogue receipt.
+16. Attempt to write unlinked `last_run.json` bookkeeping, remove the recovery marker, and release the lock.
+
+The run returns a JSON summary on standard output. Progress is written to standard error. Failure before step 16
+retains the recovery marker and readers fail closed until a complete rerun succeeds.
+
+## Clean-room universe execution
+
+The clean-room constructor wraps that exact cascade; it does not own alternate source, validation, identity, or
+availability rules. Its immutable run identity binds the ordered CSV universe, raw universe-file digest, exclusive
+request end, historical lower bound, all owning boundary/transform versions, and a policy forbidding other runtime
+stores and migration.
+
+For each universe position, in order:
+
+1. Reuse its authenticated resolution checkpoint, or resolve the submitted label and publish that checkpoint before
+   price work.
+2. If an earlier completed label owns the same canonical symbol, publish a label outcome bound to that owner and do no
+   canonical work.
+3. Otherwise run one complete canonical-symbol transaction with the run's shared bar and identity rate limiters.
+4. If a prior attempt already published source, validation, or lineage, explicitly authenticate that completed
+   boundary and resume after it. A complete source is never requested again merely because later work was interrupted.
+5. Treat failed pricing validation as a terminal rejected outcome: source and validation remain auditable, lineage and
+   catalogue membership are absent, and the transaction marker is cleared because the public catalogue was not
+   mutated.
+6. Publish a terminal `published`, `rejected_validation`, or `canonical_reused` outcome. Any other exception is retried
+   a bounded number of times and then stops the scheduler without inventing a terminal result.
+
+Each successful canonical transaction recalculates only the identity/source closure made stale by that new input.
+Prior correlation in that closure is not reusable because its immediate input set changed; unrelated correlation and
+catalogue objects remain trusted. This is the precise distinction between “never repeat completed work” and “never
+ignore a newly required dependency.”
+
+After every input position has exactly one outcome, the constructor:
+
+1. verifies resolution/outcome bindings and canonical-owner uniqueness;
+2. proves exact directory membership for admitted and rejected sources;
+3. authenticates every source and validation boundary, and every admitted lineage, correlation, and warning boundary;
+4. authenticates candidate, availability, the complete content-addressed catalogue, and their generation closure;
+5. requires catalogue source membership to equal the admitted canonical set exactly;
+6. opens the isolated store through a `DataLibrary` facade and reads all eight adjustments for every online public ID;
+7. verifies the catalogue generation remained fixed; and
+8. writes the audit report and its digest-bound completion receipt.
+
+Optional activation is a post-audit selection operation, not part of calculation. It retains the prior public store,
+renames the audited store into `data_vtest/`, and rolls back if `DataLibrary` does not select the audited generation and
+online count.
+
+## Cascade dependencies
+
+```text
+source ───────────────┐
+  │                   │
+  v                   v
+validation ──────> correlation ─────> warnings
+  │                   │                  │
+  v                   │                  │
+lineage ──────────────┘                  │
+  │                   │                  │
+  └────────────> identity candidate <────┘
+                           │
+                           v
+                     availability
+                           │
+                           v
+                       catalogue
+                           │
+                           v
+                     public reader
+```
+
+The graph records dependency, not shared ownership. Correlation may consume source rows and lineage facts, but source
+encoding remains owned by the source boundary and lineage interpretation remains evidence until correlation applies
+its own registered rules.
+
+## Reuse cascade
+
+The pipeline does not use timestamps or file presence alone as cache authority. Reuse follows generation identity:
+
+1. An unchanged expected month receipt retains its existing month directory.
+2. Validation reuses a month when its source receipt and predecessor month-result digest match.
+3. Lineage retains identical output bytes when source generation, validation generation, and semantic evidence digest
+   match, although selected lineage is currently reacquired before equality is known.
+4. Correlation is reusable only when its source, validation, and lineage generations match.
+5. Warnings are reusable only when their source, validation, and correlation generations match.
+6. Candidate, availability, and catalogue receipts must all bind the same current correlation set.
+7. Only when that entire chain matches does the pipeline retain the downstream publication without recalculation.
+
+When any required identity differs, work restarts at the owning invalidated boundary. Source installation is local to
+selected month partitions; validation can also republish the immediate successor's seam. Correlation and warnings
+currently recalculate the complete processing-symbol closure. Catalogue delta publication writes only changed objects
+and inventory paths; unrelated catalogue objects are neither read nor rewritten.
+
+## Request and update behavior
+
+Every run requests all eight logical adjustments. There is no partial-adjustment, adaptive-acquisition, repair, force,
+or worker mode in the current command.
+
+- A new canonical symbol requests all history from `2016-01-01T00:00:00Z` to the exclusive request end.
+- An existing symbol requests only the selected month-partition range. Each nonempty selected partition is replaced
+  as a whole; the final one contains only observations before the exclusive request end.
+- Without `--request-start`, the start is the first day of the request-end month.
+- Without `--request-end`, the end is the current UTC date at midnight.
+- A returned row outside the selected replacement months is an error.
+- A provider page token is an error rather than permission to publish a partial response.
+
+Bar and identity traffic use separate 199-request-per-minute limiters. A focused multi-symbol command processes all
+symbols inside one global transaction. The clean-room constructor shares those limiters across restartable
+single-canonical transactions, so no transaction materializes the 18,092-label universe.
+
+## Lineage acquisition boundary
+
+Lineage follows old and new symbols named by corporate actions. A structurally complete name change may expose one
+further label only when exact HTTP-200 lookups of both endpoint CUSIPs return US equities on non-OTC exchanges, both
+assets carry the same Alpaca UUID, and both return the same single valid symbol. A CUSIP echoed as a symbol is not a
+label. Search continues in deterministic order to a bounded fixed point.
 
 Missing fields, failed lookups, different UUIDs, different returned symbols, malformed symbols, OTC or non-equity
-assets, and the traversal safety limit all fail closed. `active` and `tradable` are deliberately not gates: historical
-labels commonly resolve through inactive records. This rule only acquires evidence; the existing ownership and UUID
-lineage rules still decide row allocation and security membership.
+assets, and traversal-limit exhaustion all fail closed. Provider `active` and `tradable` flags are not acquisition
+gates. This stage publishes evidence only; ownership and UUID-lineage rules still decide allocation and membership.
 
 ## The correlation cascade
 
 Rules describe generic evidence shapes. They never name a ticker, silently choose between ambiguous identities, or
-rewrite frozen rows. Earlier row rules have precedence over later fallbacks.
+rewrite monthly source rows. Earlier row rules have precedence over later fallbacks.
 
 ### 1. Dated ownership intervals
 
@@ -57,14 +236,14 @@ ownership registry, in this order:
 2. `same_ticker_stock_merger_uuid_transition`
 3. `cash_merger_acquiree_terminal_boundary`
 
-These rules establish dated ticker/CUSIP/UUID intervals. They do not by themselves say that every related UUID is one
+These rules establish dated ticker/CUSIP/UUID intervals. They do not by themselves join every related UUID into one
 security.
 
 ### 2. Row allocation
 
 `ROW_CORRELATION_RULES` in
-[`row_correlation.py`](libs/alpaca_end_of_day_security_correlation/row_correlation.py) is the only row-decision
-registry, in this order:
+[`row_correlation.py`](libs/alpaca_end_of_day_security_correlation/row_correlation.py) is the only row registry, in
+this order:
 
 1. `exchange_test_symbol_exclusion`
 2. `complete_current_identity_suffix_after_ticker_reuse_gap`
@@ -80,91 +259,82 @@ registry, in this order:
 12. `unresolved_uuid_candidates`
 13. `stable_continuous_ticker_identity_set`, the terminal fallback after the registry
 
-The consequential gates are:
+Consequential gates include:
 
-- A gap of at least 60 expected sessions is a possible ticker-reuse boundary and blocks generic fallbacks unless a
-  stronger earlier rule proves an episode.
-- A complete current suffix needs at least 100 missing sessions, identical authenticated adjustment grids, one exact
-  current UUID, and no dated evidence placing that UUID on the left.
+- A gap of at least 60 expected sessions blocks generic fallback unless stronger evidence proves an episode.
+- A complete current suffix needs at least 100 missing sessions, identical eight-view grids, one exact current UUID,
+  and no dated evidence placing that UUID on the left.
 - An internally complete inactive suffix may end before the request boundary; an active incomplete suffix remains
   unresolved.
-- A dated terminal suffix requires an exact CUSIP lookup, one ownership interval, complete coverage to its terminal
-  boundary, and no left-side evidence for its UUID.
-- A one-session transition requires exact different old/new UUIDs, no competing UUID, a matching action boundary, and
-  agreement across all adjustment grids.
-- Continuous action-linked UUID episodes remain separate when each has one complete, non-overlapping run in all eight
-  views. Recurrence, overlap, a missing view, or ambiguity vetoes the partition.
+- A dated terminal suffix requires an exact CUSIP lookup, one ownership interval, terminal coverage, and no left-side
+  evidence for its UUID.
+- A one-session transition requires exact different old/new UUIDs, no competitor, a matching action boundary, and
+  agreement across every adjustment grid.
+- Continuous action-linked UUID episodes remain separate only when each has one complete, non-overlapping run in all
+  eight views. Recurrence, overlap, a missing view, or ambiguity vetoes the partition.
 - Current-symbol reuse requires the old occupant to have renamed away at least 100 sessions earlier, exact current
   identity evidence, complete matching grids, and no competing structural evidence.
-- Overlapping intervals for different UUIDs select the one interval with the uniquely latest explicit start date. A
-  tied latest date or entirely undated overlap fails closed. Intervals carrying the same UUID are not competing
-  security claims, so this rule defers to the existing exact requested-symbol interval rule; multiple exact claims
-  for that requested symbol still fail closed. Row routing never joins identities.
-- The terminal fallback can promote only a fully unresolved, gapless source with a stable same-ticker candidate set,
-  one current lookup anchor, agreeing non-empty names, and no missing or unexpected sessions.
+- Overlapping different-UUID intervals select only the interval with the uniquely latest explicit start. A tie or
+  wholly undated overlap fails closed. Same-UUID overlaps are one security claim and defer to exact requested-symbol
+  provenance.
+- The terminal fallback requires a gapless source, stable same-ticker candidates, one current anchor, agreeing names,
+  and no missing or unexpected sessions.
 
-Every authenticated source row appears exactly once in either the correlated or uncorrelated branch.
+Every trusted source row appears exactly once in the correlated or uncorrelated branch.
 
 ### 3. Security membership
 
-Row allocation and security membership are separate decisions. UUID-lineage edges in
-[`uuid_lineage.py`](libs/alpaca_end_of_day_security_correlation/uuid_lineage.py) connect membership only when their
-evidence is exact:
+Row allocation and UUID membership are separate calculations. UUID-lineage edges connect membership only through:
 
 - an authenticated name-change edge;
 - an authenticated same-ticker stock-merger edge; or
 - an authenticated identity-preserving same-symbol split edge.
 
-A same-symbol forward or reverse split joins the old and new Alpaca UUIDs only when one action supplies a valid date,
-positive directionally consistent rates, distinct old and new CUSIPs, no ticker change, and exactly one successful
-HTTP-200 US-equity endpoint lookup for each CUSIP; both returned assets must carry the action symbol and different
-UUIDs. Any missing, duplicated, malformed, or contradictory fact rejects the edge.
+A same-symbol split edge requires one dated action, positive directionally consistent rates, distinct old/new CUSIPs,
+no ticker change, and exactly one successful US-equity endpoint lookup for each CUSIP. Both assets must carry the
+action symbol and different UUIDs. It records provenance but never routes a price row.
 
-A qualifying split records its action, date, symbols, and CUSIPs as provenance. It never allocates, promotes, or
-reassigns a pricing row. Split edges are not candidates for the distinct-security episode partition. Conversely, an
-explicit identity partition suppresses only the corporate-action edges that the partition certifies; unrelated valid
-lineage remains connected.
+An immediately corrective next-day name change that preserves the predecessor UUID supersedes the earlier edge. The
+earlier action remains an evidence issue but does not join its unrelated successor. This is the correlation transform
+v24 membership rule.
 
-The public ID is always the SHA-256 digest of the sorted unique member Alpaca UUIDs. One security therefore has one
-membership set and one public ID even when Alpaca changes its UUID and CUSIP during a same-symbol split.
+Explicit identity partitions suppress only the corporate-action edges they certify. Unrelated valid lineage remains
+connected. The public ID is always the SHA-256 digest of sorted unique member Alpaca UUIDs.
 
 ### 4. Availability
 
-Correlation does not make an identity online. The existing availability evaluator must successfully read every
-advertised adjustment, return at least one bar, authenticate all dependencies, find no integrity or source conflict,
-and find no unexplained internal session or identity boundary. Provider `active` and `tradable` fields are evidence for
-specific rules, not substitutes for this gate.
+Correlation never makes an identity online. Availability must read every advertised adjustment successfully, return
+at least one bar, load all published dependencies, find no unresolved source conflict, and find no unexplained internal
+session or identity boundary. It may classify the result but cannot change membership or values.
+
+## First publication and incremental publication
+
+With no existing catalogue, the candidate mode is `snapshot` and contains every processing source. With an existing
+catalogue, the candidate mode is `affected_closure`:
+
+1. Begin with replacement sources and their newly contributed master IDs.
+2. Add their prior master IDs from the base catalogue.
+3. Expand through every base identity and source symbol sharing those IDs until stable.
+4. Carry unchanged closure sources as supporting inputs.
+5. Record old IDs absent from the replacement aggregate as retired.
+
+Only this closure is recalculated. Delta catalogue publication preserves all unrelated content-addressed objects and
+replaces affected objects, buckets, and roots before writing the final selection receipt.
 
 ## Non-divergence controls
 
-The following are repository requirements, not suggestions:
+- Within the existing combined workflow, acquisition, focused update, recovery rerun, and universe scheduling rejoin
+  the same cascade. The standalone pricing downloader deliberately stops before it.
+- The standalone pricing command owns no correlation rules and performs no migration. There is no ticker-specific
+  rule path or alternate catalogue publisher.
+- New ownership or row behavior enters the owning explicit registry at a deliberate precedence point.
+- Identity-only edges cannot allocate rows without a separately reviewed row rule.
+- Ambiguity fails closed into uncorrelated or offline state.
+- A boundary consumes only its declared immediate inputs and never recalculates another boundary's facts.
+- Behavioral and serialized changes bump their owning versions and append exactly one runtime changelog entry.
+- Registry order is asserted by tests and serialized into correlation output.
+- The smallest complete affected identity closure is the unit of focused recalculation.
+- Publication receipts are written last; a failed transaction retains its recovery marker.
 
-- Production, replay, repair, and update work call the same correlation builder and publishers. There is no migration
-  correlation engine.
-- New ownership or row behavior is added to the owning explicit registry at the correct precedence point.
-- Identity-only relationships are implemented as UUID-lineage edges and cannot be used as row-routing evidence unless
-  a separately reviewed row rule says so.
-- Ambiguity fails closed into the uncorrelated or offline state.
-- Every behavioral change bumps its owning version and appends exactly one runtime changelog entry.
-- The exact registry orders are asserted by tests and serialized into correlation outputs; changing order requires an
-  explicit test and contract change.
-- Finish the generic rule, focused tests, and universe-wide read-only impact audit before publishing a replay. Derived
-  reports and catalogue generations bind deterministic evidence and ordering, so a later source change invalidates the
-  replay evidence and requires the affected closure to be replayed and audited again.
-- Evaluate the smallest complete affected-symbol closure, not the whole ticker universe. Run that list through this
-  complete pipeline with `--symbol` or `--file`; do not write a migration helper, alternate publisher, or reduced
-  processing path. The fact that many historical reports contain a newly recognized evidence type defines audit
-  scope, not the set that must be reprocessed.
-- A rule-only replay pins the authenticated request boundary already shared by the selected frozen inputs and does not
-  use `--force`. Choosing a later boundary is a separate data-advance operation, not part of applying a correlation
-  rule.
-- The complete affected-symbol closure is evaluated, and the catalogue audit must check disjoint UUID membership
-  before handoff.
-
-Future update acquisition may compare the handoff-date bar and choose cached continuation or a full symbol refresh.
-That choice belongs before the frozen-source boundary. After it, both paths must rejoin this exact pipeline and cascade.
-It must not introduce a second correlation or publication path.
-
-Detailed schemas and evidence contracts live in [Technical contracts](docs/technical-contracts.md). Operator commands
-and mutation hazards live in [Operations](docs/operations.md), including the exact
-[focused-reprocessing procedure](docs/operations.md#focused-reprocessing).
+Current schemas and trust semantics are in [Technical contracts](docs/technical-contracts.md). Current command options
+and hazards are in [Operations](docs/operations.md).

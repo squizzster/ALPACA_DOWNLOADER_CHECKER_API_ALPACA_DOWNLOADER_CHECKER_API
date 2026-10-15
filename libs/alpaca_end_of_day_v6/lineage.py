@@ -60,6 +60,18 @@ def acquire_and_publish_lineage(
     pricing_view = _pricing_view(root, symbol, request_end_timestamp, pricing_input)
     local = pricing_view.local_report()
     client = client_factory(api_key_id, api_secret_key, rate_limiter=rate_limiter)
+    if symbol_resolution is not None:
+        seed_asset_lookup = getattr(client, "seed_asset_lookup", None)
+        if callable(seed_asset_lookup):
+            if symbol_resolution.get("authoritative_symbol") != symbol:
+                raise V6Error(f"symbol resolution belongs to another lineage source: {symbol}")
+            asset = symbol_resolution.get("asset")
+            http_status = symbol_resolution.get("http_status")
+            if asset is not None and not isinstance(asset, dict):
+                raise V6Error(f"symbol resolution has a malformed asset: {symbol}")
+            if type(http_status) is not int:
+                raise V6Error(f"symbol resolution has no HTTP status: {symbol}")
+            seed_asset_lookup(symbol, asset=asset, http_status=http_status)
     lineage = build_identity_report(symbol, local, client)
     report = {
         "report_version": REPORT_VERSION,

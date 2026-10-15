@@ -1,201 +1,359 @@
 # Operations
 
-Run commands from the repository root. Each command's `--help` output is the option authority.
+Run commands from the repository root with Python 3.11. Each command's current `--help` output is the option
+authority. The combined producer and public reader select `data_vtest/`; they do not fall back to
+`data/end_of_day/`.
 
 ## Command map
 
-| Command | Purpose | Side effects and access |
+| Command | Current status | Side effects and access |
 |---|---|---|
-| [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Canonical complete pipeline for one or more symbols. | Writes runtime data and normally contacts Alpaca; credentials required. |
-| [`download_alpaca_end_of_day_bars.py`](../download_alpaca_end_of_day_bars.py) | Compatibility name for the same complete pipeline. | Same pipeline options and data effects; use the canonical command for documented `SIGHUP` handling. |
-| [`inspect_alpaca_security_lineage.py`](../inspect_alpaca_security_lineage.py) | Print local and direct-provider identity evidence for one ticker. | Read-only locally, contacts Alpaca, credentials required. |
-| [`correlate_alpaca_end_of_day_security_segments.py`](../correlate_alpaca_end_of_day_security_segments.py) | Rebuild correlation and master output for one ticker from authenticated bars and fresh lineage evidence. | Writes derived runtime data, contacts Alpaca, credentials required. |
-| [`audit_alpaca_end_of_day_catalog.py`](../audit_alpaca_end_of_day_catalog.py) | Authenticate and audit one complete published catalogue generation. | Strictly read-only; no credentials or network. |
-| [`read_alpaca_end_of_day_ticker.py`](../read_alpaca_end_of_day_ticker.py) | Read one public history or export the online universe. | Strictly read-only; no credentials or network. |
+| [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Independent pricing-only downloader. | Contacts only Alpaca stock bars, writes an explicit compact-format destination, and never invokes lineage or the catalogue. |
+| [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | Standalone lineage twin; exactly one worker. | Consumes the compact store, contacts identity/action APIs, delegates missing prices to the downloader, and acknowledges durably processed notices. |
+| [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Canonical monthly acquisition-to-catalogue producer. | Contacts Alpaca, writes the current application store, and requires credentials. |
+| [`download_alpaca_end_of_day_bars.py`](../download_alpaca_end_of_day_bars.py) | Compatibility executable for the same complete producer. | Same arguments and runtime effects. |
+| [`build_alpaca_end_of_day_clean_room.py`](../build_alpaca_end_of_day_clean_room.py) | Restartable provider-only universe constructor and complete auditor. | Contacts Alpaca, writes only its explicit isolated store, requires credentials, and optionally activates only after audit. |
+| [`read_alpaca_end_of_day_ticker.py`](../read_alpaca_end_of_day_ticker.py) | Public catalogue/history client. | Current store, strictly read-only, no credentials or network. |
+| [`inspect_alpaca_security_lineage.py`](../inspect_alpaca_security_lineage.py) | Legacy-layout operator tool. | Reads `data/end_of_day/`, contacts Alpaca, and is not part of the current monthly cascade. |
+| [`correlate_alpaca_end_of_day_security_segments.py`](../correlate_alpaca_end_of_day_security_segments.py) | Legacy-layout operator tool. | Writes derived `data/end_of_day/` artifacts and is not the current catalogue publisher. |
+| [`audit_alpaca_end_of_day_catalog.py`](../audit_alpaca_end_of_day_catalog.py) | Legacy-layout catalogue audit. | Audits `data/end_of_day/`; it does **not** audit the catalogue opened by `DataLibrary`. |
+
+The last three commands remain useful only when explicitly inspecting the legacy runtime tree. Invoke them through
+`python3.11` in the current environment because their `python3` shebang resolves to Python 3.9.25 here.
 
 ## Requirements and safety
 
-- Python 3.11, the configured and locally verified runtime target, plus IANA `America/New_York` time-zone data.
-- `pigz` for any command that publishes or replaces a frozen gzip.
-- `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` for update, lineage, or correlation work that contacts Alpaca.
-- No credentials or network access for consumer reads and exports.
+The 2026-10-14 [storage rework decision](storage-rework-notes.md) retains the inventoried project and temporary stores
+in place for development reuse. Cleanup and further copies remain deferred. Separately authorized GOOG development
+uses `data_pricing/`; that does not authorize conversion, cleanup, or universe-wide acquisition of retained stores.
 
-A fresh checkout contains code and tracked [`resources/`](../resources/), but no runtime `data/`. Restore a compatible
-runtime tree or deliberately acquire and publish one before using the public reader.
+- Python 3.11 and IANA `America/New_York` time-zone data.
+- `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` plus SIP entitlement for producer runs.
+- No credentials or network for public reads and exports.
+- No `pigz` requirement for the current monthly source; deterministic gzip is produced by Python.
 
-Use only one multi-worker pipeline process against a repository at a time. Its lock coordinates workers inside that
-process; it does not coordinate another process or an older implementation.
+For the combined catalogue workflow, use only one producer process against a store. Its global lock serializes writers and readers, but it is not a durable
+batch scheduler and does not make independently submitted focused transactions one coherent request. The focused
+producer is sequential and has no `--workers` option. The clean-room command supplies the durable universe scheduler;
+do not run another producer or activator while it is activating a completed store.
 
-Do not edit a gzip, sidecar, derived manifest, or sharded catalogue object by hand. Do not rerun a complete ticker
-universe merely to apply an identity-rule change. Work from the current derived state and process the affected symbols
-unless the task explicitly requires reacquisition.
+Do not hand-edit a gzip, month receipt, source inventory, validation artifact, lineage report, correlation branch,
+warning output, candidate, availability report, catalogue object, or publication marker. Boundary receipts are the
+selection authority; changing a selected file outside its owner violates the trust contract even when JSON remains
+syntactically valid.
 
-## Run the complete pipeline
+## Standalone pricing download
 
-Process explicit symbols:
+Use `download_alpaca_pricing.py`, not the older `download_alpaca_end_of_day_bars.py` compatibility command, when only
+pricing is wanted. The older command still invokes the complete catalogue pipeline.
 
 ```bash
-./run_alpaca_end_of_day_ticker_pipeline.py --symbol FUN -s DELL -s FB
+./download_alpaca_pricing.py --symbol GOOG --store data_pricing --to 2026-10-13
+./download_alpaca_pricing.py --file /path/to/tickers.csv --store data_pricing --to 2026-10-13
 ```
 
-An explicit `--symbol` run always re-evaluates the symbol. For a recurring batch, supply one symbol per nonblank line:
+The command requires `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` and SIP access. It requests all eight adjustment
+views per selected ticker label. It does not resolve an asset UUID, canonicalize ticker punctuation through an
+asset lookup, create public IDs, or run lineage. A response under another ticker label is rejected.
+
+`--store` is required. Only an empty directory or a matching v3 standalone store is accepted; incompatible stores are
+not automatically migrated, repaired, or copied. Prices go under `end_of_day/pricing/<TICKER>` and pending notices
+under `end_of_day/manifests/<TICKER>`. The public reader still uses its separate catalogue format.
+
+| Option | Meaning |
+|---|---|
+| `-s TICKER` / `--symbol TICKER` | Repeat for multiple tickers. |
+| `--file PATH` | Headerless CSV, one ticker per line, or a mixture; blank cells are ignored. |
+| `--all` | The tracked `resources/ticker.csv` universe; never an asset/identity query. |
+| `--workers {1,2,3}` | Concurrent whole-ticker workers; default and maximum 3, sharing one 199-RPM budget. |
+| `--from YYYY-MM-DD` | Optional history start, on/after 2016-01-01; rejects any ticker with earlier stored observations. |
+| `--to YYYY-MM-DD` | Inclusive completed date; cannot be combined with `--request-end`. |
+| `--request-end YYYY-MM-DD` | Existing exclusive UTC-midnight option; default is today UTC. |
+| `--force-download` / `--refresh-all` | Reacquire the entire retained history range and replace it, including after recovery. |
+
+The three ticker-selection modes are mutually exclusive. Labels are trimmed, uppercased, and deduplicated in input
+order. A batch freezes one end date and shares one rate limiter. One worker owns a ticker's complete update, including
+its lock, all adjustment views, and publication; only distinct tickers run concurrently. Ticker-specific failures—including `FROM` conflicts,
+invalid labels, bad ticker receipts, and request failures—do not stop remaining tickers. Invalid global arguments,
+unreadable/empty input files, or missing credentials fail before acquisition. Exit status is nonzero if any ticker fails.
+
+All workers together admit at most 199 HTTP attempts per rolling minute, paced evenly; probes, pages, and retries all
+count. HTTP 429 pauses new requests across every worker, honouring numeric or HTTP-date `Retry-After` (60 seconds for
+missing/invalid values). Retryable 5xx responses use the same shared pause. Already in-flight requests may finish.
+There are at most six attempts per request; an exhausted ticker fails without clearing the shared cooldown.
+The budget is per CLI invocation, not account-wide across separate processes: do not run multiple download commands
+with the same credentials expecting a combined 199-RPM limit. No persistent limiter files are created.
+
+`FROM` defaults to 2016 on initial acquisition; omission retains the stored floor. An explicit start may move forward
+only when no stored observation precedes it. An earlier start
+backfills by full acquisition. Force cannot bypass the no-truncation rule. Backwards/future ends and non-ISO dates are
+refused. The active month contains the day before the exclusive UTC end: November 1 still completes October.
+Historical end/`asof` dates do not select historical adjustment vintage.
+
+Normal updates first compare the first and last stored sessions in every view against live bars. A match permits
+active-month acquisition and rollover consolidation; a mismatch selects full replacement from the stored start.
+The comparison uses one source-bound validator JSON, bootstrapped once for older sources. After acquisition only the
+first session per nonempty view is re-requested; inconsistent results permit one full restart, then fail closed.
+Automatic refresh and force both discard absent old sessions; their pending notice includes removed dates. No clipped
+edges or old-price archive are retained. Force can replace damaged owned gzip data but requires intact ownership metadata.
+
+The downloader waits for the ticker's exclusive lock before provider requests. The lineage consumer uses the
+[locked handoff](technical-contracts.md#locking-publication-and-consumption), commit its work durably, then acknowledge
+the notice. Never unlink `.download.lock`: its presence does not mean it is held.
+
+An interrupted publication leaves `.pending.json` and staged changed outputs in the pricing ticker directory. Re-run
+the same command to finish recovery; if it already reaches the requested end, a normal retry makes no new request.
+Explicit force still reacquires after recovery. Do not
+remove journal/staging files manually. Unexpected files, checksum changes, and symlinks fail closed.
+
+Standard output is one JSON batch summary with `requested`, `succeeded`, `failed`, and per-ticker `results`. Each
+result reports `updated`, `unchanged`, `empty`, `recovered`, or `failed`; successful acquisition also reports mode,
+consistency, boundaries, and writes. Final results retain input order; progress/errors go to standard error in completion
+order. At most the selected worker count of ticker jobs is scheduled at once. No run ledger is created. The precise storage and pending-range
+rules live in [Technical contracts](technical-contracts.md#standalone-pricing-source-contract).
+
+## Standalone lineage
 
 ```bash
-./run_alpaca_end_of_day_ticker_pipeline.py --file path/to/symbols.txt
+./build_alpaca_lineage.py --store data_pricing --symbol GOOG
+./build_alpaca_lineage.py --store data_pricing --pending
 ```
 
-`--file` (also `--symbols-file`) and `--symbol` are mutually exclusive. File duplicates are processed once in
-first-seen order. A file-driven run skips a symbol only when its prior complete correlation partition and frozen inputs
-authenticate and its evidence-derived disposition says to skip. To deliberately re-evaluate those entries:
+This sibling command consumes an existing standalone store; it does not copy legacy data or publish `DataLibrary`'s
+catalogue. It requires the same credentials. One lineage worker is enforced across processes; `--workers` accepts
+only `1`. A missing selected ticker goes through the same downloader handoff as a missing related ticker. With no
+published range, the downloader uses its normal defaults: history from 2016-01-01 to today's exclusive UTC midnight.
+Existing pricing supplies the range for related inputs; selecting lineage does not itself advance existing prices.
+
+| Option | Meaning |
+|---|---|
+| `-s` / `--symbol` | Repeat for selected tickers; missing initial/related pricing is acquired as needed. |
+| `--file PATH` | Headerless CSV or one ticker per line. |
+| `--pending` | Pending pricing notices; default selection. |
+| `--all` | All locally downloaded tickers, **not** the downloader's tracked universe. |
+| `--refresh-metadata` | Reacquire full action/asset evidence for selected work, even without changed prices. |
+| `--no-download` | Report missing/short pricing coverage and leave notices pending instead of delegating acquisition. |
+
+Selection modes are mutually exclusive. Missing related bars normally go through the existing downloader, with all
+pricing locks released first; its new notices are consumed on resumption. `--no-download` also applies to a missing
+initial ticker; null range endpoints in its waiting result mean downloader defaults. Identity requests retain the established
+identity client's pacing and bounded 429 retries. Downloader requests retain its own 199-RPM limiter. These limits
+are not account-wide across independently running commands.
+
+The command returns one JSON summary (`workers`, `recovered`, `results`, `failed`). Results distinguish `processed`,
+`unchanged`, `waiting_for_pricing`, and `failed`. Failure or waiting returns a nonzero status. Independent inputs
+continue after a failure, unless an interrupted lineage publication must first be recovered. Unresolved identity is
+a successful durable result, not a transport or processing failure.
+
+Re-run the command after interruption; never delete `end_of_day/lineage/.pending.json` manually. A global directory
+lock serializes lineage writers, and sorted ticker locks protect each affected pricing group. No archive of old
+pricing or lineage generations is kept. An explicit `--symbol`/`--all` run also synchronizes receipts after a
+pricing provenance-only change that created no changed-date notice. Use scoped `--refresh-metadata` when older
+provider corrections need reacquisition; ordinary updates do not claim to detect arbitrary old metadata revisions.
+
+## Run the complete producer
+
+Process explicit submitted labels:
 
 ```bash
 ./run_alpaca_end_of_day_ticker_pipeline.py \
-  --file path/to/symbols.txt \
-  --include-skipped-symbols
+  --symbol AAPL \
+  --symbol BFA \
+  --request-end 2026-10-14
 ```
 
-Historical symbol-only series continue to run so later ticker reuse or newly available identity evidence can be
-detected. Frozen evidence remains in place for skipped, quarantined, excluded, and out-of-scope symbols.
+Or provide one label per nonblank line:
 
-An exact Alpaca HTTP 400 `invalid symbol: <symbol>` becomes the known `invalid_ticker_code` failure. Other queued
-symbols finish, then the batch exits nonzero.
+```bash
+./run_alpaca_end_of_day_ticker_pipeline.py \
+  --file /path/to/symbols.txt \
+  --request-end 2026-10-14
+```
+
+The parser trims whitespace, uppercases labels, preserves first-seen order, and removes duplicates. Labels must match
+`[A-Z][A-Z0-9.-]*`. `--symbol`, `--file`, and `--evidence-cohort` are mutually exclusive.
+
+`--evidence-cohort` selects the locked ten-label admission cohort. If its request end is omitted, the command pins the
+cohort's recorded parity boundary. It is a focused verification input, not a full-universe mode.
+
+The tracked [`resources/ticker.csv`](../resources/ticker.csv) is a one-record comma-separated recovery snapshot. It is
+not accepted directly by the line-oriented `--file` parser.
 
 ### Authoritative symbols
 
-The pipeline performs an exact Alpaca asset lookup before choosing the local symbol. A successful US-equity result
-makes Alpaca's returned punctuation authoritative:
+Every submitted label is resolved before the write transaction begins. A successful exact US-equity lookup makes the
+returned Alpaca symbol authoritative, including punctuation such as `BFA -> BF.A`. Multiple submitted labels resolving
+to one canonical symbol are acquired once. Submitted-to-canonical provenance is retained in the lineage report.
 
-```bash
-./run_alpaca_end_of_day_ticker_pipeline.py --symbol BFA --request-end 2026-10-06
-```
+Do not create a second directory under the submitted spelling. Source, validation, lineage, correlation, warnings,
+and catalogue contribution all use the canonical symbol.
 
-This operates on `data/end_of_day/BF.A/` and reports `BFA -> BF.A`. Do not create a parallel `BFA` directory or source.
-The correlation receipt preserves the submitted alias under `symbol_resolution`. An exact asset 404 retains the input
-symbol so lineage and disposition rules can classify it.
+### Request boundaries
 
-### Workers and rate limiting
+`--request-end YYYY-MM-DD` is an exclusive UTC midnight. For example, `--request-end 2026-10-14` requests bars before
+`2026-10-14T00:00:00Z`; it does not mean that October 14 is included.
 
-Use one to three workers:
+If omitted, the producer uses the current UTC date at midnight. Pin it whenever reproducibility or recovery matters.
 
-```bash
-./run_alpaca_end_of_day_ticker_pipeline.py \
-  --file path/to/symbols.txt \
-  --workers 3
-```
-
-Workers share one thread-safe 199-request-per-minute limiter across bar, asset, and corporate-action requests.
-Per-symbol artifacts stay isolated, and the security-master read/modify/write transaction is serialized within the
-process.
-
-`SIGHUP` and `Ctrl-C` request a graceful shutdown: active workers drain before the command exits. Their conventional
-statuses are `128 + signal` for `SIGHUP` and `130` for `Ctrl-C`.
-
-### Adaptive adjustment acquisition
-
-Add `--adaptive-adjustments` to materialize all eight logical views with fewer bar requests:
+For a new canonical symbol, the producer requests every adjustment from `2016-01-01T00:00:00Z` regardless of
+`--request-start`. For an existing symbol, it requests a month-partition replacement range:
 
 ```bash
 ./run_alpaca_end_of_day_ticker_pipeline.py \
-  --file path/to/symbols.txt \
-  --workers 3 \
-  --adaptive-adjustments \
-  --request-end 2026-10-06
+  --symbol AAPL \
+  --request-start 2026-09-01 \
+  --request-end 2026-10-14
 ```
 
-Policy `alpaca_adjustment_equivalence_v1` requests `raw`, then `all`, and follows the recorded empirical decision tree.
-The policy was measured over 4,439 complete stocks, covered nine observed equivalence patterns, and averaged 2.9606
-bar requests per stock. An unfamiliar observation downloads every remaining adjustment.
+`--request-start` must be the first day of a month and strictly precede the end. When omitted for an existing source,
+it defaults to the first day of the request-end month. Each nonempty selected partition is replaced as a whole; the
+final partition contains only observations before the exclusive request end. Rows outside the selected months are
+rejected. A selected month with no returned rows is reported as skipped; it does not delete a previously published
+month.
 
-An inferred view has its own `empirical_adjustment_alias` manifest and is a same-directory hard link to an
-authenticated direct response. Existing complete direct views retain direct-response manifests; byte-identical files
-may be atomically compacted to shared inodes. Never edit a linked gzip in place.
+The producer does not require a new request end to be later than the previously published one. An earlier end can
+therefore replace the selected terminal partition with a shorter history. Treat the request end as an explicit
+replacement boundary: pin it, compare it with the intended publication, and do not move it backwards accidentally.
 
-`--adaptive-adjustments` cannot be combined with `--adjustment`, `--force`, or `--repair`.
+Every run requests all eight adjustment views. The current command has no partial-adjustment, adaptive-acquisition,
+force, repair, skip-disposition, or concurrency option.
 
-### Reproducible request boundaries
+### Boundary cascade and reuse
 
-The command freezes one exclusive UTC request boundary before its first ticker so a batch crossing midnight keeps one
-request identity. Pin it when reproducibility or a resumed subset matters:
+The producer always owns the complete cascade:
+
+```text
+source -> validation -> lineage -> correlation -> warnings
+       -> identity candidate -> availability -> catalogue
+```
+
+Normal downstream consumption trusts completed receipts rather than re-running upstream work. Unchanged source months
+and validation months are retained. If the complete source/validation/lineage/correlation/warning/catalogue generation
+chain still matches, correlation through catalogue publication is reused as a unit.
+
+Selected lineage evidence is still reacquired before semantic equality can be established. If an input generation
+changes, correlation and warnings are recalculated for the complete processing-symbol closure. Catalogue publication
+then writes only affected content-addressed objects and inventory paths. See the exact
+[reuse matrix](technical-contracts.md#reuse-and-recomputation-matrix).
+
+### Locking and reader impact
+
+After all submitted labels resolve, the producer acquires the exclusive `.publication.lock`, writes
+`.publication.pending.json`, and retains the lock through bar requests, lineage requests, correlation, availability,
+and final publication. Public catalogue and history reads wait on a shared lock for the entire run.
+
+This lock scope makes focused updates coherent but makes one very large invocation unsuitable today. It also means a
+long network run causes equivalent reader downtime.
+
+### Output
+
+Progress lines are written to standard error. On success, standard output receives one compact JSON result containing
+request boundaries, submitted and canonical symbols, processing closure, source changes, boundary receipts, reuse
+status, and whether `last_run.json` was recorded.
+
+`data_vtest/last_run.json` is operational bookkeeping only. It is not digest-bound and is never an input to another
+boundary. Failure to write it does not invalidate an otherwise completed publication.
+
+## Build a clean-room generation
+
+Use this path for the tracked recovery universe or any deliberate new provider-only generation:
+
+```bash
+./build_alpaca_end_of_day_clean_room.py \
+  --universe resources/ticker.csv \
+  --store data_clean_room \
+  --request-end 2026-10-14
+```
+
+The universe must be exactly one sorted, duplicate-free CSV record. `--request-end` is required and immutable for the
+run. The default universe and store are the two paths shown above. A new store must be virgin: an existing monthly
+store without this run's matching clean-room manifest is refused even if its store format is valid.
+
+Construction admits exactly three input classes:
+
+- the ordered universe and its raw file digest;
+- responses obtained from Alpaca during this run; and
+- the repository's runtime-validated contracts, transforms, calendar, and changelogs.
+
+It never probes `data/`, `data_vtest/`, a backup, or another source directory. It does not migrate, compare with, or
+repair from an earlier generation. Supplying `--store data` or `--store data_vtest` is refused.
+
+The run manifest binds the ordered-label digest, request range, every relevant boundary/transform version, and that
+input policy. Every label gets a durable resolution document before bar work and exactly one terminal outcome. A
+canonical symbol is calculated by its first owning label only; later aliases bind to that outcome without requesting
+bars or lineage again. Bar and identity rate limiters remain shared for the life of the scheduler.
+
+Each new canonical symbol uses one complete transaction, so memory and recovery are bounded by its affected identity
+closure rather than the whole universe. Completed outcome files are skipped on resume. If an interruption occurs
+after source, validation, or lineage publication, recovery authenticates the completed boundary and continues after
+it; it does not request that source again. Pricing-validation failure is an explicit rejected terminal outcome and is
+kept for audit but never admitted to lineage or the catalogue. Other failures receive four bounded attempts and then
+stop the run without fabricating an outcome.
+
+Rerun the exact same command to resume. A different universe digest, request end, or owning contract version is
+rejected instead of mixing generations.
+
+### Mandatory final audit
+
+Acquisition completion does not equal handoff. After all labels have outcomes, the same command automatically:
+
+- proves exact label, resolution, canonical-owner, and directory accounting;
+- authenticates every source and validation artifact;
+- authenticates lineage, correlation, and warnings for every admitted canonical source;
+- authenticates the candidate, availability output, catalogue engine, and final catalogue bindings;
+- requires current catalogue membership to equal the admitted canonical set; and
+- opens an isolated public-library facade and reads all eight adjustments for every online public ID.
+
+Only a passing audit writes `clean_room_run/audit.json` and the digest-bound
+`clean_room_run/completion.json`. A completed rerun trusts that receipt and performs no provider or domain calculation.
+
+### Activate after audit
+
+Add `--activate` to the same command to select the audited generation:
+
+```bash
+./build_alpaca_end_of_day_clean_room.py \
+  --request-end 2026-10-14 \
+  --activate
+```
+
+Activation waits for the existing public-store lock, retains the prior store as
+`data_previous_public_<UTC>_<run-id-prefix>/`, and renames the audited store to `data_vtest/` on the same filesystem.
+It then opens `DataLibrary`, requires the audited generation and online count, and records a receipt under
+`alpaca_run_logs/`. A failed public smoke check restores both directory names. The retained store is recovery evidence
+only and is never an input to the new generation.
+
+## Interrupted publication and recovery
+
+An error or signal after the transaction begins leaves `.publication.pending.json`. Readers then reject the store as
+incomplete. A later run sees the marker and disables complete downstream reuse for that recovery transaction.
+
+Rerun the **same canonical symbol set and exact request boundaries** to recover:
 
 ```bash
 ./run_alpaca_end_of_day_ticker_pipeline.py \
-  --file path/to/symbols.txt \
-  --request-end 2026-10-06
-```
-
-`--request-end` is exclusive: `2026-10-06` requests completed bars strictly before that instant, so the last ordinary
-US session is `2026-10-05`. It is not the label of the last included bar.
-
-Omit `--adjustment` to process all eight views; repeat it to select views. Correlation examines every stored gzip for
-that symbol, so after a validation-version change process all views before a partial-view update.
-
-`download_alpaca_end_of_day_bars.py` is a compatibility entrypoint for the same complete pipeline.
-
-### Focused reprocessing
-
-A narrow rule or data correction uses the canonical complete pipeline; it does not require new code or a
-full-universe run. First determine the smallest complete set of affected source symbols: start with the identities
-whose published result can change, include every source symbol already contributing rows to those identities, and
-include any source symbol carrying evidence needed to decide them. Put that closed set in a plain file, one symbol per
-line, and run:
-
-```bash
-./run_alpaca_end_of_day_ticker_pipeline.py \
-  --file path/to/affected-symbols.txt \
+  --file /path/to/original-symbols.txt \
+  --request-start YYYY-MM-01 \
   --request-end YYYY-MM-DD
 ```
 
-That ordinary `--file` invocation is sufficient unless an affected symbol has a prior authenticated disposition whose
-recurring action is `skip`. Add `--include-skipped-symbols` only when the closed set deliberately includes one of those
-symbols. Repeated `--symbol` arguments always re-evaluate their symbols and do not need that flag.
+The current code does not enforce that a recovery invocation matches the marker's recorded request. Supplying a
+different cohort or boundary can clear the marker after publishing a different transaction and must not be used as a
+recovery shortcut.
 
-For a very small set, repeat `--symbol` instead of using `--file`. Omit `--adjustment` so all eight views pass through
-the normal acquisition, authentication, correlation, warning, master-publication, and availability stages. The
-pipeline authenticates reusable inputs and acquires only what its existing rules require up to the one shared request
-boundary.
+`SIGHUP` exits with `128 + signal`; `Ctrl-C` exits with 130. They are not durable batch checkpoints. If received inside
+the transaction, the recovery marker remains.
 
-For a rule-only replay, `YYYY-MM-DD` must be the existing common `request_to` recorded by the authenticated bar
-manifests. Do not substitute today's date, and do not use `--force`: unchanged request identities are cache hits, after
-which the normal downstream stages apply the new rule. If the selected symbols do not share one authenticated
-boundary, stop and split or investigate the set instead of silently advancing it.
+## Focused updates
 
-A later `--request-end` changes the frozen request identity. Existing files then fail closed with
-`refresh_required`; that is a deliberate data advance and only that operation may justify `--force`. When replacing a
-dependency-connected set, use `--workers 1` so one worker cannot authenticate a related source while another worker
-is replacing its gzip/manifest pair. This serialization warning concerns replacement only; ordinary cache-backed
-focused replay may use multiple workers.
+A rule or evidence change uses the same producer, not a direct publisher or alternate rule engine. Submit the smallest
+complete set of source symbols whose source or identity evidence must change. When a catalogue exists, the producer
+automatically expands those seeds through their current source/identity closure before recalculating correlation and
+availability.
 
-Do not create a migration script, alternate builder, direct bulk publisher, or shortened pipeline for this job. Do
-not reprocess every source merely because its historical report contains the same kind of evidence. That larger set is
-useful for a read-only impact audit; execution expands beyond the affected-symbol closure only when the audit proves
-that another source can change the result.
-
-Finish the rule and its focused tests before the read-only impact audit, then freeze the affected-symbol closure before
-the replay. Correlation reports and catalogue generations bind deterministic output and provenance; changing rule code
-or ordering after a replay means the replay and final catalogue audit must be repeated. Treat the post-audit generation
-as final only after the source change itself is final.
-
-## Narrow operator commands
-
-```bash
-# Authenticate every catalogue shard and run all catalogue-wide integrity checks.
-./audit_alpaca_end_of_day_catalog.py
-
-# Read lineage evidence and print JSON. This may contact Alpaca.
-./inspect_alpaca_security_lineage.py FB > /tmp/fb-lineage.json
-
-# Authenticate local downloads, publish correlation and master updates, then print its receipt.
-./correlate_alpaca_end_of_day_security_segments.py FB
-```
-
-Correlation requires current validation receipts. Warning publication has a library API but no standalone command.
-These commands are operator tools and do not define the consumer contract.
-
-The catalogue audit writes its JSON report to standard output. It is exhaustive over the published catalogue, not the
-complete frozen-data dependency graph; exact checks and scope are defined in
-[Technical contracts](technical-contracts.md#read-only-catalogue-audit). An authentication or integrity error exits
-with status `1`. Investigative warnings alone produce `passed_with_warnings` and status `0`; argument errors use status
-`2`. Use `--repository-root` to inspect a staged restoration without placing it over the live repository.
+An ordinary focused update still contacts Alpaca for all eight selected-month views and current lineage evidence. The
+current producer does not provide an offline rule-only replay switch. Do not claim a cache-only replay when provider
+requests occurred.
 
 ## Consume online data
 
@@ -209,12 +367,8 @@ with status `1`. Investigative warnings alone produce `passed_with_warnings` and
   --end 2025-12-31
 ```
 
-`--master-id` is an alias for `--public-id`. Adjustment types are `raw`, `split`, `dividend`, `spin-off`,
-`split,dividend`, `split,spin-off`, `dividend,spin-off`, and `all`.
-
-The command prints one consumer JSON document. Bounds are inclusive market-session dates; omit them for all available
-history. It performs no update, repair, or network request. Argument errors use status 2; authentication, contract, or
-I/O errors use status 1.
+`--master-id` remains an alias for `--public-id`. Bounds are inclusive session dates. The reader selects the current
+published catalogue through the trusted consumption path and performs no writes or network requests.
 
 ### Flat online CSV
 
@@ -225,109 +379,55 @@ I/O errors use status 1.
   --end 2025-12-31
 ```
 
-The export contains raw and fully adjusted OHLC, volume, trade count, and VWAP for every online ID with observations in
-the range. It is ordered by date, then `unique_id`. The exporter uses disk-backed chunks and installs a path output
-atomically, so reserve space beside the destination for both the spool and temporary final file. Use `-` to stream CSV
-to stdout.
+The export contains raw and fully adjusted values for every online identity with observations in range, ordered by
+date and then public ID. It uses a disk-backed spool and atomically replaces a path destination. Use `-` to stream CSV
+to standard output. Exact columns and failure semantics are in [Public API](public-api.md#flat-online-csv).
 
-Python applications use `DataLibrary`; search, resolution, types, exact columns, and failure semantics are documented
-in [Public API](public-api.md). Application code must not import the internal reader under `libs/`.
+## Audit status
 
-## Replacement and repair
+The clean-room command composes the explicit source, validation, lineage, correlation, warnings, identity-candidate,
+availability, catalogue-engine, and public-reader checks into one mandatory final audit of its selected isolated
+store. The audit is read-only with respect to domain boundaries; only its operational report and completion receipt
+are added afterward.
 
-```bash
-# Replace one coherent authenticated pair with a new provider response.
-./run_alpaca_end_of_day_ticker_pipeline.py \
-  --symbol DELL \
-  --adjustment raw \
-  --force
-
-# Recreate exactly one orphaned gzip/sidecar pair.
-./run_alpaca_end_of_day_ticker_pipeline.py \
-  --symbol DELL \
-  --adjustment raw \
-  --repair
-```
-
-| Observed state | Required action |
-|---|---|
-| Both gzip and sidecar absent | Normal download. |
-| Coherent current pair | Cache hit. |
-| Coherent pair with stale derived generation | Authenticate and reprocess locally; frozen pair stays unchanged. |
-| Changed request identity, including a later default end | Use `--force`. |
-| Exactly one of gzip or sidecar missing | Use `--repair` for that adjustment. |
-| Malformed metadata, changed stat, or SHA mismatch | Stop. Neither flag chooses an authority. |
-
-`--repair` restores publication completeness; it does not repair prices, security identity, correlation, or derived
-manifests. Never delete one member of a pair to force a refresh.
+The older `audit_alpaca_end_of_day_catalog.py` command still selects `data/end_of_day/` and must not be presented as
+evidence for the monthly application store. The composed audit is currently an inseparable final phase of the
+clean-room constructor rather than a general audit-only CLI for arbitrary stores.
 
 ## Backup and recovery
 
-Choose between restoring an existing authenticated generation and acquiring a new one. They are different outcomes.
+### Restore the same application state
 
-### Restore an existing generation
-
-Frozen bars, correlation outputs, warning outputs, the master catalogue, and primary evidence referenced by a verified
-session exclusion form one dependency graph. Back up the complete `data/end_of_day/` tree when the goal is to reproduce
-the existing service state; a manifest-only archive cannot recreate missing frozen or evidence files.
-
-The security-master receipt authenticates the root file's nanosecond mtime as well as its bytes and SHA-256. Use a
-POSIX/PAX archive so fractional mtimes survive:
+Back up the complete `data_vtest/` directory, not only its final catalogue receipt. The catalogue depends on monthly
+source, validation, lineage, correlation, warning, candidate, availability, and content-addressed engine artifacts.
 
 ```bash
 tar --format=posix --pax-option=delete=atime,delete=ctime \
   -czf /path/to/alpaca-end-of-day-backup.tar.gz \
-  data/end_of_day
+  data_vtest
 ```
 
-Restore into a staging copy of a compatible source revision, then audit that copy before switching consumers to it:
+Restore into a staging copy of the same source revision. `DataLibrary` opening is a trusted consumer check, not by
+itself a full authentication pass. The clean-room composed auditor is bound to its own run ledger and is not a generic
+restored-store audit command. Never test restoration over the live store.
 
-```bash
-tar -xzf /path/to/alpaca-end-of-day-backup.tar.gz \
-  -C /path/to/restored-repository
+### Acquire a new application state
 
-./audit_alpaca_end_of_day_catalog.py \
-  --repository-root /path/to/restored-repository
-```
+The tracked recovery snapshot contains 18,092 historical source labels, not just currently online tickers. Provider
+data, identity evidence, and an intentional new request end would create a different generation.
 
-A basic tar archive may round timestamps and fail authentication even when bytes match. Never test restoration over the
-live catalogue.
+Use the clean-room command above. Do not convert the CSV to lines and pass it as one focused `--file` run: that would
+hold one transaction across the cohort, retain a large processing set, and provide no per-label terminal ledger.
 
-### Acquire a fresh generation
-
-The source checkout includes [`resources/ticker.csv`](../resources/ticker.csv), a headerless, single-record CSV of the
-sorted unique source-symbol universe captured from the authenticated master catalogue. It includes source symbols, not
-only currently online public identities. Convert it to the pipeline's one-symbol-per-line format:
-
-```bash
-tr ',' '\n' < resources/ticker.csv > /tmp/alpaca-restore-symbols.txt
-```
-
-Running that complete list is an explicit, network-intensive rebuild. With credentials, entitlement, `pigz`, and an
-intentional exclusive request boundary, the command is:
-
-```bash
-./run_alpaca_end_of_day_ticker_pipeline.py \
-  --file /tmp/alpaca-restore-symbols.txt \
-  --workers 3 \
-  --adaptive-adjustments \
-  --request-end YYYY-MM-DD
-```
-
-This regenerates source files, manifests, correlation outputs, warnings, and the catalogue; none of those runtime files
-come from `resources/`. It is not a byte-for-byte restoration: provider data, identity evidence, and the chosen request
-boundary can produce a different authenticated generation. Refresh the tracked ticker snapshot deliberately whenever
-the authenticated source-symbol universe changes.
-
-## Pipeline exit status
+## Exit status
 
 | Status | Meaning |
 |---|---|
-| `0` | Selected stages completed without an actionable pricing/data integrity failure. |
-| `1` | Recorded/replayed integrity failure or another runtime-stage failure. |
-| `2` | Corrupt frozen boundary or invalid recovery mode. |
+| `0` | The selected complete transaction finished and the recovery marker was removed. |
+| `1` | A runtime, provider, boundary, validation, publication, or I/O error aborted the run. |
+| `2` | Command-line parsing failed. |
+| `130` | Interrupted by `Ctrl-C`. |
+| `128 + signal` | Interrupted by `SIGHUP`. |
 
-Multi-symbol runs aggregate failures after all selected tickers finish. A failed ticker does not cancel unrelated queued
-tickers. Warnings and uncorrelated work do not change exit status. In recurring file batches, integrity failures bound
-to a newly authenticated skip disposition remain recorded for audit but are excluded from the active-universe failure
-total.
+The current multi-symbol producer is sequential and aborts on the first exception. It does not aggregate independent
+ticker failures after continuing unrelated work.

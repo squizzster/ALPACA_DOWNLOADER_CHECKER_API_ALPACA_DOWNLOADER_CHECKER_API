@@ -1459,6 +1459,12 @@ def _authenticate_catalogue_store(root: Path) -> AuthenticatedSecurityMaster:
 def authenticate_catalogue(repository_root: Path | str) -> AuthenticatedSecurityMaster:
     """Authenticate the sole supported public catalogue at data_vtest."""
     root = current_store_root(repository_root)
+    return authenticate_catalogue_store(root)
+
+
+def authenticate_catalogue_store(store_root: Path | str) -> AuthenticatedSecurityMaster:
+    """Authenticate one explicitly selected operator store without changing selection."""
+    root = Path(store_root)
     with publication_lock(root, exclusive=False):
         assert_publication_complete(root)
         return _authenticate_catalogue_store(root)
@@ -1476,6 +1482,7 @@ __all__ = [
     "IdentityCandidate",
     "authenticate_identity_candidate",
     "authenticate_catalogue",
+    "authenticate_catalogue_store",
     "build_affected_identity_candidate",
     "build_identity_candidate",
     "build_identity_candidate_from_boundaries",

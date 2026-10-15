@@ -30,6 +30,7 @@ from libs.download_alpaca_end_of_day_bars.settings import ALPACA_ADJUSTMENT_MODE
 from .common import (
     canonical_sha256,
     document_bytes,
+    durability_batch,
     ensure_publication_lock,
     fsync_directory,
     read_json_object,
@@ -304,7 +305,17 @@ def _install_month(directory: Path, staged: Path, expected_document: dict[str, A
 
 def _month_is_current(directory: Path, expected_document: dict[str, Any]) -> bool:
     manifest_path = directory / MONTH_MANIFEST
-    return manifest_path.is_file() and manifest_path.read_bytes() == document_bytes(expected_document)
+    if not manifest_path.is_file() or manifest_path.read_bytes() != document_bytes(expected_document):
+        return False
+    try:
+        _authenticate_month_directory(
+            directory,
+            expected_document["symbol"],
+            expected_document["placement"],
+        )
+    except V6Error:
+        return False
+    return True
 
 
 def _request_boundary(value: str, description: str) -> datetime:
@@ -403,30 +414,32 @@ def publish_monthly_source(
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         expected_directories: set[Path] = set()
-        for placement in sorted(placements, key=lambda item: (-1, -1) if item is None else item):
-            placement_name, relative = _placement_parts(placement)
-            directory = symbol_root / relative
-            expected_directories.add(relative)
-            month_rows = {
-                adjustment: tuple(placements[placement].get(adjustment, ()))
-                for adjustment in ALPACA_ADJUSTMENT_MODES
-            }
-            document, payloads = _month_document(
-                symbol,
-                placement_name,
-                month_rows,
-            )
-            month_receipts.append(
-                {
-                    "placement": placement_name,
-                    "sha256": sha256_bytes(document_bytes(document)),
+        with durability_batch():
+            for placement in sorted(placements, key=lambda item: (-1, -1) if item is None else item):
+                placement_name, relative = _placement_parts(placement)
+                directory = symbol_root / relative
+                expected_directories.add(relative)
+                month_rows = {
+                    adjustment: tuple(placements[placement].get(adjustment, ()))
+                    for adjustment in ALPACA_ADJUSTMENT_MODES
                 }
-            )
-            if _month_is_current(directory, document):
-                continue
-            staged = _stage_month(directory, document, payloads)
-            if _install_month(directory, staged, document):
-                changed.append(placement_name)
+                document, payloads = _month_document(
+                    symbol,
+                    placement_name,
+                    month_rows,
+                )
+                month_receipts.append(
+                    {
+                        "placement": placement_name,
+                        "sha256": sha256_bytes(document_bytes(document)),
+                    }
+                )
+                if _month_is_current(directory, document):
+                    continue
+                staged = _stage_month(directory, document, payloads)
+                if _install_month(directory, staged, document):
+                    changed.append(placement_name)
+            fsync_directory(symbol_root)
 
         inventory = _source_inventory(symbol, tuple(placements), empty_adjustments)
         inventory_path = symbol_root / SOURCE_MANIFEST

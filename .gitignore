@@ -10,6 +10,7 @@ htmlcov/
 !.env.example
 .*.tmp.*
 /data/
+/data_pricing/
 /data_v2/
 /data_v3/
 /data_v3_1000/
@@ -17,6 +18,8 @@ htmlcov/
 /data_v4/
 /data_v6/
 /data_vtest/
+/data_clean_room/
+/data_previous_public_*/
 *.sqlite3
 *.sqlite3-journal
 *.sqlite3-wal

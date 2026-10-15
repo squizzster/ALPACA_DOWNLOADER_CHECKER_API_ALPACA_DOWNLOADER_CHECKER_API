@@ -1,0 +1,16 @@
+[
+  {
+    "modifications": [
+      "Add a standalone single-worker lineage twin over the compact pricing store, reusing the established identity and correlation registries.",
+      "Publish completed-years, current-year snapshot and authoritative current-month assignment boundaries without copying pricing; retain unchanged boundaries and resume metadata acquisition from the prior active month.",
+      "Resolve affected dependency closures, delegate missing pricing to the downloader outside pricing locks, and publish recoverably before acknowledging locked update notices.",
+      "Trust published inputs without re-auditing them; reuse approved closed single-identity assignments on safe monthly continuations, and keep dependency lookup in one incrementally updated index instead of rewriting a universe-sized JSON file."
+    ]
+  },
+  {
+    "modifications": [
+      "Delegate missing initial-ticker pricing through the same unlocked downloader handoff as related tickers; when no published range exists, use downloader defaults and resume from its published receipt and notice.",
+      "Keep no-download waiting, bounded acquisition, per-ticker failure isolation and publish-before-acknowledge behavior; retain compatible v1 receipt, index and recovery reads without new storage or auditing."
+    ]
+  }
+]
