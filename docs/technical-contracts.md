@@ -636,6 +636,10 @@ Ticker, name, CUSIP, FIGI, date, exchange, and action evidence determine or desc
 digest for a fixed UUID set. A ticker is a dated label and may resolve to multiple identities. A retained UUID-less
 series may receive a non-security series ID, but it never enters the public catalogue.
 
+This digest is stable for fixed membership, not a persistent identifier across membership expansion. A newly accepted
+split UUID changes the digest without itself changing historical ticker/UUID attribution. Membership-only split edges
+never route rows. No persistent-ID registry or archive of superseded snapshots is implied by this contract.
+
 ## Runtime artifact layout
 
 ```text

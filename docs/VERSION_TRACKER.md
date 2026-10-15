@@ -46,6 +46,12 @@ validators use the JSON changelog arrays under `resources/`; array position is t
 
 ### Modified
 
+- Documentation-only checkpoint records the completed live 50-seed lineage run and separates attribution differences,
+  membership-only differences and empty histories; detailed runtime reports remain ignored and no verdict is implied.
+- Correlation transform v25 scopes latest-start competition to the requested historical label, after stronger
+  as-of/reuse rules. Concurrent as-of predecessor branches and competing intervals without source scope fail closed.
+  Requested-label fallback also refuses an undated reuse boundary when another UUID occupied the same label.
+  Split membership and the membership-hash ID contract are unchanged; new regressions separate those from attribution.
 - Documentation-only integration checkpoint records current automated verification and the unfinished live lineage
   cohort below. No correctness verdict, identity-rule change, runtime version bump, or JSON changelog change.
 - Documentation-only clarification near the top of the README: public IDs identify securities, not ticker labels;
@@ -81,6 +87,42 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+Completed live 50-seed lineage run, **2026-10-15 UTC**, correlation v25:
+
+- The actual standalone CLI processed the full selected file in one run: 50 selected tickers, 250 source labels
+  including dependencies, exit 0, no failures, 22 minutes 30 seconds. Normal downloader handoffs acquired missing
+  pricing and lineage published its receipts; no retained-store copying or public-catalogue publication occurred.
+- Compared 573,600 observations across all eight adjustment views within the shared retained/current request ranges:
+  41 tickers match, four have attribution differences, three have membership-only differences, and AXICY/DNMRQ have
+  empty shared histories. No source-session additions or removals occurred within those comparison ranges.
+- Attribution differences, sessions per view: DOC 1,086 (2019-11-06 through 2024-03-01), ALTM 760 (2022-02-23 through
+  2025-03-05), ECDA six (2023-12-13 through 2023-12-20), and INBX one (2024-05-30). Previously resolved rows are now
+  unresolved. ASCA, MDGS and PBTS retain historical ticker/UUID attribution but have expanded membership and new IDs.
+- BTN now matches all 1,758 historical sessions per view; JTAI succeeds and matches. All seven differences agree
+  across the eight views. These are comparison results, not independent correctness verdicts; grouped review remains
+  outstanding. Lists, exact IDs and detailed reports stay under ignored `data/lineage_test_candidates/`.
+
+Initial correlation v25 implementation verification, **2026-10-15 UTC**, before the live run above:
+
+- `ruff check .`, `ruff format --check .` (144 files), `git diff --check`, and 189 local documentation
+  links/anchors: passed. Full `python3.11 -B -W error::ResourceWarning -m unittest discover -s tests -v`:
+  **382 tests passed**, including seven new ownership/membership regressions. Rule order remains explicit at 8–10.
+- Replayed all 111 already-published standalone sources in their 21 dependency groups, using captured evidence,
+  trusted pricing and all three correlation passes. All reached the fixed point; 97 retained their dated assignments.
+  Fourteen changed: AMRK, BAM.WI, BAMR, BTN, DOC, DPW, FGH, HCP, HYAC, JWAC, NETE, NUKK, PIH and SCRM.
+  The changed spans involve 16 membership IDs; per view, 10,100 source observations resolve, 3,525 become unresolved,
+  and 1,471 change resolved attribution. These are correlation results, not public online/offline transitions.
+- BTN's 1,758 sessions per view now resolve to its own predecessor UUID. ASCA's 513 historical assignments per view
+  remain unchanged; its accepted split extension retains the current membership-derived hash. Synthetic earlier/later
+  evidence tests verify that membership expansion changes the hash without changing historical ticker/UUID ownership.
+- Deliberate unresolved results include FGH's 26 sessions before the captured February 2023 transition, concurrent
+  predecessor claims in DOC, and undated reused-label claims in HCP/HYAC. No external dates or ticker exceptions were
+  inserted. Split membership logic, pricing, datastore layout and the ID scheme were not redesigned.
+- No provider calls, pricing copies, notice consumption, runtime publication or public availability changes occurred
+  during this in-memory replay. At that point lineage receipts remained v24 pending normal reprocessing. The replay verifies
+  the complete stored-input cascade, not independent real-world correctness of every wider changed history; those
+  evidence conflicts remain review items. No full retained/universe rebuild or remaining 30-seed batch was run.
 
 Main integration checkpoint, **2026-10-15 UTC**:
 
@@ -255,7 +297,7 @@ complete current-store audit coverage.
 | Availability | 1 | Per-candidate online/offline decision. |
 | Catalogue publication | 2 | Snapshot and bounded affected-closure catalogue selection. |
 | Validation transform | 19 | Established daily-bar and dataset rules. |
-| Correlation transform | 24 | Established ownership, row allocation, and UUID-membership rules. |
+| Correlation transform | 25 | Source-scoped ownership competition and fail-closed predecessor ambiguity. |
 | Catalogue engine | 5 | Content-addressed source/security objects and inventories. |
 | Warning transform | 6 | Established advisory rules. |
 | Detailed history transform | 7 | Established source-selection and history assembly semantics. |
@@ -379,7 +421,7 @@ catalogue engine version 4, warning transform version 6, and reader version 5.
 ### Established transforms
 
 - Validation transform v1–v19 defines daily-bar, zero-activity, volume, session, and integrity rules.
-- Correlation transform v1–v24 defines exhaustive row partitioning, ticker-reuse and transition rules, UUID membership,
+- Correlation transform v1–v25 defines exhaustive row partitioning, ticker-reuse and transition rules, UUID membership,
   same-symbol split continuity, overlap selection, fixed-point discovery, and the superseded-rename veto.
 - Catalogue engine v1–v5 defines deterministic IDs, content-addressed sharding, persisted availability, and supported
   correlation-generation migration.

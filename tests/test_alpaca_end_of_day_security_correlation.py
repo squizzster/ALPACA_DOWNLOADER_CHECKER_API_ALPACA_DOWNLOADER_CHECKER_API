@@ -1269,6 +1269,161 @@ class RowCorrelationTests(unittest.TestCase):
         )
         self.assertIn("older_overlapping_ownership_claim_superseded", newer["warnings"])
 
+    def test_related_predecessor_branches_do_not_compete_for_historical_rows(self) -> None:
+        # BTN-shaped evidence, then the identical shape with entirely different labels.
+        for original, renamed, other, successor in (
+            ("BTN", "FGH", "PIH", "FGF"),
+            ("LEFT", "LEFTNEW", "RIGHT", "JOINED"),
+        ):
+            lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+            left = ("left-id", original, "111111111", "Left predecessor")
+            middle = ("middle-id", renamed, "222222222", "Renamed left predecessor")
+            right = ("right-id", other, "333333333", "Right predecessor")
+            joined = ("right-id", successor, "333333333", "Right predecessor")
+            for action_id, when, predecessor, following in (
+                ("right-rename", "2020-12-17", right, joined),
+                ("left-rename", "2023-02-03", left, middle),
+                ("later-connection", "2024-03-01", middle, joined),
+            ):
+                add_name_change_edge(
+                    lineage,
+                    action_id=action_id,
+                    process_date=when,
+                    predecessor=predecessor,
+                    successor=following,
+                )
+            rows = complete_market_session_rows("2016-01-04", "2022-12-24")
+            self.assertEqual(1758, len(rows))
+            intervals, issues = build_ticker_ownership_intervals(lineage)
+            self.assertEqual([], issues)
+            for adjustment in ALPACA_ADJUSTMENT_MODES:
+                with self.subTest(symbol=original, adjustment=adjustment):
+                    source = {**correlation_source(original, asof="2026-10-15"), "adjustment": adjustment}
+                    branches = correlate_download_rows(rows, source, lineage, intervals)
+                    self.assertEqual([], branches["uncorrelated"])
+                    self.assertEqual(1, len(branches["correlated"]))
+                    segment = branches["correlated"][0]
+                    self.assertEqual(1758, segment["row_count"])
+                    self.assertEqual(original, segment["historical_symbol"])
+                    self.assertEqual("left-id", segment["canonical_security"]["alpaca_asset_id"])
+                    self.assertEqual(
+                        {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+                        segment["correlation_rule"],
+                    )
+                    self.assertEqual(
+                        branches, correlate_download_rows(rows, source, lineage, list(reversed(intervals)))
+                    )
+
+    def test_foreign_latest_start_cannot_resolve_ambiguous_same_label_claims(self) -> None:
+        intervals = [
+            TickerOwnershipInterval("DELL", cusip, asset_id, None, None, ())
+            for cusip, asset_id in (("111111111", "first-id"), ("222222222", "second-id"))
+        ]
+        intervals.append(TickerOwnershipInterval("OTHER", "333333333", "foreign-id", date(2024, 1, 2), None, ()))
+        branches = correlate_download_rows(
+            [{"t": "2024-01-03T12:00:00Z"}],
+            correlation_source("DELL", asof="2024-01-03"),
+            dell_lineage(),
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(
+            ["overlapping_ownership_intervals_without_unique_latest_start"],
+            branches["uncorrelated"][0]["reason_codes"],
+        )
+
+    def test_foreign_intervals_cannot_supply_missing_source_identity(self) -> None:
+        intervals = [
+            TickerOwnershipInterval(symbol, cusip, asset_id, start, None, ())
+            for symbol, cusip, asset_id, start in (
+                ("OTHER", "111111111", "first-id", None),
+                ("LATER", "222222222", "second-id", date(2024, 1, 2)),
+            )
+        ]
+        branches = correlate_download_rows(
+            [{"t": "2024-01-03T12:00:00Z"}],
+            correlation_source("UNKNOWN", asof="2024-01-03"),
+            {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []},
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(1, branches["uncorrelated"][0]["row_count"])
+        self.assertEqual(
+            ["overlapping_ownership_intervals_without_source_scope"],
+            branches["uncorrelated"][0]["reason_codes"],
+        )
+
+    def test_ended_prior_occupant_does_not_date_an_undated_reused_label(self) -> None:
+        intervals = [
+            TickerOwnershipInterval("REUSED", "111111111", "old-id", None, date(2024, 1, 3), ()),
+            TickerOwnershipInterval("REUSED", "222222222", "later-id", None, date(2024, 1, 5), ()),
+        ]
+        branches = correlate_download_rows(
+            [{"t": "2024-01-04T12:00:00Z"}],
+            correlation_source("REUSED", asof="2024-01-08"),
+            {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []},
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(
+            ["undated_requested_ticker_reuse_boundary"], branches["uncorrelated"][0]["reason_codes"]
+        )
+        self.assertEqual(
+            {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+            branches["uncorrelated"][0]["correlation_rule"],
+        )
+
+    def test_unscoped_branches_cannot_fall_through_to_one_current_uuid(self) -> None:
+        lineage = dell_lineage()  # One exact current candidate is not dated source ownership.
+        intervals = [
+            TickerOwnershipInterval(symbol, cusip, asset_id, None, None, ())
+            for symbol, cusip, asset_id in (
+                ("OLD", "111111111", "first-id"),
+                ("OTHER", "222222222", "second-id"),
+            )
+        ]
+        branches = correlate_download_rows(
+            [{"t": "2024-01-03T12:00:00Z"}],
+            correlation_source("DELL", asof="2024-01-03"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(
+            ["overlapping_ownership_intervals_without_source_scope"],
+            branches["uncorrelated"][0]["reason_codes"],
+        )
+
+    def test_concurrent_asof_predecessors_cannot_be_resolved_by_requested_label(self) -> None:
+        lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+        for action_id, predecessor in (
+            ("left-connection", ("left-id", "JOINED", "111111111", "Left predecessor")),
+            ("right-connection", ("right-id", "OTHER", "222222222", "Right predecessor")),
+        ):
+            add_name_change_edge(
+                lineage,
+                action_id=action_id,
+                process_date="2024-01-04",
+                predecessor=predecessor,
+                successor=("successor-id", "JOINED", "333333333", "Successor"),
+            )
+        intervals, issues = build_ticker_ownership_intervals(lineage)
+        self.assertEqual([], issues)
+        branches = correlate_download_rows(
+            [{"t": "2024-01-03T12:00:00Z"}, {"t": "2024-01-04T12:00:00Z"}],
+            correlation_source("JOINED", asof="2024-01-05"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual(1, branches["uncorrelated"][0]["row_count"])
+        self.assertEqual(["ambiguous_asof_uuid_lineage_intervals"], branches["uncorrelated"][0]["reason_codes"])
+        self.assertEqual(1, branches["correlated"][0]["row_count"])
+        self.assertEqual("successor-id", branches["correlated"][0]["canonical_security"]["alpaca_asset_id"])
+        self.assertEqual(
+            {"order": 8, "name": "asof_selected_uuid_lineage_interval"},
+            branches["uncorrelated"][0]["correlation_rule"],
+        )
+
     def test_overlapping_ownership_claims_without_unique_latest_start_fail_closed(self) -> None:
         for label, starts in {
             "tied": (date(2024, 1, 2), date(2024, 1, 2)),
@@ -2056,6 +2211,54 @@ class RowCorrelationTests(unittest.TestCase):
                 self.assertEqual([], edges)
                 self.assertEqual([], issues)
 
+    def test_later_split_extends_membership_without_rewriting_predecessor_attribution(self) -> None:
+        # ASCA-shaped evidence: a dated predecessor followed by a later same-symbol split.
+        extended = same_symbol_split_lineage()
+        add_name_change_edge(
+            extended,
+            action_id="predecessor-transition",
+            process_date="2024-04-04",
+            predecessor=("predecessor-id", "ASCA", "333333333", "Predecessor security"),
+            successor=("old-split-asset-id", "SPLT", "111111111", "Split Test Security"),
+        )
+        prior = copy.deepcopy(extended)
+        prior["corporate_actions"] = [
+            a for a in prior["corporate_actions"] if a["action_type"] != "reverse_split"
+        ]
+        prior["identities"] = [a for a in prior["identities"] if a["id"] != "new-split-asset-id"]
+        prior["asset_lookups"] = [a for a in prior["asset_lookups"] if a["asset"]["id"] != "new-split-asset-id"]
+        rows = complete_market_session_rows("2022-03-18", "2024-04-04")
+        self.assertEqual(513, len(rows))
+        prior_intervals, _ = build_ticker_ownership_intervals(prior)
+        extended_intervals, _ = build_ticker_ownership_intervals(extended)
+        self.assertEqual(prior_intervals, extended_intervals)
+        for adjustment in ALPACA_ADJUSTMENT_MODES:
+            with self.subTest(adjustment=adjustment):
+                source = {**correlation_source("ASCA", asof="2026-10-15"), "adjustment": adjustment}
+                before = correlate_download_rows(rows, source, prior, prior_intervals)
+                after = correlate_download_rows(rows, source, extended, extended_intervals)
+                self.assertEqual([], before["uncorrelated"])
+                self.assertEqual([], after["uncorrelated"])
+                self.assertEqual(1, len(before["correlated"]))
+                self.assertEqual(1, len(after["correlated"]))
+                old, new = before["correlated"][0], after["correlated"][0]
+                self.assertEqual(513, new["row_count"])
+                self.assertEqual("ASCA", new["historical_symbol"])
+                self.assertEqual("predecessor-id", new["canonical_security"]["alpaca_asset_id"])
+                old_identity, new_identity = old.pop("security_identity"), new.pop("security_identity")
+                self.assertEqual(old_identity["security_id"], old["canonical_security"].pop("security_id"))
+                self.assertEqual(new_identity["security_id"], new["canonical_security"].pop("security_id"))
+                self.assertEqual(old, new)
+                self.assertEqual(
+                    sorted([*old_identity["member_alpaca_asset_ids"], "new-split-asset-id"]),
+                    new_identity["member_alpaca_asset_ids"],
+                )
+                self.assertNotEqual(old_identity["security_id"], new_identity["security_id"])
+                self.assertEqual(
+                    security_id_for_alpaca_asset_ids(new_identity["member_alpaca_asset_ids"]),
+                    new_identity["security_id"],
+                )
+
     def test_forward_split_uses_the_same_identity_rule(self) -> None:
         lineage = same_symbol_split_lineage()
         lineage["corporate_actions"][0].update(
@@ -2525,7 +2728,7 @@ class RowCorrelationTests(unittest.TestCase):
 class CorrelationPublicationTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
         self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
-        self.assertEqual(frozenset(range(8, 25)), SUPPORTED_CORRELATION_VERSIONS)
+        self.assertEqual(frozenset(range(8, 26)), SUPPORTED_CORRELATION_VERSIONS)
 
     def test_concurrent_security_master_updates_preserve_every_symbol(self) -> None:
         def source_contribution(

@@ -238,6 +238,14 @@ def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision
                 warning_codes=tuple(warning_codes),
             )
         if len(selected_matches) > 1:
+            if len({interval.asset_id for interval in selected_matches}) > 1:
+                # A successor can have concurrent predecessor branches. Neither
+                # global recency nor requested-label fallback proves which branch
+                # supplied these historical rows. Same-UUID aliases still defer.
+                return _RowDecision(
+                    branch=UNCORRELATED_BRANCH,
+                    reason_codes=("ambiguous_asof_uuid_lineage_intervals",),
+                )
             return None
     return None
 
@@ -269,6 +277,18 @@ def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecis
     )
     requested_interval = _unique_interval_or_none(requested_symbol_matches)
     if requested_interval is not None:
+        if requested_interval.start_date_inclusive is None and any(
+            interval.historical_symbol == context.requested_symbol
+            and interval.asset_id != requested_interval.asset_id
+            for interval in context.intervals
+        ):
+            # Another occupant ending does not date this occupant's beginning.
+            # Proven reuse/as-of rules above can establish the source episode;
+            # this fallback cannot fill an unknown reuse boundary retrospectively.
+            return _RowDecision(
+                branch=UNCORRELATED_BRANCH,
+                reason_codes=("undated_requested_ticker_reuse_boundary",),
+            )
         warning_codes = (
             ("inferred_lower_ownership_boundary",) if requested_interval.start_date_inclusive is None else ()
         )
@@ -454,7 +474,21 @@ def _apply_current_symbol_reuse_rule(
 def _apply_latest_dated_ownership_interval_rule(
     context: _RowRuleContext,
 ) -> _RowDecision | None:
-    matching_intervals = _interval_matches(context.intervals, context.session_date)
+    # Stronger as-of lineage and reuse rules have already had their turn. This
+    # fallback compares competing occupants of this dated label, not every branch
+    # discovered through a later corporate relationship. A later start on another
+    # predecessor's label cannot supersede this source's historical ownership.
+    all_matching_intervals = _interval_matches(context.intervals, context.session_date)
+    matching_intervals = [
+        interval for interval in all_matching_intervals if interval.historical_symbol == context.requested_symbol
+    ]
+    if not matching_intervals and len({interval.asset_id for interval in all_matching_intervals}) > 1:
+        # Do not turn unscoped competing branches into a current-UUID guess merely
+        # by excluding their labels from the latest-start comparison.
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("overlapping_ownership_intervals_without_source_scope",),
+        )
     if len(matching_intervals) < 2:
         return None
     if len({interval.asset_id for interval in matching_intervals}) == 1:

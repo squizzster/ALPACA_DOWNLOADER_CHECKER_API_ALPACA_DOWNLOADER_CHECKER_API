@@ -274,9 +274,14 @@ Consequential gates include:
   eight views. Recurrence, overlap, a missing view, or ambiguity vetoes the partition.
 - Current-symbol reuse requires the old occupant to have renamed away at least 100 sessions earlier, exact current
   identity evidence, complete matching grids, and no competing structural evidence.
-- Overlapping different-UUID intervals select only the interval with the uniquely latest explicit start. A tie or
-  wholly undated overlap fails closed. Same-UUID overlaps are one security claim and defer to exact requested-symbol
-  provenance.
+- An as-of-selected successor with concurrent different-UUID predecessor intervals remains unresolved; neither
+  latest-start nor requested-label fallback may choose a predecessor branch. Same-UUID aliases still defer.
+- After stronger rules, latest-start competition is restricted to occupants of the requested historical label.
+  Another label's later start cannot supersede that occupant. A tie or wholly undated same-label overlap fails closed;
+  competing branches with no matching source-label interval also remain unresolved rather than reaching an undated
+  current-UUID fallback. Same-UUID overlaps defer to exact requested-symbol provenance.
+- Requested-label fallback cannot infer a new occupant's beginning from another occupant's ending. When different
+  UUIDs used that label, an undated-start interval remains unresolved unless a stronger rule already established it.
 - The terminal fallback requires a gapless source, stable same-ticker candidates, one current anchor, agreeing names,
   and no missing or unexpected sessions.
 
@@ -299,7 +304,9 @@ earlier action remains an evidence issue but does not join its unrelated success
 v24 membership rule.
 
 Explicit identity partitions suppress only the corporate-action edges they certify. Unrelated valid lineage remains
-connected. The public ID is always the SHA-256 digest of sorted unique member Alpaca UUIDs.
+connected. The public ID is always the SHA-256 digest of sorted unique member Alpaca UUIDs. Later split evidence can
+extend membership and change that digest without changing earlier row ownership; see the
+[identity model](docs/technical-contracts.md#identity-model).
 
 ### 4. Availability
 

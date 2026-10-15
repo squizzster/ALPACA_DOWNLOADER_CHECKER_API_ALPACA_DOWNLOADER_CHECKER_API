@@ -151,5 +151,13 @@
     "modifications": [
       "Reject a name-change UUID-membership edge when the same exact predecessor receives a next-day corrective rename that preserves its Alpaca UUID, retaining the supersession as evidence instead of joining the unrelated successor security."
     ]
+  },
+  {
+    "modifications": [
+      "Scope latest-start ownership competition to the requested historical label after stronger as-of lineage and ticker-reuse rules, preventing related predecessor branches from superseding or obscuring a uniquely supported historical occupant.",
+      "Fail closed when an as-of-selected successor has concurrent different-UUID predecessor claims, or competing dated branches lack a matching source label; neither requested-label preference nor undated fallback may resolve that ambiguity.",
+      "Do not infer an undated reused-label occupant's beginning from another occupant's ending; leave the requested-symbol fallback unresolved unless stronger rules or an explicit start establish ownership.",
+      "Retain same-label ambiguity vetoes and existing split-only membership semantics: accepted later split evidence may change the membership-derived ID without changing historical ticker or Alpaca UUID attribution."
+    ]
   }
 ]
