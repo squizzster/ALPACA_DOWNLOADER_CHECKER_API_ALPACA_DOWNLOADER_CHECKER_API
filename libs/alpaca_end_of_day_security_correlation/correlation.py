@@ -13,7 +13,12 @@ from .errors import SecurityCorrelationError
 from .evidence import build_ticker_ownership_intervals, ownership_interval_rule_order
 from .frozen_downloads import read_authenticated_frozen_download
 from .identity_partition import assess_one_session_distinct_uuid_transition
-from .predecessor_prefix import assess_predecessor_prefixes
+from .predecessor_prefix import (
+    assess_bridged_initial_prefix,
+    assess_independent_donor_prefixes,
+    assess_independent_historical_intervals,
+    assess_predecessor_prefixes,
+)
 from .publication import lineage_evidence_sha256, publish_security_correlation
 from .row_correlation import (
     correlate_download_rows,
@@ -22,8 +27,16 @@ from .row_correlation import (
 )
 from .session_exclusions import read_verified_session_exclusions
 from .settings import CORRELATED_BRANCH, SYMBOL_PATTERN, UNCORRELATED_BRANCH
+from .source_continuity import retired_history_lower_bound
+from .terminal_episode import (
+    assess_bridged_traded_episodes,
+    assess_dated_departure_prefix,
+    assess_terminal_traded_episode,
+    has_informative_trading,
+    has_prolonged_carry_forward,
+)
 from .ticker_reuse_gap import adjustment_session_consensus
-from .uuid_lineage import build_uuid_lineage_edges
+from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
 
 
 def _source_context(authenticated_download) -> dict[str, Any]:
@@ -187,7 +200,70 @@ def build_security_correlation_report(
         correlation_loader=correlation_loader if complete_source else None,
         source_rows_loader=source_rows_loader,
     )
+    independent_history = assess_independent_historical_intervals(
+        symbol,
+        lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        correlation_loader=correlation_loader if complete_source else None,
+        source_rows_loader=source_rows_loader,
+    )
+    independent_history += assess_independent_donor_prefixes(
+        symbol,
+        lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        correlation_loader=correlation_loader if complete_source else None,
+        source_rows_loader=source_rows_loader,
+    )
+    independent_history += assess_bridged_initial_prefix(
+        symbol,
+        lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        correlation_loader=correlation_loader if complete_source else None,
+        source_rows_loader=source_rows_loader,
+    )
+    bridged_episodes = (
+        assess_bridged_traded_episodes(symbol, lineage, intervals, authenticated_work_items)
+        if complete_source
+        else ()
+    )
 
+    terminal_episode = (
+        assess_terminal_traded_episode(symbol, lineage, intervals, authenticated_work_items)
+        if complete_source
+        else None
+    )
+    departure_prefix = (
+        assess_dated_departure_prefix(symbol, lineage, intervals, authenticated_work_items)
+        if complete_source and terminal_episode is not None
+        else None
+    )
+    closed_history_evidence = (
+        complete_source
+        and (
+            any(edge.edge_type in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES for edge in uuid_lineage_edges)
+            or (
+                len({item.get("id") for item in lineage.get("identities", []) if item.get("symbol") == symbol})
+                > 1
+                and any(
+                    action.get("action_type") in ("cash_merger", "stock_and_cash_merger")
+                    and action.get("acquiree_symbol") == symbol
+                    for action in lineage.get("corporate_actions", [])
+                )
+            )
+        )
+        and any(
+            source["adjustment"] == "raw" and has_informative_trading(download.rows)
+            for download, source, _ in authenticated_work_items
+        )
+        and all(not has_prolonged_carry_forward(download.rows) for download, _, _ in authenticated_work_items)
+    )
+    retired_lower_bound = retired_history_lower_bound(symbol, intervals, authenticated_work_items)
     for authenticated_download, source, _ in authenticated_work_items:
         file_branches = correlate_download_rows(
             authenticated_download.rows,
@@ -198,6 +274,12 @@ def build_security_correlation_report(
             evidence_issues=evidence_issues,
             distinct_uuid_transition=distinct_uuid_transition,
             predecessor_prefixes=predecessor_prefixes,
+            terminal_episode=terminal_episode,
+            bridged_episodes=bridged_episodes,
+            departure_prefix=departure_prefix,
+            closed_history_evidence=closed_history_evidence,
+            independent_history=independent_history,
+            retired_lower_bound=retired_lower_bound,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]

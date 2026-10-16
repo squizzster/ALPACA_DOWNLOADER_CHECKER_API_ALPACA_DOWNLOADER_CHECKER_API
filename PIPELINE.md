@@ -281,6 +281,11 @@ Consequential gates include:
   unresolved.
 - A dated terminal suffix requires an exact CUSIP lookup, one ownership interval, terminal coverage, and no left-side
   evidence for its UUID.
+- Rule 4 also recognizes complete informative traded episodes separated by shared inert carry-forwards or a physical
+  reuse gap. Exact dated endpoints and noncompeting ownership identify the episode; the inert bridge is not assigned.
+  A complete initial episode before physical reuse needs a nearby exact terminal event and an independently supported
+  current suffix. A middle episode needs its own nearby departure; an anchored current suffix can use a nearby exact
+  acquirer action. Shared grids, complete calendars and competing-owner vetoes apply across all eight views.
 - One-session transition inference uses exact distinct symbol identities, a dated action and matching session grids;
   an explicitly superseded action cannot support it. Conflicting action-endpoint UUID/CUSIP evidence alone does not
   erase the original inference. Exact gates are owned by `assess_one_session_distinct_uuid_transition` in
@@ -292,12 +297,21 @@ Consequential gates include:
   identity evidence, complete matching grids, and no competing structural evidence.
 - Within the as-of rule, one explicitly started interval for the exact selected UUID takes precedence over other
   connected predecessor branches. `asof` selects the entity, not historical adjustment values. Without that exact
-  dated match, concurrent different-UUID predecessors remain unresolved; neither latest-start nor requested-label
-  fallback may choose a branch. An undated start or multiple exact-UUID aliases gains no new preference.
+  dated match, concurrent different-UUID predecessors need comparative continuity evidence or a unique independent
+  raw-transaction certificate. A fully dated, uninterrupted same-label chain can distinguish itself from foreign
+  converging branches through agreeing exact full names, classes and exchanges, with no prior foreign history of its
+  members. Ticker spelling and processing-date order alone do not select the branch.
 - After stronger rules, latest-start competition is restricted to occupants of the requested historical label.
   Another label's later start cannot supersede that occupant. A tie or wholly undated same-label overlap fails closed;
   competing branches with no matching source-label interval also remain unresolved rather than reaching an undated
-  current-UUID fallback. Same-UUID overlaps defer to exact requested-symbol provenance.
+  current-UUID fallback. An independently anchored sole buyer may exclude foreign intervals supported exclusively by
+  exact cash-acquiree terminal actions naming that buyer; targets retain their separate histories and memberships.
+  Same-UUID overlaps defer to exact requested-symbol provenance.
+- A retired requested label can retain same-UUID continuity through a unique chronological accepted rename chain to
+  agreeing exact current symbol/CUSIP lookups. This supplements missing historical selection without pretending the API
+  performed an as-of mapping or replacing existing directly dated requested-label provenance. Newly inferred backward
+  attribution stops at the last prolonged shared inert run before that requested-label epoch. A later halt does not
+  erase predecessor history, and earlier independent ownership remains available through the cascade.
 - Requested-label fallback cannot infer a new occupant's beginning from another occupant's ending. When different
   UUIDs used that label, an undated-start interval remains unresolved unless a stronger rule already established it.
   One exception preserves the original predecessor's inferred lower bound when all known occupants form one
@@ -305,8 +319,14 @@ Consequential gates include:
   same-symbol name-change or stock-merger edge binds the exact ticker/CUSIP/UUID endpoints and shared action.
   Extra undated occupants, gaps, overlaps, branching, recurrence, foreign-label paths, split-only links and common
   future successors gain no exception. This stays inside the requested-label rule; earlier gap/as-of vetoes still win.
+- Exact component-separation or positive cash-dividend ex-date evidence can establish occupancy from that date onward.
+  It does not establish inception, end a prior episode, or override a competing positive ownership interval.
 - The terminal fallback requires a gapless source, stable same-ticker candidates, one current anchor, agreeing names,
   and no missing or unexpected sessions.
+- The fallback can also assign complete informative observed history to an exact inactive split component or narrowly
+  supported successive dividend identities. It requires complete grids and no prolonged synthetic carries. Known
+  component membership need not establish the per-session UUID/CUSIP vintage; those fields remain null when unknown.
+  An inactive split component does not require invented termination metadata or a join to the acquiring security.
 
 Rule 9 is assessed once per source by `assess_predecessor_prefixes` in
 [`predecessor_prefix.py`](libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py), using the shared cross-source
@@ -314,10 +334,14 @@ loaders. A reused label's complete held prefix must match an accepted dated name
 session before the handoff. Exact raw timestamps and all raw bar fields must match a related source whose prefix was
 independently assigned by rule 8 to the exact predecessor UUID/CUSIP/label, with matching feed, timeframe and generation.
 All eight source adjustment grids must agree; their adjusted price values need not. At least two traded observations
-must have different OHLC values. Conflicting owners, partial or middle-only matches, recursive donor inference and
-flat zero-trade carry-forwards do not establish ownership. Only the supported prefix is assigned; the later source
-history and UUID-membership graph are unchanged. Compact comparison assessments are transient operator evidence,
-not another persistent pricing or audit boundary.
+must have different OHLC values. The same module can certify a complete independently owned donor interval within a
+mixed source, including a donor anchored by exact dated occupancy, a sole known predecessor-label occupant, or a unique accepted
+same-label split chain. A leading constant zero-trade donor pad is compared in full before trimming; matching only an isolated island is
+insufficient. A complete initial prefix may end at a shared inert bridge when the exact outgoing action was processed
+later inside that bridge. Conflicting owners, missing observations and recursive donor inference reject the proof.
+These certificates can distinguish an as-of branch at rule 8 or let the gap guard reach rule 9. They assign only the
+supported interval and do not change membership or claim the remainder. Compact comparison assessments are transient
+operator evidence, not another persistent pricing or audit boundary.
 
 Every trusted source row appears exactly once in the correlated or uncorrelated branch.
 
@@ -336,6 +360,11 @@ action symbol and different UUIDs. It records provenance but never routes a pric
 An immediately corrective next-day name change that preserves the predecessor UUID supersedes the earlier edge. The
 earlier action remains an evidence issue but does not join its unrelated successor. This is the correlation transform
 v24 membership rule.
+
+An acquirer adopting its target's ticker is a separate shape: a unique same-day foreign-label rename into the exact
+successor, together with an unequal-ratio same-label target merger and three distinct exact endpoint UUIDs, prevents
+the target merger from joining the continuing acquirer. The acquirer rename and the target's dated ownership remain.
+Contradictory target-continuity evidence prevents that inference. Raw ownership is decided separately by the row rules.
 
 Accepted continuity edges remain at membership construction even when pricing-episode rules distinguish dated rows.
 Unrelated reused-symbol occupants have no accepted connecting edge and remain separate. A common corporate successor

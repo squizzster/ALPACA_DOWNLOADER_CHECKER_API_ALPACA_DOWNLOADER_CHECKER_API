@@ -24,7 +24,7 @@ general concepts, not symbol-specific recipes or permission to restore every old
 
 Follow the [repeatable research-and-rule-improvement loop](docs/development.md#lineage-research-and-rule-improvement-loop):
 one case at a time, a fresh research agent per case, main-agent ownership of the complete cascade, focused checks
-during implementation, and one consolidated evaluation at the end of the agreed three-case batch. Public research
+during implementation, and one consolidated evaluation at the agreed batch boundary. Public research
 informs development; production decisions use deterministic inputs, not a model or researched ticker overrides.
 
 Requires Python **3.11** (configured target; verified with 3.11.13) and IANA `America/New_York` time-zone data.

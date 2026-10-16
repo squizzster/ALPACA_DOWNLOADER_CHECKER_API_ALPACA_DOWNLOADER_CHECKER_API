@@ -101,6 +101,11 @@ baseline, not ground truth; neither old/new agreement nor a higher resolved coun
 general concepts, not ticker-specific recipes. This is an agent-led development procedure, not an automatic batch
 scheduler or a model-dependent runtime resolver.
 
+Choose the most likely correct attribution from the complete evidence pattern, allowing residual uncertainty when
+one explanation is better supported. A one-to-four-session processing discrepancy alone neither defeats continuity
+nor authorizes a merge. Test the competing explanation, including a genuine change of predecessor. Leave history
+unmatched when attribution remains insufficient after the cascade, not merely because an individual rule declines it.
+
 - **Main agent:** owns the complete cascade, case selection, internal-evidence interpretation, implementation and
   acceptance. Translate a research concept into the actual pipeline; do not paste an agent's suggested rule verbatim.
 - **Research agent:** use a fresh `gpt-6.1-sol`, `reasoning_effort="high"`, `fork_turns="none"` for each case. Give it a
@@ -111,8 +116,10 @@ scheduler or a model-dependent runtime resolver.
   deterministic stored/provider inputs must establish the internal UUID mapping. Research facts never become
   executable ticker exceptions or a production dependency on the research agent.
 
-Agree the case list and stopping point before starting. The established learning cadence is three sequential cases,
-then a consolidated evaluation and handoff. Do not automatically start case four or restart a universe worker.
+Agree the selection criteria and stopping point before starting. Investigate cases sequentially while they add useful
+concepts or material recoveries, then perform one consolidated evaluation and handoff. A case quota does not establish
+coverage. Announce each case's ownership question and explain findings and decisions as work proceeds. Starting a
+full lineage run or pricing-universe run requires authorization for that distinct operation.
 
 ### One case, step by step
 
@@ -155,7 +162,7 @@ then a consolidated evaluation and handoff. Do not automatically start case four
 > counterexamples and its proper cascade position, or explain why no justified change is available. Consider both
 > incorrect attribution and withholding attributable history. Research only: do not edit code or publish data.
 
-### End of the three-case batch
+### End of the agreed batch
 
 Perform one consolidated impact and regression review, not a whole-store audit after every edit:
 

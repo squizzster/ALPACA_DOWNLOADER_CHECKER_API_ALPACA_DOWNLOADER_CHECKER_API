@@ -261,6 +261,60 @@ def _immediately_superseded_name_change_action_ids(
     return frozenset(superseded_action_ids), evidence_issues
 
 
+def _exclude_adopted_target_joins(edges, lineage):
+    actions = {action.get("id"): action for action in lineage.get("corporate_actions", [])}
+    retained, issues = [], []
+    for edge in edges:
+        action = actions.get(edge.action_id, {})
+        old_rate = _positive_rate(action.get("acquiree_rate"))
+        new_rate = _positive_rate(action.get("acquirer_rate"))
+        if edge.edge_type != "stock_merger" or old_rate is None or new_rate is None or old_rate == new_rate:
+            retained.append(edge)
+            continue
+        renames = [
+            other
+            for other in edges
+            if other.edge_type == "name_change"
+            and other.effective_date == edge.effective_date
+            and other.predecessor_symbol != edge.successor_symbol
+            and (other.successor_symbol, other.successor_cusip, other.successor_asset_id)
+            == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+            and len({edge.predecessor_asset_id, other.predecessor_asset_id, edge.successor_asset_id}) == 3
+        ]
+        independent_continuity = any(
+            other.edge_type in ("name_change", *IDENTITY_PRESERVING_SPLIT_EDGE_TYPES)
+            and (other.predecessor_asset_id, other.successor_asset_id)
+            == (edge.predecessor_asset_id, edge.successor_asset_id)
+            for other in edges
+        )
+        if len({other.predecessor_asset_id for other in renames}) != 1 or independent_continuity:
+            retained.append(edge)
+            continue
+        rename = renames[0]
+        endpoints = (
+            (edge.predecessor_cusip, edge.predecessor_asset_id),
+            (rename.predecessor_cusip, rename.predecessor_asset_id),
+            (edge.successor_cusip, edge.successor_asset_id),
+        )
+        if any(
+            (asset := exact_cusip_lookup_asset(lineage, cusip)) is None or asset["id"] != asset_id
+            for cusip, asset_id in endpoints
+        ):
+            retained.append(edge)
+            continue
+        issues.append(
+            {
+                "severity": "warning",
+                "reason_code": "acquirer_adopted_target_symbol",
+                "corporate_action_id": edge.action_id,
+                "continuing_name_change_action_ids": sorted({other.action_id for other in renames}),
+                "target_asset_id": edge.predecessor_asset_id,
+                "acquirer_asset_id": edge.successor_asset_id,
+            }
+        )
+    return retained, issues
+
+
 def build_uuid_lineage_edges(
     lineage: dict[str, Any],
 ) -> tuple[list[UuidLineageEdge], list[dict[str, Any]]]:
@@ -347,6 +401,8 @@ def build_uuid_lineage_edges(
                 successor_cusip=edge_candidate.successor_cusip,
             )
         )
+    edges, adoption_issues = _exclude_adopted_target_joins(edges, lineage)
+    evidence_issues.extend(adoption_issues)
     edges.sort(key=lambda edge: (edge.effective_date, edge.edge_type, edge.action_id))
     return edges, evidence_issues
 

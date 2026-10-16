@@ -17,7 +17,12 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import (
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
 from libs.alpaca_lineage_build.transform import correlate
 from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
-from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge, correlation_source
+from tests.test_alpaca_end_of_day_security_correlation import (
+    add_name_change_edge,
+    asset,
+    complete_market_session_rows,
+    correlation_source,
+)
 
 
 def lineage():
@@ -288,6 +293,73 @@ class PredecessorPrefixTests(unittest.TestCase):
             descriptor["rows"] = 100
         reports = correlate(Path("."), inputs, {symbol: self.lineage for symbol in inputs})
         self.assertEqual(0, reports["OLD"]["correlated"]["row_count"])
+
+    def reused_source(self):
+        current = asset("reused", "OLD", "Unrelated new issuer")
+        self.lineage["identities"].append(current)
+        self.lineage.setdefault("asset_lookups", []).append(
+            {
+                "lookup": "OLD",
+                "lookup_kind": "symbol",
+                "found": True,
+                "outcome": "found",
+                "http_status": 200,
+                "asset": current,
+            }
+        )
+        suffix = complete_market_session_rows("2026-10-01", "2026-10-07")
+        return rows() + suffix
+
+    def test_certified_prefix_survives_later_reuse_gap_with_unsupported_remainder(self):
+        proofs = self.assess()
+        source_rows = self.reused_source()
+        before = correlate_download_rows(source_rows, self.work[0][1], self.lineage, self.intervals)
+        self.assertEqual(3, before["uncorrelated"][0]["row_count"])
+        after = correlate_download_rows(
+            source_rows,
+            self.work[0][1],
+            self.lineage,
+            self.intervals,
+            predecessor_prefixes=proofs,
+        )
+        self.assertEqual([2, 4], [item["row_count"] for item in after["correlated"]])
+        self.assertEqual(1, after["uncorrelated"][0]["row_count"])
+        self.assertEqual(
+            ["old1", "reused"], [item["canonical_security"]["alpaca_asset_id"] for item in after["correlated"]]
+        )
+        rival = replace(proofs[0], interval=replace(proofs[0].interval, asset_id="old2"))
+        conflict = correlate_download_rows(
+            source_rows,
+            self.work[0][1],
+            self.lineage,
+            self.intervals,
+            predecessor_prefixes=(*proofs, rival),
+        )
+        self.assertEqual(3, conflict["uncorrelated"][0]["row_count"])
+
+    def test_metadata_only_reused_occupant_can_trigger_certification_screen(self):
+        self.reused_source()
+        self.lineage["identities"] = [item for item in self.lineage["identities"] if item["id"] != "old2"]
+        self.lineage["symbol_occupancy_evidence"] = [
+            item for item in self.lineage["symbol_occupancy_evidence"] if item["asset_id"] != "old2"
+        ]
+        self.intervals = [item for item in self.intervals if item.asset_id != "old2"]
+        self.assertEqual(1, len(self.assess()))
+
+    def test_certificate_does_not_release_gap_rows_to_conflicting_asof_owner(self):
+        proofs = self.assess()
+        source_rows = self.reused_source()
+        rival = replace(
+            proofs[0].interval, asset_id="rival", start_date_inclusive=date(2024, 8, 1), end_date_exclusive=None
+        )
+        after = correlate_download_rows(
+            source_rows,
+            self.work[0][1],
+            self.lineage,
+            [*self.intervals, rival],
+            predecessor_prefixes=proofs,
+        )
+        self.assertEqual(3, after["uncorrelated"][0]["row_count"])
 
 
 if __name__ == "__main__":

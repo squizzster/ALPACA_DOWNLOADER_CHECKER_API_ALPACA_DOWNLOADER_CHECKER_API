@@ -3538,7 +3538,7 @@ class RowCorrelationTests(unittest.TestCase):
 class CorrelationPublicationTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
         self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
-        self.assertEqual(frozenset(range(8, 32)), SUPPORTED_CORRELATION_VERSIONS)
+        self.assertEqual(frozenset(range(8, CORRELATION_VERSION + 1)), SUPPORTED_CORRELATION_VERSIONS)
 
     def test_concurrent_security_master_updates_preserve_every_symbol(self) -> None:
         def source_contribution(

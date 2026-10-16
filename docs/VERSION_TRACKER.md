@@ -13,7 +13,7 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 - Documentation-only lineage research-and-rule-improvement procedure in [Development](development.md#lineage-research-and-rule-improvement-loop),
   linked prominently from the compact README and agent instructions: fresh GPT-6.1-Sol High researcher per sequential
-  case, main-agent integration responsibility, generic concepts, focused checks and one consolidated three-case review.
+  case, main-agent integration responsibility, generic concepts, focused checks and one consolidated batch review.
   Includes the reusable research brief, success criteria, minimal fact retention and evidence-versus-rule reproducibility.
 - Standalone lineage v1 and `build_alpaca_lineage.py`: one worker; trusted pricing consumption; identical three
   chronological boundaries; approved closed-assignment reuse; established identity rules; missing-pricing delegation;
@@ -54,6 +54,16 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Modified
 
+- Correlation transform v32–v51 adds dated occupancy anchors, independently attributed informative historical
+  intervals, bounded traded episodes, retired-label continuity and inactive component history. It separates cash
+  targets from buyer history and corrects membership when an acquirer adopts its target's ticker. Exact versioned
+  changes remain in the runtime changelog; the consolidated extended-batch evaluation is recorded below.
+- The consolidated comparison exposed an over-broad retired-label inference across stale carry-forwards and an
+  empty-calendar-range error for equal action/boundary dates. V51 narrows the new backward inference while preserving
+  informative suffixes, and handles zero discrepancy without bypassing the other ownership gates.
+- Documentation reconciles those concepts in the ordered cascade and identity contract, and generalizes the
+  research loop to an agreed batch boundary with a diminishing-returns stopping decision. No documentation-only
+  runtime version increment is required.
 - Documentation-only refactor consolidates operational examples and execution explanations into their owning guides,
   documents the real evidence CLI, reconciles the implemented rule cascade and ID-stability limits, and separates
   historical snapshots from current verification. No application behavior, runtime version or JSON changelog change
@@ -110,6 +120,45 @@ are unchanged.
 ## Verification status
 
 ### Current implementation and evidence scope — 2026-10-16
+
+The working implementation is correlation **v51**, standalone lineage **v2**, identity report **v4**, and operator
+evidence schema **v2**. The extended batch closed **39 investigations**: 30 routine cases followed by nine targeted
+reviews of material consolidated-comparison findings. Routine selection stopped at diminishing reusable concepts;
+case count does not establish universe coverage.
+
+The accepted same-input comparison against correlation **v31**, commit `1c008a3`, covers **3,446 sources**, **1,265
+complete dependency groups** and **3,771,492 source-sessions**. It includes the retained evidence-shape screens and
+controls, not a full-store audit:
+
+- **97,980 newly attributed source-sessions** across 115 sources; **zero previously attributed sessions lost**.
+- **2,304 ownership corrections** across seven sources, separately reviewed against independent primary records and
+  directly established donor histories. **2,711 membership-only changes** across CWBC/CVCY preserve the continuing
+  acquirer while separating the adopted-ticker target.
+- **123 sources changed** in total; **100,939 source-sessions remain unmatched** within this comparison scope.
+  All eight adjustment views agree on ownership; counts are not multiplied by eight.
+- The running independent downloader changed 25 pricing generations during evaluation. Only their 15 complete
+  dependency groups, 76 sources, were replayed in both versions against matching approved inputs. Unaffected results
+  were retained; provider-input changes are not counted as rule gains.
+
+The comparison exposed and corrected over-broad backward retired-label inference through synthetic padding, plus
+an equal-date calendar error. V51 preserves independently dated ownership while bounding only unsupported backward
+inference. Subsequent targeted review supports all changed owners. Backfilled CUSIP vintages, some preexisting
+membership gaps, and the authenticity of individual inert prices remain distinct limitations; the batch does not
+claim to repair them or validate every historical identifier field.
+
+Final implementation verification: **528 tests passed** in **37.501 seconds**, with ResourceWarnings treated as
+errors. `ruff check .`, `ruff format --check .` (166 files), `git diff --check`, and **220 local documentation links**
+across ten maintained documents passed. No repository CI exists.
+
+Real evidence-CLI publication completed for **40 selected labels in 37 dependency groups**. The trusted lineage
+handoff then verified **151 sources**, all eight adjustment views, against the accepted ownership, public IDs and
+membership: no assignment errors or changed-input discrepancies. All 37 publications needed **zero pricing
+acquisition waves**. Other affected groups were evaluated; the authorized full local-source lineage run follows this
+accepted checkpoint and commit. Its launch and completion are separate runtime outcomes, not implied by these checks.
+Standalone lineage publication does not establish public-catalogue integration or consumer availability. Sourced
+facts and compact case outcomes remain in the existing ignored research files; they are not production inputs.
+
+### Previous three-case checkpoint — 2026-10-16
 
 The working implementation is correlation **v31**, standalone lineage **v2**, identity report **v4**, and operator
 evidence schema **v2**. Runtime receipts select their own versions; this is not a claim that every source was rebuilt.
@@ -398,7 +447,7 @@ complete current-store audit coverage.
 | Availability | 1 | Per-candidate online/offline decision. |
 | Catalogue publication | 2 | Snapshot and bounded affected-closure catalogue selection. |
 | Validation transform | 19 | Established daily-bar and dataset rules. |
-| Correlation transform | 31 | Accepted continuity edges, shared endpoint interpretation and independently resolved exact-raw predecessor prefixes. |
+| Correlation transform | 51 | Dated occupancy, bounded traded episodes, independent raw-history attribution, retired-label continuity and scoped membership. |
 | Operator lineage evidence | 2 | Actual workflow evidence, published decision paths and compact transient prefix assessments; no second resolver. |
 | Catalogue engine | 5 | Content-addressed source/security objects and inventories. |
 | Warning transform | 6 | Established advisory rules. |
@@ -533,10 +582,12 @@ catalogue engine version 4, warning transform version 6, and reader version 5.
 ### Established transforms
 
 - Validation transform v1–v19 defines daily-bar, zero-activity, volume, session, and integrity rules.
-- Correlation transform v1–v31 defines exhaustive row partitioning, ticker-reuse and transition rules, UUID membership,
+- Correlation transform v1–v51 defines exhaustive row partitioning, ticker-reuse and transition rules, UUID membership,
   same-symbol split continuity, overlap selection, fixed-point discovery, the superseded-rename veto, shared endpoint
   completion and independent exact-raw predecessor-prefix ownership. V28 preserves accepted continuity membership;
   v29 interprets missing endpoints; v30 adds the prefix rule; v31 separates raw ownership evidence from adjustments.
+  V32–v51 extend those concepts to dated occupancy, bounded informative episodes, independent donor intervals,
+  inactive observed components and retired labels, and distinguish continuing acquirers from acquired targets.
 - Catalogue engine v1–v5 defines deterministic IDs, content-addressed sharding, persisted availability, and supported
   correlation-generation migration.
 - Detailed history transform v1–v7 defines deterministic source selection, provenance, and conflict handling.

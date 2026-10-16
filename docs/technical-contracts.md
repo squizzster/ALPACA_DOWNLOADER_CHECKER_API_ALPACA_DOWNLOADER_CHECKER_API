@@ -661,6 +661,13 @@ This digest is stable for fixed membership, not a persistent identifier across m
 split UUID changes the digest without itself changing historical ticker/UUID attribution. Membership-only split edges
 never route rows. No persistent-ID registry or archive of superseded snapshots is implied by this contract.
 
+An attributed segment can identify a continuing component while leaving canonical UUID and CUSIP null: component
+membership may be established without knowing the provider's exact historical identifier vintage. Current or
+backfilled CUSIPs likewise need not be literal historical identifiers. These are explicit limits on provenance, not
+permission to merge unconnected securities. Observed inactive history does not imply an inferred legal termination.
+Supported intervals may be published alongside an unmatched remainder. The ordered evidence gates belong to
+[Pipeline](../PIPELINE.md#the-correlation-cascade); correlation alone does not establish public availability.
+
 ## Runtime artifact layout
 
 ```text
