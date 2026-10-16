@@ -43,7 +43,8 @@ not the explicit boundary-audit path described in
 | `get_history(public_id, adjustment="raw", start=None, end=None)` | Exact daily bars for all time or an inclusive date range. |
 | `write_flat_online_csv(destination, start=None, end=None)` | Date-ordered raw and fully adjusted rows for the online universe. |
 
-Methods are local, synchronous, read-only, credential-free, and make no network requests.
+Methods are local, synchronous and credential-free, and make no network requests or store mutations. Export writes
+the explicitly requested destination and a temporary spool as described below.
 
 ## Search and resolve
 
@@ -73,15 +74,19 @@ matches; callers decide what an empty, single, or multiple result means for thei
 
 ## Public identity
 
-`public_id` is the stable, opaque, 64-hex identifier for one resolved historical-pricing identity. It is the internal
+`public_id` is the opaque, 64-hex identifier for one resolved historical-pricing identity. It is the internal
 master ID exposed under a consumer name. Store, compare, and submit it as an identifier; do not derive it from ticker,
 name, CUSIP, or another provider identifier. Input is case-insensitive and returned IDs are lowercase.
+
+It is stable for fixed resolved UUID membership, not guaranteed immutable across evidence updates. A membership
+extension can change the ID without changing historical row ownership. No persistent-ID crosswalk or old-snapshot
+archive is promised. The exact derivation belongs to the [identity model](technical-contracts.md#identity-model).
 
 Every `Security` contains:
 
 | Field | Meaning |
 |---|---|
-| `public_id` | Stable exact lookup key. |
+| `public_id` | Exact lookup key within the selected catalogue. |
 | `tickers` | All authenticated ticker labels attached to the identity. No primary ticker is invented. |
 | `names` | Authenticated security names. |
 | `cusips` | Authenticated CUSIPs when present. Missing CUSIP data is represented by an empty tuple. |

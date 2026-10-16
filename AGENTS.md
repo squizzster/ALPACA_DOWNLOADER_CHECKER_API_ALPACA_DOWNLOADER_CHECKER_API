@@ -29,6 +29,9 @@ serves data. Downstream research or trading decisions are outside its responsibi
 - Correlation and availability rules must describe a generic, obvious evidence shape. Do not special-case a ticker.
   Put each rule at the correct point in the explicit rule registry, fail closed on ambiguity, and verify the complete
   set of identities affected by the rule.
+- For lineage-rule development, follow the [research-and-rule-improvement loop](docs/development.md#lineage-research-and-rule-improvement-loop).
+  Cases supply concepts, not ticker exceptions. The main agent owns integration; use a fresh research agent per case,
+  focused checks during implementation, and one consolidated review at the agreed batch boundary. Trust approved inputs.
 - Keep offline discovery and diagnostics outside the public API. A separate discovery product can be designed later;
   it is not part of `DataLibrary`.
 - Tracked root Python files are executable entrypoints. The supported consumer library lives in

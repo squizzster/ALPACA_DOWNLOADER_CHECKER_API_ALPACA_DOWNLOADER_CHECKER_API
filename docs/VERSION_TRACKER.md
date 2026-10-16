@@ -3,10 +3,18 @@
 This repository versions serialized boundaries and reusable transforms independently. There are no Git tags. Runtime
 validators use the JSON changelog arrays under `resources/`; array position is the boundary version.
 
+Start with the [current version matrix](#current-version-matrix), [verification status](#verification-status) and
+[known gaps](#known-gaps). Dated checkpoints below describe those runs, not current worker status or blanket approval
+of every runtime receipt. Installed code and selected publications can have different versions.
+
 ## Unreleased
 
 ### Added
 
+- Documentation-only lineage research-and-rule-improvement procedure in [Development](development.md#lineage-research-and-rule-improvement-loop),
+  linked prominently from the compact README and agent instructions: fresh GPT-6.1-Sol High researcher per sequential
+  case, main-agent integration responsibility, generic concepts, focused checks and one consolidated three-case review.
+  Includes the reusable research brief, success criteria, minimal fact retention and evidence-versus-rule reproducibility.
 - Standalone lineage v1 and `build_alpaca_lineage.py`: one worker; trusted pricing consumption; identical three
   chronological boundaries; approved closed-assignment reuse; established identity rules; missing-pricing delegation;
   affected dependency closure; and recoverable publication before notice acknowledgement. No pricing copies or
@@ -46,6 +54,13 @@ validators use the JSON changelog arrays under `resources/`; array position is t
 
 ### Modified
 
+- Documentation-only refactor consolidates operational examples and execution explanations into their owning guides,
+  documents the real evidence CLI, reconciles the implemented rule cascade and ID-stability limits, and separates
+  historical snapshots from current verification. No application behavior, runtime version or JSON changelog change
+  is made by this documentation pass; preceding implementation changes retain their own version entries.
+- Correlation transform v27 narrows the requested-label reuse guard for one fully dated, same-symbol successor
+  chain. The original predecessor retains its existing inferred-lower-bound warning; unrelated reuse and earlier
+  ambiguity/gap vetoes remain unchanged. The exact evidence gates live in [Pipeline](../PIPELINE.md#2-row-allocation).
 - Correlation transform v26 preserves an existing positively dated ownership start when the same ticker/CUSIP/UUID
   episode has later overlapping arrival evidence. The existing as-of rule prefers a unique explicitly started
   interval for the exact selected UUID before broader predecessor competition. Registry order, ambiguity vetoes,
@@ -93,6 +108,61 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+### Current implementation and evidence scope — 2026-10-16
+
+The working implementation is correlation **v31**, standalone lineage **v2**, identity report **v4**, and operator
+evidence schema **v2**. Runtime receipts select their own versions; this is not a claim that every source was rebuilt.
+The agreed three-case development batch completed through the real CLI. Focused publications needed no new pricing
+acquisition or copies. Broader affected-source comparisons were evaluated without publishing every affected group.
+No universe worker restart or public-catalogue integration is part of this documentation task.
+
+Documentation/integration verification, **2026-10-16 UTC**:
+
+- `ruff check .`, `ruff format --check .` (151 files), and `git diff --check`: passed.
+- `python3.11 -B -W error::ResourceWarning -m unittest discover -s tests -v`: **440 tests passed**, 36.201 seconds.
+- Checked 219 relative links/anchors across all 10 maintained documents, complete README coverage, and the documented
+  row registry against `row_correlation_rule_order`: passed. All 10 documented entrypoints' `--help` commands passed.
+- No repository CI or dedicated Markdown checker exists; the local link/anchor/coverage check was read-only. Prior
+  non-Markdown working-tree changes and untracked implementation files were unchanged by this documentation pass.
+- No live acquisition, lineage publication, runtime-store audit, data copies or new runtime versions were performed
+  for this refactor. Existing implementation changes are verified separately from the documentation-only edits.
+
+The evidence CLI and shared cascade are implemented. The research/improvement loop is agent-led, not an automated
+scheduler. Full failed-predicate traces are not retained; offline or reused evidence must not be described as a fresh
+replay. Existing ignored research facts and compact case outcomes are references, not production dependencies.
+
+### Earlier verification checkpoints
+
+Earlier v28 draft checkpoint (superseded by the revised baseline and v29–v31): the v27 lineage worker was
+stopped on 2026-10-15; the downloader was left running at that checkpoint. Draft impact runs were stopped when review exposed
+over-broad evidence sharing and an over-strict historical-candidate rejection; those draft behaviors were removed.
+The next comparison was directed to start from the original retained cascade, carrying forward established corrections.
+That review was outstanding then, not a description of today's implemented version. Passing unit tests alone never
+authorized a restart or established universal correctness. Retained examples select v19, v22 and v23, not one uniform version.
+
+Correlation v27 verification, **2026-10-15 UTC**:
+
+- Screened all 5,171 captured published standalone sources against the exact positive gate; 28 qualify. Replayed
+  their complete dependency/UUID closures plus explicit controls: 132 sources in 41 groups, 1,278,904 observations
+  across eight views. Both v26-baseline and v27-candidate passes reached the three-pass fixed point; no deferrals.
+- Four sources recover assignments, sessions per view: ACST 2,205 (2016-01-04 through 2024-10-07), AMAM 583
+  (2021-06-18 through 2023-10-11), ANTE 1,499 (2019-06-13 through 2025-05-29), and PWM 145 (2023-07-06 through
+  2024-01-31). That is 4,432 ticker-sessions / 35,456 view observations assigned to four existing membership IDs.
+  All eight views agree. No previously resolved observation changes owner, becomes unresolved or changes membership.
+- All 128 other replayed sources retain their assignments, including AACI/AACIW, ACAC/ACACW, AAN, ACAT, ACEV,
+  AENT, ALCE, ASCA, BTN, DOC, INBX, FB/META and JTAI. Each changed identity has an explicit same-symbol dated
+  handoff; its previously approved inferred lower boundary and membership calculation are retained, not redefined.
+- Eight new synthetic regressions cover two/three-UUID handoffs in all adjustments, alternate ticker spellings,
+  exact cutovers, stock mergers, extra undated occupants, shared-successor branches, missing/superseded or mismatched
+  links, overlaps, recurrence, and precedence of gap/as-of vetoes. Registry order remains unchanged.
+- `ruff check .`, `ruff format --check .` (144 files), `git diff --check`, and 190 local documentation links/anchors:
+  passed. Full `python3.11 -B -W error::ResourceWarning -m unittest discover -s tests -v`: **402 tests passed**.
+- Replay is read-only, using stored pricing and captured normalized evidence, not external adjudication. Thirty
+  control/dependency sources have newer pricing than their selecting lineage receipt; both rule versions consume
+  identical captured inputs, and none is one of the four changed sources. No provider calls, pricing copies,
+  publication, notice consumption or availability calculation. Online/offline transitions are not evaluated.
+  Runtime receipts remain on their published versions until normal reprocessing; the active worker was not restarted.
 
 Correlation v26 verification, **2026-10-15 UTC**:
 
@@ -214,15 +284,15 @@ Standalone pricing v5, **2026-10-15 UTC**, against the working tree:
 - No live API calls, runtime dataset mutations, or store copies were made for v4/v5. The earlier GOOG snapshot below
   remains v3; its validator will be created during its next successful update. Universe selection was tested offline.
 
-### Current standalone development store
+### Standalone development snapshot — 2026-10-15
 
-`data_pricing/end_of_day/pricing/GOOG` has 2,710 effective sessions per view, 2016-01-04 through 2026-10-13:
+At this historical checkpoint, `data_pricing/end_of_day/pricing/GOOG` had 2,710 effective sessions per view, 2016-01-04 through 2026-10-13:
 2,514 completed-years rows, 196 year-snapshot rows, and 9 active-month rows with overlap replaced. Its 12 pricing files
-are seven gzip payloads, four receipts, and the stable lock. No staging or publication journal remains.
+were seven gzip payloads, four receipts, and the stable lock. No staging or publication journal remained.
 
-`data_pricing/end_of_day/manifests/GOOG/update.json` is still pending:
+`data_pricing/end_of_day/manifests/GOOG/update.json` was pending:
 `{"from":"2016-01-04","to":"2026-10-13"}`. The authorized v3 layout move used an in-place directory rename and
-preserved payload hashes, inodes, and modification times; no old GOOG copy remains. No lineage consumer has processed
+preserved payload hashes, inodes, and modification times; no old GOOG copy remained. No lineage consumer had processed
 this notice. The original seven-cutoff dataset below was deleted at the user's request before the later live rebuild.
 
 The v2 META handoff test added META, FB and METV in this same store, through 2026-10-14 (exclusive end 2026-10-15).
@@ -328,7 +398,8 @@ complete current-store audit coverage.
 | Availability | 1 | Per-candidate online/offline decision. |
 | Catalogue publication | 2 | Snapshot and bounded affected-closure catalogue selection. |
 | Validation transform | 19 | Established daily-bar and dataset rules. |
-| Correlation transform | 26 | Preserve dated episode starts; prefer exact as-of UUID before predecessor competition. |
+| Correlation transform | 31 | Accepted continuity edges, shared endpoint interpretation and independently resolved exact-raw predecessor prefixes. |
+| Operator lineage evidence | 2 | Actual workflow evidence, published decision paths and compact transient prefix assessments; no second resolver. |
 | Catalogue engine | 5 | Content-addressed source/security objects and inventories. |
 | Warning transform | 6 | Established advisory rules. |
 | Detailed history transform | 7 | Established source-selection and history assembly semantics. |
@@ -340,19 +411,29 @@ Exact constants and changelog paths are listed in [Development](development.md#v
 
 ## Known gaps
 
-Standalone pricing and lineage are implemented; public-reader integration is not.
-Lineage's no-cold-read continuation currently covers the explicit single-identity reuse gate. Context-dependent
-multi-identity cases and rollover calculate the affected chronology using trusted inputs, not an upstream audit.
-Older metadata corrections outside the resumed month window require explicit refresh. The lineage twin is verified
-with synthetic fixtures and the focused live META/FB/METV handoff above; no universe-scale run has been performed.
-Endpoint checks are the chosen refresh policy, not exhaustive historical correction detection. Live verification is
-limited to GOOG and the META-related closure; no standalone full-universe performance claim is made.
+Standalone pricing and lineage are implemented; public-reader integration is not. Lineage's no-cold-read continuation
+covers the explicit single-identity reuse gate. Context-dependent multi-identity cases and rollover calculate the
+affected chronology using trusted inputs, not an upstream audit. A full evidence diagnostic can read closed session
+grids even when normal processing reuses assignments.
+
+Older metadata corrections outside the resumed month window require explicit refresh. Endpoint checks are the chosen
+pricing-refresh policy, not exhaustive historical correction detection. The focused publications and broader read-only
+comparisons do not establish complete current-universe correctness or throughput. Historical run summaries below are
+not a live monitor; no whole-universe acceptance or performance claim is made by this documentation pass.
+
+The research loop is not an implemented automatic scheduler. Some unit/warrant histories remain insufficiently
+anchored; adjacent/backfilled action records can leave membership gaps, and synthetic pre-listing carry-forwards need
+separate ownership analysis. Exact raw-prefix recovery does not resolve every later reused-symbol interval, certify
+all historical legal CUSIPs, or prove adjusted-price equivalence across aliases. Current research facts and selected
+case limits are retained locally, not injected as executable ticker rules.
+
 The batch runner has at most three ticker workers with one shared 199-request/minute limiter. A normal populated-ticker update uses up to 32
 requests before pagination/retries: 16 initial probes, eight acquisitions, and eight final first-session probes.
 For 18,092 such tickers that implies roughly 48.5 hours at the configured rate, before latency. `--all` is functional,
 not yet demonstrated as a daily universe service. Request batching/performance work is separate from this boundary change.
 Workers overlap latency but do not multiply the request allowance. The allowance is process-local, not shared across
-independent command invocations using the same credentials. The worker implementation has not yet been exercised live.
+independent command invocations using the same credentials. The tests establish limiter behavior, not achieved live
+universe throughput or a daily completion guarantee.
 
 The existing combined catalogue workflow has these separate gaps:
 
@@ -452,8 +533,10 @@ catalogue engine version 4, warning transform version 6, and reader version 5.
 ### Established transforms
 
 - Validation transform v1–v19 defines daily-bar, zero-activity, volume, session, and integrity rules.
-- Correlation transform v1–v25 defines exhaustive row partitioning, ticker-reuse and transition rules, UUID membership,
-  same-symbol split continuity, overlap selection, fixed-point discovery, and the superseded-rename veto.
+- Correlation transform v1–v31 defines exhaustive row partitioning, ticker-reuse and transition rules, UUID membership,
+  same-symbol split continuity, overlap selection, fixed-point discovery, the superseded-rename veto, shared endpoint
+  completion and independent exact-raw predecessor-prefix ownership. V28 preserves accepted continuity membership;
+  v29 interprets missing endpoints; v30 adds the prefix rule; v31 separates raw ownership evidence from adjustments.
 - Catalogue engine v1–v5 defines deterministic IDs, content-addressed sharding, persisted availability, and supported
   correlation-generation migration.
 - Detailed history transform v1–v7 defines deterministic source selection, provenance, and conflict handling.

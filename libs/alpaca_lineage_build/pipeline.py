@@ -45,7 +45,9 @@ def _current_sources(store, locked):
     return result
 
 
-def process_group(store, root, seed, *, identity_client, pricing_client=None, refresh=False, index=None):
+def process_group(
+    store, root, seed, *, identity_client, pricing_client=None, refresh=False, index=None, observer=None
+):
     index = storage.read_index(root) if index is None else index
     group = closure(index, {seed})
     acquisition_waves = 0
@@ -85,6 +87,18 @@ def process_group(store, root, seed, *, identity_client, pricing_client=None, re
                         for symbol in group
                     )
                 ):
+                    if observer is not None:
+                        observer(
+                            store=store,
+                            receipts=previous,
+                            boundaries={
+                                name: storage.read_boundaries(root, item) for name, item in previous.items()
+                            },
+                            inputs=None,
+                            reports=None,
+                            notices={},
+                            resumed=False,
+                        )
                     return {"symbol": seed, "status": "unchanged", "processed": sorted(group)}
                 old_boundaries = {
                     symbol: storage.read_boundaries(root, prior) if prior else None
@@ -161,6 +175,18 @@ def process_group(store, root, seed, *, identity_client, pricing_client=None, re
                             name: item.source_sha256 for name, item in inputs.items()
                         }
                     storage.publish(store, root, index, receipts, boundaries, notices)
+                    # Inspection observes the actual publication while the same
+                    # locks still protect its inputs. It never runs another resolver.
+                    if observer is not None:
+                        observer(
+                            store=store,
+                            receipts=receipts,
+                            boundaries=boundaries,
+                            inputs=inputs,
+                            reports=reports,
+                            notices=notices,
+                            resumed=resume,
+                        )
                     return {
                         "symbol": seed,
                         "status": "processed",
@@ -199,7 +225,9 @@ def local_symbols(store: Path, *, pending: bool) -> list[str]:
     return result
 
 
-def run_lineage(store, symbols=None, *, identity_client, pricing_client=None, all_symbols=False, refresh=False):
+def run_lineage(
+    store, symbols=None, *, identity_client, pricing_client=None, all_symbols=False, refresh=False, observer=None
+):
     validate_version()
     store = Path(store).absolute()
     results, processed = [], set()
@@ -232,6 +260,7 @@ def run_lineage(store, symbols=None, *, identity_client, pricing_client=None, al
                     pricing_client=pricing_client,
                     refresh=refresh,
                     index=index,
+                    observer=observer,
                 )
                 processed.update(result["processed"])
             except (RuntimeError, OSError, ValueError) as error:

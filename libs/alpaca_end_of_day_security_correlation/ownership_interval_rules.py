@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable
 
+from .action_identity import complete_stock_merger_endpoints
+
 
 @dataclass(frozen=True)
 class AppliedOwnershipIntervalRule:
@@ -62,6 +64,7 @@ class TickerOwnershipInterval:
 class _OwnershipIntervalRuleContext:
     corporate_actions: tuple[dict[str, Any], ...]
     asset_ids_by_symbol_and_cusip: dict[tuple[str, str], str]
+    lineage: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ class _SameTickerStockMergerTransition:
     predecessor_asset_id: str
     successor_cusip: str
     successor_asset_id: str
+    completed_symbol: bool
 
 
 def _rule_reference(rule_order: int, rule_name: str) -> dict[str, Any]:
@@ -560,6 +564,9 @@ def _parse_same_ticker_stock_merger_transitions(
             continue
         predecessor_symbol = action.get("acquiree_symbol")
         successor_symbol = action.get("acquirer_symbol")
+        completed = complete_stock_merger_endpoints(action, context.lineage)
+        if completed is not None:
+            predecessor_symbol = successor_symbol = completed.symbol
         if not all(isinstance(symbol, str) and symbol for symbol in (predecessor_symbol, successor_symbol)):
             evidence_issues.append(
                 {
@@ -604,6 +611,9 @@ def _parse_same_ticker_stock_merger_transitions(
 
         predecessor_asset_id = context.asset_ids_by_symbol_and_cusip.get((predecessor_symbol, predecessor_cusip))
         successor_asset_id = context.asset_ids_by_symbol_and_cusip.get((successor_symbol, successor_cusip))
+        if completed is not None:
+            predecessor_asset_id = completed.predecessor_asset_id
+            successor_asset_id = completed.successor_asset_id
         if predecessor_asset_id is None or successor_asset_id is None:
             evidence_issues.append(
                 {
@@ -642,6 +652,7 @@ def _parse_same_ticker_stock_merger_transitions(
                 predecessor_asset_id=predecessor_asset_id,
                 successor_cusip=successor_cusip,
                 successor_asset_id=successor_asset_id,
+                completed_symbol=completed is not None,
             )
         )
     transitions.sort(key=lambda transition: (transition.boundary_date, transition.action_id))
@@ -679,6 +690,38 @@ def _apply_same_ticker_stock_merger_transition_rule(
         boundary_date = matching_transitions[0].boundary_date
         supporting_action_ids = tuple(transition.action_id for transition in matching_transitions)
         boundary_dates = sorted({transition.boundary_date for transition in matching_transitions})
+        # Completing a missing label establishes the direct identity link, not
+        # permission to contradict a name-change boundary already established
+        # earlier in this registry. Retain that ownership chronology; the UUID
+        # edge owner can still preserve the independently supported continuity.
+        conflicting_prior_intervals = [
+            interval
+            for interval in existing_intervals
+            if interval.historical_symbol == symbol
+            and interval.contains(boundary_date)
+            and (
+                interval.asset_id not in {predecessor_asset_id, successor_asset_id}
+                or (
+                    interval.asset_id == successor_asset_id
+                    and interval.start_date_inclusive is not None
+                    and interval.start_date_inclusive < boundary_date
+                )
+            )
+        ]
+        if (
+            all(transition.completed_symbol for transition in matching_transitions)
+            and conflicting_prior_intervals
+        ):
+            evidence_issues.append(
+                {
+                    "reason_code": "same_ticker_stock_merger_conflicts_with_existing_ownership_intervals",
+                    "ownership_interval_rule": _rule_reference(rule_order, rule_name),
+                    "action_ids": list(supporting_action_ids),
+                    "symbol": symbol,
+                    "detail": "Completed endpoint retains membership; earlier name-change dates retain ownership.",
+                }
+            )
+            continue
         if len(boundary_dates) > 1:
             evidence_issues.append(
                 {
@@ -825,6 +868,7 @@ def build_ticker_ownership_intervals(
     context = _OwnershipIntervalRuleContext(
         corporate_actions=normalized_actions,
         asset_ids_by_symbol_and_cusip=asset_ids,
+        lineage=lineage,
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
 

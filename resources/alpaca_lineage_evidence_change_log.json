@@ -1,0 +1,14 @@
+[
+  {
+    "modifications": [
+      "Expose operator JSON from the real standalone lineage workflow, including normal identity acquisition and missing-pricing downloader handoff, without a second resolver or pricing copies.",
+      "Include normalized evidence, request provenance, session grids, published assignments, actual transient calculation reports and ordered first-match paths; distinguish current calculations, reused boundaries and stale publications.",
+      "Provide explicit read-only offline inspection under existing publication locks, without acquisition, publication, acknowledgement, recovery or rule replay."
+    ]
+  },
+  {
+    "modifications": [
+      "Describe the shared predecessor-prefix rule's use of exact cross-source price equality, exposed through compact qualifying assessments in fresh actual reports; retain source-generation bindings without copying prices or adding a persistent audit boundary."
+    ]
+  }
+]

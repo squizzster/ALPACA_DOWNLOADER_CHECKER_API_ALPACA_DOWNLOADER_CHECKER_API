@@ -239,6 +239,14 @@ ownership registry, in this order:
 These rules establish dated ticker/CUSIP/UUID intervals. They do not by themselves join every related UUID into one
 security.
 
+For a stock merger with exactly one omitted symbol, `complete_stock_merger_endpoints` in
+[`action_identity.py`](libs/alpaca_end_of_day_security_correlation/action_identity.py) may complete the label from
+agreeing exact successful CUSIP lookups: both identify the explicit symbol as a non-OTC US equity, with no conflicting
+occupancy UUID. Raw evidence and explicit labels remain unchanged. Ownership rule 2 and UUID membership share this
+interpretation, then apply their own date/conflict gates. If the inferred transition contradicts earlier name-change
+ownership, preserve that chronology while retaining an independently supported membership link. Completing metadata
+does not authorize overriding an established historical owner or joining different merger branches.
+
 Overlapping evidence for the exact same ticker/CUSIP/UUID episode preserves its earliest explicit start and earliest
 explicit end. A later repeated arrival cannot erase an already dated beginning. Unknown dates do not erase known
 dates; separate or touching episodes remain separate, and a constraint overlapping multiple episodes is rejected.
@@ -257,11 +265,12 @@ this order:
 6. `one_session_distinct_uuid_transition`
 7. `complete_current_symbol_run_after_authenticated_ticker_reuse`
 8. `asof_selected_uuid_lineage_interval`
-9. `latest_dated_ownership_interval_overlapping_claims`
-10. `requested_symbol_dated_uuid_interval`
-11. `unique_uuid_candidate_with_warnings`
-12. `unresolved_uuid_candidates`
-13. `stable_continuous_ticker_identity_set`, the terminal fallback after the registry
+9. `exact_independently_resolved_predecessor_prefix`
+10. `latest_dated_ownership_interval_overlapping_claims`
+11. `requested_symbol_dated_uuid_interval`
+12. `unique_uuid_candidate_with_warnings`
+13. `unresolved_uuid_candidates`
+14. `stable_continuous_ticker_identity_set`, the terminal fallback after the registry
 
 Consequential gates include:
 
@@ -272,10 +281,13 @@ Consequential gates include:
   unresolved.
 - A dated terminal suffix requires an exact CUSIP lookup, one ownership interval, terminal coverage, and no left-side
   evidence for its UUID.
-- A one-session transition requires exact different old/new UUIDs, no competitor, a matching action boundary, and
-  agreement across every adjustment grid.
-- Continuous action-linked UUID episodes remain separate only when each has one complete, non-overlapping run in all
-  eight views. Recurrence, overlap, a missing view, or ambiguity vetoes the partition.
+- One-session transition inference uses exact distinct symbol identities, a dated action and matching session grids;
+  an explicitly superseded action cannot support it. Conflicting action-endpoint UUID/CUSIP evidence alone does not
+  erase the original inference. Exact gates are owned by `assess_one_session_distinct_uuid_transition` in
+  [`identity_partition.py`](libs/alpaca_end_of_day_security_correlation/identity_partition.py).
+- Continuous-episode assessments require complete, non-overlapping runs in all eight views; recurrence, overlap,
+  missing views and ambiguity veto those assessments. Pricing gaps, episode assessments and current-symbol vacancy
+  do not revoke an otherwise accepted UUID-continuation edge at membership construction.
 - Current-symbol reuse requires the old occupant to have renamed away at least 100 sessions earlier, exact current
   identity evidence, complete matching grids, and no competing structural evidence.
 - Within the as-of rule, one explicitly started interval for the exact selected UUID takes precedence over other
@@ -288,8 +300,24 @@ Consequential gates include:
   current-UUID fallback. Same-UUID overlaps defer to exact requested-symbol provenance.
 - Requested-label fallback cannot infer a new occupant's beginning from another occupant's ending. When different
   UUIDs used that label, an undated-start interval remains unresolved unless a stronger rule already established it.
+  One exception preserves the original predecessor's inferred lower bound when all known occupants form one
+  nonrecurrent same-symbol handoff chain: each predecessor end equals the next explicit start, and an accepted
+  same-symbol name-change or stock-merger edge binds the exact ticker/CUSIP/UUID endpoints and shared action.
+  Extra undated occupants, gaps, overlaps, branching, recurrence, foreign-label paths, split-only links and common
+  future successors gain no exception. This stays inside the requested-label rule; earlier gap/as-of vetoes still win.
 - The terminal fallback requires a gapless source, stable same-ticker candidates, one current anchor, agreeing names,
   and no missing or unexpected sessions.
+
+Rule 9 is assessed once per source by `assess_predecessor_prefixes` in
+[`predecessor_prefix.py`](libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py), using the shared cross-source
+loaders. A reused label's complete held prefix must match an accepted dated name-change edge and reach the last market
+session before the handoff. Exact raw timestamps and all raw bar fields must match a related source whose prefix was
+independently assigned by rule 8 to the exact predecessor UUID/CUSIP/label, with matching feed, timeframe and generation.
+All eight source adjustment grids must agree; their adjusted price values need not. At least two traded observations
+must have different OHLC values. Conflicting owners, partial or middle-only matches, recursive donor inference and
+flat zero-trade carry-forwards do not establish ownership. Only the supported prefix is assigned; the later source
+history and UUID-membership graph are unchanged. Compact comparison assessments are transient operator evidence,
+not another persistent pricing or audit boundary.
 
 Every trusted source row appears exactly once in the correlated or uncorrelated branch.
 
@@ -309,8 +337,10 @@ An immediately corrective next-day name change that preserves the predecessor UU
 earlier action remains an evidence issue but does not join its unrelated successor. This is the correlation transform
 v24 membership rule.
 
-Explicit identity partitions suppress only the corporate-action edges they certify. Unrelated valid lineage remains
-connected. The public ID is always the SHA-256 digest of sorted unique member Alpaca UUIDs. Later split evidence can
+Accepted continuity edges remain at membership construction even when pricing-episode rules distinguish dated rows.
+Unrelated reused-symbol occupants have no accepted connecting edge and remain separate. A common corporate successor
+does not make parallel predecessor observations interchangeable. The public ID is the SHA-256 digest of sorted unique
+member Alpaca UUIDs. Later split evidence can
 extend membership and change that digest without changing earlier row ownership; see the
 [identity model](docs/technical-contracts.md#identity-model).
 
@@ -346,6 +376,7 @@ replaces affected objects, buckets, and roots before writing the final selection
 - A boundary consumes only its declared immediate inputs and never recalculates another boundary's facts.
 - Behavioral and serialized changes bump their owning versions and append exactly one runtime changelog entry.
 - Registry order is asserted by tests and serialized into correlation output.
+- The evidence CLI observes this same standalone execution path; it owns no resolver or ticker-specific overrides.
 - The smallest complete affected identity closure is the unit of focused recalculation.
 - Publication receipts are written last; a failed transaction retains its recovery marker.
 

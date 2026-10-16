@@ -6,7 +6,7 @@ and operational hazards belong in [Operations](operations.md).
 
 The existing combined pipeline and `DataLibrary` use `data_vtest/`, without fallback to `data/end_of_day/`.
 The independent downloader uses the [standalone pricing-source contract](#standalone-pricing-source-contract) and an
-explicit destination, currently `data_pricing/` for GOOG development. Some internal Python paths, command help strings,
+explicit destination, currently `data_pricing/` for standalone development. Some internal Python paths, command help strings,
 and serialized boundary identifiers still carry an older release label. Those strings are literal compatibility
 facts, not a second pipeline or an architectural version choice.
 
@@ -104,7 +104,7 @@ published history to prove that it works, for example, but it cannot change a ba
 | Monthly pricing source | 2 | One canonical symbol, selected replacement partitions, and eight Alpaca adjustment responses; request identity is bound downstream | Deterministic month payloads, exact-copy aliases, month receipts, and structural source inventory. |
 | Monthly validation | 3 | One published source generation, the exclusive request end, validation transform v19, and the tracked market calendar | Per-month row/dataset findings, predecessor seams, compact ticker summary, and validation generation. |
 | Lineage source | 2 | Source generation, validation generation, exact asset and corporate-action responses, and lineage report v4 | Normalized lineage evidence and its generation; raw HTTP bodies are not retained. |
-| Correlation envelope | 2 | Source, validation, and lineage generations plus correlation transform v24 | Correlated and uncorrelated row partitions plus correlation-owned identity evidence. |
+| Correlation envelope | 2 | Source, validation, and lineage generations plus the installed correlation transform | Correlated and uncorrelated row partitions plus correlation-owned identity evidence. |
 | Warning envelope | 2 | Source, validation, and correlation generations, warning transform version 6, warning configuration, and market calendar | Cross-adjustment and security-segment advisory findings. |
 | Identity candidate | 2 | Published correlation partitions and lineage reports, plus the current catalogue base in affected mode | A restartable private snapshot or affected-closure aggregation with provisional offline state. |
 | Availability | 1 | Candidate, warning set, published histories, and lineage evidence | Exactly one online/offline/lineage-gap decision for every candidate identity. |
@@ -429,6 +429,27 @@ It selects approved assignments, applies the month overlay, and refuses incomple
 work. It does not read price payloads, acquire metadata, or rerun identity rules. These identity checks prevent mixed
 generations; the approved facts themselves are trusted.
 
+## Operator lineage evidence
+
+Owner: [`evidence.py`](../libs/alpaca_lineage_build/evidence.py), `output_evidence` and `EvidenceCapture`;
+entrypoint: [`output_current_lineage_evidence.py`](../output_current_lineage_evidence.py). Schema 2 is validated against
+[`alpaca_lineage_evidence_change_log.json`](../resources/alpaca_lineage_evidence_change_log.json). This is an on-demand
+operator response, not another durable datastore boundary or a public `DataLibrary` interface.
+
+The document identifies `schema_version`, `boundary`, requested `symbol`, `mode`, `installed_versions`, the actual
+`workflow` result and its `sources`. Each published source exposes the selecting receipt and normalized evidence,
+pricing receipt/session-grid context, effective assignments, input freshness and decision origin. Fresh calculations
+also expose the actual transient report and qualifying predecessor-prefix comparisons. Price payloads are not included.
+
+`rule_path` explains first-match control flow from the recorded selection and ordered registry. It labels earlier
+fall-through and later unevaluated rules; it does not replay predicates or invent their failure reasons. Reused and
+offline publications retain their own versions and selected decisions, not a fictional trace from the installed code.
+Transient assessments absent from a reused publication are explicitly unavailable. Normal pipeline observation runs
+under the existing locks; offline inspection also respects publication locks and makes no writes or repairs.
+
+See [Operations](operations.md#current-lineage-evidence) for acquisition effects and flags, and
+[Development](development.md#lineage-research-and-rule-improvement-loop) for the research/implementation procedure.
+
 ## Monthly pricing-source contract
 
 The store manifest fixes symbol/year/month placement, month abbreviations, column order, adjustment order, gzip level
@@ -693,14 +714,17 @@ data_vtest/
 ```
 
 Runtime data is ignored by Git. [`resources/ticker.csv`](../resources/ticker.csv) is a one-record, comma-separated
-recovery snapshot containing 18,092 historical source labels. It is not a catalogue, is not accepted directly by the
-current line-oriented `--file` parser, and cannot reproduce a generation without provider acquisition and the complete
-boundary cascade.
+recovery snapshot containing 18,092 historical source labels. It is not a catalogue. The combined producer's
+line-oriented `--file` parser does not accept it directly; the standalone siblings' CSV-aware parsers do. It cannot
+reproduce a generation without provider acquisition and the complete boundary cascade.
 
 ## Authoritative implementation
 
 | Contract | Source |
 |---|---|
+| Compact pricing and locked pending dates | [`alpaca_pricing_download`](../libs/alpaca_pricing_download/) |
+| Standalone lineage execution, versions and publication | [`pipeline.py`](../libs/alpaca_lineage_build/pipeline.py), [`contract.py`](../libs/alpaca_lineage_build/contract.py), [`storage.py`](../libs/alpaca_lineage_build/storage.py) |
+| Operator evidence and recorded rule paths | [`evidence.py`](../libs/alpaca_lineage_build/evidence.py) |
 | Request defaults and adjustment labels | [`settings.py`](../libs/download_alpaca_end_of_day_bars/settings.py) |
 | Bar HTTP, rate limiting, and page-token rejection | [`alpaca_http.py`](../libs/download_alpaca_end_of_day_bars/alpaca_http.py) |
 | Monthly source and authentication | [`source.py`](../libs/alpaca_end_of_day_v6/source.py) |

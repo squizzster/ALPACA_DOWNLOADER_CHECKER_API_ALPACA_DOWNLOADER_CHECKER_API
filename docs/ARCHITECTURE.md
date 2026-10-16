@@ -18,6 +18,7 @@ The standalone pricing producer is independent of the existing combined catalogu
 |---|---|---|
 | Standalone pricing downloader | [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Acquire exact ticker-labelled pricing, publish compact source boundaries and pending dates, and stop; no identity or catalogue dependency. |
 | Standalone lineage | [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | One worker consumes pending pricing, acquires identity evidence, applies the established rules, and publishes chronological assignments before acknowledgement. |
+| Operator lineage evidence | [`output_current_lineage_evidence.py`](../output_current_lineage_evidence.py) | Observe the same lineage workflow, or inspect published decisions offline; no alternate resolver and no public consumer API. |
 | Producer | [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Own the complete acquisition-to-catalogue cascade and publish receipts last. |
 | Clean-room constructor | [`build_alpaca_end_of_day_clean_room.py`](../build_alpaca_end_of_day_clean_room.py) | Schedule the same cascade as bounded canonical-symbol transactions using only the fixed universe, provider responses, and repository contracts; checkpoint exact accounting; audit before activation. |
 | Consumer | [`alpaca_end_of_day.DataLibrary`](../alpaca_end_of_day/__init__.py) | Trust one completed catalogue generation and expose only online public identities and exact histories. |
@@ -155,23 +156,9 @@ failed smoke check rolls the rename back. Operations permit only one producer or
 
 ## Update flow
 
-The canonical orchestrator is
-[`pipeline.py`](../libs/alpaca_end_of_day_v6/pipeline.py). At a high level it:
-
-```text
-resolve every submitted label
-  -> open one exclusive publication transaction
-  -> acquire and publish selected monthly source ranges
-  -> publish or reuse monthly validation
-  -> acquire and publish normalized lineage evidence
-  -> retain the complete downstream publication when all generations still match
-  -> otherwise run correlation to a fixed point
-  -> publish warnings
-  -> publish a private identity candidate
-  -> evaluate availability through published history reads
-  -> incrementally publish catalogue objects
-  -> write the reader-visible catalogue receipt last
-```
+The combined orchestrator is [`pipeline.py`](../libs/alpaca_end_of_day_v6/pipeline.py). Its exact execution sequence is
+owned by [Pipeline](../PIPELINE.md#one-ordered-execution-path); standalone updates have their
+[own entry path](../PIPELINE.md#standalone-lineage-execution) into the shared identity transforms.
 
 For an existing catalogue, processing expands submitted canonical symbols to their current source/identity closure.
 Only submitted canonical symbols reacquire bars and lineage; unchanged supporting symbols are loaded from their
@@ -179,24 +166,9 @@ published boundaries. Catalogue delta publication preserves unrelated objects an
 
 ## Consumer flow
 
-```text
-DataLibrary construction
-  -> acquire the shared publication lock
-  -> reject an incomplete publication marker
-  -> select one reader-visible catalogue receipt
-  -> lazily expose only identities with online = true
-
-public ID + adjustment + optional dates
-  -> reacquire the shared lock
-  -> require the same security-master generation
-  -> load published correlation, warning, and monthly source views
-  -> assemble the requested exact history
-  -> project typed public values
-```
-
-Ordinary consumer reads do not run the explicit digest audit path. `DataLibrary` stays bound to the selected
-security-master generation; if publication changes, a history call raises `CatalogChangedError` and the caller opens a
-new instance.
+`DataLibrary` selects one completed online snapshot and trusts its published dependencies; it does not perform an
+explicit digest audit or switch generations during a history read. The [public snapshot contract](public-api.md#snapshot-consistency)
+owns lock, generation-change and error behavior. The standalone evidence CLI is an operator interface, not this reader.
 
 ## Code ownership
 

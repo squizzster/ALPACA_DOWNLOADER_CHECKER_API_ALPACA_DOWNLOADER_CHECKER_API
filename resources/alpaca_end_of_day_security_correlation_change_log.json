@@ -166,5 +166,39 @@
       "Within the existing as-of row rule, prefer one explicitly started interval for the exact selected entity UUID over connected predecessor branches; keep earlier reuse/exclusion rules and fail-closed handling of undated or ambiguous claims.",
       "Evaluate the complete cross-source fixed-point cascade, including resulting episode partitions and membership hashes, without changing pricing, identity-edge rules, datastore layout or the public-ID scheme."
     ]
+  },
+  {
+    "modifications": [
+      "Retain an undated requested-label predecessor when every dated occupant forms one nonrecurrent same-symbol successor chain, with adjoining ownership boundaries and an accepted name-change or stock-merger edge supporting each exact ticker/CUSIP/UUID handoff.",
+      "Keep the existing requested-symbol rule and inferred-lower-bound warning; unrelated reuse, gaps, overlaps, branching, foreign-label paths, split-only links and superseded edges gain no exception, and earlier ambiguity and pricing-gap rules retain precedence.",
+      "Precompute handoff eligibility from existing approved interval and edge inputs; preserve registry order, split-only membership semantics, and the datastore layout."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve accepted UUID-lineage edges at public-ID membership construction: one-session or continuous-episode pricing gaps and current-symbol vacancy assessments do not revoke a same-security continuation. Unrelated ticker occupants remain separate without an accepted connecting edge.",
+      "Retain the original one-session transition inference and registry position, except for actions already explicitly rejected by the established supersession rule. Conflicting action-endpoint UUID/CUSIP evidence alone does not veto a pricing transition or erase supported predecessor ownership.",
+      "Preserve established dated-ownership, branch-scoping, reused-symbol allocation and narrow split-membership rules. No external research facts, source-anchor inference, new storage or pricing changes are introduced."
+    ]
+  },
+  {
+    "modifications": [
+      "Complete one omitted stock-merger endpoint symbol when both exact successful CUSIP lookups identify US equities with the other explicitly named symbol, without conflicting occupancy UUIDs. Preserve raw evidence and never override a nonblank historical label.",
+      "Share endpoint interpretation between the existing same-ticker ownership transition and UUID-membership calculations, retaining their date, identity and conflict checks and the unchanged downstream row-rule order. Different-symbol merger branches and cash acquirees gain no identity equivalence.",
+      "When a completed endpoint conflicts with an earlier name-change ownership claim at the handoff, retain the earlier chronology without adding contradictory intervals; preserve the independently supported direct UUID-membership link. Do not remove supported pricing because vendor UUID dates cannot be refined."
+    ]
+  },
+  {
+    "modifications": [
+      "Resolve an ambiguous old-label source's complete predecessor prefix when all eight pricing views exactly match an independently as-of-resolved successor view, bound to the same accepted name-change UUID/CUSIP and ending at its dated handoff.",
+      "Require matching sessions, exact canonical prices and traded nonconstant observations; reject incomplete, conflicting or recursively inferred donor evidence. Apply after stronger source-selection and reuse rules, before ambiguous ownership fallbacks.",
+      "Use the existing shared cross-source fixed-point loaders without changing identity membership, pricing storage or the later reused-symbol suffix. Expose compact donor, action and compared-span assessments in the transient report, not a new persistent audit boundary."
+    ]
+  },
+  {
+    "modifications": [
+      "Use exact complete raw transaction fingerprints to establish predecessor-prefix ownership; later splits or other adjustment differences do not change the historical owner. Keep agreement of the source's eight adjustment session grids and the existing independent donor, dated action, informative trading and ambiguity safeguards.",
+      "Refine the existing prefix assessment at the same cascade position without new UUID links, pricing changes or persistent audit fields. Report raw-price equality separately from adjustment-session agreement."
+    ]
   }
 ]

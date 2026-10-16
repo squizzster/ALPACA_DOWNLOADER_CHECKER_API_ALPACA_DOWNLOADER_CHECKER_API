@@ -9,11 +9,11 @@ from libs.alpaca_security_lineage import (
 )
 
 from .correlation_version import CORRELATION_VERSION, validate_correlation_change_log
-from .episode_partition import assess_distinct_uuid_episode_partitions
 from .errors import SecurityCorrelationError
 from .evidence import build_ticker_ownership_intervals, ownership_interval_rule_order
 from .frozen_downloads import read_authenticated_frozen_download
 from .identity_partition import assess_one_session_distinct_uuid_transition
+from .predecessor_prefix import assess_predecessor_prefixes
 from .publication import lineage_evidence_sha256, publish_security_correlation
 from .row_correlation import (
     correlate_download_rows,
@@ -158,6 +158,7 @@ def build_security_correlation_report(
     distinct_uuid_transition = assess_one_session_distinct_uuid_transition(
         repository_root,
         lineage,
+        evidence_issues=evidence_issues,
         authenticated_symbol_sessions=authenticated_symbol_sessions,
     )
     if distinct_uuid_transition is not None and symbol not in {
@@ -165,16 +166,26 @@ def build_security_correlation_report(
         distinct_uuid_transition.successor.symbol,
     }:
         distinct_uuid_transition = None
-    distinct_uuid_episode_partitions = (
-        assess_distinct_uuid_episode_partitions(
-            repository_root,
-            symbol,
-            lineage,
-            correlation_loader=correlation_loader,
-            source_rows_loader=source_rows_loader,
-        )
-        if assess_episode_partitions
-        else ()
+    # Missing pricing sessions do not revoke an accepted identity edge. The old
+    # episode-partition pass read other sources solely to make those cuts; no
+    # membership decision consumes it now. Legacy adapter arguments remain valid.
+
+    # Incremental runs contain only the open boundary; they cannot establish a
+    # whole-source prefix. Earlier published assignments remain trusted as-is.
+    complete_source = all(
+        descriptor.get("rows", len(download.rows)) == len(download.rows)
+        for download, _, _ in authenticated_work_items
+        for descriptor in local_downloads
+        if isinstance(descriptor, dict) and descriptor.get("file") == download.path.name
+    )
+    predecessor_prefixes = assess_predecessor_prefixes(
+        symbol,
+        lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        correlation_loader=correlation_loader if complete_source else None,
+        source_rows_loader=source_rows_loader,
     )
 
     for authenticated_download, source, _ in authenticated_work_items:
@@ -186,7 +197,7 @@ def build_security_correlation_report(
             adjustment_consensus=session_consensus,
             evidence_issues=evidence_issues,
             distinct_uuid_transition=distinct_uuid_transition,
-            distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
+            predecessor_prefixes=predecessor_prefixes,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]
@@ -254,6 +265,7 @@ def build_security_correlation_report(
         "uuid_lineage_edges": [edge.as_report_object() for edge in uuid_lineage_edges],
         "ticker_ownership_intervals": [_interval_report_object(interval) for interval in intervals],
         "evidence_issues": evidence_issues,
+        "predecessor_prefix_assessments": [item.as_report_object() for item in predecessor_prefixes],
         "files": files,
         "correlated": {
             "segment_count": len(correlated_segments),

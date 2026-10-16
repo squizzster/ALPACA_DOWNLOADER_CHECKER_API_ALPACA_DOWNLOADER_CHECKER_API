@@ -28,13 +28,11 @@ from libs.alpaca_end_of_day_security_correlation import (
     uncorrelated_pipeline_path,
     validate_correlation_change_log,
 )
+from libs.alpaca_end_of_day_security_correlation.action_identity import complete_stock_merger_endpoints
 from libs.alpaca_end_of_day_security_correlation.current_symbol_reuse import (
     CURRENT_SYMBOL_REUSE_RULE_NAME,
 )
-from libs.alpaca_end_of_day_security_correlation.episode_partition import (
-    PARTITION_RULE_NAME,
-    _qualify_component,
-)
+from libs.alpaca_end_of_day_security_correlation.episode_partition import _qualify_component
 from libs.alpaca_end_of_day_security_correlation.evidence import (
     build_ticker_ownership_intervals,
     ownership_interval_rule_order,
@@ -51,6 +49,7 @@ from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import
 from libs.alpaca_end_of_day_security_correlation.row_correlation import (
     LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME,
     _apply_asof_selected_identity_rule,
+    _dated_same_symbol_predecessors,
     _RowRuleContext,
     correlate_download_rows,
     row_correlation_rule_order,
@@ -931,6 +930,127 @@ class DistinctUuidTransitionTests(unittest.TestCase):
 
         self.assertIsNone(self._assessment(new_session=date(2024, 1, 5)))
 
+    def test_one_session_candidate_respects_existing_action_supersession(self) -> None:
+        lineage = self._lineage()
+        lineage["corporate_actions"] = []
+        predecessor = ("old-asset-id", "OLD", "111111111", "Old issuer")
+        for action_id, when, successor in (
+            ("transition-1", "2024-01-03", ("new-asset-id", "NEW", "222222222", "New issuer")),
+            ("correction", "2024-01-04", ("old-asset-id", "CORRECT", "333333333", "Old issuer")),
+        ):
+            add_name_change_edge(
+                lineage, action_id=action_id, process_date=when, predecessor=predecessor, successor=successor
+            )
+        _, issues = build_uuid_lineage_edges(lineage)
+        self.assertIn("transition-1", {issue.get("rejected_action_id") for issue in issues})
+        self.assertEqual((), _transition_candidates(lineage))
+        # The report adapter supplies this existing conclusion; no re-audit.
+        with patch(
+            "libs.alpaca_end_of_day_security_correlation.identity_partition.build_uuid_lineage_edges",
+            side_effect=AssertionError("already calculated"),
+        ):
+            self.assertEqual((), _transition_candidates(lineage, evidence_issues=issues))
+
+    def test_one_session_candidate_keeps_original_inference_without_corroboration(self) -> None:
+        lineage = self._lineage()
+        for identity in lineage["identities"]:
+            identity["lookup_cusips"] = []
+        self.assertEqual(1, len(_transition_candidates(lineage)))
+
+    def test_conflicting_action_cusip_does_not_erase_dated_predecessor_evidence(self) -> None:
+        lineage = self._lineage()
+        lineage["corporate_actions"][0]["old_cusip"] = "222222222"
+        lineage["corporate_actions"].append(
+            {
+                "action_type": "cash_dividend",
+                "id": "earlier-dividend",
+                "process_date": "2024-01-02",
+                "symbol": "OLD",
+                "cusip": "111111111",
+            }
+        )
+        lineage["symbol_occupancy_evidence"] = [
+            occupancy(
+                "OLD",
+                "111111111",
+                "old-asset-id",
+                action_type="cash_dividend",
+                action_id="earlier-dividend",
+                process_date="2024-01-02",
+                role="symbol",
+            ),
+            *[
+                occupancy(
+                    symbol,
+                    "222222222",
+                    "new-asset-id",
+                    action_type="name_change",
+                    action_id="transition-1",
+                    process_date="2024-01-03",
+                    role=role,
+                )
+                for symbol, role in (("OLD", "old"), ("NEW", "new"))
+            ],
+        ]
+        candidate = _transition_candidates(lineage)[0]
+        transition = _assess_candidate(candidate, {"OLD": (date(2024, 1, 2),), "NEW": (date(2024, 1, 4),)}, ())
+        self.assertIsNotNone(transition)
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        for adjustment in ALPACA_ADJUSTMENT_MODES:
+            with self.subTest(adjustment=adjustment):
+                branches = correlate_download_rows(
+                    [{"t": "2024-01-02T05:00:00Z"}, {"t": "2024-01-04T05:00:00Z"}],
+                    {**correlation_source("NEW", asof="2024-01-05"), "adjustment": adjustment},
+                    lineage,
+                    intervals,
+                    distinct_uuid_transition=transition,
+                )
+                self.assertEqual([], branches["uncorrelated"])
+                self.assertEqual(
+                    ["old-asset-id", "new-asset-id"],
+                    [s["canonical_security"]["alpaca_asset_id"] for s in branches["correlated"]],
+                )
+
+    def test_one_session_routing_does_not_cut_an_accepted_continuation(self) -> None:
+        lineage = self._lineage()
+        lineage["symbol_occupancy_evidence"] = [
+            occupancy(
+                symbol,
+                cusip,
+                identifier,
+                action_type="name_change",
+                action_id="transition-1",
+                process_date="2024-01-03",
+                role=role,
+            )
+            for symbol, cusip, identifier, role in (
+                ("OLD", "111111111", "old-asset-id", "old"),
+                ("NEW", "222222222", "new-asset-id", "new"),
+            )
+        ]
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        expected_id = security_id_for_alpaca_asset_ids(("old-asset-id", "new-asset-id"))
+        for adjustment in ALPACA_ADJUSTMENT_MODES:
+            with self.subTest(adjustment=adjustment):
+                branches = correlate_download_rows(
+                    [{"t": "2024-01-02T05:00:00Z"}, {"t": "2024-01-04T05:00:00Z"}],
+                    {**correlation_source("NEW", asof="2024-01-05"), "adjustment": adjustment},
+                    lineage,
+                    intervals,
+                    distinct_uuid_transition=self._assessment(),
+                )
+                self.assertEqual([], branches["uncorrelated"])
+                segments = branches["correlated"]
+                self.assertEqual(["OLD", "NEW"], [s["historical_symbol"] for s in segments])
+                self.assertEqual(
+                    ["old-asset-id", "new-asset-id"],
+                    [s["canonical_security"]["alpaca_asset_id"] for s in segments],
+                )
+                self.assertEqual([expected_id] * 2, [s["security_identity"]["security_id"] for s in segments])
+                self.assertEqual(
+                    ["explicit_uuid_lineage"] * 2, [s["security_identity"]["basis"] for s in segments]
+                )
+
 
 class DistinctUuidEpisodePartitionTests(unittest.TestCase):
     def _sessions_by_adjustment(
@@ -983,7 +1103,7 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
         self.assertNotIn("correlated_output_sha256", serialized)
         self.assertNotIn("uncorrelated_output_sha256", serialized)
 
-    def test_episode_partition_suppresses_its_certified_uuid_edge(self) -> None:
+    def test_episode_partition_cannot_suppress_a_certified_uuid_edge(self) -> None:
         lineage = DistinctUuidTransitionTests._lineage()
         lineage["symbol_occupancy_evidence"] = [
             occupancy(
@@ -1035,19 +1155,19 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
 
         self.assertEqual([], branches["uncorrelated"])
         segment = branches["correlated"][0]
-        self.assertEqual(PARTITION_RULE_NAME, segment["security_identity"]["basis"])
+        self.assertEqual("explicit_uuid_lineage", segment["security_identity"]["basis"])
         self.assertEqual(
-            ["old-asset-id"],
+            ["new-asset-id", "old-asset-id"],
             segment["security_identity"]["member_alpaca_asset_ids"],
         )
 
-    def test_partition_suppresses_only_its_edge_and_retains_a_split_edge(self) -> None:
+    def test_partition_retains_both_name_change_and_split_edges(self) -> None:
         lineage = same_symbol_split_lineage()
         add_name_change_edge(
             lineage,
             action_id="spac-to-split-security",
             process_date="2024-01-03",
-            predecessor=("spac-asset-id", "SPAC", "333333333", "Unrelated SPAC"),
+            predecessor=("spac-asset-id", "SPAC", "333333333", "Predecessor SPAC"),
             successor=("old-split-asset-id", "SPLT", "111111111", "Split Test Security"),
         )
         edges, edge_issues = build_uuid_lineage_edges(lineage)
@@ -1071,7 +1191,7 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
         self.assertEqual([], edge_issues)
         self.assertEqual([], interval_issues)
         self.assertIsNotNone(partition)
-        expected_split_members = ["new-split-asset-id", "old-split-asset-id"]
+        expected_split_members = ["new-split-asset-id", "old-split-asset-id", "spac-asset-id"]
         for timestamp, expected_asset_id in (
             ("2026-09-28T04:00:00Z", "old-split-asset-id"),
             ("2026-09-29T04:00:00Z", "old-split-asset-id"),
@@ -1090,7 +1210,7 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
                     expected_split_members,
                     segment["security_identity"]["member_alpaca_asset_ids"],
                 )
-                self.assertNotIn(
+                self.assertIn(
                     "spac-asset-id",
                     segment["security_identity"]["member_alpaca_asset_ids"],
                 )
@@ -1183,6 +1303,417 @@ class OwnershipEpisodeBoundaryTests(unittest.TestCase):
         )
         lineage["corporate_actions"].reverse()
         self.assertEqual((intervals, issues), build_ticker_ownership_intervals(lineage))
+
+
+class DatedSameSymbolHandoffTests(unittest.TestCase):
+    @staticmethod
+    def lineage(symbol="HOLD", count=2):
+        lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+        stages = [(f"stage-{index}", symbol, str(index + 1) * 9, "Security") for index in range(count)]
+        for index, (predecessor, successor) in enumerate(zip(stages, stages[1:])):
+            add_name_change_edge(
+                lineage,
+                action_id=f"handoff-{index}",
+                process_date=f"2024-01-0{index + 3}",
+                predecessor=predecessor,
+                successor=successor,
+            )
+        add_name_change_edge(
+            lineage,
+            action_id="rename-away",
+            process_date="2024-01-05",
+            predecessor=stages[-1],
+            successor=(stages[-1][0], "RENAMED", stages[-1][2], "Security"),
+        )
+        return lineage
+
+    def test_dated_chain_preserves_predecessor_and_exact_cutovers_in_every_view(self):
+        for symbol in ("HOLD", "DIFFERENT"):
+            for count in (2, 3):
+                lineage = self.lineage(symbol, count)
+                intervals, issues = build_ticker_ownership_intervals(lineage)
+                self.assertEqual([], issues)
+                for adjustment in ALPACA_ADJUSTMENT_MODES:
+                    with self.subTest(symbol=symbol, count=count, adjustment=adjustment):
+                        source = {**correlation_source(symbol, asof="2024-01-08"), "adjustment": adjustment}
+                        rows = complete_market_session_rows("2024-01-02", "2024-01-05")
+                        branches = correlate_download_rows(rows, source, lineage, intervals)
+                        self.assertEqual([], branches["uncorrelated"])
+                        expected = [f"stage-{min(index, count - 1)}" for index in range(len(rows))]
+                        actual = [
+                            segment["canonical_security"]["alpaca_asset_id"]
+                            for segment in branches["correlated"]
+                            for _ in range(segment["row_count"])
+                        ]
+                        self.assertEqual(expected, actual)
+                        first = branches["correlated"][0]
+                        self.assertEqual(
+                            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+                            first["correlation_rule"],
+                        )
+                        self.assertIn("inferred_lower_ownership_boundary", first["warnings"])
+                        self.assertEqual(
+                            [f"stage-{index}" for index in range(count)],
+                            first["security_identity"]["member_alpaca_asset_ids"],
+                        )
+                        self.assertEqual(
+                            branches,
+                            correlate_download_rows(rows, source, lineage, list(reversed(intervals))),
+                        )
+
+    def test_same_symbol_stock_merger_can_establish_the_same_dated_handoff(self):
+        lineage = self.lineage()
+        action = lineage["corporate_actions"][0]
+        lineage["corporate_actions"][0] = {
+            "id": action["id"],
+            "action_type": "stock_merger",
+            "effective_date": action["process_date"],
+            "acquiree_symbol": action["old_symbol"],
+            "acquiree_cusip": action["old_cusip"],
+            "acquirer_symbol": action["new_symbol"],
+            "acquirer_cusip": action["new_cusip"],
+        }
+        intervals, issues = build_ticker_ownership_intervals(lineage)
+        self.assertEqual([], issues)
+        branches = correlate_download_rows(
+            complete_market_session_rows("2024-01-02", "2024-01-05"),
+            correlation_source("HOLD", asof="2024-01-08"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual([], branches["uncorrelated"])
+        self.assertEqual("stage-0", branches["correlated"][0]["canonical_security"]["alpaca_asset_id"])
+
+    def test_incomplete_overlapping_recurrent_or_unrelated_chains_gain_no_exception(self):
+        lineage = self.lineage()
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        edges, _ = build_uuid_lineage_edges(lineage)
+        predecessor, successor = [item for item in intervals if item.historical_symbol == "HOLD"]
+        cases = {
+            "gap": [predecessor, replace(successor, start_date_inclusive=date(2024, 1, 4))],
+            "overlap": [predecessor, replace(successor, start_date_inclusive=date(2024, 1, 2))],
+            "undated successor": [predecessor, replace(successor, start_date_inclusive=None)],
+            "no terminal boundary": [replace(predecessor, end_date_exclusive=None), successor],
+            "recurrence": [predecessor, replace(successor, asset_id=predecessor.asset_id)],
+            "unrelated occupant": [
+                predecessor,
+                successor,
+                TickerOwnershipInterval("HOLD", "999999999", "unrelated", date(2024, 1, 8), None, ()),
+            ],
+        }
+        for label, candidates in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual(
+                    frozenset(), _dated_same_symbol_predecessors("HOLD", lineage, candidates, edges)
+                )
+
+    def test_only_an_accepted_exact_handoff_can_establish_continuity(self):
+        lineage = self.lineage()
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        edges, _ = build_uuid_lineage_edges(lineage)
+        handoff = edges[0]
+        cases = {
+            "missing or superseded edge": [],
+            "wrong action": [replace(handoff, action_id="other-action")],
+            "wrong CUSIP": [replace(handoff, predecessor_cusip="999999999")],
+            "wrong UUID": [replace(handoff, predecessor_asset_id="unrelated")],
+            "wrong date": [replace(handoff, effective_date=date(2024, 1, 4))],
+            "foreign label": [replace(handoff, predecessor_symbol="OTHER")],
+            "split only": [replace(handoff, edge_type="reverse_split")],
+        }
+        for label, candidates in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual(
+                    frozenset(), _dated_same_symbol_predecessors("HOLD", lineage, intervals, candidates)
+                )
+
+    def test_undated_extra_occupancy_or_current_lookup_vetoes_the_dated_subset(self):
+        for kind in ("occupancy", "lookup"):
+            with self.subTest(kind=kind):
+                lineage = self.lineage()
+                intervals, _ = build_ticker_ownership_intervals(lineage)
+                edges, _ = build_uuid_lineage_edges(lineage)
+                if kind == "occupancy":
+                    lineage["symbol_occupancy_evidence"].append(
+                        {"symbol": "HOLD", "cusip": "999999999", "asset_id": "unrelated", "evidence": []}
+                    )
+                else:
+                    lineage["asset_lookups"] = [
+                        {"lookup_kind": "symbol", "lookup": "HOLD", "asset": {"id": "unrelated"}}
+                    ]
+                self.assertEqual(frozenset(), _dated_same_symbol_predecessors("HOLD", lineage, intervals, edges))
+                branches = correlate_download_rows(
+                    [{"t": "2024-01-02T12:00:00Z"}],
+                    correlation_source("HOLD", asof="2024-01-08"),
+                    lineage,
+                    intervals,
+                )
+                self.assertEqual([], branches["correlated"])
+                self.assertEqual(
+                    ["undated_requested_ticker_reuse_boundary"], branches["uncorrelated"][0]["reason_codes"]
+                )
+
+    def test_a_shared_future_successor_is_not_a_same_symbol_handoff(self):
+        lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
+        for index, when in enumerate(("2024-01-03", "2024-01-05")):
+            add_name_change_edge(
+                lineage,
+                action_id=f"branch-{index}",
+                process_date=when,
+                predecessor=(f"branch-{index}", "REUSED", str(index + 1) * 9, "Predecessor"),
+                successor=("joined-id", "JOINED", "333333333", "Successor"),
+            )
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        edges, _ = build_uuid_lineage_edges(lineage)
+        self.assertEqual(2, len(edges))
+        self.assertEqual(frozenset(), _dated_same_symbol_predecessors("REUSED", lineage, intervals, edges))
+        branches = correlate_download_rows(
+            [{"t": "2024-01-04T12:00:00Z"}],
+            correlation_source("REUSED", asof="2024-01-08"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(
+            ["undated_requested_ticker_reuse_boundary"], branches["uncorrelated"][0]["reason_codes"]
+        )
+
+    def test_pricing_gap_guard_still_precedes_the_supported_handoff(self):
+        lineage = self.lineage()
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        branches = correlate_download_rows(
+            [{"t": "2020-01-02T12:00:00Z"}, {"t": "2024-01-02T12:00:00Z"}],
+            correlation_source("HOLD", asof="2024-01-08"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertTrue(
+            all(
+                segment["correlation_rule"]["name"] == "ticker_reuse_gap_guard"
+                for segment in branches["uncorrelated"]
+            )
+        )
+
+    def test_concurrent_asof_predecessors_still_veto_the_supported_handoff(self):
+        lineage = self.lineage()
+        add_name_change_edge(
+            lineage,
+            action_id="other-predecessor",
+            process_date="2024-01-03",
+            predecessor=("other-id", "OTHER", "999999999", "Other security"),
+            successor=("stage-1", "HOLD", "222222222", "Security"),
+        )
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        branches = correlate_download_rows(
+            [{"t": "2024-01-02T12:00:00Z"}],
+            correlation_source("HOLD", asof="2024-01-04"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual([], branches["correlated"])
+        self.assertEqual(["ambiguous_asof_uuid_lineage_intervals"], branches["uncorrelated"][0]["reason_codes"])
+
+
+class OmittedStockMergerEndpointTests(unittest.TestCase):
+    @staticmethod
+    def lineage():
+        old = asset("old-id", "HOLD", "Old legal name")
+        new = asset("new-id", "HOLD", "New legal name")
+        old.update(status="inactive", tradable=False)
+        return {
+            "query": complete_query("HOLD"),
+            "corporate_actions": [
+                {
+                    "action_type": "stock_merger",
+                    "id": "handoff",
+                    "effective_date": "2024-01-03",
+                    "process_date": "2024-01-03",
+                    "acquiree_symbol": "HOLD",
+                    "acquirer_symbol": "",
+                    "acquiree_cusip": "111111111",
+                    "acquirer_cusip": "222222222",
+                    "acquiree_rate": 1,
+                    "acquirer_rate": 1,
+                }
+            ],
+            "identities": [old, new],
+            "symbol_occupancy_evidence": [],
+            "asset_lookups": [
+                {
+                    "lookup_kind": "cusip",
+                    "lookup": cusip,
+                    "found": True,
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": security,
+                }
+                for cusip, security in (("111111111", old), ("222222222", new))
+            ],
+        }
+
+    def test_shared_interpretation_preserves_raw_evidence_and_existing_cascade(self):
+        lineage = self.lineage()
+        # Unrelated cash acquirees must keep their own intervals, not intercept
+        # the source's now-authenticated direct same-symbol handoff.
+        for number, symbol in enumerate(("BUYONE", "BUYTWO"), 3):
+            lineage["corporate_actions"].append(
+                {
+                    "action_type": "cash_merger",
+                    "id": symbol,
+                    "effective_date": "2025-01-03",
+                    "process_date": "2025-01-03",
+                    "acquiree_symbol": symbol,
+                    "acquiree_cusip": str(number) * 9,
+                    "acquirer_symbol": "HOLD",
+                    "acquirer_cusip": "222222222",
+                }
+            )
+            lineage["symbol_occupancy_evidence"].append(
+                {
+                    "symbol": symbol,
+                    "cusip": str(number) * 9,
+                    "asset_id": symbol + "-id",
+                }
+            )
+        original = copy.deepcopy(lineage)
+        intervals, issues = build_ticker_ownership_intervals(lineage)
+        edges, edge_issues = build_uuid_lineage_edges(lineage)
+        self.assertEqual([], issues)
+        self.assertEqual([], edge_issues)
+        self.assertEqual(4, len(intervals))
+        self.assertEqual(1, len(edges))
+        branches = correlate_download_rows(
+            [{"t": "2024-01-02T05:00:00Z"}, {"t": "2024-01-03T05:00:00Z"}],
+            correlation_source("HOLD", asof="2026-10-06"),
+            lineage,
+            intervals,
+        )
+        self.assertEqual([], branches["uncorrelated"])
+        self.assertEqual(
+            ["old-id", "new-id"],
+            [segment["canonical_security"]["alpaca_asset_id"] for segment in branches["correlated"]],
+        )
+        for segment in branches["correlated"]:
+            self.assertEqual(
+                {"order": 8, "name": "asof_selected_uuid_lineage_interval"}, segment["correlation_rule"]
+            )
+            self.assertEqual(["new-id", "old-id"], segment["security_identity"]["member_alpaca_asset_ids"])
+        self.assertEqual(original, lineage)
+
+    def test_one_omitted_endpoint_on_either_side(self):
+        for field in ("acquiree_symbol", "acquirer_symbol"):
+            for missing in (None, ""):
+                with self.subTest(field=field, missing=missing):
+                    lineage = self.lineage()
+                    action = lineage["corporate_actions"][0]
+                    action.update(acquiree_symbol="HOLD", acquirer_symbol="HOLD")
+                    action[field] = missing
+                    self.assertEqual("HOLD", complete_stock_merger_endpoints(action, lineage).symbol)
+
+    def test_missing_label_never_overrides_conflicting_or_insufficient_evidence(self):
+        changes = {
+            "both_missing": lambda e: e["corporate_actions"][0].update(acquiree_symbol=None),
+            "explicit_other": lambda e: e["corporate_actions"][0].update(acquirer_symbol="OTHER"),
+            "malformed_symbol": lambda e: e["corporate_actions"][0].update(acquirer_symbol=123),
+            "lookup_missing": lambda e: e["asset_lookups"].pop(),
+            "duplicate_lookup": lambda e: e["asset_lookups"].append(copy.deepcopy(e["asset_lookups"][0])),
+            "lookup_failed": lambda e: e["asset_lookups"][1].update(found=False),
+            "lookup_wrong_status": lambda e: e["asset_lookups"][1].update(http_status=404),
+            "lookup_other_label": lambda e: e["asset_lookups"][1]["asset"].update(symbol="OTHER"),
+            "lookup_non_equity": lambda e: e["asset_lookups"][1]["asset"].update({"class": "crypto"}),
+            "lookup_otc": lambda e: e["asset_lookups"][1]["asset"].update(exchange="OTC"),
+            "same_cusip": lambda e: e["corporate_actions"][0].update(acquirer_cusip="111111111"),
+            "occupancy_conflict": lambda e: e["symbol_occupancy_evidence"].append(
+                {
+                    "symbol": "HOLD",
+                    "cusip": "222222222",
+                    "asset_id": "unrelated-id",
+                }
+            ),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name):
+                lineage = self.lineage()
+                change(lineage)
+                self.assertIsNone(complete_stock_merger_endpoints(lineage["corporate_actions"][0], lineage))
+                self.assertEqual([], build_uuid_lineage_edges(lineage)[0])
+                self.assertEqual([], build_ticker_ownership_intervals(lineage)[0])
+
+    def test_existing_date_and_distinct_uuid_guards_still_apply(self):
+        for invalid in ("date", "same_uuid"):
+            with self.subTest(invalid=invalid):
+                lineage = self.lineage()
+                if invalid == "date":
+                    lineage["corporate_actions"][0]["effective_date"] = "bad-date"
+                else:
+                    lineage["asset_lookups"][1]["asset"]["id"] = "old-id"
+                self.assertEqual([], build_uuid_lineage_edges(lineage)[0])
+                self.assertEqual([], build_ticker_ownership_intervals(lineage)[0])
+
+    def test_completed_endpoint_preserves_prior_rename_chronology_but_keeps_membership(self):
+        for case in ("third_uuid_arrival", "third_uuid_departure", "earlier_successor_arrival"):
+            with self.subTest(case=case):
+                lineage = self.lineage()
+                successor = case == "earlier_successor_arrival"
+                identity = "new-id" if successor else "alias-id"
+                cusip = "222222222" if successor else "333333333"
+                departing = case == "third_uuid_departure"
+                old_symbol, new_symbol = ("HOLD", "LATER") if departing else ("BEFORE", "HOLD")
+                rename_date = "2024-02-01" if departing else "2023-01-03"
+                lineage["corporate_actions"].append(
+                    {
+                        "action_type": "name_change",
+                        "id": "earlier-registry-claim",
+                        "old_symbol": old_symbol,
+                        "new_symbol": new_symbol,
+                        "old_cusip": cusip,
+                        "new_cusip": cusip,
+                        "process_date": rename_date,
+                    }
+                )
+                lineage["symbol_occupancy_evidence"] += [
+                    {"symbol": symbol, "cusip": cusip, "asset_id": identity}
+                    for symbol in (old_symbol, new_symbol)
+                ]
+                baseline = copy.deepcopy(lineage)
+                baseline["corporate_actions"] = baseline["corporate_actions"][1:]
+                expected = build_ticker_ownership_intervals(baseline)[0]
+                actual, issues = build_ticker_ownership_intervals(lineage)
+                self.assertEqual(expected, actual)
+                self.assertEqual(
+                    "same_ticker_stock_merger_conflicts_with_existing_ownership_intervals",
+                    issues[0]["reason_code"],
+                )
+                edges, _ = build_uuid_lineage_edges(lineage)
+                self.assertTrue(
+                    any(
+                        edge.predecessor_asset_id == "old-id" and edge.successor_asset_id == "new-id"
+                        for edge in edges
+                    )
+                )
+
+    def test_completed_endpoint_can_constrain_an_undated_successor_rename(self):
+        lineage = self.lineage()
+        lineage["corporate_actions"].append(
+            {
+                "action_type": "name_change",
+                "id": "later-rename",
+                "old_symbol": "HOLD",
+                "new_symbol": "LATER",
+                "old_cusip": "222222222",
+                "new_cusip": "222222222",
+                "process_date": "2024-02-01",
+            }
+        )
+        lineage["symbol_occupancy_evidence"] = [
+            {"symbol": symbol, "cusip": "222222222", "asset_id": "new-id"} for symbol in ("HOLD", "LATER")
+        ]
+        intervals, issues = build_ticker_ownership_intervals(lineage)
+        self.assertEqual([], issues)
+        successor = next(i for i in intervals if i.historical_symbol == "HOLD" and i.asset_id == "new-id")
+        self.assertEqual(date(2024, 1, 3), successor.start_date_inclusive)
+        self.assertEqual(date(2024, 2, 1), successor.end_date_exclusive)
 
 
 class RowCorrelationTests(unittest.TestCase):
@@ -1412,6 +1943,58 @@ class RowCorrelationTests(unittest.TestCase):
 
         self.assertNotEqual(CURRENT_SYMBOL_REUSE_RULE_NAME, branches["correlated"][0]["correlation_method"])
 
+    def test_current_symbol_reuse_preserves_only_accepted_lineage_membership(self) -> None:
+        current_id = "current-reused-symbol-asset-id"
+        previous_id = "previous-reused-symbol-asset-id"
+        sessions = expected_market_session_coverage("2024-07-01", "2024-07-08").session_dates
+        consensus = adjustment_session_consensus(
+            (adjustment, tuple(date.fromisoformat(value) for value in sessions))
+            for adjustment in ALPACA_ADJUSTMENT_MODES
+        )
+        for linked in (True, False):
+            lineage = current_symbol_reuse_lineage()
+            action = lineage["corporate_actions"][0]
+            successor_id = current_id if linked else "unrelated-successor-id"
+            action["new_cusip"] = "222222222" if linked else "333333333"
+            lineage["symbol_occupancy_evidence"].append(
+                occupancy(
+                    "OLD",
+                    action["new_cusip"],
+                    successor_id,
+                    action_type="name_change",
+                    action_id=action["id"],
+                    process_date=action["process_date"],
+                    role="new",
+                )
+            )
+            edges, issues = build_uuid_lineage_edges(lineage)
+            self.assertEqual([], issues)
+            self.assertEqual(1, len(edges))
+            expected_members = sorted((current_id, previous_id)) if linked else [current_id]
+            for adjustment in ALPACA_ADJUSTMENT_MODES:
+                with self.subTest(linked=linked, adjustment=adjustment):
+                    branches = correlate_download_rows(
+                        [{"t": f"{session}T12:00:00Z"} for session in sessions],
+                        {
+                            **correlation_source("REUS", asof="2024-07-07"),
+                            "request_to": "2024-07-08T00:00:00Z",
+                            "adjustment": adjustment,
+                        },
+                        lineage,
+                        [superseded_reused_symbol_interval()],
+                        adjustment_consensus=consensus,
+                        evidence_issues=[],
+                    )
+                    self.assertEqual([], branches["uncorrelated"])
+                    segment = branches["correlated"][0]
+                    self.assertEqual(CURRENT_SYMBOL_REUSE_RULE_NAME, segment["correlation_method"])
+                    self.assertEqual(current_id, segment["canonical_security"]["alpaca_asset_id"])
+                    self.assertEqual(expected_members, segment["security_identity"]["member_alpaca_asset_ids"])
+                    self.assertEqual(
+                        security_id_for_alpaca_asset_ids(expected_members),
+                        segment["security_identity"]["security_id"],
+                    )
+
     def test_unique_uuid_candidate_correlates_dell_with_boundary_warning(self) -> None:
         lineage = dell_lineage()
         intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
@@ -1437,7 +2020,7 @@ class RowCorrelationTests(unittest.TestCase):
         )
         self.assertEqual("24703L202", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
-            {"order": 11, "name": "unique_uuid_candidate_with_warnings"},
+            {"order": 12, "name": "unique_uuid_candidate_with_warnings"},
             branches["correlated"][0]["correlation_rule"],
         )
         self.assertIn("missing_dated_ticker_ownership_interval", branches["correlated"][0]["warnings"])
@@ -1481,12 +2064,12 @@ class RowCorrelationTests(unittest.TestCase):
         older, newer = branches["correlated"]
         self.assertEqual("older-dell-asset-id", older["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
             older["correlation_rule"],
         )
         self.assertEqual("newer-dell-asset-id", newer["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 9, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
+            {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
             newer["correlation_rule"],
         )
         self.assertEqual(
@@ -1533,7 +2116,7 @@ class RowCorrelationTests(unittest.TestCase):
                     self.assertEqual(original, segment["historical_symbol"])
                     self.assertEqual("left-id", segment["canonical_security"]["alpaca_asset_id"])
                     self.assertEqual(
-                        {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+                        {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
                         segment["correlation_rule"],
                     )
                     self.assertEqual(
@@ -1595,7 +2178,7 @@ class RowCorrelationTests(unittest.TestCase):
             ["undated_requested_ticker_reuse_boundary"], branches["uncorrelated"][0]["reason_codes"]
         )
         self.assertEqual(
-            {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
             branches["uncorrelated"][0]["correlation_rule"],
         )
 
@@ -1685,7 +2268,7 @@ class RowCorrelationTests(unittest.TestCase):
                 self.assertEqual(1, len(branches["uncorrelated"]))
                 unresolved = branches["uncorrelated"][0]
                 self.assertEqual(
-                    {"order": 9, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
+                    {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
                     unresolved["correlation_rule"],
                 )
                 self.assertEqual(
@@ -1721,7 +2304,7 @@ class RowCorrelationTests(unittest.TestCase):
         correlated = branches["correlated"][0]
         self.assertEqual("dell-asset-id", correlated["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
             correlated["correlation_rule"],
         )
 
@@ -1749,7 +2332,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(1, len(branches["uncorrelated"]))
         unresolved = branches["uncorrelated"][0]
         self.assertEqual(
-            {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
             unresolved["correlation_rule"],
         )
         self.assertEqual(["conflicting_requested_ticker_intervals"], unresolved["reason_codes"])
@@ -2218,7 +2801,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(2, branches["correlated"][0]["row_count"])
         self.assertEqual("90184L102", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
-            {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
             branches["correlated"][0]["correlation_rule"],
         )
 
@@ -2535,11 +3118,12 @@ class RowCorrelationTests(unittest.TestCase):
                 {"order": 6, "name": "one_session_distinct_uuid_transition"},
                 {"order": 7, "name": CURRENT_SYMBOL_REUSE_RULE_NAME},
                 {"order": 8, "name": "asof_selected_uuid_lineage_interval"},
-                {"order": 9, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
-                {"order": 10, "name": "requested_symbol_dated_uuid_interval"},
-                {"order": 11, "name": "unique_uuid_candidate_with_warnings"},
-                {"order": 12, "name": "unresolved_uuid_candidates"},
-                {"order": 13, "name": "stable_continuous_ticker_identity_set"},
+                {"order": 9, "name": "exact_independently_resolved_predecessor_prefix"},
+                {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
+                {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+                {"order": 12, "name": "unique_uuid_candidate_with_warnings"},
+                {"order": 13, "name": "unresolved_uuid_candidates"},
+                {"order": 14, "name": "stable_continuous_ticker_identity_set"},
             ],
             row_correlation_rule_order(),
         )
@@ -2954,7 +3538,7 @@ class RowCorrelationTests(unittest.TestCase):
 class CorrelationPublicationTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
         self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
-        self.assertEqual(frozenset(range(8, 27)), SUPPORTED_CORRELATION_VERSIONS)
+        self.assertEqual(frozenset(range(8, 32)), SUPPORTED_CORRELATION_VERSIONS)
 
     def test_concurrent_security_master_updates_preserve_every_symbol(self) -> None:
         def source_contribution(

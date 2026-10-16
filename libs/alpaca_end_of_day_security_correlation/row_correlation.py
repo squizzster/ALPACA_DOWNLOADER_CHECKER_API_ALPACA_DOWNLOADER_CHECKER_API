@@ -17,6 +17,7 @@ from .evidence import (
     identity_candidates_for_symbol,
 )
 from .identity_partition import OneSessionDistinctUuidTransition
+from .predecessor_prefix import PREDECESSOR_PREFIX_RULE_NAME, PredecessorPrefix
 from .security_identity import security_identity_for_alpaca_assets
 from .settings import CORRELATED_BRANCH, UNCORRELATED_BRANCH
 from .terminal_fallback import (
@@ -33,6 +34,7 @@ from .ticker_reuse_gap import (
 )
 from .uuid_lineage import (
     IDENTITY_PRESERVING_SPLIT_EDGE_TYPES,
+    UuidLineageEdge,
     build_uuid_lineage_edges,
     predecessor_uuid_branch,
 )
@@ -106,6 +108,8 @@ class _RowRuleContext:
     distinct_uuid_transition: OneSessionDistinctUuidTransition | None
     distinct_uuid_episode_partitions: tuple[DistinctUuidEpisodePartition, ...] = ()
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
+    dated_same_symbol_predecessors: frozenset[tuple] = frozenset()
+    predecessor_prefixes: tuple[PredecessorPrefix, ...] = ()
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -199,6 +203,21 @@ def _selected_asof_interval(
     return _unique_interval_or_none(matching_intervals)
 
 
+def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | None:
+    matches = {item.interval for item in context.predecessor_prefixes if item.contains(context.session_date)}
+    if len(matches) != 1:
+        return None
+    interval = next(iter(matches))
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=interval.asset_id,
+        cusip=interval.cusip,
+        interval=interval,
+        identity_confidence="action_supported",
+        warning_codes=("inferred_lower_ownership_boundary",) if interval.start_date_inclusive is None else (),
+    )
+
+
 def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision | None:
     if context.selected_asof_interval is not None:
         selected_asset_ids = context.selected_asof_identity_chain_asset_ids
@@ -276,6 +295,52 @@ def _apply_exchange_test_symbol_exclusion_rule(
     )
 
 
+def _dated_same_symbol_predecessors(
+    requested_symbol: str,
+    lineage: dict[str, Any],
+    intervals: list[TickerOwnershipInterval],
+    edges: list[UuidLineageEdge],
+) -> frozenset[tuple]:
+    """Recognize a dated handoff chain, never an undirected identity component."""
+    occupants = [interval for interval in intervals if interval.historical_symbol == requested_symbol]
+    if len(occupants) < 2 or len({interval.asset_id for interval in occupants}) != len(occupants):
+        return frozenset()
+    # No interval filter: an additional undated current/occupancy UUID is still
+    # a competitor, even if the dated subset alone looks like a clean chain.
+    known_ids = {
+        candidate["asset_id"]
+        for candidate in identity_candidates_for_symbol(lineage, requested_symbol, [], date.min)
+    }
+    if known_ids - {interval.asset_id for interval in occupants}:
+        return frozenset()
+    occupants.sort(key=lambda interval: interval.start_date_inclusive or date.min)
+    if occupants[0].start_date_inclusive is not None:
+        return frozenset()
+    for predecessor, successor in zip(occupants, occupants[1:]):
+        boundary = predecessor.end_date_exclusive
+        if boundary is None or successor.start_date_inclusive != boundary:
+            return frozenset()
+        predecessor_actions = {
+            action for rule in predecessor.applied_rules for action in rule.supporting_action_ids
+        }
+        successor_actions = {action for rule in successor.applied_rules for action in rule.supporting_action_ids}
+        if not any(
+            edge.edge_type in ("name_change", "stock_merger")
+            and edge.effective_date == boundary
+            and (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+            == predecessor.identity_key()
+            and (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+            == successor.identity_key()
+            and edge.action_id in predecessor_actions & successor_actions
+            for edge in edges
+        ):
+            return frozenset()
+    # Only the original predecessor gains permission to retain its inferred
+    # lower bound. A split-only link, recurrence, unrelated reuse, foreign-label
+    # path or a common future successor cannot establish this handoff chain.
+    return frozenset((occupants[0].interval_key(),))
+
+
 def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecision | None:
     requested_symbol_matches = _interval_matches(
         context.intervals,
@@ -284,10 +349,14 @@ def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecis
     )
     requested_interval = _unique_interval_or_none(requested_symbol_matches)
     if requested_interval is not None:
-        if requested_interval.start_date_inclusive is None and any(
-            interval.historical_symbol == context.requested_symbol
-            and interval.asset_id != requested_interval.asset_id
-            for interval in context.intervals
+        if (
+            requested_interval.start_date_inclusive is None
+            and requested_interval.interval_key() not in context.dated_same_symbol_predecessors
+            and any(
+                interval.historical_symbol == context.requested_symbol
+                and interval.asset_id != requested_interval.asset_id
+                for interval in context.intervals
+            )
         ):
             # Another occupant ending does not date this occupant's beginning.
             # Proven reuse/as-of rules above can establish the source episode;
@@ -595,6 +664,10 @@ ROW_CORRELATION_RULES = (
         apply=_apply_asof_selected_identity_rule,
     ),
     RowCorrelationRule(
+        name=PREDECESSOR_PREFIX_RULE_NAME,
+        apply=_apply_predecessor_prefix_rule,
+    ),
+    RowCorrelationRule(
         name=LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME,
         apply=_apply_latest_dated_ownership_interval_rule,
     ),
@@ -717,6 +790,7 @@ def correlate_download_rows(
     evidence_issues: list[dict[str, Any]] | None = None,
     distinct_uuid_transition: OneSessionDistinctUuidTransition | None = None,
     distinct_uuid_episode_partitions: tuple[DistinctUuidEpisodePartition, ...] = (),
+    predecessor_prefixes: tuple[PredecessorPrefix, ...] = (),
 ) -> dict[str, list[dict[str, Any]]]:
     requested_symbol = source["requested_symbol"]
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
@@ -724,6 +798,9 @@ def correlate_download_rows(
     row_routing_edges = [
         edge for edge in uuid_lineage_edges if edge.edge_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
     ]
+    dated_same_symbol_predecessors = _dated_same_symbol_predecessors(
+        requested_symbol, lineage, intervals, row_routing_edges
+    )
     selected_identity_chain_asset_ids = (
         predecessor_uuid_branch(selected_interval.asset_id, row_routing_edges)
         if selected_interval is not None
@@ -747,16 +824,8 @@ def correlate_download_rows(
         adjustment_consensus,
         evidence_issues,
     )
-    partitioned_action_ids = {
-        action_id
-        for partition in distinct_uuid_episode_partitions
-        for action_id, _, _, _ in partition.action_edges
-    }
-    if distinct_uuid_transition is not None:
-        partitioned_action_ids.add(distinct_uuid_transition.action_id)
-    if current_symbol_reuse is not None:
-        partitioned_action_ids.add(current_symbol_reuse.vacated_action_id)
-    identity_edges = [edge for edge in uuid_lineage_edges if edge.action_id not in partitioned_action_ids]
+    # Pricing gaps and ticker occupancy cannot revoke an accepted continuation.
+    # Unrelated reused-symbol occupants already have no edge to the prior lineage.
     correlated_rows = []
     for row_number, timestamp, session_date in parsed_rows:
         decision = _decide_row(
@@ -771,20 +840,10 @@ def correlate_download_rows(
                 distinct_uuid_transition=distinct_uuid_transition,
                 distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
                 current_symbol_reuse=current_symbol_reuse,
+                dated_same_symbol_predecessors=dated_same_symbol_predecessors,
+                predecessor_prefixes=predecessor_prefixes,
             )
         )
-        if decision.branch == CORRELATED_BRANCH and not decision.use_rule_identity_basis:
-            matching_partitions = [
-                partition
-                for partition in distinct_uuid_episode_partitions
-                if decision.asset_id in partition.asset_ids
-            ]
-            if len(matching_partitions) == 1:
-                decision = replace(
-                    decision,
-                    distinct_uuid_episode_partition=matching_partitions[0],
-                    use_rule_identity_basis=True,
-                )
         correlated_rows.append(
             _CorrelatedRow(
                 row_number=row_number,
@@ -836,6 +895,9 @@ def correlate_download_rows(
                 if decision.distinct_uuid_episode_partition is not None
                 else decision.rule_name
                 if decision.use_rule_identity_basis
+                and not (
+                    decision.distinct_uuid_transition is not None and identity_basis == "explicit_uuid_lineage"
+                )
                 else identity_basis
             )
             historical_symbol = decision.historical_symbol or (
@@ -843,7 +905,7 @@ def correlate_download_rows(
             )
             security_identity = security_identity_for_alpaca_assets(
                 (decision.asset_id,),
-                identity_edges,
+                uuid_lineage_edges,
                 tickers=(historical_symbol,),
                 basis=identity_basis,
             )

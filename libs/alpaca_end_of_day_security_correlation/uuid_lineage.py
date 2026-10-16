@@ -3,6 +3,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .action_identity import complete_stock_merger_endpoints, exact_cusip_lookup_asset
+
 IDENTITY_PRESERVING_SPLIT_EDGE_TYPES = frozenset(("forward_split", "reverse_split"))
 
 
@@ -65,32 +67,6 @@ def _asset_ids_by_symbol_and_cusip(lineage: dict[str, Any]) -> dict[tuple[str, s
     return asset_ids
 
 
-def _exact_cusip_lookup_asset(lineage: dict[str, Any], cusip: str) -> dict[str, Any] | None:
-    asset_lookups = lineage.get("asset_lookups")
-    if not isinstance(asset_lookups, list):
-        return None
-    matching_lookups = [
-        lookup
-        for lookup in asset_lookups
-        if isinstance(lookup, dict) and lookup.get("lookup_kind") == "cusip" and lookup.get("lookup") == cusip
-    ]
-    if len(matching_lookups) != 1:
-        return None
-    lookup = matching_lookups[0]
-    asset = lookup.get("asset")
-    if (
-        lookup.get("found") is not True
-        or lookup.get("outcome") != "found"
-        or lookup.get("http_status") != 200
-        or not isinstance(asset, dict)
-        or asset.get("class") != "us_equity"
-        or not isinstance(asset.get("id"), str)
-        or not asset["id"]
-    ):
-        return None
-    return asset
-
-
 def _positive_rate(value: object) -> Decimal | None:
     if isinstance(value, bool):
         return None
@@ -138,8 +114,8 @@ def _identity_preserving_split_edge(
     except ValueError:
         return None
 
-    predecessor_asset = _exact_cusip_lookup_asset(lineage, old_cusip)
-    successor_asset = _exact_cusip_lookup_asset(lineage, new_cusip)
+    predecessor_asset = exact_cusip_lookup_asset(lineage, old_cusip)
+    successor_asset = exact_cusip_lookup_asset(lineage, new_cusip)
     if predecessor_asset is None or successor_asset is None:
         return None
     if predecessor_asset.get("symbol") != symbol or successor_asset.get("symbol") != symbol:
@@ -306,8 +282,14 @@ def build_uuid_lineage_edges(
             edges.append(split_edge)
             continue
         edge_candidate = _name_change_edge_candidate(action)
+        completed = complete_stock_merger_endpoints(action, lineage)
         if edge_candidate is None:
-            edge_candidate = _same_ticker_stock_merger_edge_candidate(action)
+            interpreted_action = (
+                {**action, "acquiree_symbol": completed.symbol, "acquirer_symbol": completed.symbol}
+                if completed is not None
+                else action
+            )
+            edge_candidate = _same_ticker_stock_merger_edge_candidate(interpreted_action)
         if edge_candidate is None:
             continue
         if (
@@ -323,6 +305,9 @@ def build_uuid_lineage_edges(
             (edge_candidate.successor_symbol, edge_candidate.successor_cusip),
             set(),
         )
+        if completed is not None:
+            predecessor_asset_ids = {completed.predecessor_asset_id}
+            successor_asset_ids = {completed.successor_asset_id}
         if len(predecessor_asset_ids) != 1 or len(successor_asset_ids) != 1:
             evidence_issues.append(
                 {

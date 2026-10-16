@@ -13,6 +13,7 @@ from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 from .errors import SecurityCorrelationError
 from .frozen_downloads import read_authenticated_frozen_download
+from .uuid_lineage import build_uuid_lineage_edges
 
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
 
@@ -126,10 +127,15 @@ def _identity_for_exact_symbol(lineage: dict[str, Any], symbol: str) -> Distinct
     )
 
 
-def _transition_candidates(lineage: dict[str, Any]) -> tuple[_TransitionCandidate, ...]:
+def _transition_candidates(
+    lineage: dict[str, Any], *, evidence_issues: list[dict[str, Any]] | None = None
+) -> tuple[_TransitionCandidate, ...]:
     actions = lineage.get("corporate_actions")
     if not isinstance(actions, list):
         return ()
+    if evidence_issues is None:
+        _, evidence_issues = build_uuid_lineage_edges(lineage)
+    rejected_action_ids = {issue.get("rejected_action_id") for issue in evidence_issues}
     name_changes_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for action in actions:
         if not isinstance(action, dict) or action.get("action_type") != "name_change":
@@ -158,6 +164,8 @@ def _transition_candidates(lineage: dict[str, Any]) -> tuple[_TransitionCandidat
         action_id = action.get("id")
         action_date_value = action.get("process_date")
         if not isinstance(action_id, str) or not action_id or not isinstance(action_date_value, str):
+            continue
+        if action_id in rejected_action_ids:
             continue
         try:
             action_date = date.fromisoformat(action_date_value)
@@ -272,6 +280,7 @@ def assess_one_session_distinct_uuid_transition(
     repository_root: Path,
     lineage: dict[str, Any],
     *,
+    evidence_issues: list[dict[str, Any]] | None = None,
     authenticated_symbol_sessions: Callable[
         [str], tuple[tuple[date, ...], tuple[tuple[str, str, str], ...]] | None
     ]
@@ -279,7 +288,7 @@ def assess_one_session_distinct_uuid_transition(
 ) -> OneSessionDistinctUuidTransition | None:
     """Resolve one absent session between two exact, distinct ticker UUIDs."""
     matches = []
-    for candidate in _transition_candidates(lineage):
+    for candidate in _transition_candidates(lineage, evidence_issues=evidence_issues):
         sessions_by_symbol = {}
         supporting_downloads = []
         for identity in (candidate.predecessor, candidate.successor):

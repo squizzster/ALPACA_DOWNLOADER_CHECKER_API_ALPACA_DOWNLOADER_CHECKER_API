@@ -10,6 +10,7 @@ authority. The combined producer and public reader select `data_vtest/`; they do
 |---|---|---|
 | [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Independent pricing-only downloader. | Contacts only Alpaca stock bars, writes an explicit compact-format destination, and never invokes lineage or the catalogue. |
 | [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | Standalone lineage twin; exactly one worker. | Consumes the compact store, contacts identity/action APIs, delegates missing prices to the downloader, and acknowledges durably processed notices. |
+| [`output_current_lineage_evidence.py`](../output_current_lineage_evidence.py) | Evidence from that same lineage workflow, not a second resolver. | Default mode can acquire and publish; `--offline` only inspects existing publications under locks. Emits JSON to stdout. |
 | [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Canonical monthly acquisition-to-catalogue producer. | Contacts Alpaca, writes the current application store, and requires credentials. |
 | [`download_alpaca_end_of_day_bars.py`](../download_alpaca_end_of_day_bars.py) | Compatibility executable for the same complete producer. | Same arguments and runtime effects. |
 | [`build_alpaca_end_of_day_clean_room.py`](../build_alpaca_end_of_day_clean_room.py) | Restartable provider-only universe constructor and complete auditor. | Contacts Alpaca, writes only its explicit isolated store, requires credentials, and optionally activates only after audit. |
@@ -24,13 +25,18 @@ The last three commands remain useful only when explicitly inspecting the legacy
 ## Requirements and safety
 
 The 2026-10-14 [storage rework decision](storage-rework-notes.md) retains the inventoried project and temporary stores
-in place for development reuse. Cleanup and further copies remain deferred. Separately authorized GOOG development
-uses `data_pricing/`; that does not authorize conversion, cleanup, or universe-wide acquisition of retained stores.
+in place for development reuse. Cleanup and further copies remain deferred. Standalone development uses
+`data_pricing/`; a focused task does not authorize conversion, cleanup, or universe-wide acquisition of retained stores.
 
 - Python 3.11 and IANA `America/New_York` time-zone data.
 - `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` plus SIP entitlement for producer runs.
 - No credentials or network for public reads and exports.
 - No `pigz` requirement for the current monthly source; deterministic gzip is produced by Python.
+
+The configured target in [`pyproject.toml`](../pyproject.toml) is Python 3.11. This environment has Python 3.11.13,
+but unqualified `python3` is 3.9.25; use `python3.11 -B` explicitly for scripts whose shebang is not already 3.11.
+Runtime code uses the standard library; there is no dependency lock or package-install metadata. Ruff is a separate
+development tool. See [verification](development.md#verification) for local checks and CI status.
 
 For the combined catalogue workflow, use only one producer process against a store. Its global lock serializes writers and readers, but it is not a durable
 batch scheduler and does not make independently submitted focused transactions one coherent request. The focused
@@ -98,7 +104,7 @@ Automatic refresh and force both discard absent old sessions; their pending noti
 edges or old-price archive are retained. Force can replace damaged owned gzip data but requires intact ownership metadata.
 
 The downloader waits for the ticker's exclusive lock before provider requests. The lineage consumer uses the
-[locked handoff](technical-contracts.md#locking-publication-and-consumption), commit its work durably, then acknowledge
+[locked handoff](technical-contracts.md#locking-publication-and-consumption), commits its work durably, then acknowledges
 the notice. Never unlink `.download.lock`: its presence does not mean it is held.
 
 An interrupted publication leaves `.pending.json` and staged changed outputs in the pricing ticker directory. Re-run
@@ -150,6 +156,39 @@ lock serializes lineage writers, and sorted ticker locks protect each affected p
 pricing or lineage generations is kept. An explicit `--symbol`/`--all` run also synchronizes receipts after a
 pricing provenance-only change that created no changed-date notice. Use scoped `--refresh-metadata` when older
 provider corrections need reacquisition; ordinary updates do not claim to detect arbitrary old metadata revisions.
+
+## Current lineage evidence
+
+Use the actual standalone workflow to obtain the information available to deterministic decisions:
+
+```bash
+./output_current_lineage_evidence.py TICKER --store data_pricing
+```
+
+Replace `TICKER` with the requested label. The default store is the repository's `data_pricing/`. Default mode requires
+credentials and calls `run_lineage` with an evidence observer under its existing locks. It can acquire identity
+evidence, delegate missing prices, publish lineage and consume notices. It does not disable pricing acquisition,
+advance existing pricing merely for inspection, or use a second rule engine.
+
+For read-only inspection of an existing publication:
+
+```bash
+./output_current_lineage_evidence.py TICKER --store data_pricing --offline
+```
+
+`--offline` needs no credentials and makes no downloads, writes or rule replay. It fails if no lineage publication
+exists; it does not repair one. `--refresh-metadata` selects the normal pipeline's full metadata refresh and is
+mutually exclusive with `--offline`. Do not use refresh merely to obtain another copy of the same explanation.
+
+Stdout is one JSON evidence document; a failed workflow returns status 1. Reused or offline decisions retain their
+published versions, while `installed_versions` describes the code now present. Inspect freshness and decision origin
+before calling a result current. Rule paths explain recorded selection and fall-through order, not unrecorded failed
+predicate reasons. A full diagnostic may read closed session grids even when normal processing reuses their assignments;
+it is not a cheap progress poll. Pricing values are not duplicated into the evidence document.
+
+The [operator evidence contract](technical-contracts.md#operator-lineage-evidence) owns its fields and limits.
+The [development loop](development.md#lineage-research-and-rule-improvement-loop) owns research-agent selection,
+case-by-case evaluation and the consolidated review cadence. Neither command is an automated research scheduler.
 
 ## Run the complete producer
 
@@ -357,31 +396,11 @@ requests occurred.
 
 ## Consume online data
 
-### One history
-
-```bash
-./read_alpaca_end_of_day_ticker.py \
-  --public-id <64-hex-public-id> \
-  --type raw \
-  --start 2025-01-01 \
-  --end 2025-12-31
-```
-
-`--master-id` remains an alias for `--public-id`. Bounds are inclusive session dates. The reader selects the current
-published catalogue through the trusted consumption path and performs no writes or network requests.
-
-### Flat online CSV
-
-```bash
-./read_alpaca_end_of_day_ticker.py \
-  --dump-flat-online-csv /path/to/online.csv \
-  --start 2025-01-01 \
-  --end 2025-12-31
-```
-
-The export contains raw and fully adjusted values for every online identity with observations in range, ordered by
-date and then public ID. It uses a disk-backed spool and atomically replaces a path destination. Use `-` to stream CSV
-to standard output. Exact columns and failure semantics are in [Public API](public-api.md#flat-online-csv).
+Use the [public CLI examples](public-api.md#command-line-client) for single-ID JSON history and CSV export, or
+the [Python quick start](public-api.md#open-a-snapshot). Reads select a completed combined catalogue, not the
+standalone store, and require no credentials or network. Export writes the requested destination; it does not mutate
+the data store. [Flat export semantics](public-api.md#flat-online-csv) cover its disk spool, atomic path replacement,
+ordering and failure conditions.
 
 ## Audit status
 
@@ -397,6 +416,9 @@ clean-room constructor rather than a general audit-only CLI for arbitrary stores
 ## Backup and recovery
 
 ### Restore the same application state
+
+The following is a procedure for an explicitly authorized backup/restore, not a request to copy retained development
+stores. The [retention decision](storage-rework-notes.md) continues to prohibit unrequested copies or cleanup.
 
 Back up the complete `data_vtest/` directory, not only its final catalogue receipt. The catalogue depends on monthly
 source, validation, lineage, correlation, warning, candidate, availability, and content-addressed engine artifacts.
@@ -420,6 +442,9 @@ Use the clean-room command above. Do not convert the CSV to lines and pass it as
 hold one transaction across the cohort, retain a large processing set, and provide no per-label terminal ledger.
 
 ## Exit status
+
+This table describes the **combined producer**, not every entrypoint. Standalone batch and evidence statuses are
+specified with their commands above; unresolved lineage can be a successful durable result.
 
 | Status | Meaning |
 |---|---|
