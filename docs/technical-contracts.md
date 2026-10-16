@@ -357,9 +357,10 @@ Standalone lineage consumes this handoff; `DataLibrary` integration remains sepa
 
 ## Standalone lineage contract
 
-Owner: `libs/alpaca_lineage_build/`; entrypoint: `build_alpaca_lineage.py`; contract **2**. Compatible v1 receipts,
-indexes and recovery journals remain readable. The standalone pricing
-store/marker remains unchanged. Lineage acquires asset/CUSIP and corporate-action evidence itself, but requests
+Owner: [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/); entrypoint:
+[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **2**. Compatible v1 receipts,
+indexes and recovery journals remain parseable; that does not make them eligible for current-version reuse.
+The standalone pricing store/marker remains unchanged. Lineage acquires asset/CUSIP and corporate-action evidence itself, but requests
 pricing only through the downloader. It reuses the existing ownership, row-allocation, UUID-membership and
 `security_id` transforms; it does not publish online status or the public catalogue.
 
@@ -389,8 +390,28 @@ price or identity-rule engine. Normal reads trust published receipts; they do no
 
 ### Resume and invalidation
 
-Ordinary action acquisition starts at the **previously active month**, retaining older normalized actions. Exact
-asset/CUSIP lookups are refreshed. Newly discovered labels acquire their full requested evidence range. First use,
+Whole-group reuse precedes metadata acquisition and price loading. `process_group` in
+[`pipeline.py`](../libs/alpaca_lineage_build/pipeline.py) returns `unchanged` only when:
+
+- metadata refresh was not requested;
+- every source in the known dependency group has published pricing and a lineage receipt;
+- no source in that group has a pending pricing notice; and
+- every receipt selects the current pricing-source digest and exactly matches `versions()`.
+
+The build CLI then performs no price-payload read, lineage-boundary read, provider request, correlation calculation
+or publication for that group. Checking the small source document's digest is an input-generation comparison, not
+another authentication of the bars. Completed unresolved and empty histories qualify too. An evidence observer may
+read boundaries and session grids to explain the retained result; see the [operator evidence contract](#operator-lineage-evidence).
+
+`versions()` in [`contract.py`](../libs/alpaca_lineage_build/contract.py) includes the lineage, identity-report and
+correlation versions plus the calendar digest. Changing any of these invalidates the shortcut, including an execution
+version bump that leaves the row rules unchanged. Readable older schemas are not automatically reusable or current
+reader results. Any future compatibility exception must be explicit; silently ignoring version changes would weaken
+the receipt contract.
+
+When acquisition is required, ordinary action acquisition starts at the **previously active month**, retaining older
+normalized actions. Exact asset/CUSIP lookups are refreshed. Newly discovered labels acquire their full requested
+evidence range. First use,
 an older pricing invalidation, changed rules/calendar, or explicit metadata refresh reacquires the full evidence
 range. Historical provider corrections outside the resumed window require explicit refresh; matching prices are
 not claimed to prove metadata freshness. Conflicting current action identities fail before publication.
@@ -408,24 +429,36 @@ Dependency edges do **not** imply security membership. Thus FB → META may pres
 remains separate. A later notice for a related source reactivates earlier processed dependants. An identity-rule change
 can require all previously processed sources; unrelated unchanged sources are otherwise left alone.
 
+The smaller month-only reuse gate is implemented by `eligible_source` and `can_resume` in
+[`resume.py`](../libs/alpaca_lineage_build/resume.py). It applies to changed work; it is distinct from skipping an
+entire unchanged group. Selection and restart commands belong in the [restart guide](operations.md#restart-and-catch-up).
+
 ### Lock, delegate, publish, acknowledge
 
-One directory-inode `flock` serializes lineage workers. The worker takes the complete known set of exclusive pricing
-locks in sorted order. If discovery expands it, all pricing locks are released before reacquisition. Missing initial
-or related pricing, or short request coverage, is handed to the downloader **outside those locks**. Without a published
-range, null request bounds select the downloader's defaults; no second range policy is introduced. The worker then reloads the current notices and
-receipts. A published empty response is acquired evidence. Discovery is capped at 100 labels and three pricing
+One directory-inode `flock` serializes lineage invocations for a store. `run_lineage` holds it exclusively through
+recovery, work selection and the entire group-processing loop, not just the write step. The worker takes the complete
+known set of exclusive pricing locks in sorted order. If discovery expands it, all pricing locks are released before
+reacquisition. Missing initial or related pricing, or short request coverage, is handed to the downloader **outside
+those locks**. Without a published range, null request bounds select the downloader's defaults; no second range policy
+is introduced. The worker then reloads the current notices and receipts. A published empty response is acquired
+evidence. Discovery is capped at 100 labels and three pricing
 acquisition waves; exhaustion/failure leaves notices pending. No queue-file hierarchy is introduced.
 
 All resulting JSON is prepared before publication. One temporary `.pending.json` journals only changed outputs,
 retirements, affected index entries, selected pricing generations and notices. Outputs are installed, then the index
-is committed, then notices are acknowledged. The journal is removed last. Cooperating readers hold the lineage lock
-and reject a pending transaction. Recovery rolls forward; a newer pricing generation is never acknowledged using an
-older journal, even when its notice has identical dates. Process death releases locks. Unresolved assignments are
+is committed, then notices are acknowledged. The journal is removed last. Each group is durable immediately; the
+global lock still prevents cooperating readers from observing it until the invocation releases the lock. Readers
+take the lineage lock shared before taking their pricing locks and reject a pending transaction. Recovery rolls
+forward; a newer pricing generation is never acknowledged using an older journal, even when its notice has identical
+dates. Process death releases locks. Unresolved assignments are
 durable results; API or processing failure is not successful consumption.
 
-`libs/alpaca_lineage_build/reader.py:read_lineage` is an internal downstream handoff, not a public application import.
-It selects approved assignments, applies the month overlay, and refuses incomplete/stale input generations or pending
+`publish`, `recover` and the lock helpers in [`storage.py`](../libs/alpaca_lineage_build/storage.py) own this protocol.
+Recovery can finish journaled outputs without reacquiring metadata; work interrupted before journaling can calculate
+again. Reuse is based on durable receipts and notices, not a persistent position in a universe loop.
+
+`read_lineage` in [`reader.py`](../libs/alpaca_lineage_build/reader.py) is an internal downstream handoff, not a public
+application import. It selects approved assignments, applies the month overlay, and refuses incomplete/stale input generations or pending
 work. It does not read price payloads, acquire metadata, or rerun identity rules. These identity checks prevent mixed
 generations; the approved facts themselves are trusted.
 
@@ -623,6 +656,10 @@ whole cohort in one such transaction. The clean-room scheduler bounds a transact
 runs it against an isolated store.
 
 ## Reuse and recomputation matrix
+
+This matrix describes the **combined catalogue workflow**. The standalone lineage builder has a separate
+[unchanged-group and month-only reuse contract](#resume-and-invalidation); selected standalone work does not always
+reacquire metadata.
 
 | Boundary | Reuse key | Work retained | Work repeated when selected |
 |---|---|---|---|

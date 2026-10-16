@@ -54,6 +54,11 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Modified
 
+- Documentation-only navigation and restart clarification: the README keeps a compact product overview and complete
+  document index; Operations owns restart/catch-up selection and reader-blocking consequences; Technical contracts
+  owns the unchanged-group gate, version invalidation and lock/recovery protocol. The contributor guide owns the
+  documentation handoff checks. Single-worker lineage, default/explicit acquisition effects and retained-store
+  restrictions are preserved. No application behavior, runtime version or JSON changelog changes.
 - Correlation transform v32–v51 adds dated occupancy anchors, independently attributed informative historical
   intervals, bounded traded episodes, retired-label continuity and inactive component history. It separates cash
   targets from buyer history and corrects membership when an acquirer adopts its target's ticker. Exact versioned
@@ -119,10 +124,30 @@ are unchanged.
 
 ## Verification status
 
+### Documentation and restart clarification — 2026-10-16
+
+This refactor changes eight Markdown files only; application code, runtime versions and JSON changelogs are unchanged.
+The existing topic layout and all ten maintained documents are retained. Detailed research workflow remains in
+Development, restart choices in Operations, and reuse/locking gates in Technical contracts.
+
+Verified with Python **3.11.13** and Ruff **0.15.21**:
+
+- **528 tests passed** in **37.715 seconds**, with ResourceWarnings treated as errors.
+- `ruff check .`, `ruff format --check .` (**166 files**) and `git diff --check` passed.
+- **243 local Markdown links and anchors**, complete README coverage of the other nine documents,
+  **24 distinct inline source/resource paths** and **12 referenced lineage symbols** passed local checks.
+- All **ten documented entrypoints** returned successful `--help`; the five documented lineage option combinations
+  were parsed without executing acquisition or publication.
+
+No production acquisition or lineage restart was performed for this documentation check. Full-store restart timing,
+public integration of the standalone pair, and the current background run's completion are not established by these
+tests. There is still no repository CI or configured Markdown/link-checking tool; the documentation checks were
+explicit local checks, not a new automated repository gate.
+
 ### Current implementation and evidence scope — 2026-10-16
 
-The working implementation is correlation **v51**, standalone lineage **v2**, identity report **v4**, and operator
-evidence schema **v2**. The extended batch closed **39 investigations**: 30 routine cases followed by nine targeted
+The implementation committed in `c5176d5` is correlation **v51**, standalone lineage **v2**, identity report **v4**,
+and operator evidence schema **v2**. The extended batch closed **39 investigations**: 30 routine cases followed by nine targeted
 reviews of material consolidated-comparison findings. Routine selection stopped at diminishing reusable concepts;
 case count does not establish universe coverage.
 
@@ -153,8 +178,9 @@ across ten maintained documents passed. No repository CI exists.
 Real evidence-CLI publication completed for **40 selected labels in 37 dependency groups**. The trusted lineage
 handoff then verified **151 sources**, all eight adjustment views, against the accepted ownership, public IDs and
 membership: no assignment errors or changed-input discrepancies. All 37 publications needed **zero pricing
-acquisition waves**. Other affected groups were evaluated; the authorized full local-source lineage run follows this
-accepted checkpoint and commit. Its launch and completion are separate runtime outcomes, not implied by these checks.
+acquisition waves**. Other affected groups were evaluated. The authorized full local-source lineage run was launched
+after this accepted checkpoint and commit; its completion and any remaining failures are separate runtime outcomes,
+not implied by these checks. This dated record is not a worker-status monitor.
 Standalone lineage publication does not establish public-catalogue integration or consumer availability. Sourced
 facts and compact case outcomes remain in the existing ignored research files; they are not production inputs.
 
@@ -465,6 +491,14 @@ covers the explicit single-identity reuse gate. Context-dependent multi-identity
 affected chronology using trusted inputs, not an upstream audit. A full evidence diagnostic can read closed session
 grids even when normal processing reuses assignments.
 
+Standalone lineage remains one worker per store. Each group is durably published, but the whole-run writer lock
+blocks internal lineage reads and offline evidence inspection until release. `--all` restarts skip unchanged
+calculations but still scan dependencies and receipts; no full-store restart-time guarantee has been established.
+See [restart and reader limits](operations.md#restart-and-catch-up). Multi-worker lineage and priority scheduling were
+investigated, not implemented. Changing only the CLI worker count or releasing the global lock would leave the shared
+journal/index and reader/recovery lock ordering unsafe; a future execution-version change must also address existing
+receipt reuse explicitly.
+
 Older metadata corrections outside the resumed month window require explicit refresh. Endpoint checks are the chosen
 pricing-refresh policy, not exhaustive historical correction detection. The focused publications and broader read-only
 comparisons do not establish complete current-universe correctness or throughput. Historical run summaries below are
@@ -476,8 +510,9 @@ separate ownership analysis. Exact raw-prefix recovery does not resolve every la
 all historical legal CUSIPs, or prove adjusted-price equivalence across aliases. Current research facts and selected
 case limits are retained locally, not injected as executable ticker rules.
 
-The batch runner has at most three ticker workers with one shared 199-request/minute limiter. A normal populated-ticker update uses up to 32
-requests before pagination/retries: 16 initial probes, eight acquisitions, and eight final first-session probes.
+The standalone pricing downloader has at most three ticker workers with one shared 199-request/minute limiter.
+A normal populated-ticker update uses up to 32 requests before pagination/retries: 16 initial probes, eight acquisitions,
+and eight final first-session probes.
 For 18,092 such tickers that implies roughly 48.5 hours at the configured rate, before latency. `--all` is functional,
 not yet demonstrated as a daily universe service. Request batching/performance work is separate from this boundary change.
 Workers overlap latency but do not multiply the request allowance. The allowance is process-local, not shared across
@@ -512,19 +547,19 @@ The existing combined catalogue workflow has these separate gaps:
 
 ## Milestones
 
-### 2026-10-15 — Whole-ticker workers and shared request allowance (working tree)
+### 2026-10-15 — Whole-ticker workers and shared request allowance (development checkpoint)
 
 v5 adds a maximum of three independent ticker workers, sharing one paced rolling-minute budget and retry cooldown.
 Each worker owns its complete ticker boundary. Store layout, payload deduplication, ticker locks, and lineage handoff
 are unchanged; v4 validators remain readable. No live acquisition or runtime-store mutation is part of this change.
 
-### 2026-10-15 — Standalone batch CLI and endpoint validator (working tree)
+### 2026-10-15 — Standalone batch CLI and endpoint validator (development checkpoint)
 
 v4 adds one per-ticker validator inside the established layout, safe date/selection options, isolated batch failures,
 and bounded post-acquisition consistency checks. Automatic refresh and force remain clean replacements; clipped-edge
 retention is deferred in a code comment. Runtime data is unchanged by this implementation.
 
-### 2026-10-14 — Standalone pricing and future lineage handoff (working tree)
+### 2026-10-14 — Standalone pricing and future lineage handoff (development checkpoint)
 
 The stable v3 contract separates ticker acquisition from identity work, replaces permanent monthly history with
 three compact boundaries, checks first/last sessions before updating, and publishes one locked pending date range.

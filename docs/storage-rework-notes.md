@@ -13,7 +13,7 @@ downloader is recorded below; the retained-store restrictions still apply.
 `data_v4` and `month.manifest.json` established the useful first boundary: transformed, value-preserving REST pricing,
 addressed by ticker. Keeping every historical month as a separate durable directory was subsequently superseded.
 The stable [standalone contract](technical-contracts.md#standalone-pricing-source-contract) now owns consolidation,
-first/last-session refresh checks, and the future lineage handoff. This note owns only the retained-store inventory
+first/last-session refresh checks, and the implemented lineage handoff. This note owns only the retained-store inventory
 and reuse restrictions, not a competing layout specification.
 
 The original problem was excessive persistent artifacts, mirrored validation trees, repeated stores, and disk

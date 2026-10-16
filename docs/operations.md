@@ -29,6 +29,7 @@ in place for development reuse. Cleanup and further copies remain deferred. Stan
 `data_pricing/`; a focused task does not authorize conversion, cleanup, or universe-wide acquisition of retained stores.
 
 - Python 3.11 and IANA `America/New_York` time-zone data.
+- A Unix environment and filesystem supporting `fcntl.flock`, atomic replacement and directory `fsync`.
 - `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` plus SIP entitlement for producer runs.
 - No credentials or network for public reads and exports.
 - No `pigz` requirement for the current monthly source; deterministic gzip is produced by Python.
@@ -135,10 +136,11 @@ Existing pricing supplies the range for related inputs; selecting lineage does n
 |---|---|
 | `-s` / `--symbol` | Repeat for selected tickers; missing initial/related pricing is acquired as needed. |
 | `--file PATH` | Headerless CSV or one ticker per line. |
-| `--pending` | Pending pricing notices; default selection. |
+| `--pending` | Pending pricing notices; default selection. Known sources with stale rule/calendar versions are also selected. |
 | `--all` | All locally downloaded tickers, **not** the downloader's tracked universe. |
+| `--workers 1` | Exactly one lineage worker; another invocation against the same store waits for it. |
 | `--refresh-metadata` | Reacquire full action/asset evidence for selected work, even without changed prices. |
-| `--no-download` | Report missing/short pricing coverage and leave notices pending instead of delegating acquisition. |
+| `--no-download` | Disable pricing acquisition only; identity/action requests still occur for work needing calculation. Missing/short pricing coverage leaves notices pending. |
 
 Selection modes are mutually exclusive. Missing related bars normally go through the existing downloader, with all
 pricing locks released first; its new notices are consumed on resumption. `--no-download` also applies to a missing
@@ -151,11 +153,59 @@ The command returns one JSON summary (`workers`, `recovered`, `results`, `failed
 continue after a failure, unless an interrupted lineage publication must first be recovered. Unresolved identity is
 a successful durable result, not a transport or processing failure.
 
-Re-run the command after interruption; never delete `end_of_day/lineage/.pending.json` manually. A global directory
-lock serializes lineage writers, and sorted ticker locks protect each affected pricing group. No archive of old
-pricing or lineage generations is kept. An explicit `--symbol`/`--all` run also synchronizes receipts after a
-pricing provenance-only change that created no changed-date notice. Use scoped `--refresh-metadata` when older
-provider corrections need reacquisition; ordinary updates do not claim to detect arbitrary old metadata revisions.
+### Restart and catch-up
+
+Re-run the command after interruption. Recovery finishes an interrupted publication before selecting new work;
+completed receipts remain reusable, while an unfinished calculation may repeat. Never delete
+`end_of_day/lineage/.pending.json` manually. No archive of superseded pricing or lineage generations is kept.
+
+Choose the selection for the intended work:
+
+| Intent | Selection | Effect on completed work |
+|---|---|---|
+| Consume ordinary pricing updates | `--pending` (also the default) | Current completed groups without notices are not initially scheduled; related or version-invalidated groups can still be selected. |
+| Resume or catch up a full local-source pass | `--all` | Checks local sources and returns `unchanged` for reusable groups. Also synchronizes provenance-only source changes that produced no changed-date notice. |
+| Revisit a bounded family | `--symbol TICKER` | Checks the complete dependency group, using the same reuse and publication path. |
+| Deliberately reacquire older identity/action evidence | Add `--refresh-metadata` | Disables the unchanged-group shortcut and requests full metadata for the selected work. |
+
+For an authorized all-local-source pass with no pricing acquisition:
+
+```bash
+python3.11 -B build_alpaca_lineage.py --store data_pricing --all --no-download
+```
+
+This command still needs credentials for unfinished identity work. Omit `--refresh-metadata` for an ordinary restart.
+The exact [reuse gate](technical-contracts.md#resume-and-invalidation) checks input generations, pending notices and
+owning versions before price loading or calculation. It also retains completed empty or unresolved outcomes.
+
+`--all` snapshots the initial local label list once, after acquiring the worker lock. It can discover related labels
+while running, but it does not continuously discover unrelated downloads arriving later. Each group reads its current
+published inputs under ticker locks; the invocation does not freeze every pricing generation at launch. If the
+downloader completes after selection, a subsequent pass catches newly available sources. A second simultaneous
+lineage command waits for the existing worker; it does not restart or accelerate it.
+
+Skipping calculation is not a constant-time cursor resume. `--all` still enumerates sources, expands dependency
+groups, acquires locks and reads receipts. The current `closure` implementation scans the dependency index for each
+group. Use `--pending` for ordinary updates; no fixed full-store restart-time guarantee is established.
+
+Use scoped metadata refresh when older provider corrections need reacquisition. Ordinary updates do not claim to
+detect arbitrary old metadata revisions. Selection and shortcut behavior are owned by `run_lineage`, `local_symbols`
+and `process_group` in [`pipeline.py`](../libs/alpaca_lineage_build/pipeline.py); CLI flags are owned by `build_parser`
+in [`command_line.py`](../libs/alpaca_lineage_build/command_line.py).
+
+### Lineage reader availability and progress
+
+Each completed group is durable before the next group starts. However, the writer holds the global lineage lock for
+the **whole invocation**. `read_lineage` and `output_current_lineage_evidence.py --offline` take that lock shared and
+therefore wait even when the requested receipt has already been published. After a crash, a pending transaction must
+be recovered before those readers can serve it. Keep these
+[publication and lock guarantees](technical-contracts.md#lock-delegate-publish-acknowledge) when inspecting results;
+unlocked file access is not a coherent reader handoff.
+
+The build CLI prints its JSON summary only when the invocation finishes; it has no per-group progress stream. An
+empty redirected stdout log is therefore not proof that work stopped. Evidence inspection is also not a live progress
+poll: it observes the same locks and may read complete session grids. Neither standalone publication nor its internal
+reader makes an ID available through `DataLibrary`; that library still selects the combined catalogue.
 
 ## Current lineage evidence
 
@@ -185,6 +235,10 @@ published versions, while `installed_versions` describes the code now present. I
 before calling a result current. Rule paths explain recorded selection and fall-through order, not unrecorded failed
 predicate reasons. A full diagnostic may read closed session grids even when normal processing reuses their assignments;
 it is not a cheap progress poll. Pricing values are not duplicated into the evidence document.
+
+Both modes follow the [lineage reader/worker locking limits](#lineage-reader-availability-and-progress). The evidence
+CLI's parser is [`evidence_command_line.py`](../libs/alpaca_lineage_build/evidence_command_line.py); it shares
+`run_lineage` with the build CLI rather than owning another execution pipeline.
 
 The [operator evidence contract](technical-contracts.md#operator-lineage-evidence) owns its fields and limits.
 The [development loop](development.md#lineage-research-and-rule-improvement-loop) owns research-agent selection,

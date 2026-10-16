@@ -224,6 +224,7 @@ The repository's defined local checks are:
 ruff check .
 ruff format --check .
 python3.11 -B -W error::ResourceWarning -m unittest discover -s tests -v
+git diff --check
 ```
 
 Tests use temporary repositories and HTTP doubles. They do not require production data or live credentials. `-B`
@@ -246,8 +247,23 @@ versions, results, and unresolved gaps belong in [VERSION_TRACKER.md](VERSION_TR
 | Consumer-facing Python and CLI contract | [`public-api.md`](public-api.md) |
 | Operator commands, mutation, backup, and recovery | [`operations.md`](operations.md) |
 | Schemas, evidence gates, identity rules, runtime artifacts, and tracked resources | [`technical-contracts.md`](technical-contracts.md) |
+| Contributor workflow, research loop, local checks, and documentation ownership | [`development.md`](development.md) |
 | Current versions, pending changes, history, and verification gaps | [`VERSION_TRACKER.md`](VERSION_TRACKER.md) |
+| Dated retained-store inventory and reuse restrictions | [`storage-rework-notes.md`](storage-rework-notes.md) |
 
 Keep one explanation authoritative and link to it from other documents. The repository has no configured Markdown
 linter or link checker; documentation changes require an explicit local relative-link, anchor, and referenced-path
 check.
+
+For a documentation-only handoff:
+
+1. Compare guidance with the owning symbols, CLI parsers, version constants, changelog arrays and relevant tests.
+   Use `python3.11 -B <entrypoint.py> --help` for safe option verification; do not run a mutating example merely to
+   check its syntax. Keep important restrictions and failure/recovery behavior when consolidating prose.
+2. Check every maintained Markdown file's relative links, heading anchors and referenced repository paths. Confirm
+   that the README links directly to every other maintained document, including root agent/pipeline instructions.
+   Ignored runtime paths are examples or dated evidence, not files a fresh checkout must contain.
+3. Review `git diff --name-only` to confirm the refactor changes documentation only, and run the repository checks
+   above before handoff. Record actual results and any verification gaps under
+   [verification status](VERSION_TRACKER.md#verification-status), with the documentation change under `Unreleased`.
+   Leave runtime versions and JSON changelogs unchanged.

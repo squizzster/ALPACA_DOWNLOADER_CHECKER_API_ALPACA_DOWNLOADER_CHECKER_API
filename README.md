@@ -15,21 +15,17 @@ ticker while an unrelated security later reuses its old label. IDs are determini
 membership; accepted membership changes can change the ID. See the [identity contract](docs/technical-contracts.md#identity-model).
 
 Each boundary owns its calculation and publishes a selecting receipt. Downstream stages trust completed boundaries
-instead of re-auditing them. Exact-copy manifest aliases avoid duplicate pricing payloads; bounded updates preserve
-unaffected data. This is a data handoff system, not a trading engine or a logging product.
-
-**Lineage development objective:** improve the deterministic production cascade with simple, common-sense,
-non-ticker-specific rules. Both incorrect attribution and withholding attributable history are errors. Cases supply
-general concepts, not symbol-specific recipes or permission to restore every older result.
-
-Follow the [repeatable research-and-rule-improvement loop](docs/development.md#lineage-research-and-rule-improvement-loop):
-one case at a time, a fresh research agent per case, main-agent ownership of the complete cascade, focused checks
-during implementation, and one consolidated evaluation at the agreed batch boundary. Public research
-informs development; production decisions use deterministic inputs, not a model or researched ticker overrides.
+instead of re-auditing them. Restartable lineage skips unchanged completed groups, while bounded updates preserve
+unaffected history. Exact-copy manifest aliases avoid duplicate pricing payloads. This is a data handoff system;
+downstream research and trading decisions belong to its consumers.
 
 Requires Python **3.11** (configured target; verified with 3.11.13) and IANA `America/New_York` time-zone data.
 Producer runs require Alpaca credentials and SIP entitlement. Public reads need neither credentials nor network,
 but do require a compatible published catalogue: runtime data is not included in Git.
+
+Lineage development improves generic deterministic rules using the
+[research-and-rule-improvement loop](docs/development.md#lineage-research-and-rule-improvement-loop). Both incorrect
+attribution and withholding attributable history are errors. Research informs development, not runtime decisions.
 
 ## Documentation
 
@@ -42,8 +38,8 @@ but do require a compatible published catalogue: runtime data is not included in
 ### Use and operate
 
 - [Public API](docs/public-api.md) — Python quick start, dated ticker resolution, exact histories, CSV export and errors.
-- [Operations](docs/operations.md) — command map, credentials, date semantics, evidence inspection, locks and recovery.
-- [Technical contracts](docs/technical-contracts.md) — manifests, compact storage, identity, compatibility and publication.
+- [Operations](docs/operations.md) — command selection, credentials, restart and catch-up, evidence inspection and reader blocking.
+- [Technical contracts](docs/technical-contracts.md) — manifests, compact storage, identity, exact reuse gates, locks and publication.
 
 ### Develop and assess
 

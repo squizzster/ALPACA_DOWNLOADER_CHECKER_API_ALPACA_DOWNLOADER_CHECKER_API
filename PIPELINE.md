@@ -51,6 +51,8 @@ locking, and overlap semantics live in
 2. Expand the dependency closure through old relationships and UUID evidence. Lock known pricing inputs in sorted
    order. Trust completed pricing receipts; reject an incomplete pricing transaction without repairing it. A missing
    starting ticker takes the same downloader handoff as step 4; absent a published range, use downloader defaults.
+   Before loading price rows or acquiring metadata, return `unchanged` for a completed group satisfying the
+   [reuse gate](docs/technical-contracts.md#resume-and-invalidation). Otherwise continue through the stages below.
 3. Resume corporate-action acquisition from the previously active month, retaining earlier normalized evidence;
    refresh asset/CUSIP lookups. First acquisition, older invalidation, changed rules, or `--refresh-metadata` acquires
    the full evidence range. Discover newly related labels to a bounded fixed point.
@@ -66,7 +68,8 @@ locking, and overlap semantics live in
    exactly the handled pricing notices. A crash may repeat acknowledgement but cannot consume a newer generation.
 
 No public catalogue is produced. The [lineage contract](docs/technical-contracts.md#standalone-lineage-contract)
-defines the trust boundary, bounded work, chronological reuse and internal downstream handoff.
+defines the trust boundary, bounded work, chronological reuse and internal downstream handoff. The
+[restart guide](docs/operations.md#restart-and-catch-up) distinguishes pending work from an all-local-source scan.
 
 The existing combined cascade below has one calculation owner per boundary. A downstream stage consumes a trusted completed boundary, never
 repeats that boundary's rule calculation, and never writes its artifacts. Publication-time authentication and ordinary

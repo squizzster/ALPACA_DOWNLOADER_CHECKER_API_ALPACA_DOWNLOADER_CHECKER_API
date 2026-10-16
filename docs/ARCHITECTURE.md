@@ -44,16 +44,15 @@ imports no identity, lineage, validation, or combined-pipeline package. Consolid
 storage ownership, not price values or security ownership; see the
 [standalone contract](technical-contracts.md#standalone-pricing-source-contract).
 
-The standalone execution boundary is **one worker, one ticker transaction**: a worker owns its ticker from lock
-acquisition through all probes, adjustment downloads, and publication. At most three workers run concurrently;
+The standalone **downloader** execution boundary is **one worker, one ticker transaction**: a worker owns its ticker
+from lock acquisition through all probes, adjustment downloads, and publication. At most three workers run concurrently;
 only the in-memory request budget/cooldown is shared across tickers. Workers never split one ticker's adjustments.
 
-The lineage twin has one worker across processes and the same three chronological boundaries, including the
-month-over-year overlay. A small dependency index expands only the affected connected sources; relationship does not
-itself prove security identity. It acquires the complete pricing lock set in sorted order, publishes the group's
-lineage durably, then acknowledges notices. Approved upstream values are consumed without re-audit. A safe
-single-identity continuation reuses closed assignments and opens only the month; context-dependent cases recalculate
-the affected chronology using the established rules. Exact gates belong to the
+The lineage twin has **one worker per store across processes**. Its unit of work is a complete dependency group,
+which can contain several ticker labels; the downloader's worker count does not apply to lineage. Its three
+chronological boundaries include the month-over-year overlay. The dependency index identifies connected sources,
+not shared security ownership. Completed groups are restart checkpoints, and approved upstream values are consumed
+without re-audit. Exact reuse, continuation and lock gates belong to the
 [standalone lineage contract](technical-contracts.md#standalone-lineage-contract).
 
 The existing combined catalogue workflow remains:
@@ -133,6 +132,11 @@ its declared inputs, but it cannot change or reinterpret the upstream output.
 Standalone pricing uses the [per-ticker publication and acknowledgement protocol](technical-contracts.md#locking-publication-and-consumption).
 Normal handoff readers trust published pricing receipts and aliases; explicit pricing authentication remains separate.
 Downloader endpoint probes trust a small source-bound validator; they do not reopen cold gzip data on ordinary updates.
+
+Standalone lineage publishes each dependency group durably, but its writer lock spans the entire invocation. The
+internal lineage reader and offline evidence inspection wait until that lock is released. See
+[lineage reader availability](operations.md#lineage-reader-availability-and-progress) before treating a completed
+receipt as immediately accessible through a reader. This is separate from the combined catalogue lock below.
 
 The combined store has one stable `.publication.lock`. The pipeline holds it exclusively from the start of the mutation
 transaction through final catalogue publication. Public catalogue and history reads hold it shared. The writer also
