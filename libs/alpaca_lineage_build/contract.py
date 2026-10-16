@@ -8,13 +8,17 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 2
-SUPPORTED_VERSIONS = (1, 2)
+VERSION = 3
+SUPPORTED_VERSIONS = (1, 2, 3)
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
 
 
 class LineageError(RuntimeError):
+    pass
+
+
+class LineageBusyError(LineageError):
     pass
 
 
@@ -25,6 +29,17 @@ def versions() -> dict:
         "correlation": CORRELATION_VERSION,
         "calendar_sha256": us_market_hours_sha256(),
     }
+
+
+def reusable_versions(published: dict) -> bool:
+    """V3 changes locking only; v2 calculations remain valid with identical inputs.
+
+    Do not generalize this exception to other execution or rule versions. Older
+    readable schemas are not necessarily reusable, and all other version fields
+    must still match exactly.
+    """
+    current = versions()
+    return published == current or published == {**current, "lineage": 2}
 
 
 def validate_version() -> None:

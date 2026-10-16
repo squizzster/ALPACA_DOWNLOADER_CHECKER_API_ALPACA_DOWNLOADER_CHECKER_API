@@ -109,7 +109,7 @@ published history to prove that it works, for example, but it cannot change a ba
 | Identity candidate | 2 | Published correlation partitions and lineage reports, plus the current catalogue base in affected mode | A restartable private snapshot or affected-closure aggregation with provisional offline state. |
 | Availability | 1 | Candidate, warning set, published histories, and lineage evidence | Exactly one online/offline/lineage-gap decision for every candidate identity. |
 | Catalogue publication | 2 | Candidate and availability generations, current retention state, and catalogue engine v5 | Incremental source/security objects, inventories, retention state, and the final catalogue receipt. |
-| Public API | 1 | One completed reader-visible catalogue plus published history dependencies | Online-only typed identities, resolution, search, histories, and flat export. |
+| Public API | 2 | A completed catalogue for `DataLibrary`, or a completed standalone group for `StandaloneReader` | Separate online-only catalogue reads and source-scoped resolved histories; no new persisted reader artifacts. |
 
 The standalone pricing, clean-room ledger, eight monthly boundary, and older transformation changelogs are runtime-validated arrays under
 [`resources/`](../resources/). Array position is the version; entries never contain an explicit `version` key.
@@ -353,13 +353,14 @@ Normal handoff reads use `load_published_boundary` / `load_published_views`: the
 decode selected payloads, and follow approved aliases without re-hashing prices or repeating validation. Source
 selection and incomplete-publication checks are not a repeated data audit. The separate internal
 `read_pricing_views` helper retains shared-lock explicit authentication. None is a supported application API.
-Standalone lineage consumes this handoff; `DataLibrary` integration remains separate work.
+Standalone lineage consumes this handoff; `StandaloneReader` consumes its completed assignments and pricing.
+`DataLibrary` catalogue integration remains separate work.
 
 ## Standalone lineage contract
 
 Owner: [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/); entrypoint:
-[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **2**. Compatible v1 receipts,
-indexes and recovery journals remain parseable; that does not make them eligible for current-version reuse.
+[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **3**. Compatible v1/v2 receipts,
+indexes and recovery journals remain parseable. Only the explicit v2 exception below permits prior-version reuse.
 The standalone pricing store/marker remains unchanged. Lineage acquires asset/CUSIP and corporate-action evidence itself, but requests
 pricing only through the downloader. It reuses the existing ownership, row-allocation, UUID-membership and
 `security_id` transforms; it does not publish online status or the public catalogue.
@@ -368,6 +369,7 @@ pricing only through the downloader. It reuses the existing ownership, row-alloc
 
 ```text
 end_of_day/lineage/
+  .worker.lock                        # one stable writer-only guard per store
   index.sqlite3                       # one small dependency/receipt selector, no prices
   GOOG/
     lineage.manifest.json             # selected inputs, normalized evidence, output receipts
@@ -396,7 +398,7 @@ Whole-group reuse precedes metadata acquisition and price loading. `process_grou
 - metadata refresh was not requested;
 - every source in the known dependency group has published pricing and a lineage receipt;
 - no source in that group has a pending pricing notice; and
-- every receipt selects the current pricing-source digest and exactly matches `versions()`.
+- every receipt selects the current pricing-source digest and passes `reusable_versions`.
 
 The build CLI then performs no price-payload read, lineage-boundary read, provider request, correlation calculation
 or publication for that group. Checking the small source document's digest is an input-generation comparison, not
@@ -404,10 +406,10 @@ another authentication of the bars. Completed unresolved and empty histories qua
 read boundaries and session grids to explain the retained result; see the [operator evidence contract](#operator-lineage-evidence).
 
 `versions()` in [`contract.py`](../libs/alpaca_lineage_build/contract.py) includes the lineage, identity-report and
-correlation versions plus the calendar digest. Changing any of these invalidates the shortcut, including an execution
-version bump that leaves the row rules unchanged. Readable older schemas are not automatically reusable or current
-reader results. Any future compatibility exception must be explicit; silently ignoring version changes would weaken
-the receipt contract.
+correlation versions plus the calendar digest. `reusable_versions` accepts exact equality or lineage v2 with every
+other field equal: v3 changes locking, not calculations. This exception applies to whole-group reuse, month resume,
+metadata acquisition and readers; it neither rewrites v2 receipts nor accepts v1 or changed rules/calendar. All other
+version changes invalidate reuse. Readable older schemas are not automatically reusable.
 
 When acquisition is required, ordinary action acquisition starts at the **previously active month**, retaining older
 normalized actions. Exact asset/CUSIP lookups are refreshed. Newly discovered labels acquire their full requested
@@ -435,8 +437,8 @@ entire unchanged group. Selection and restart commands belong in the [restart gu
 
 ### Lock, delegate, publish, acknowledge
 
-One directory-inode `flock` serializes lineage invocations for a store. `run_lineage` holds it exclusively through
-recovery, work selection and the entire group-processing loop, not just the write step. The worker takes the complete
+One permanent `.worker.lock` serializes lineage invocations for a store. `run_lineage` holds it exclusively through
+recovery, work selection and the entire group-processing loop; readers never take it. The worker takes the complete
 known set of exclusive pricing locks in sorted order. If discovery expands it, all pricing locks are released before
 reacquisition. Missing initial or related pricing, or short request coverage, is handed to the downloader **outside
 those locks**. Without a published range, null request bounds select the downloader's defaults; no second range policy
@@ -444,14 +446,25 @@ is introduced. The worker then reloads the current notices and receipts. A publi
 evidence. Discovery is capped at 100 labels and three pricing
 acquisition waves; exhaustion/failure leaves notices pending. No queue-file hierarchy is introduced.
 
-All resulting JSON is prepared before publication. One temporary `.pending.json` journals only changed outputs,
+All resulting JSON is prepared before publication. While still holding the group's pricing locks, the worker takes
+the lineage directory-inode `flock` exclusively as a **brief publication gate**. One temporary `.pending.json` journals only changed outputs,
 retirements, affected index entries, selected pricing generations and notices. Outputs are installed, then the index
-is committed, then notices are acknowledged. The journal is removed last. Each group is durable immediately; the
-global lock still prevents cooperating readers from observing it until the invocation releases the lock. Readers
-take the lineage lock shared before taking their pricing locks and reject a pending transaction. Recovery rolls
+is committed, then notices are acknowledged. The journal is removed last and the gate released. Recovery takes
+sorted pricing locks **before** the publication gate, then rolls
 forward; a newer pricing generation is never acknowledged using an older journal, even when its notice has identical
 dates. Process death releases locks. Unresolved assignments are
 durable results; API or processing failure is not successful consumption.
+
+All standalone readers use `reader_snapshot`: select the group under the shared publication gate, release it, acquire
+sorted shared pricing locks, then briefly reacquire the gate and reselect. A changed selection releases all locks and
+retries, at most three times. Selected receipts/boundaries are loaded under the gate; only pricing locks remain held
+while consuming the snapshot. Never wait for a pricing lock while holding the publication gate. Unrelated groups can
+calculate and publish during a read. A pending journal still prevents reads until recovery; no partial commit is exposed.
+
+At worker startup, the publication gate drains old-protocol users before upgrading SQLite `user_version` to 3.
+Only the protocol header changes; prices and existing receipts stay intact. Older executables reject that index
+before taking pricing locks. New readers refuse the old header until the worker upgrades it. Do not run old binaries
+against an upgraded store, unlink either lock inode, or bypass the locks with direct file reads.
 
 `publish`, `recover` and the lock helpers in [`storage.py`](../libs/alpaca_lineage_build/storage.py) own this protocol.
 Recovery can finish journaled outputs without reacquiring metadata; work interrupted before journaling can calculate
@@ -461,6 +474,19 @@ again. Reuse is based on durable receipts and notices, not a persistent position
 application import. It selects approved assignments, applies the month overlay, and refuses incomplete/stale input generations or pending
 work. It does not read price payloads, acquire metadata, or rerun identity rules. These identity checks prevent mixed
 generations; the approved facts themselves are trusted.
+
+### Standalone resolved reader handoff
+
+`StandaloneReader._snapshot` in [`standalone.py`](../alpaca_end_of_day/standalone.py) uses the shared `reader_snapshot`
+handshake above, opening existing lock inodes read-only for the seed receipt's `input_sources`. It selects
+only those indexed receipts, not the entire universe. Every group receipt must select the same input generations,
+compatible owning versions and matching pricing boundaries/anchor; pending journals or pricing notices prevent a read.
+Group pricing locks remain held through price assembly. Default acquisition is nonblocking; waiting is explicit.
+
+The reader applies the same completed-years/year/month overlay and consumes correlated assignments without changing
+their IDs. Comparing small source-document identities binds generations; no payload digest audit or domain-rule rerun
+occurs. The returned group generation is derived from selected receipt identities, not a new on-disk catalogue.
+Lookup and history selection semantics belong in the [consumer contract](public-api.md#standalone-resolved-pricing-reader).
 
 ## Operator lineage evidence
 

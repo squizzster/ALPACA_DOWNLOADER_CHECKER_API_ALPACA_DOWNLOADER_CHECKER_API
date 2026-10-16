@@ -7,7 +7,7 @@ from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
 
 from . import storage
-from .contract import MAX_ACQUISITION_WAVES, MAX_CLOSURE, LineageError, validate_version, versions
+from .contract import MAX_ACQUISITION_WAVES, MAX_CLOSURE, LineageError, reusable_versions, validate_version
 from .metadata import EvidenceClient, acquire, dependencies
 from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
@@ -83,7 +83,7 @@ def process_group(
                     and all(
                         previous[symbol] is not None
                         and previous[symbol]["source_sha256"] == storage.document_digest(sources[symbol])
-                        and previous[symbol]["versions"] == versions()
+                        and reusable_versions(previous[symbol]["versions"])
                         for symbol in group
                     )
                 ):
@@ -119,7 +119,7 @@ def process_group(
                     full = refresh or (
                         prior is not None
                         and (
-                            prior["versions"] != versions()
+                            not reusable_versions(prior["versions"])
                             or notices.get(symbol, {}).get("from", prior["anchor_month"] + "-01")
                             < prior["anchor_month"] + "-01"
                         )
@@ -245,7 +245,7 @@ def run_lineage(
             selected.extend(
                 symbol
                 for symbol, entry in index["symbols"].items()
-                if entry.get("versions") != versions() and symbol not in selected
+                if not reusable_versions(entry.get("versions")) and symbol not in selected
             )
         for label in selected:
             try:

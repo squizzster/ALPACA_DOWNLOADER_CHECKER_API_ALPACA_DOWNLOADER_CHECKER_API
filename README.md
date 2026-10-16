@@ -8,7 +8,10 @@ combined publication pipeline.
 The standalone downloader and lineage builder are independent siblings: compact completed-years, current-year and
 current-month boundaries reduce file churn; up to three whole-ticker download workers share a 199-request/minute
 budget; one lineage worker consumes locked pending-date notices. Their development store is `data_pricing/`.
-**The public reader is not yet connected to this standalone pair**; it selects the combined catalogue in `data_vtest/`.
+[`read_alpaca_pricing.py`](read_alpaca_pricing.py) and `alpaca_end_of_day.StandaloneReader` read that pair's resolved
+pricing directly, without downloads or datastore writes; completed groups stay readable during unrelated lineage work.
+The separate online-only `DataLibrary` still selects the
+combined catalogue in `data_vtest/`; resolved lineage does not claim that catalogue's availability approval.
 
 **A `public_id` represents resolved security pricing continuity, never a ticker spelling.** A security can change
 ticker while an unrelated security later reuses its old label. IDs are deterministic for fixed provider-UUID
@@ -21,7 +24,7 @@ downstream research and trading decisions belong to its consumers.
 
 Requires Python **3.11** (configured target; verified with 3.11.13) and IANA `America/New_York` time-zone data.
 Producer runs require Alpaca credentials and SIP entitlement. Public reads need neither credentials nor network,
-but do require a compatible published catalogue: runtime data is not included in Git.
+but do require compatible published boundaries (a catalogue for `DataLibrary`): runtime data is not included in Git.
 
 Lineage development improves generic deterministic rules using the
 [research-and-rule-improvement loop](docs/development.md#lineage-research-and-rule-improvement-loop). Both incorrect

@@ -3,15 +3,74 @@
 [`alpaca_end_of_day`](../alpaca_end_of_day/__init__.py) is the only supported Python import for consumer applications.
 Everything under `libs/` is implementation or operator-inspection machinery.
 
-The public library exposes only the producer-validated online snapshot selected by the current publication receipt.
+`DataLibrary` exposes only the producer-validated online snapshot selected by the current publication receipt.
 Ordinary reads trust completed boundary receipts; they do not re-hash every catalogue object or monthly payload. The
 absence of an ID, ticker, name, or history does not disclose whether an internal offline record exists.
 
 A source checkout alone is not a readable data library: Git does not contain the runtime `data_vtest/` store.
 `DataLibrary` requires a compatible completed catalogue there; it does not probe or fall back to the legacy
 `data/end_of_day/` tree. See [Backup and recovery](operations.md#backup-and-recovery).
-The standalone pricing/lineage twins are producer boundaries, not an additional `DataLibrary` store format. Their
-internal handoff readers under `libs/` are not supported application imports.
+The standalone pricing/lineage twins are not an additional `DataLibrary` store format. Use `StandaloneReader` for
+their resolved pricing; internal handoff readers under `libs/` are not supported application imports.
+
+## Standalone resolved-pricing reader
+
+`StandaloneReader` consumes the existing standalone store directly. It does not run availability, produce an online
+catalogue, or change `DataLibrary`. A resolved portion remains readable when other observations are unresolved;
+unresolved rows are not assigned an ID by the reader.
+
+```python
+from alpaca_end_of_day import StandaloneReader
+
+reader = StandaloneReader("data_pricing")
+choices = reader.resolve_ticker("GOOG")  # metadata only; no price payloads
+history = reader.get_history("GOOG", "all", start="2026-10-01", end="2026-10-14")
+```
+
+The symbol locates an existing published source and its dependency group. Resolution returns every ID assigned to
+that source, plus IDs bearing that historical ticker in the group. A provider source alias need not equal a historical
+trading label. Dependency membership is not security membership: only the published row assignments select IDs.
+`matches` contains public IDs, actual historical tickers, available adjustments, and first/last observed sessions;
+those endpoints do not promise uninterrupted coverage.
+
+If several IDs match, `get_history` raises `AmbiguousTickerError`; pass `public_id=...` from the resolution result.
+The symbol is still required: there is no new global public-ID catalogue or universe scan. Date bounds select rows
+after identity selection; they do not silently choose an identity for a reused ticker. A source alias is never
+invented as a historical trading label.
+
+History results are JSON-compatible dictionaries with `security`, `adjustment`, inclusive `range`, `bar_count`, and
+`bars`. Bars contain the New York `session`, original `timestamp`, published historical `tickers`, and all seven
+numeric pricing fields as **exact strings**, including volume and trade count. All eight adjustment modes below are
+supported; `all` means fully adjusted, not every mode. A valid range without observations returns an empty array.
+
+For overlapping sources, the reader reuses `_resolve_bar_candidates` in
+[`history.py`](../libs/alpaca_end_of_day_reader/history.py): equal observations collapse; differing adjusted bars
+prefer strictly broader correlated session coverage, then a unique source matching the historical ticker; differing
+raw bars use only that historical-ticker preference. An unsettled price conflict raises an error. No price arithmetic
+or new identity rule is applied. Each contributing boundary opens only the selected adjustment's physical gzip,
+following approved aliases. The selected history is assembled **before date filtering** so a narrower request cannot
+change source preference; narrow requests can therefore read cold pricing too.
+
+Each method selects one completed group through the [snapshot handshake](technical-contracts.md#lock-delegate-publish-acknowledge)
+and holds its shared pricing locks. Unrelated lineage work can calculate and publish concurrently. Results include a group `generation`; calls
+may select newer publications, unlike the pinned `DataLibrary` instance below. There is no persistent reader cache,
+index, price copy, repair, acknowledgement, or network request. Busy producers raise `ReaderBusyError` by default;
+`StandaloneReader(store, wait=True)` waits. Missing, stale, incomplete, or incompatible publications raise
+`StandaloneReaderError`. Malformed query arguments raise `ValueError`.
+
+The standalone CLI writes JSON or CSV to stdout:
+
+```bash
+./read_alpaca_pricing.py --store data_pricing -s GOOG --resolve
+./read_alpaca_pricing.py --store data_pricing -s GOOG --type all --from 2026-10-01 --to 2026-10-14
+./read_alpaca_pricing.py --store data_pricing -s FB --public-id <64-hex-id> --format csv
+```
+
+`--start`/`--end` alias `--from`/`--to`. CSV carries session, public ID, historical tickers (pipe-separated when several
+agreeing sources supply labels), timestamp and exact numeric fields. `--resolve` is metadata-only JSON and does not
+accept history filters. See [reader operation and exit statuses](operations.md#standalone-reader).
+
+The remaining sections describe the combined-catalogue `DataLibrary` interface.
 
 ## Open a snapshot
 

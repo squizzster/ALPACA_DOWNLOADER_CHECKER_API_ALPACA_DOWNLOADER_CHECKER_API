@@ -131,6 +131,7 @@ class LineageBuildTests(unittest.TestCase):
         self.assertEqual(
             set(snapshot(self.root)),
             {
+                ".worker.lock",
                 "index.sqlite3",
                 "GOOG/lineage.manifest.json",
                 "GOOG/completed_years.manifest.json",
@@ -494,7 +495,7 @@ class LineageBuildTests(unittest.TestCase):
         ):
             result = self.run_build(["GOOG"], refresh=True)
         self.assertTrue(result["recovered"])
-        self.assertEqual(self.receipt()["schema_version"], 2)
+        self.assertEqual(self.receipt()["schema_version"], storage.VERSION)
         self.assertEqual(before, snapshot(self.store / "end_of_day/pricing"))
         self.assertFalse(self.notice().exists())
 

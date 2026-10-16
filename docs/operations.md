@@ -1,7 +1,7 @@
 # Operations
 
 Run commands from the repository root with Python 3.11. Each command's current `--help` output is the option
-authority. The combined producer and public reader select `data_vtest/`; they do not fall back to
+authority. The combined producer and `DataLibrary` reader select `data_vtest/`; they do not fall back to
 `data/end_of_day/`.
 
 ## Command map
@@ -10,6 +10,7 @@ authority. The combined producer and public reader select `data_vtest/`; they do
 |---|---|---|
 | [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Independent pricing-only downloader. | Contacts only Alpaca stock bars, writes an explicit compact-format destination, and never invokes lineage or the catalogue. |
 | [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | Standalone lineage twin; exactly one worker. | Consumes the compact store, contacts identity/action APIs, delegates missing prices to the downloader, and acknowledges durably processed notices. |
+| [`read_alpaca_pricing.py`](../read_alpaca_pricing.py) | Standalone resolved-pricing reader. | Explicit compact store; read-only, no credentials/network, JSON or CSV stdout, nonblocking by default. |
 | [`output_current_lineage_evidence.py`](../output_current_lineage_evidence.py) | Evidence from that same lineage workflow, not a second resolver. | Default mode can acquire and publish; `--offline` only inspects existing publications under locks. Emits JSON to stdout. |
 | [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Canonical monthly acquisition-to-catalogue producer. | Contacts Alpaca, writes the current application store, and requires credentials. |
 | [`download_alpaca_end_of_day_bars.py`](../download_alpaca_end_of_day_bars.py) | Compatibility executable for the same complete producer. | Same arguments and runtime effects. |
@@ -65,7 +66,7 @@ asset lookup, create public IDs, or run lineage. A response under another ticker
 
 `--store` is required. Only an empty directory or a matching v3 standalone store is accepted; incompatible stores are
 not automatically migrated, repaired, or copied. Prices go under `end_of_day/pricing/<TICKER>` and pending notices
-under `end_of_day/manifests/<TICKER>`. The public reader still uses its separate catalogue format.
+under `end_of_day/manifests/<TICKER>`. `StandaloneReader` reads this pair; `DataLibrary` retains its catalogue format.
 
 | Option | Meaning |
 |---|---|
@@ -195,10 +196,10 @@ in [`command_line.py`](../libs/alpaca_lineage_build/command_line.py).
 
 ### Lineage reader availability and progress
 
-Each completed group is durable before the next group starts. However, the writer holds the global lineage lock for
-the **whole invocation**. `read_lineage` and `output_current_lineage_evidence.py --offline` take that lock shared and
-therefore wait even when the requested receipt has already been published. After a crash, a pending transaction must
-be recovered before those readers can serve it. Keep these
+Each completed group is readable while the single worker handles unrelated groups. The worker-only guard spans the
+invocation; the shared/exclusive publication gate covers only selection and installation. `read_lineage` and offline
+evidence wait on conflicting pricing or publication work; the public reader defaults to a prompt busy response.
+After a crash, a pending transaction must be recovered before readers can serve results. Keep these
 [publication and lock guarantees](technical-contracts.md#lock-delegate-publish-acknowledge) when inspecting results;
 unlocked file access is not a coherent reader handoff.
 
@@ -206,6 +207,27 @@ The build CLI prints its JSON summary only when the invocation finishes; it has 
 empty redirected stdout log is therefore not proof that work stopped. Evidence inspection is also not a live progress
 poll: it observes the same locks and may read complete session grids. Neither standalone publication nor its internal
 reader makes an ID available through `DataLibrary`; that library still selects the combined catalogue.
+
+## Standalone reader
+
+Use `read_alpaca_pricing.py` for resolved histories from `data_pricing`, not the combined-catalogue CLI:
+
+```bash
+./read_alpaca_pricing.py --store data_pricing --symbol GOOG --resolve
+./read_alpaca_pricing.py --store data_pricing --symbol GOOG --type raw --from 2026-10-01 --to 2026-10-14
+```
+
+The command makes no API calls or datastore writes and creates no lock files. It requires published lineage for the
+source group. If a producer holds a required group lock or the brief publication gate, it returns **status 3** promptly
+with a busy message; `--wait` instead waits. A busy unrelated ticker does not block the read. Same-group acquisition
+can still take time. Do not bypass locks to read partially installed files. After upgrading from lineage v2, start the
+new lineage command once to activate the v3 lock protocol; compatible completed receipts are reused, not rebuilt.
+
+Status **0** means success, **1** means an unavailable/invalid publication or query/runtime error, and **2** means a
+CLI syntax/option error. No history is printed before its read succeeds. Use `--resolve`, then `--public-id` alongside
+the same symbol when multiple IDs match. `--format csv` writes stdout only; an output file requires an explicit shell
+redirection. The [consumer guide](public-api.md#standalone-resolved-pricing-reader) owns output types, date semantics,
+lookup scope and overlap selection. This reader does not activate or populate the online catalogue.
 
 ## Current lineage evidence
 

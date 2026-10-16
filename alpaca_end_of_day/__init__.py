@@ -2,7 +2,9 @@
 
 Consumer code should import this package and no module below ``libs``. The
 pipeline has already checked its published boundaries; this consumer reads the
-resulting online universe, public identities, and daily histories.
+resulting online universe, public identities, and daily histories. The separate
+StandaloneReader consumes resolved pricing from the standalone twins without
+claiming the combined catalogue's online-availability contract.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 1
+API_VERSION = 3
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 ADJUSTMENTS = tuple(ALPACA_ADJUSTMENT_MODES)
 FLAT_ONLINE_CSV_COLUMNS = (
@@ -1051,9 +1053,17 @@ class DataLibrary:
         )
 
 
+from .standalone import (  # noqa: E402
+    AmbiguousTickerError,
+    ReaderBusyError,
+    StandaloneReader,
+    StandaloneReaderError,
+)
+
 __all__ = [
     "ADJUSTMENTS",
     "API_VERSION",
+    "AmbiguousTickerError",
     "Catalog",
     "CatalogChangedError",
     "DailyBar",
@@ -1064,6 +1074,9 @@ __all__ = [
     "FlatCsvExport",
     "History",
     "PublicIdUnavailableError",
+    "ReaderBusyError",
     "Security",
+    "StandaloneReader",
+    "StandaloneReaderError",
     "TickerResolution",
 ]

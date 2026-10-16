@@ -11,6 +11,10 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Added
 
+- Public API v2 adds `StandaloneReader` and `read_alpaca_pricing.py`: explicit-store, source-scoped resolved-ID
+  histories; exact JSON/CSV stdout; metadata-only resolution; shared producer locks with busy-by-default handling;
+  no downloads, datastore writes or new catalogue. `DataLibrary` keeps its online-only combined-store contract.
+  Reader usage, handoff, lock hazards and verification ownership are documented in their existing guides.
 - Documentation-only lineage research-and-rule-improvement procedure in [Development](development.md#lineage-research-and-rule-improvement-loop),
   linked prominently from the compact README and agent instructions: fresh GPT-6.1-Sol High researcher per sequential
   case, main-agent integration responsibility, generic concepts, focused checks and one consolidated batch review.
@@ -54,6 +58,11 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Modified
 
+- Standalone lineage v3 separates the one-worker guard from brief group-publication locking. All standalone readers
+  use sorted shared pricing locks and bounded re-selection, so unrelated work no longer blocks completed reads.
+  Public API v3 adopts that handshake. The SQLite protocol header upgrades once; compatible v2 receipts and month
+  continuations remain reusable without price copies, rule changes or a whole-store rebuild. The existing guides
+  now describe lock ordering, upgrade/recovery hazards and concurrent read semantics.
 - Documentation-only navigation and restart clarification: the README keeps a compact product overview and complete
   document index; Operations owns restart/catch-up selection and reader-blocking consequences; Technical contracts
   owns the unchanged-group gate, version invalidation and lock/recovery protocol. The contributor guide owns the
@@ -123,6 +132,41 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+### Concurrent standalone reads — 2026-10-16
+
+- **567 tests passed** in **50.657 seconds**, with ResourceWarnings treated as errors. The 39 standalone-reader
+  tests include cross-process unrelated publication, same-group waiting without lock inversion, publication/recovery
+  protection, bounded selection retries, typed index failures and exact v2 receipt/month-resume compatibility.
+- `ruff check .`, `ruff format --check .` (**170 files**) and `git diff --check` passed. **257 local Markdown links
+  and anchors**, complete README coverage of the other nine maintained documents, and reader `--help` passed.
+- The authorized old worker was interrupted during calculation, with no pending publication left in its active group.
+  The detached replacement started at **20:14 UTC**, PID **1598510**, using `--all --workers 1` with pricing downloads
+  enabled. Its store remains `/data2/alpaca/data_pricing`; this dated record is not a live process-status guarantee.
+- While that worker ran, the actual GOOG CLI returned resolution in **0.275 seconds** and **10 fully adjusted
+  sessions** for October 1–14 in **0.344 seconds**. Both selected the same group generation. GOOG's lineage v2,
+  correlation v51 receipt retained its modification time; the index protocol was v3. No price copy or forced refresh
+  was used to activate the reader.
+
+The current whole-universe lineage pass is not established as complete. Same-group work, incomplete publications
+and stale input generations still prevent reads; these checks do not establish universe-wide identity correctness
+or `DataLibrary` catalogue availability. Correlation rules and pricing layout are unchanged.
+
+### Standalone resolved reader — 2026-10-16
+
+- **558 tests passed** in **47.244 seconds**, with ResourceWarnings treated as errors; 30 new standalone-reader
+  tests cover real synthetic publisher handoffs, all adjustments, exact values, overlay/rollover, reused tickers and
+  aliases, partial unresolved history, source selection, stale inputs, non-mutation and process-independent locks.
+- `ruff check .`, `ruff format --check .` (**170 files**) and `git diff --check` passed.
+- **256 local Markdown links and anchors** and complete README coverage of the other nine maintained documents
+  passed a local check. The new executable's `--help` succeeded; its real subprocess test read synthetic published
+  prices without credentials or store changes.
+- A live `./read_alpaca_pricing.py --store data_pricing -s GOOG --resolve` returned the expected **busy status 3**
+  while the detached lineage invocation held its existing global lock. No lock was bypassed or producer restarted.
+
+That initial API v2 checkpoint could not verify live history while the old writer held its lock. The subsequent v3
+coordination checkpoint above addresses that limitation. Neither checkpoint is a universe-wide readability or
+availability approval; pricing layout and lineage rules are unchanged.
 
 ### Documentation and restart clarification — 2026-10-16
 
@@ -461,9 +505,9 @@ complete current-store audit coverage.
 | Boundary or transform | Version | Role |
 |---|---:|---|
 | Standalone pricing source | 6 | Whole-ticker workers, shared rate budget, compact storage, endpoint validator, and trusted pending-date handoff. |
-| Standalone lineage | 2 | One-worker identity twin, initial/related pricing handoff, chronological reuse and publish-before-acknowledge recovery. |
+| Standalone lineage | 3 | One-worker guard, brief group publication gate, concurrent readers, compatible v2 calculation reuse and recovery. |
 | Clean-room run ledger | 1 | Immutable scope, checkpoints, exhaustive audit, completion, and activation authority. |
-| Public consumer API | 1 | Online-only typed consumer surface. |
+| Public consumer API | 3 | Separate online-only `DataLibrary` and source-scoped standalone reader with concurrent group snapshots. |
 | Monthly pricing source | 2 | Month storage, aliases, inventories, and selected-month replacement. |
 | Monthly validation | 3 | Reusable month results and predecessor seams. |
 | Lineage source | 2 | Normalized evidence bound to source and validation generations. |
@@ -486,18 +530,19 @@ Exact constants and changelog paths are listed in [Development](development.md#v
 
 ## Known gaps
 
-Standalone pricing and lineage are implemented; public-reader integration is not. Lineage's no-cold-read continuation
+Standalone pricing, lineage and source-scoped resolved reading are implemented; integration with `DataLibrary`'s
+online catalogue is not. The new reader requires a source symbol even when selecting a public ID; it does not provide
+a global live catalogue or universe-wide export. Unrelated lineage groups can publish during a read.
+Lineage's no-cold-read continuation
 covers the explicit single-identity reuse gate. Context-dependent multi-identity cases and rollover calculate the
 affected chronology using trusted inputs, not an upstream audit. A full evidence diagnostic can read closed session
 grids even when normal processing reuses assignments.
 
-Standalone lineage remains one worker per store. Each group is durably published, but the whole-run writer lock
-blocks internal lineage reads and offline evidence inspection until release. `--all` restarts skip unchanged
+Standalone lineage remains one worker per store. Reads can still wait on their own pricing group or a brief commit;
+an incomplete publication prevents reads until recovery. `--all` restarts skip unchanged
 calculations but still scan dependencies and receipts; no full-store restart-time guarantee has been established.
 See [restart and reader limits](operations.md#restart-and-catch-up). Multi-worker lineage and priority scheduling were
-investigated, not implemented. Changing only the CLI worker count or releasing the global lock would leave the shared
-journal/index and reader/recovery lock ordering unsafe; a future execution-version change must also address existing
-receipt reuse explicitly.
+investigated, not implemented. The v3 change removes whole-invocation reader blocking, not writer serialization.
 
 Older metadata corrections outside the resumed month window require explicit refresh. Endpoint checks are the chosen
 pricing-refresh policy, not exhaustive historical correction detection. The focused publications and broader read-only

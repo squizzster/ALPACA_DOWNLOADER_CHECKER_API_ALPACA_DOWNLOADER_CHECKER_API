@@ -12,5 +12,12 @@
       "Delegate missing initial-ticker pricing through the same unlocked downloader handoff as related tickers; when no published range exists, use downloader defaults and resume from its published receipt and notice.",
       "Keep no-download waiting, bounded acquisition, per-ticker failure isolation and publish-before-acknowledge behavior; retain compatible v1 receipt, index and recovery reads without new storage or auditing."
     ]
+  },
+  {
+    "modifications": [
+      "Separate the single-worker guard from brief receipt/index publication locking, allowing completed groups to remain readable during unrelated lineage work.",
+      "Use selection, sorted shared pricing locks, and bounded re-selection for all standalone readers; preserve publication recovery and publish-before-acknowledge ordering.",
+      "Upgrade only the SQLite protocol header to exclude old lock ordering; reuse v2 publications when all pricing, identity, correlation, report and calendar versions still match, without rewriting their receipts or prices."
+    ]
   }
 ]

@@ -8,7 +8,8 @@ The existing combined calculation path is the monthly acquisition-to-catalogue c
 transactions by [`build_alpaca_end_of_day_clean_room.py`](build_alpaca_end_of_day_clean_room.py).
 [`download_alpaca_end_of_day_bars.py`](download_alpaca_end_of_day_bars.py) is a compatibility executable for the same
 focused orchestrator. Those older commands remain coupled; the new standalone command is a separate pricing entrypoint,
-not an alternate identity-rule engine. The public catalogue reader is not yet connected to its compact source format.
+not an alternate identity-rule engine. The online catalogue reader retains its separate format; the standalone
+resolved reader consumes the compact twins directly as described below.
 
 ## Standalone pricing execution
 
@@ -64,12 +65,31 @@ locking, and overlap semantics live in
    the affected chronology. Do not repeat pricing authentication or market-price validation.
 6. Publish completed-years, year snapshot and authoritative month assignments. Preserve unchanged receipts; retire
    consolidated month/year files. Ambiguous rows remain explicitly unassigned; dependency relationships never merge IDs.
-7. Install the affected group under a recoverable transaction, update its small dependency index, then acknowledge
+7. Take the brief publication gate while holding group pricing locks. Install the affected group under a recoverable transaction, update its small dependency index, then acknowledge
    exactly the handled pricing notices. A crash may repeat acknowledgement but cannot consume a newer generation.
 
 No public catalogue is produced. The [lineage contract](docs/technical-contracts.md#standalone-lineage-contract)
 defines the trust boundary, bounded work, chronological reuse and internal downstream handoff. The
 [restart guide](docs/operations.md#restart-and-catch-up) distinguishes pending work from an all-local-source scan.
+
+## Standalone reader execution
+
+[`read_alpaca_pricing.py`](read_alpaca_pricing.py) enters `alpaca_end_of_day.StandaloneReader`:
+
+1. Select the input group under the brief shared publication gate, release it, then acquire sorted pricing shared
+   locks. Reacquire the gate to confirm selection and load metadata; retry a changed selection at most three times.
+   Keep only pricing locks through consumption. Report busy by default; `--wait` opts into waiting. Never recover
+   or acknowledge a producer transaction. Unrelated lineage work can continue.
+2. Select the source's indexed lineage receipt and its existing group. Require completed, current-rule receipts
+   selecting the same pricing generations, without pending work. No universe scan or new persisted index is needed.
+3. Apply the published month-over-year assignment overlay. Return every matching public ID for resolution, or require
+   an explicit ID when several match. Unresolved rows do not become history; resolved portions remain usable.
+4. Load only the selected adjustment's contributing payloads through their manifest aliases. Assemble one ID's
+   continuation using the established history-source selection policy, then filter inclusive session dates.
+5. Release the locks and return exact values as JSON or CSV. No downloads, pricing copies, lineage calculations,
+   upstream re-audits, or online-availability decisions occur.
+
+See the [consumer contract](docs/public-api.md#standalone-resolved-pricing-reader) for lookup scope and source preference.
 
 The existing combined cascade below has one calculation owner per boundary. A downstream stage consumes a trusted completed boundary, never
 repeats that boundary's rule calculation, and never writes its artifacts. Publication-time authentication and ordinary

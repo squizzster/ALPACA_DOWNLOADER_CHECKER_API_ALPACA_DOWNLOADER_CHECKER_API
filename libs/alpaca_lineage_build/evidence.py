@@ -1,9 +1,6 @@
 """Operator evidence from the real lineage workflow, never a second resolver."""
 
-import fcntl
 import json
-import os
-from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
 
@@ -203,13 +200,8 @@ class EvidenceCapture:
 
 def inspect_offline(store, symbol, capture):
     """Observe existing publications under their locks; create or repair nothing."""
-    storage.check_store(store)
-    root = regular_path(store, "end_of_day/lineage")
-    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_SH)
-        if storage.path_at(root, ".pending.json").exists():
-            raise LineageError("lineage publication incomplete; resume lineage first")
+
+    def select(root):
         index = storage.read_index(root)
         group = closure(index, {symbol})
         receipts = {name: storage.read_receipt(root, name, index) for name in sorted(group)}
@@ -217,31 +209,21 @@ def inspect_offline(store, symbol, capture):
             raise LineageError(f"no published lineage for {symbol}; omit --offline to run the pipeline")
         # Include every recorded input, even if a later index changed dependency links.
         group.update(name for receipt in receipts.values() if receipt for name in receipt["input_sources"])
-        receipts = {name: storage.read_receipt(root, name, index) for name in sorted(group)}
-        with ExitStack() as stack:
-            views, notices = {}, {}
-            for name in sorted(group):
-                pricing = regular_path(store, f"end_of_day/pricing/{name}")
-                if not pricing.exists():
-                    continue
-                # Open the existing lock read-only. The ordinary acquisition
-                # lock helper may create it; offline inspection must not.
-                lock = stack.enter_context(regular_path(pricing, ".download.lock").open("rb"))
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                if regular_path(pricing, ".pending.json").exists():
-                    raise LineageError(f"{name}: pricing publication incomplete; resume downloader first")
-                if load_source(pricing, name) is not None:
-                    views[name] = load_pricing(store, name)
-                notice = read_update(pricing)
-                if notice is not None:
-                    notices[name] = notice
-            boundaries = {
-                name: storage.read_boundaries(root, receipt) for name, receipt in receipts.items() if receipt
-            }
-            capture.capture(receipts, boundaries, views, None, notices, resumed=False, offline=True)
-        return {"results": [{"symbol": symbol, "status": "offline", "processed": []}], "failed": 0}
-    finally:
-        os.close(descriptor)
+        return {name: index["symbols"].get(name) for name in sorted(group)}
+
+    with storage.reader_snapshot(store, select) as snap:
+        views, notices = {}, {}
+        for name in sorted(snap["locked"]):
+            pricing = regular_path(store, f"end_of_day/pricing/{name}")
+            if regular_path(pricing, ".pending.json").exists():
+                raise LineageError(f"{name}: pricing publication incomplete; resume downloader first")
+            if load_source(pricing, name) is not None:
+                views[name] = load_pricing(store, name)
+            notice = read_update(pricing)
+            if notice is not None:
+                notices[name] = notice
+        capture.capture(snap["receipts"], snap["boundaries"], views, None, notices, resumed=False, offline=True)
+    return {"results": [{"symbol": symbol, "status": "offline", "processed": []}], "failed": 0}
 
 
 def output_evidence(store, symbol, *, offline=False, identity_client=None, pricing_client=None, refresh=False):

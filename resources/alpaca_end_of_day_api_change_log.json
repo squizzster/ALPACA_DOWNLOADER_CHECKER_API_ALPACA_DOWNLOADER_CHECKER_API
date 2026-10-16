@@ -6,5 +6,18 @@
       "Bind each library instance to one authenticated catalog generation and return one generic unavailable result for every public ID outside that online snapshot.",
       "Return typed public security and exact daily-bar values without exposing provider, pipeline, manifest, warning, repair, or offline-state machinery."
     ]
+  },
+  {
+    "modifications": [
+      "Add StandaloneReader and read_alpaca_pricing.py for source-scoped resolved pricing from the standalone downloader/lineage store, without changing DataLibrary's online-catalogue contract.",
+      "Consume completed group receipts under shared lineage and sorted pricing locks; report busy by default, reject stale or incomplete handoffs, and never download, acknowledge, repair, copy or re-audit approved inputs.",
+      "Resolve reused tickers to every published public ID, require explicit ambiguous-ID selection, apply the established history-source policy, and return exact values with inclusive date filtering as JSON or CSV."
+    ]
+  },
+  {
+    "modifications": [
+      "Read completed standalone groups while the lineage worker handles unrelated groups, retaining fail-fast busy behavior and explicit --wait for conflicting work.",
+      "Use the shared snapshot handshake and accept lock-compatible lineage v2 receipts after protocol upgrade, without changing identity rules, prices, or DataLibrary's online contract."
+    ]
   }
 ]

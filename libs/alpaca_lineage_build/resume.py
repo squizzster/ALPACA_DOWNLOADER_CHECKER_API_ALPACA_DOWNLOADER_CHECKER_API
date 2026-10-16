@@ -9,14 +9,14 @@ from datetime import date, timedelta
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
-from .contract import versions
+from .contract import reusable_versions
 
 
 def eligible_source(source, previous, notice, *, refresh):
     return (
         not refresh
         and previous is not None
-        and previous["versions"] == versions()
+        and reusable_versions(previous["versions"])
         and previous["anchor_month"] == source["anchor_month"]
         and previous["source_rows"] > 0
         and previous["unresolved_rows"] == 0

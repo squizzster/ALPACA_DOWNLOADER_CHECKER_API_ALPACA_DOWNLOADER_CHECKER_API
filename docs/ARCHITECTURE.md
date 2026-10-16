@@ -18,6 +18,7 @@ The standalone pricing producer is independent of the existing combined catalogu
 |---|---|---|
 | Standalone pricing downloader | [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Acquire exact ticker-labelled pricing, publish compact source boundaries and pending dates, and stop; no identity or catalogue dependency. |
 | Standalone lineage | [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | One worker consumes pending pricing, acquires identity evidence, applies the established rules, and publishes chronological assignments before acknowledgement. |
+| Standalone resolved reader | [`read_alpaca_pricing.py`](../read_alpaca_pricing.py), `alpaca_end_of_day.StandaloneReader` | Read completed pricing/lineage groups and select published public-ID histories; no availability decision, acquisition, or datastore writes. |
 | Operator lineage evidence | [`output_current_lineage_evidence.py`](../output_current_lineage_evidence.py) | Observe the same lineage workflow, or inspect published decisions offline; no alternate resolver and no public consumer API. |
 | Producer | [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Own the complete acquisition-to-catalogue cascade and publish receipts last. |
 | Clean-room constructor | [`build_alpaca_end_of_day_clean_room.py`](../build_alpaca_end_of_day_clean_room.py) | Schedule the same cascade as bounded canonical-symbol transactions using only the fixed universe, provider responses, and repository contracts; checkpoint exact accounting; audit before activation. |
@@ -133,10 +134,11 @@ Standalone pricing uses the [per-ticker publication and acknowledgement protocol
 Normal handoff readers trust published pricing receipts and aliases; explicit pricing authentication remains separate.
 Downloader endpoint probes trust a small source-bound validator; they do not reopen cold gzip data on ordinary updates.
 
-Standalone lineage publishes each dependency group durably, but its writer lock spans the entire invocation. The
-internal lineage reader and offline evidence inspection wait until that lock is released. See
-[lineage reader availability](operations.md#lineage-reader-availability-and-progress) before treating a completed
-receipt as immediately accessible through a reader. This is separate from the combined catalogue lock below.
+Standalone lineage keeps one writer-only guard for the invocation and a brief publication gate for each group commit.
+Readers pin only their selected pricing group after a selection handshake, allowing unrelated work to continue.
+`StandaloneReader` reports conflicting work as busy by default or waits explicitly. Incomplete transactions and stale
+inputs still prevent reads. The [lineage lock contract](technical-contracts.md#lock-delegate-publish-acknowledge)
+owns ordering, recovery and upgrade compatibility. This is separate from the combined catalogue lock below.
 
 The combined store has one stable `.publication.lock`. The pipeline holds it exclusively from the start of the mutation
 transaction through final catalogue publication. Public catalogue and history reads hold it shared. The writer also
@@ -174,6 +176,11 @@ published boundaries. Catalogue delta publication preserves unrelated objects an
 explicit digest audit or switch generations during a history read. The [public snapshot contract](public-api.md#snapshot-consistency)
 owns lock, generation-change and error behavior. The standalone evidence CLI is an operator interface, not this reader.
 
+`StandaloneReader` is the separate source-scoped consumer of the twins' existing published groups. It selects
+resolved assignments, applies the compact month overlay, and reuses the established history-source policy. It does
+not publish a catalogue, make online-availability decisions, or expose unresolved rows as resolved identities. Its
+[consumer contract](public-api.md#standalone-resolved-pricing-reader) is distinct from `DataLibrary`.
+
 ## Code ownership
 
 | Boundary | Owner | Responsibility |
@@ -181,6 +188,7 @@ owns lock, generation-change and error behavior. The standalone evidence CLI is 
 | Standalone pricing | [`libs/alpaca_pricing_download/`](../libs/alpaca_pricing_download/) | Batch CLI, ticker REST requests, exact conversion, source-bound endpoint validator, three pricing boundaries, recoverable publication, and locked pending-date handoff; no security identity work. |
 | Standalone lineage | [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/) | One-worker CLI, chronological evidence resumption, trusted pricing adapter, affected dependency closure, existing identity transforms, twin assignment boundaries, and publish-before-acknowledge recovery. |
 | Consumer library | [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | Online-only catalogue, search, ticker resolution, typed history, and flat export. |
+| Standalone resolved consumption | [`standalone.py`](../alpaca_end_of_day/standalone.py), [`standalone_cli.py`](../alpaca_end_of_day/standalone_cli.py) | Source-scoped public-ID lookup, coherent shared-lock reads, exact history assembly and JSON/CSV stdout; no new datastore artifact. |
 | Complete monthly orchestration | [`pipeline.py`](../libs/alpaca_end_of_day_v6/pipeline.py) | Stage order, transaction, reuse selection, fixed-point execution, and final publication. |
 | Clean-room scheduling and audit | [`libs/alpaca_end_of_day_clean_room/`](../libs/alpaca_end_of_day_clean_room/) | Immutable run identity, resolution/outcome checkpoints, canonical deduplication, bounded retries, exhaustive audit, and rollback-safe activation. |
 | Monthly source | [`source.py`](../libs/alpaca_end_of_day_v6/source.py) | Month partitioning, deterministic gzip payloads, exact-copy aliases, inventory, and explicit authentication. |

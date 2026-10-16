@@ -20,7 +20,15 @@ from libs.alpaca_pricing_download.storage import (
     write_file,
 )
 
-from .contract import SUPPORTED_VERSIONS, VERSION, LineageError, document_digest, selected_document
+from .contract import (
+    MAX_CLOSURE,
+    SUPPORTED_VERSIONS,
+    VERSION,
+    LineageBusyError,
+    LineageError,
+    document_digest,
+    selected_document,
+)
 
 
 def path_at(root: Path, relative: str) -> Path:
@@ -64,17 +72,120 @@ def check_store(store: Path) -> None:
 
 
 @contextmanager
+def publication_lock(root: Path, *, exclusive=False, wait=True):
+    """Protect only receipt/index installation or a short selection handshake."""
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(
+                descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | (0 if wait else fcntl.LOCK_NB)
+            )
+        except BlockingIOError as error:
+            raise LineageBusyError("publication is busy; retry later or use --wait") from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _index_version(root: Path) -> int | None:
+    path = path_at(root, "index.sqlite3")
+    if not path.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            return connection.execute("PRAGMA user_version").fetchone()[0]
+    except sqlite3.Error as error:
+        raise LineageError("cannot load lineage dependency index") from error
+
+
+@contextmanager
 def writer_lock(store: Path):
     check_store(store)
     root = regular_path(store, "end_of_day/lineage")
     root.mkdir(parents=True, exist_ok=True)
     fsync_directory(root.parent)
-    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    # One permanent inode per store, not per ticker. Readers never take it.
+    with path_at(root, ".worker.lock").open("a+b") as worker:
+        fcntl.flock(worker.fileno(), fcntl.LOCK_EX)
+        with publication_lock(root, exclusive=True):
+            # Drain v1/v2 writers/readers before activating the new lock order.
+            # Older executables then reject index v3 before taking pricing locks.
+            # Only the protocol header changes: no receipt or prices are rebuilt.
+            existing = _index_version(root)
+            if existing is not None and existing not in SUPPORTED_VERSIONS:
+                raise LineageError("unsupported lineage index")
+            if existing != VERSION:
+                _update_index(root, {})
         yield root
-    finally:
-        os.close(descriptor)
+
+
+def select_inputs(root: Path, symbol: str) -> dict:
+    """Select the published input group without scanning the universe."""
+    index = read_index(root, symbol)
+    receipt = read_receipt(root, symbol, index)
+    if receipt is None:
+        raise LineageError(f"no published lineage for {symbol}")
+    group = receipt["input_sources"]
+    if symbol not in group or not 1 <= len(group) <= MAX_CLOSURE:
+        raise LineageError("invalid lineage input group")
+    return {
+        name: (index if name == symbol else read_index(root, name))["symbols"].get(name)
+        for name in sorted(group)
+    }
+
+
+@contextmanager
+def reader_snapshot(store: Path, select, *, wait=True):
+    """Snapshot selection, release gate, lock prices, reselect; never invert locks.
+
+    select(root) returns symbol -> index entry (or None for offline discovery).
+    Selected metadata is loaded under the brief gate, then pricing SH locks alone
+    protect it throughout consumption. Unrelated groups can publish during reads.
+    """
+    check_store(store)
+    root = regular_path(store, "end_of_day/lineage")
+
+    def selection():
+        # New lock order must not overlap an executable using the old order.
+        # The worker upgrades this header under the old shared/exclusive gate.
+        if _index_version(root) not in {None, VERSION}:
+            raise LineageError("lineage lock protocol needs upgrade; run lineage first")
+        if path_at(root, ".pending.json").exists():
+            raise LineageError("lineage publication incomplete; resume lineage first")
+        return select(root)
+
+    for _ in range(3):
+        with publication_lock(root, wait=wait):
+            selected = selection()
+        with ExitStack() as locks:
+            locked = set()
+            for symbol in sorted(selected):
+                symbol_label(symbol)
+                pricing = regular_path(store, f"end_of_day/pricing/{symbol}")
+                if not pricing.exists():
+                    continue
+                stream = locks.enter_context(regular_path(pricing, ".download.lock").open("rb"))
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_SH | (0 if wait else fcntl.LOCK_NB))
+                except BlockingIOError as error:
+                    raise LineageBusyError("pricing group is busy; retry later or use --wait") from error
+                locked.add(symbol)
+            with publication_lock(root, wait=wait):
+                if selection() != selected:
+                    continue  # Release every price lock before retrying a changed closure.
+                index = {"symbols": {name: entry for name, entry in selected.items() if entry is not None}}
+                receipts = {name: read_receipt(root, name, index) for name in selected}
+                boundaries = {
+                    name: read_boundaries(root, receipt) for name, receipt in receipts.items() if receipt
+                }
+            yield {
+                "receipts": receipts,
+                "boundaries": boundaries,
+                "entries": selected,
+                "locked": locked,
+            }
+            return
+    raise LineageBusyError("lineage group changed during selection; retry later")
 
 
 @contextmanager
@@ -161,7 +272,7 @@ def read_boundaries(root: Path, receipt: dict) -> dict:
 
 
 def _install(root: Path, journal: dict) -> None:
-    # The journal and exclusive worker lock make multi-symbol visibility atomic to
+    # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
     for relative, value in sorted(journal["documents"].items()):
         atomic_json(path_at(root, relative), value)
@@ -208,7 +319,8 @@ def recover(store: Path, root: Path) -> bool:
         or journal.get("boundary") != "alpaca_lineage_transaction"
     ):
         raise LineageError("unsupported lineage recovery transaction")
-    with pricing_locks(store, journal["sources"]):
+    # Same order as publication/readers: price locks BEFORE the publication gate.
+    with pricing_locks(store, journal["sources"]), publication_lock(root, exclusive=True):
         finish_publication(store, root, journal)
     return True
 
@@ -247,6 +359,8 @@ def publish(store: Path, root: Path, index: dict, receipts: dict, boundaries: di
         "sources": {symbol: receipt["source_sha256"] for symbol, receipt in receipts.items()},
         "notices": notices,
     }
-    atomic_json(path_at(root, ".pending.json"), journal)
-    finish_publication(store, root, journal)
+    # Caller already owns the complete pricing group and the worker-only lock.
+    with publication_lock(root, exclusive=True):
+        atomic_json(path_at(root, ".pending.json"), journal)
+        finish_publication(store, root, journal)
     index["symbols"].update(updated)

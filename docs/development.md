@@ -41,6 +41,14 @@ decisions from fresh calculation, and keeps offline inspection read-only. `tests
 checks exact independent prefix attribution, counterexamples and the shared three-pass fixed point. These supplement
 the ordered-rule and identity-membership coverage in `tests/test_alpaca_end_of_day_security_correlation.py`.
 
+`tests/test_alpaca_standalone_reader.py` exercises `alpaca_end_of_day.StandaloneReader` and its actual CLI using the
+real standalone publishers with synthetic provider doubles. It covers exact values, compact overlays/rollover,
+source aliases, selected-adjustment reads, ticker reuse, partial unresolved history, shared history-source policy,
+stale and incomplete generations, read-only behavior, and cross-process busy/wait/release semantics. It also verifies
+unrelated publication during reads, same-group lock order, bounded re-selection and v2 receipt/month reuse through
+the v3 protocol upgrade. No retained pricing is copied and no provider credentials are required. Reader behavior owns
+the public API version; shared publication locking owns the standalone lineage version, not the identity rules.
+
 `libs/common/` is dependency-neutral shared infrastructure. Consumer code imports only `alpaca_end_of_day`, never a
 module under `libs/`.
 
