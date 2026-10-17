@@ -38,8 +38,9 @@ in place for development reuse. Cleanup and further copies remain deferred. Stan
 
 The configured target in [`pyproject.toml`](../pyproject.toml) is Python 3.11. This environment has Python 3.11.13,
 but unqualified `python3` is 3.9.25; use `python3.11 -B` explicitly for scripts whose shebang is not already 3.11.
-Runtime code uses the standard library; there is no dependency lock or package-install metadata. Ruff is a separate
-development tool. See [verification](development.md#verification) for local checks and CI status.
+Core producers and readers use the standard library. Optional Parquet export requires the pinned PyArrow dependency
+in [`requirements-bloodhound.txt`](../requirements-bloodhound.txt); there is no project-wide lock or package-install
+metadata. Ruff is a separate development tool. See [verification](development.md#verification) for local checks and CI status.
 
 For the combined catalogue workflow, use only one producer process against a store. Its global lock serializes writers and readers, but it is not a durable
 batch scheduler and does not make independently submitted focused transactions one coherent request. The focused

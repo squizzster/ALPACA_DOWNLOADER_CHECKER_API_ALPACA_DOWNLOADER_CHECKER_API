@@ -2,6 +2,9 @@
 
 ## Find the change owner
 
+Start with the [current state](VERSION_TRACKER.md#current-state) for the accepted baseline and next investigation.
+Historical checkpoints are evidence, not the current backlog or worker status.
+
 The [architecture ownership table](ARCHITECTURE.md#code-ownership) is the authority for component boundaries. Start at
 the public package or root command named by the request, then follow its imports to the owning package under `libs/`.
 The focused producer enters the monthly boundary package; the clean-room constructor enters its scheduling/audit

@@ -1,4 +1,4 @@
-# Pricing acquisition and the existing catalogue pipeline
+# Pricing and lineage pipelines
 
 The standalone [`download_alpaca_pricing.py`](download_alpaca_pricing.py) owns pricing-only acquisition. It never calls
 the existing catalogue pipeline, and its successful publication does not depend on lineage or identity resolution.

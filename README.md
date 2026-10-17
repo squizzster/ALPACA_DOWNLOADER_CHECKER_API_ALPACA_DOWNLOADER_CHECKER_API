@@ -1,17 +1,18 @@
 # Alpaca EOD Data Engine
 
-Alpaca EOD Data Engine turns ticker-labelled US-equity REST pricing into exact local histories and deterministic
+Alpaca EOD Data Engine turns ticker-labelled US-equity REST data into exact local pricing histories and deterministic
 security lineage. It preserves all eight adjustment views, follows supported pricing continuity across ticker changes,
-separates unrelated ticker reuse, and provides an online-only catalogue, Python reader and CSV export through its
-combined publication pipeline.
+and separates unrelated securities that reuse the same symbol.
 
-The standalone downloader and lineage builder are independent siblings: compact completed-years, current-year and
-current-month boundaries reduce file churn; up to three whole-ticker download workers share a 199-request/minute
-budget; one lineage worker consumes locked pending-date notices. Their development store is `data_pricing/`.
-[`read_alpaca_pricing.py`](read_alpaca_pricing.py) and `alpaca_end_of_day.StandaloneReader` read that pair's resolved
-pricing directly, without downloads or datastore writes; completed groups stay readable during unrelated lineage work.
-The separate online-only `DataLibrary` still selects the
-combined catalogue in `data_vtest/`; resolved lineage does not claim that catalogue's availability approval.
+The standalone downloader and lineage builder are independent siblings using `data_pricing/`. Compact completed-years,
+current-year and current-month boundaries reduce file churn. Up to three whole-ticker download workers share a
+199-request/minute budget; one lineage worker consumes locked update notices. Completed boundaries are trusted and
+unchanged work is reused, without repeated upstream audits or duplicate pricing copies.
+
+`alpaca_end_of_day.StandaloneReader` and [`read_alpaca_pricing.py`](read_alpaca_pricing.py) read resolved histories as
+exact values or CSV without downloads or store writes. Unrelated lineage work does not block completed groups.
+The separate `DataLibrary` reads only the combined pipeline's online catalogue in `data_vtest/`; standalone lineage
+does not publish that catalogue or approve availability.
 
 The offline [Bloodhound Parquet converter](docs/operations.md#bloodhound-parquet-export) preserves Alpaca all-adjusted
 prices and raw volume, derives a separate split factor from all eight views, and embeds the full public-ID mapping in
@@ -21,23 +22,21 @@ one file. It uses the latest observed ticker as a display label; schema compatib
 ticker while an unrelated security later reuses its old label. IDs are deterministic for fixed provider-UUID
 membership; accepted membership changes can change the ID. See the [identity contract](docs/technical-contracts.md#identity-model).
 
-Each boundary owns its calculation and publishes a selecting receipt. Downstream stages trust completed boundaries
-instead of re-auditing them. Restartable lineage skips unchanged completed groups, while bounded updates preserve
-unaffected history. Exact-copy manifest aliases avoid duplicate pricing payloads. This is a data handoff system;
-downstream research and trading decisions belong to its consumers.
-
-Requires Python **3.11** (configured target; verified with 3.11.13) and IANA `America/New_York` time-zone data.
-Producer runs require Alpaca credentials and SIP entitlement. Public reads need neither credentials nor network,
-but do require compatible published boundaries (a catalogue for `DataLibrary`): runtime data is not included in Git.
+Requires Python **3.11** (configured target; verified with 3.11.13), IANA `America/New_York` time-zone data and Unix
+filesystem locking. Producers require Alpaca credentials and SIP entitlement. Reads need compatible published data,
+not credentials or network; runtime stores are not included in Git. Parquet export additionally requires
+[`requirements-bloodhound.txt`](requirements-bloodhound.txt).
 
 Lineage development improves generic deterministic rules using the
 [research-and-rule-improvement loop](docs/development.md#lineage-research-and-rule-improvement-loop). Both incorrect
 attribution and withholding attributable history are errors. Research informs development, not runtime decisions.
+The project's responsibility ends at the data handoff; downstream research and trading decisions belong to consumers.
 
 ## Documentation
 
 ### Start here
 
+- [Current state](docs/VERSION_TRACKER.md#current-state) — accepted baseline, completed groups, next work and publication limits.
 - [Agent instructions](AGENTS.md) — required reading order, task scope, safe changes and verification.
 - [Architecture](docs/ARCHITECTURE.md) — system boundaries, supported interfaces, code ownership and store separation.
 - [Pipeline](PIPELINE.md) — the implemented execution paths, ordered identity-rule cascade and reuse decisions.

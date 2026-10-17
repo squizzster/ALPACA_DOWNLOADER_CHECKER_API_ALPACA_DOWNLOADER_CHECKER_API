@@ -3,9 +3,39 @@
 This repository versions serialized boundaries and reusable transforms independently. There are no Git tags. Runtime
 validators use the JSON changelog arrays under `resources/`; array position is the boundary version.
 
-Start with the [current version matrix](#current-version-matrix), [verification status](#verification-status) and
-[known gaps](#known-gaps). Dated checkpoints below describe those runs, not current worker status or blanket approval
-of every runtime receipt. Installed code and selected publications can have different versions.
+Start with [current state](#current-state), then the [version matrix](#current-version-matrix),
+[verification evidence](#verification-status) and [known gaps](#known-gaps). Dated checkpoints describe those runs,
+not current worker status or blanket approval of every runtime receipt.
+
+## Current state
+
+As of **2026-10-17**, the accepted lineage code baseline is **`ada3975` / correlation v55**. It includes the earlier
+[434-group comparison](#correlation-v52-consolidated-handoff--2026-10-17),
+[auxiliary-acquisition/PANW fix](#auxiliary-acquisition-regression--2026-10-17), and these research iterations:
+
+| Group | Version | Status |
+|---|---:|---|
+| 1 — Retired-label continuation | 53 | Implemented; scoped comparison and selected publication accepted. |
+| 2 — Inactive dividend-backed continuity | 54 | Implemented; scoped comparison and selected publication accepted. |
+| 3 — Cash-closing boundaries before unrelated reuse | 55 | Implemented; scoped comparison and selected publication accepted. |
+| 4 — Overlapping ownership without source scope | — | Selected only; not implemented or accepted. Start with POLY. |
+
+Groups 1–3 recovered **22,438 source-sessions** with no prior-assignment losses/reassignments or existing membership
+changes in their comparisons. Eight adjustment views are consistency checks, not eight independent recoveries.
+Completing an iteration does not resolve every shortlisted source. Group 4 has **24 sources / 11,941 unresolved
+source-sessions** in the mixed-version stored-state screen; that is not a completed v55 replay.
+
+The [consolidated verification](#consolidated-lineage-release-checkpoint--2026-10-17) passed the full suite and real
+CLI/reader checks. These are code and selected-publication results, not whole-universe correctness claims.
+
+- **Runtime store:** `data_pricing/` still contains older-rule publications. Normal lineage catch-up is needed before
+  current-version reads of those groups; no whole-store catch-up was performed for this release. Use the
+  [restart guide](operations.md#restart-and-catch-up), not price copies or manual receipt edits.
+- **Consumers:** selected standalone histories are verified. The separate `DataLibrary` catalogue and Bloodhound
+  Parquet were not rebuilt by this lineage checkpoint; standalone resolution does not establish online availability.
+- **Next development:** investigate Group 4 through the [research/rule loop](development.md#lineage-research-and-rule-improvement-loop).
+  Publish supported intervals; leave only unsupported attribution unresolved. Research informs generic deterministic
+  rules, never runtime ticker exceptions. Further operating and coverage limits remain in [known gaps](#known-gaps).
 
 ## Unreleased
 
@@ -92,6 +122,9 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Modified
 
+- Documentation-only current-state refactor: compact README and direct status pointer; one current group/backlog
+  summary here; dated verification kept separate; optional Parquet dependency clarified. Detailed ownership, rule,
+  identity, locking, recovery and research-loop guidance remains in its existing authoritative files.
 - Documentation-only consolidated lineage checkpoint accepts the implemented baseline through correlation v55,
   reconciles Groups 1–3 with the earlier completed comparison/acquisition work, and explicitly leaves the selected
   Group 4 investigation pending. It separates code acceptance, selected publication, whole-store catch-up and
@@ -193,24 +226,22 @@ are unchanged.
 
 ## Verification status
 
+### Current-state documentation refactor — 2026-10-17
+
+- Five documentation files changed; no application, runtime-version, changelog or runtime-data changes. Current
+  progress has one home above; historical results and detailed contract/recovery/research gotchas are retained.
+- **719 tests passed in 62.428 seconds**, zero skips, with ResourceWarnings treated as errors. Ruff lint/format
+  (**188 Python files**) and `git diff --check` passed.
+- **292 local links/anchors**, all **10 maintained documents**, complete README coverage and its seven-paragraph
+  overview checked. Nine maintained CLI `--help` calls passed under Python **3.11.13**; no acquisition was run.
+- No repository CI or dedicated Markdown checker exists; these are local checks. Publication/catch-up limits in
+  current state and the known gaps remain unchanged.
+
 ### Consolidated lineage release checkpoint — 2026-10-17
 
-The accepted implementation baseline is correlation **v55**. It includes the earlier completed
-[434-group comparison](#correlation-v52-consolidated-handoff--2026-10-17), acquisition recovery and subsequent
-three evidence-shape iterations. This checkpoint reviews the accumulated changes and reruns the repository gate;
-it does not repeat the already completed same-input impact comparisons or introduce another rule.
-
-| Research group | Version | Checkpoint disposition |
-|---|---:|---|
-| 1 — Retired-label continuation | 53 | Accepted implementation and selected publication; detailed scope below. |
-| 2 — Inactive dividend-backed identity continuity | 54 | Accepted implementation and selected publication; detailed scope below. |
-| 3 — Cash-closing boundaries before unrelated reuse | 55 | Accepted implementation and selected publication; detailed scope below. |
-| 4 — Overlapping ownership without source scope | None | Selected only: 24 sources / 11,941 stored unresolved source-sessions; POLY is the first proposed case. No rule change or acceptance claimed. |
-
-Groups 1–3 recovered **22,438 source-sessions**, not multiplied by eight views, without the previously assigned-row
-losses/reassignments or existing membership changes checked in their respective comparisons. An accepted iteration
-does not mean every candidate in its original shortlist was resolved. Group 4's screening count is a mixed-version
-stored-state count, not a completed v55 replay or a promise that every observation can be recovered.
+This checkpoint accepted the accumulated lineage implementation through correlation **v55**, committed in `ada3975`.
+The [current-state summary](#current-state) owns group status and remaining work. The verification below did not
+repeat the completed same-input impact comparisons or introduce another rule.
 
 - Fresh full gate: **719 tests passed in 62.813 seconds**, **zero skips**, with ResourceWarnings treated as errors.
   Ruff lint and formatting passed for **188 Python files**. All **281 local documentation links/anchors** and complete
@@ -226,12 +257,6 @@ stored-state count, not a completed v55 replay or a promise that every observati
 - Pricing is unchanged: no copies, repair, redownload or whole-universe run. This verification adds no runtime
   behavior or version. Earlier checkpoints' uncommitted-work notes describe those earlier checkpoints, not this
   consolidated acceptance.
-
-**Release boundary:** the implemented rules and selected standalone publications are accepted for continued work.
-Older stored groups still need normal lineage catch-up before current-version reads; this pass does not perform that
-catch-up. Group 4 remains the next research task. `DataLibrary` catalogue availability and Bloodhound regeneration
-remain separate operations, neither performed nor claimed by this checkpoint. This is a reproducible code baseline,
-not a claim that every unresolved history or every stored assignment has been independently established as correct.
 
 ### Correlation v55 cash-closing / ticker-reuse group — 2026-10-17
 
@@ -584,7 +609,7 @@ public integration of the standalone pair, and the current background run's comp
 tests. There is still no repository CI or configured Markdown/link-checking tool; the documentation checks were
 explicit local checks, not a new automated repository gate.
 
-### Current implementation and evidence scope — 2026-10-16
+### Earlier implementation and evidence scope — 2026-10-16
 
 The implementation committed in `c5176d5` is correlation **v51**, standalone lineage **v2**, identity report **v4**,
 and operator evidence schema **v2**. The extended batch closed **39 investigations**: 30 routine cases followed by nine targeted
