@@ -13,9 +13,9 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VERSION = 6
+VERSION = 7
 # Existing boundary payloads/receipts remain valid after an explicit directory move.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, VERSION)
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, VERSION)
 VALIDATOR_FILE = "validator_first_last_sessions.json"
 ADJUSTMENTS = (
     "raw",
@@ -36,6 +36,30 @@ Row = tuple[str, ...]
 
 class DownloadError(RuntimeError):
     pass
+
+
+class BarsSymbolUnavailable(DownloadError):
+    """An exact provider rejection, not an empty response or an identity verdict."""
+
+    def __init__(self, symbol: str, http_status: int):
+        self.symbol = symbol
+        self.http_status = http_status
+        self.provider_message = f"invalid symbol: {symbol}"
+        super().__init__(f"Alpaca bars rejected {symbol}: HTTP {http_status}: {self.provider_message}")
+
+
+class InitialPricingUnavailable(DownloadError):
+    """No source existed and the very first pricing response rejected its label."""
+
+    def __init__(self, request: dict, error: BarsSymbolUnavailable):
+        self.symbol = error.symbol
+        self.evidence = {
+            "outcome": "invalid_symbol",
+            "http_status": error.http_status,
+            "provider_message": error.provider_message,
+            "request": dict(request),
+        }
+        super().__init__(str(error))
 
 
 def validate_version() -> None:

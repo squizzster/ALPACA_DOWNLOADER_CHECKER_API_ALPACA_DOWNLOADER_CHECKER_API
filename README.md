@@ -13,6 +13,10 @@ pricing directly, without downloads or datastore writes; completed groups stay r
 The separate online-only `DataLibrary` still selects the
 combined catalogue in `data_vtest/`; resolved lineage does not claim that catalogue's availability approval.
 
+The offline [Bloodhound Parquet converter](docs/operations.md#bloodhound-parquet-export) preserves Alpaca all-adjusted
+prices and raw volume, derives a separate split factor from all eight views, and embeds the full public-ID mapping in
+one file. It uses the latest observed ticker as a display label; schema compatibility is not Bloodhound admission.
+
 **A `public_id` represents resolved security pricing continuity, never a ticker spelling.** A security can change
 ticker while an unrelated security later reuses its old label. IDs are deterministic for fixed provider-UUID
 membership; accepted membership changes can change the ID. See the [identity contract](docs/technical-contracts.md#identity-model).

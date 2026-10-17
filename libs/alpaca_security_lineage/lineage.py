@@ -161,8 +161,12 @@ def build_identity_report(
     symbol: str,
     local_report: dict[str, Any],
     client: AlpacaIdentityClient,
+    *,
+    query_dates: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
-    start_date, end_date = local_query_dates(local_report)
+    # Metadata can exist for an entitlement which the bars endpoint rejects.
+    # Explicit bounds avoid inventing a local download just to query that metadata.
+    start_date, end_date = query_dates or local_query_dates(local_report)
     pending_symbols = deque([symbol])
     queued_symbols = {symbol}
     queried_symbols = []

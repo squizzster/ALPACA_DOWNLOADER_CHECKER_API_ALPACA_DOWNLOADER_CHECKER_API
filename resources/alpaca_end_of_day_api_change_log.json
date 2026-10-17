@@ -19,5 +19,49 @@
       "Read completed standalone groups while the lineage worker handles unrelated groups, retaining fail-fast busy behavior and explicit --wait for conflicting work.",
       "Use the shared snapshot handshake and accept lock-compatible lineage v2 receipts after protocol upgrade, without changing identity rules, prices, or DataLibrary's online contract."
     ]
+  },
+  {
+    "modifications": [
+      "Add StandaloneReader.get_histories for ordered, deduplicated adjustment views from one locked group snapshot, reusing decoded physical aliases within the call without persistent caches or writes.",
+      "Accept multiple/repeated --type values and --all-types in read_alpaca_pricing.py; multi-view JSON groups bars by adjustment and CSV adds an adjustment column, while default/single-view output retains its existing shape.",
+      "Keep compound adjustment names atomic, preserve fully-adjusted --type all semantics, and fail the complete request without partial stdout if a requested view is unavailable or conflicts."
+    ]
+  },
+  {
+    "modifications": [
+      "Expose metadata-only standalone source rosters and completed group evidence, including resolved public-ID locators and all latest observed labels, without changing DataLibrary's online catalogue contract.",
+      "Allow get_histories to include published evidence from the same locked group snapshot; retain source generations and distinguish lookup metadata and request asof from dated listing facts or adjustment vintage."
+    ]
+  },
+  {
+    "modifications": [
+      "Add opt-in bounded generation-keyed RAM caching to StandaloneReader for selected JSON documents and immutable decoded pricing payloads; retain fresh index selection, pricing receipts, pending-work checks and existing lock order on every call.",
+      "Expose get_generation for lightweight locked freshness checks without rereading assignment boundaries, and cache_info for in-process memory accounting; preserve returned values and independent mutable result documents.",
+      "Reuse assembled adjustment histories within a call only when physical payloads, row selections, labels and overlap policy are identical; raw and adjusted source-selection policies remain distinct."
+    ]
+  },
+  {
+    "modifications": [
+      "Add open_group for compact summaries and explicit-ID eight-view reads from one locked group snapshot, using the same history assembly and source policy as existing reads; parse selected lineage documents once per handshake and release working data on close.",
+      "Retain a private compact freshness token whose check_current compares current index selections and locked pricing receipts without rereading approved lineage documents; consumer exceptions preserve their type, and closed snapshots cannot serve histories."
+    ]
+  },
+  {
+    "modifications": [
+      "Add in-memory read/reuse/eviction counters shared across group caches and conservative tuple/Unicode cache accounting without recursive per-cell traversal.",
+      "Reuse locked path selections and timestamp-to-session conversions, and directly assemble uncontested observations; resolve only overlapping timestamps with full source coverage and unchanged source-selection rules, sharing raw/adjusted alias assembly only without source competition.",
+      "Retain consumed pricing-receipt file identity in group freshness tokens so unchanged receipts are reused without rereading their JSON; pending-work, index-generation and changed-file checks remain live."
+    ]
+  },
+  {
+    "modifications": [
+      "Expose GroupSnapshot.set_cache_limit to resize retained decoded-data reuse between explicit-ID reads within the reader's configured cap, evicting only as needed while preserving source values, aliases, locks and freshness checks."
+    ]
+  },
+  {
+    "modifications": [
+      "Include deliberately unavailable auxiliary pricing inputs in standalone snapshot locks and freshness tokens; reject a formerly absent input which gains pricing or pending publication, including cached reads and export checks.",
+      "Keep public histories and group summaries scoped to actual published price sources; auxiliary metadata remains operator evidence rather than a fabricated security or empty pricing series."
+    ]
   }
 ]

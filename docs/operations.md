@@ -11,6 +11,7 @@ authority. The combined producer and `DataLibrary` reader select `data_vtest/`; 
 | [`download_alpaca_pricing.py`](../download_alpaca_pricing.py) | Independent pricing-only downloader. | Contacts only Alpaca stock bars, writes an explicit compact-format destination, and never invokes lineage or the catalogue. |
 | [`build_alpaca_lineage.py`](../build_alpaca_lineage.py) | Standalone lineage twin; exactly one worker. | Consumes the compact store, contacts identity/action APIs, delegates missing prices to the downloader, and acknowledges durably processed notices. |
 | [`read_alpaca_pricing.py`](../read_alpaca_pricing.py) | Standalone resolved-pricing reader. | Explicit compact store; read-only, no credentials/network, JSON or CSV stdout, nonblocking by default. |
+| [`convert_latest_alpaca_pricing_to_blood_hound_parquet`](../convert_latest_alpaca_pricing_to_blood_hound_parquet) | Offline Bloodhound-shaped export. | All eight standalone views; one Parquet with embedded full-ID mapping; no source writes or automatic Bloodhound registration. |
 | [`output_current_lineage_evidence.py`](../output_current_lineage_evidence.py) | Evidence from that same lineage workflow, not a second resolver. | Default mode can acquire and publish; `--offline` only inspects existing publications under locks. Emits JSON to stdout. |
 | [`run_alpaca_end_of_day_ticker_pipeline.py`](../run_alpaca_end_of_day_ticker_pipeline.py) | Canonical monthly acquisition-to-catalogue producer. | Contacts Alpaca, writes the current application store, and requires credentials. |
 | [`download_alpaca_end_of_day_bars.py`](../download_alpaca_end_of_day_bars.py) | Compatibility executable for the same complete producer. | Same arguments and runtime effects. |
@@ -149,6 +150,11 @@ initial ticker; null range endpoints in its waiting result mean downloader defau
 identity client's pacing and bounded 429 retries. Downloader requests retain its own 199-RPM limiter. These limits
 are not account-wide across independently running commands.
 
+An exact rejected auxiliary may remain metadata-only while the supported source group publishes. This is distinct
+from a successful empty response or a failed seed: see [unavailable auxiliary pricing](technical-contracts.md#unavailable-auxiliary-pricing).
+Use `--refresh-metadata` to reconsider a recorded rejection; an unchanged group otherwise reuses it. Do not remove
+the auxiliary's `.download.lock` or manufacture an empty source to make the group proceed.
+
 The command returns one JSON summary (`workers`, `recovered`, `results`, `failed`). Results distinguish `processed`,
 `unchanged`, `waiting_for_pricing`, and `failed`. Failure or waiting returns a nonzero status. Independent inputs
 continue after a failure, unless an interrupted lineage publication must first be recovered. Unresolved identity is
@@ -215,6 +221,8 @@ Use `read_alpaca_pricing.py` for resolved histories from `data_pricing`, not the
 ```bash
 ./read_alpaca_pricing.py --store data_pricing --symbol GOOG --resolve
 ./read_alpaca_pricing.py --store data_pricing --symbol GOOG --type raw --from 2026-10-01 --to 2026-10-14
+./read_alpaca_pricing.py --store data_pricing --symbol GOOG --type raw all --from 2026-01-01
+./read_alpaca_pricing.py --store data_pricing --symbol GOOG --all-types --format csv
 ```
 
 The command makes no API calls or datastore writes and creates no lock files. It requires published lineage for the
@@ -228,6 +236,65 @@ CLI syntax/option error. No history is printed before its read succeeds. Use `--
 the same symbol when multiple IDs match. `--format csv` writes stdout only; an output file requires an explicit shell
 redirection. The [consumer guide](public-api.md#standalone-resolved-pricing-reader) owns output types, date semantics,
 lookup scope and overlap selection. This reader does not activate or populate the online catalogue.
+
+## Bloodhound Parquet export
+
+Install the optional writer with Python 3.11 (`python3.11 -m pip install -r requirements-bloodhound.txt`).
+The tested dependency is pinned in [requirements-bloodhound.txt](../requirements-bloodhound.txt); core readers remain
+standard-library-only. The output parent must exist and must be outside the source datastore.
+
+```bash
+./convert_latest_alpaca_pricing_to_blood_hound_parquet --output ./alpaca.parquet
+./convert_latest_alpaca_pricing_to_blood_hound_parquet --output /tmp/alpaca_blood_hound.parquet --include-all-passed
+./convert_latest_alpaca_pricing_to_blood_hound_parquet --output ./sample.parquet -s NVDA -s AAPL --from 2020-01-01
+```
+
+Default store is `data_pricing`; default selection is all existing indexed lineage groups, not every downloaded ticker.
+`-s/--symbol` is a repeatable group locator; every resolved public ID in that selected group is considered. Repeat
+`--public-id` to restrict identities explicitly. Reused labels never collapse IDs. The latest observed ticker in each
+full history labels all output rows; GOOG and GOOGL are not excluded or combined. `--from/--to` filter inclusively
+**after** full-history factor calculation and label selection. Gaps remain gaps.
+
+The default aborts without publishing if any selected source/ID fails. `--include-all-passed` instead attempts every
+selected public ID and publishes only histories passing the same conversion checks. Rejected identities contribute
+no rows; valid dates are not salvaged from a rejected history. Rejections identify the source, public ID when known,
+and reason on **stderr only**, alongside progress and the final rejection count. This replaces `--allow-partial`.
+Stdout contains only the output path, published row count and published identity count. No diagnostic sidecar is made.
+
+`--memory-mib` sets the RAM allowance, default/maximum **8192 MiB** (minimum 256). Accepted output is retained as
+Arrow tables, not Python row dictionaries or compressed Parquet bytes. The allowance reserves a quarter, up to 2 GiB,
+for active histories, metadata and writer workspace. Output buffers and conservative per-table overhead are charged
+against the remainder; the read-cache limit shrinks as output grows. This is retained-memory accounting, not a hard
+OS RSS cap. Insufficient output capacity aborts the entire export without omitting IDs or spilling to disk.
+
+`--cache-mib` remains the reader's upper bound, default **2048 MiB**, maximum **6144 MiB**; zero disables retained
+reuse. It is not an additional independent allowance. Cache decoded rows rather than only gzip bytes; aliases and IDs
+within a group share those rows. Eviction or changed inputs can require another decode. The cache creates no files,
+changes no numeric checks, and does not bypass locks or current-generation selection. Groups release their working
+cache on close. Progress counts source locators processed, accepted identities and rows **held in RAM**, not written
+rows. No output file is created during acquisition. At the end, one serialization packs row groups across IDs, then
+the existing freshness checks precede atomic publication. Physical row order is deterministic source
+group order, then series ID within each group, then date; it is not a global series-ID sort.
+After successful publication, the cumulative RAM-only cache/read ledger is printed once to stderr. It is not written
+to the Parquet, stdout or a sidecar. Peak process RSS is also reported once to stderr. The only persistent export
+artifact is the final Parquet; staging exists only during final serialization and is removed on failure.
+
+`--wait` waits for producer locks. Changed selected generations, ID collisions and writer errors always abort under
+either policy. No passing observations means no output. `--replace` replaces an existing output only after successful
+conversion; otherwise existing files are never overwritten. Failed temporary output is removed. Exit 0 means the
+requested policy succeeded (with rejections permitted only under `--include-all-passed`), 1 means failure, 2 means
+argument error. Passing these checks is conversion acceptance, not independent certification of market truth.
+
+One persistent file contains the exact 18-column schema plus JSON metadata under footer key `alpaca_bloodhound`.
+Read it with `json.loads(pyarrow.parquet.read_metadata(path).metadata[b"alpaca_bloodhound"])`; the JSON includes
+full public-ID mappings, supporting group/source generations, inference assumptions and uncertainty for published
+identities only. There are no omission records, rejection counts, partial flags or zero-window identity entries in
+the file. Identity mappings and provenance remain footer metadata, not extra data columns or a source-data/audit tree.
+
+The output is **schema-compatible**, not automatically registered or independently action-certified. Unknown dated
+type/exchange are `UNKNOWN`; CIK/FIGI/name remain null. Use an all-observed universe if importing after separate
+Bloodhound admission; do not pretend these are historical listing classifications or filing identities. The exact
+formula, limits and evidence rationale live in the [conversion contract](technical-contracts.md#bloodhound-conversion-contract).
 
 ## Current lineage evidence
 

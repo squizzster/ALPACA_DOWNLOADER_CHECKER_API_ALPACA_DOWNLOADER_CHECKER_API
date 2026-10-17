@@ -9,8 +9,10 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 from .action_identity import exact_cusip_lookup_asset
-from .current_symbol_reuse import _current_identity
+from .current_symbol_reuse import _complete_corporate_action_query, _current_identity
+from .occupancy_anchor import _action_anchor
 from .ownership_interval_rules import TickerOwnershipInterval
+from .security_identity import security_identity_for_alpaca_assets
 from .ticker_reuse_gap import adjustment_session_consensus, assess_ticker_reuse_gap
 from .uuid_lineage import build_uuid_lineage_edges
 
@@ -24,6 +26,8 @@ class TerminalTradedEpisode:
     terminated_during_reuse_gap: bool = False
     bounded_by_inert_bridges: bool = False
     initial_before_reuse_gap: bool = False
+    preceding_inert_first: date | None = None
+    preceding_inert_last: date | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +175,86 @@ def _positive_competing_owner(symbol, intervals, asset_id, first, last):
     )
 
 
+def _dividend_backed_current_reuse(
+    symbol, lineage, intervals, candidates, current_id, cusip, bridge, first, last, end
+):
+    """A dated dividend anchors the current issue within an observed resumption.
+
+    It does not establish inception. The shared inert separator and unrelated
+    former departure distinguish this episode from a continuing stock's halt.
+    """
+    edges, issues = build_uuid_lineage_edges(lineage)
+    rejected = {issue["rejected_action_id"] for issue in issues if "rejected_action_id" in issue}
+    actions = {action.get("id"): action for action in lineage.get("corporate_actions", [])}
+    departures = set()
+    # Trust the ownership boundary, not merely a raw action candidate. A known
+    # departure does not require resolving the former issue's successor UUID.
+    for when, asset_id, former_cusip in candidates:
+        if not bridge[0] <= when <= bridge[1] or asset_id == current_id:
+            continue
+        for interval in intervals:
+            if (
+                interval.identity_key() != (symbol, former_cusip, asset_id)
+                or interval.end_date_exclusive != when
+            ):
+                continue
+            for rule in interval.applied_rules:
+                for action_id in rule.supporting_action_ids:
+                    action = actions.get(action_id, {})
+                    role = "old" if action.get("action_type") == "name_change" else "acquiree"
+                    effective = (
+                        action.get("process_date")
+                        if role == "old"
+                        else action.get("effective_date") or action.get("process_date")
+                    )
+                    if (
+                        action_id not in rejected
+                        and effective == when.isoformat()
+                        and (action.get(role + "_symbol"), action.get(role + "_cusip")) == (symbol, former_cusip)
+                    ):
+                        departures.add((when, asset_id))
+    if not departures or not _complete_corporate_action_query(lineage, min(d[0] for d in departures), end):
+        return False
+    component = security_identity_for_alpaca_assets(
+        (current_id,), edges, tickers=(symbol,), basis="current_reuse_screen"
+    ).member_alpaca_asset_ids
+    if any(asset_id in component for _, asset_id in departures):
+        return False
+    anchored = False
+    for action in lineage.get("corporate_actions", []):
+        if not any(value == symbol for key, value in action.items() if key.endswith("symbol")):
+            continue
+        try:
+            when = date.fromisoformat(
+                action.get("ex_date") or action.get("effective_date") or action["process_date"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not first <= when <= last:
+            continue
+        if action.get("action_type") != "cash_dividend" or action.get("cusip") != cusip:
+            return False  # A return, structural change or another issue needs its own dated allocation.
+        try:
+            anchored |= _action_anchor(action, symbol, cusip) == when
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            return False
+    # A conflicting dated occupant may not have produced an ownership interval.
+    for occupant in lineage.get("symbol_occupancy_evidence", []):
+        if occupant.get("symbol") != symbol or (occupant.get("asset_id"), occupant.get("cusip")) == (
+            current_id,
+            cusip,
+        ):
+            continue
+        for record in occupant.get("evidence", []):
+            try:
+                when = date.fromisoformat(record["process_date"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if first <= when <= last:
+                return False
+    return anchored
+
+
 def assess_bridged_traded_episodes(symbol, lineage, intervals, work_items):
     """Anchor bounded resumed runs, without interpreting inert rows as trades."""
     bridges = shared_inert_bridges(work_items)
@@ -195,6 +279,7 @@ def assess_bridged_traded_episodes(symbol, lineage, intervals, work_items):
         ):
             continue
         owners = set()
+        current_reuse = False
         if following:
             # A named departure near the first inert row anchors the preceding
             # complete episode. An event anywhere in a long bridge is insufficient.
@@ -223,6 +308,20 @@ def assess_bridged_traded_episodes(symbol, lineage, intervals, work_items):
                 or tuple(day.isoformat() for day in sessions[start:]) != complete.session_dates
             ):
                 continue
+            if _dividend_backed_current_reuse(
+                symbol,
+                lineage,
+                intervals,
+                candidates,
+                asset_id,
+                cusip,
+                (sessions[bridges[number][0]], sessions[left_end]),
+                first,
+                last,
+                date.fromisoformat(source["request_to"][:10]),
+            ):
+                owners.add((asset_id, cusip))
+                current_reuse = True
             for action in lineage.get("corporate_actions", []):
                 if (
                     action.get("action_type") != "stock_merger"
@@ -252,7 +351,17 @@ def assess_bridged_traded_episodes(symbol, lineage, intervals, work_items):
             for item in intervals
         ):
             continue
-        episodes.append(TerminalTradedEpisode(first, last, asset_id, cusip, bounded_by_inert_bridges=True))
+        episodes.append(
+            TerminalTradedEpisode(
+                first,
+                last,
+                asset_id,
+                cusip,
+                bounded_by_inert_bridges=True,
+                preceding_inert_first=sessions[bridges[number][0]] if current_reuse else None,
+                preceding_inert_last=sessions[left_end] if current_reuse else None,
+            )
+        )
     return tuple(episodes)
 
 

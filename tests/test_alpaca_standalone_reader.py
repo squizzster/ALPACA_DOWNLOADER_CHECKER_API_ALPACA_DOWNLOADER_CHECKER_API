@@ -171,6 +171,57 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual([b["session"] for b in result["bars"]], [r["t"][:10] for r in self.bars[1:-1]])
         self.assertEqual(self.reader.get_history("TEST", start="2027-01-01")["bars"], [])
 
+    def test_multiple_views_share_one_snapshot_and_deduplicate_physical_reads(self):
+        before = snapshot(self.store)
+        original, opened = Path.read_bytes, []
+
+        def observe(path):
+            if path.suffix == ".gz":
+                opened.append(path)
+            return original(path)
+
+        with (
+            patch.object(self.reader, "_snapshot", wraps=self.reader._snapshot) as select,
+            patch.object(Path, "read_bytes", observe),
+        ):
+            result = self.reader.get_histories("TEST", start="2026-10-01")
+        select.assert_called_once_with("TEST")
+        self.assertEqual(list(result["views"]), list(ADJUSTMENTS))
+        self.assertEqual(len(opened), 3)  # Eight aliases, three physical boundaries.
+        self.assertEqual(len(set(opened)), 3)
+        self.assertTrue(all(view["bar_count"] == 2 for view in result["views"].values()))
+        for adjustment, view in result["views"].items():
+            single = self.reader.get_history("TEST", adjustment, start="2026-10-01")
+            self.assertEqual(view, {"bar_count": single["bar_count"], "bars": single["bars"]})
+            self.assertEqual(result["generation"], single["generation"])
+        self.assertEqual(before, snapshot(self.store))
+        opened.clear()
+        with patch.object(Path, "read_bytes", observe):
+            self.reader.get_histories("TEST")
+        self.assertEqual(len(opened), 3)  # No persistent decoded cache across calls.
+
+    def test_multiple_views_validate_before_reading_and_preserve_requested_order(self):
+        missing = StandaloneReader(self.store / "absent")
+        for adjustments in ([], (), "raw", None, ["raw", "bad"], [None], [["raw"]]):
+            with self.subTest(adjustments=adjustments), self.assertRaises(ValueError):
+                missing.get_histories("TEST", adjustments)
+        result = self.reader.get_histories("TEST", ["all", "raw", "split,dividend", "raw"], start="2027-01-01")
+        self.assertEqual(list(result["views"]), ["all", "raw", "split,dividend"])
+        self.assertTrue(all(view == {"bar_count": 0, "bars": []} for view in result["views"].values()))
+
+    def test_unavailable_requested_view_fails_before_any_payload_read(self):
+        def change(_, boundaries):
+            for boundary in boundaries.values():
+                for entry in boundary["adjustments"]:
+                    if entry["adjustment"] == "all":
+                        for segment in entry["segments"]:
+                            segment["branch"] = "uncorrelated"
+
+        self.change_publication(change)
+        with patch("alpaca_end_of_day.standalone._rows", side_effect=AssertionError("payload read")):
+            with self.assertRaisesRegex(StandaloneReaderError, "adjustment is unavailable"):
+                self.reader.get_histories("TEST", ["raw", "all"])
+
     def test_bad_arguments_before_store_access(self):
         reader = StandaloneReader(self.store / "absent")
         for kwargs in (
@@ -225,6 +276,9 @@ class StandaloneReaderTests(unittest.TestCase):
         self.build(["TEST"], IdentityClient({"TEST": asset("TEST")}))
         self.assertEqual(self.reader.get_history("TEST", "raw")["bars"][0]["close"], str(self.bars[0]["c"]))
         self.assertEqual(self.reader.get_history("TEST", "all")["bars"][0]["close"], str(self.bars[0]["c"] * 2))
+        both = self.reader.get_histories("TEST", ["raw", "all"])["views"]
+        self.assertEqual(both["raw"]["bars"][0]["close"], str(self.bars[0]["c"]))
+        self.assertEqual(both["all"]["bars"][0]["close"], str(self.bars[0]["c"] * 2))
 
     def test_source_alias_does_not_hide_resolved_history_or_become_a_trading_label(self):
         def change(_, boundaries):
@@ -402,7 +456,7 @@ class StandaloneReaderTests(unittest.TestCase):
             [path for path in before if before[path] != after[path]], ["end_of_day/lineage/index.sqlite3"]
         )
         with closing(sqlite3.connect(self.root / "index.sqlite3")) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], storage.VERSION)
         self.assertEqual(self.publication()[0]["versions"]["lineage"], 2)
         self.assertEqual(self.reader.get_history("TEST")["bar_count"], len(self.bars))
         self.assertEqual(read_lineage(self.store, "TEST")["receipt"]["versions"]["lineage"], 2)
@@ -580,6 +634,9 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual(adjusted["bars"][0]["close"], "200.0000000000000000001")
         narrow = self.reader.get_history("NEW", "all", start="2023-12-01", end="2023-12-01")
         self.assertEqual(narrow["bars"], adjusted["bars"][:1])
+        both = self.reader.get_histories("NEW", ["raw", "all"], start="2023-12-01", end="2023-12-01")
+        self.assertEqual(both["views"]["raw"]["bars"], raw["bars"][:1])
+        self.assertEqual(both["views"]["all"]["bars"], adjusted["bars"][:1])
 
     def test_unsettled_overlap_fails_without_silently_choosing(self):
         self.renamed_pair(differing=True)
@@ -716,11 +773,84 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["bar_count"], len(self.bars))
         self.assertEqual(before, snapshot(self.store))
 
+    def test_cli_multiple_repeated_types_json_csv_and_all_types(self):
+        common = ["--store", str(self.store), "-s", "TEST", "--from", "2026-10-13"]
+        for options, names in (
+            (["--type", "raw", "all"], ["raw", "all"]),
+            (["--type", "all", "--type", "split,dividend", "raw", "all"], ["all", "split,dividend", "raw"]),
+            (["--all-types"], list(ADJUSTMENTS)),
+        ):
+            for format in ("json", "csv"):
+                with self.subTest(options=options, format=format):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(main(common + options + ["--format", format]), 0)
+                    if format == "json":
+                        result = json.loads(output.getvalue())
+                        self.assertEqual(result["boundary"], "standalone_resolved_pricing_views")
+                        self.assertEqual(list(result["views"]), names)
+                        self.assertTrue(all(view["bar_count"] == 1 for view in result["views"].values()))
+                    else:
+                        rows = list(csv.DictReader(io.StringIO(output.getvalue())))
+                        self.assertEqual([row["adjustment"] for row in rows], names)
+                        self.assertTrue(all(row["volume"] == "9007199254740993" for row in rows))
+                        self.assertTrue(all(row["session"] == "2026-10-13" for row in rows))
+
+    def test_cli_duplicate_single_type_keeps_existing_output_shape(self):
+        for format in ("json", "csv"):
+            outputs = []
+            for selection in ([], ["--type", "raw"], ["--type", "raw", "--type", "raw"]):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(
+                        main(["--store", str(self.store), "-s", "TEST", "--format", format] + selection), 0
+                    )
+                outputs.append(output.getvalue())
+            self.assertEqual(outputs, [outputs[0]] * 3)
+
+    def test_cli_rejects_conflicting_or_invalid_type_requests_without_output(self):
+        for options in (
+            ["--type", "raw", "--all-types"],
+            ["--resolve", "--all-types"],
+            ["--resolve", "--type", "raw", "all"],
+            ["--type", "raw,all"],
+            ["--type"],
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                main(["--store", str(self.store), "-s", "TEST"] + options)
+            self.assertEqual(error.exception.code, 2)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_cli_failure_in_later_view_never_prints_partial_json_or_csv(self):
+        from alpaca_end_of_day import standalone
+
+        original = standalone._history
+
+        def fail_later(assignments, sources, store, public_id, adjustment, cache, retained=None):
+            if adjustment == "all":
+                raise StandaloneReaderError("conflicting adjusted history")
+            return original(assignments, sources, store, public_id, adjustment, cache, retained)
+
+        for format in ("json", "csv"):
+            output, error = io.StringIO(), io.StringIO()
+            with (
+                patch.object(standalone, "_history", side_effect=fail_later),
+                redirect_stdout(output),
+                redirect_stderr(error),
+            ):
+                status = main(
+                    ["--store", str(self.store), "-s", "TEST", "--type", "raw", "all", "--format", format]
+                )
+            self.assertEqual(status, 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("conflicting adjusted history", error.getvalue())
+
     def test_busy_cli_returns_three_without_partial_output(self):
         self.start_lock_holder(self.root, True)
         output, error = io.StringIO(), io.StringIO()
         with redirect_stdout(output), redirect_stderr(error):
-            status = main(["--store", str(self.store), "-s", "TEST"])
+            status = main(["--store", str(self.store), "-s", "TEST", "--type", "raw", "all"])
         self.assertEqual(status, 3)
         self.assertEqual(output.getvalue(), "")
         self.assertIn("busy", error.getvalue())

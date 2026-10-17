@@ -552,6 +552,17 @@ def _apply_inactive_current_suffix_rule(
 def _apply_dated_terminal_suffix_rule(
     context: _RowRuleContext,
 ) -> _RowDecision | None:
+    if any(
+        episode.preceding_inert_first is not None
+        and episode.preceding_inert_first <= context.session_date <= episode.preceding_inert_last
+        for episode in context.bridged_episodes
+    ):
+        # A dated process event can lag the actual departure. Once unrelated
+        # reuse is established, never publish its shared synthetic bridge as trades.
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("synthetic_carry_forward_between_unrelated_issues",),
+        )
     matches = [
         episode
         for episode in (*context.bridged_episodes, context.terminal_episode)

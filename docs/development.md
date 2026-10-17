@@ -44,10 +44,21 @@ the ordered-rule and identity-membership coverage in `tests/test_alpaca_end_of_d
 `tests/test_alpaca_standalone_reader.py` exercises `alpaca_end_of_day.StandaloneReader` and its actual CLI using the
 real standalone publishers with synthetic provider doubles. It covers exact values, compact overlays/rollover,
 source aliases, selected-adjustment reads, ticker reuse, partial unresolved history, shared history-source policy,
+multi-view JSON/CSV selection, single-snapshot alias reuse, single-view compatibility and all-or-error output,
 stale and incomplete generations, read-only behavior, and cross-process busy/wait/release semantics. It also verifies
 unrelated publication during reads, same-group lock order, bounded re-selection and v2 receipt/month reuse through
 the v3 protocol upgrade. No retained pricing is copied and no provider credentials are required. Reader behavior owns
 the public API version; shared publication locking owns the standalone lineage version, not the identity rules.
+
+`tests/test_alpaca_standalone_cache.py` checks bounded eviction, cached/uncached value and Parquet equality,
+independent mutable results, exact-view assembly reuse and its label/policy counterexamples, changed generations,
+missing files, producer locks, conservative Unicode accounting and lightweight freshness without unchanged receipt
+rereads. Source data remains read-only.
+`tests/test_alpaca_standalone_group.py` covers batch/ordinary history equality, one-handshake document parsing,
+decoded reuse across IDs, release on close, consumer exception propagation, mutation isolation and retained-token
+freshness without reopening approved lineage data.
+Bloodhound export tests also verify no file creation during acquisition, one packed serialization, post-serialization
+freshness, shrinking cache allowances, zero-copy Arrow concatenation and fatal memory exhaustion under all-passed mode.
 
 `libs/common/` is dependency-neutral shared infrastructure. Consumer code imports only `alpaca_end_of_day`, never a
 module under `libs/`.
@@ -69,6 +80,7 @@ repository-layout changes under `Unreleased` in [VERSION_TRACKER.md](VERSION_TRA
 | Operator lineage evidence | [`EVIDENCE_VERSION`](../libs/alpaca_lineage_build/evidence.py) | [`alpaca_lineage_evidence_change_log.json`](../resources/alpaca_lineage_evidence_change_log.json) |
 | Clean-room run ledger | [`CLEAN_ROOM_RUN_VERSION`](../libs/alpaca_end_of_day_clean_room/generation.py) | [`alpaca_clean_room_run_change_log.json`](../resources/alpaca_clean_room_run_change_log.json) |
 | Public consumer API | [`API_VERSION`](../alpaca_end_of_day/__init__.py) | [`alpaca_end_of_day_api_change_log.json`](../resources/alpaca_end_of_day_api_change_log.json) |
+| Bloodhound export | [`VERSION`](../libs/alpaca_bloodhound_export/__init__.py) | [`alpaca_bloodhound_export_change_log.json`](../resources/alpaca_bloodhound_export_change_log.json) |
 | Monthly source | [`SOURCE_VERSION`](../libs/alpaca_end_of_day_v6/versions.py) | [Source-boundary changelog](../resources/alpaca_v6_source_change_log.json) |
 | Monthly validation | [`VALIDATION_VERSION`](../libs/alpaca_end_of_day_v6/versions.py) | [Validation-boundary changelog](../resources/alpaca_v6_validation_change_log.json) |
 | Lineage source | [`LINEAGE_SOURCE_VERSION`](../libs/alpaca_end_of_day_v6/versions.py) | [Lineage-boundary changelog](../resources/alpaca_v6_lineage_source_change_log.json) |
@@ -113,6 +125,12 @@ Choose the most likely correct attribution from the complete evidence pattern, a
 one explanation is better supported. A one-to-four-session processing discrepancy alone neither defeats continuity
 nor authorizes a merge. Test the competing explanation, including a genuine change of predecessor. Leave history
 unmatched when attribution remains insufficient after the cascade, not merely because an individual rule declines it.
+
+Treat reliable public records as settled facts where they establish the question being investigated. Use those facts
+as the benchmark for judging internal results; do not repeatedly downgrade established history to uncertainty.
+Separate confirmed facts, unanswered research questions and the internal mapping still needed. Scope uncertainty to
+the affected dates, links or issue: publish independently supported portions, and withhold only portions without a
+defensible attribution. An unsuccessful search is not itself evidence against otherwise supported history.
 
 - **Main agent:** owns the complete cascade, case selection, internal-evidence interpretation, implementation and
   acceptance. Translate a research concept into the actual pipeline; do not paste an agent's suggested rule verbatim.
@@ -225,6 +243,12 @@ per-predicate traces, price copies and repeated audit ledgers are not the produc
 not every tentative theory.
 
 ## Verification
+
+The Bloodhound converter's focused tests are `test_alpaca_bloodhound_factors.py`,
+`test_alpaca_bloodhound_export.py` and `test_alpaca_standalone_export_reader.py`. Install
+[`requirements-bloodhound.txt`](../requirements-bloodhound.txt) to execute the optional Parquet integration tests;
+without PyArrow those tests explicitly skip. Tests use synthetic data and do not require Bloodhound's repository,
+live services or source copies. Live exportability checks are bounded and separate from the unit suite.
 
 The repository's defined local checks are:
 

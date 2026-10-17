@@ -1,0 +1,2 @@
+# Optional standalone Parquet writer; core readers do not require it.
+pyarrow==25.0.0

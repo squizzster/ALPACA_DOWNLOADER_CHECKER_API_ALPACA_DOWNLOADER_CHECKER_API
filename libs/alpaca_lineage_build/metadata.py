@@ -80,6 +80,18 @@ def acquire(view, client, previous=None, *, refresh=False):
     return evidence
 
 
+def acquire_unpriced(symbol, request, client):
+    """Query metadata independently of bars, without fabricating a pricing input."""
+    local = {
+        "present": False,
+        "directory": None,
+        "downloads": [],
+    }
+    evidence = build_identity_report(symbol, local, client, query_dates=(request["start"][:10], request["asof"]))
+    evidence.pop("api_request_count", None)
+    return evidence
+
+
 def dependencies(evidence: dict, symbol: str) -> list[str]:
     labels = set(evidence["queried_symbols"])
     for action in evidence["corporate_actions"]:

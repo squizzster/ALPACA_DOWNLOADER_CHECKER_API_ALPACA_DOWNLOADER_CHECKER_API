@@ -320,5 +320,13 @@
       "Bound newly inferred retired-label predecessor history after prolonged shared inert padding within its backward-inference interval, retaining informative suffixes and independent earlier ownership.",
       "Treat equal event and episode dates as zero session discrepancy without calling the calendar on an empty range; preserve other terminal-ownership gates."
     ]
+  },
+  {
+    "modifications": [
+      "Retain an authenticated same-label split when an accepted later name-change path explains a CUSIP lookup's current ticker. Require a unique chronological path preserving the exact UUID and CUSIP, with departure strictly after the split; reject branches, cycles, conflicting dates and unexplained lookup labels.",
+      "Resolve accepted rename evidence before evaluating split endpoints, independently of corporate-action order. Preserve split endpoint historical labels, exact equity lookups and ratio checks; membership evidence does not itself establish price-row ownership.",
+      "Scope incoming split-chain traversal for independently dated predecessor donors to events before the handoff. Later membership expansion must not erase earlier exact donor provenance; extra known occupants still require the full earlier same-label chain and existing ambiguity, branch and recursive-donor guards.",
+      "Extend the existing bounded-episode rule to a complete current suffix after a shared prolonged inert separator when exact active symbol/CUSIP identity and dated dividends anchor that issue, an unrelated former identity departed during the separator, and complete action coverage supplies no contradictory structural or issue occupancy. Do not infer a listing date, join the former issue, or assign the synthetic bridge."
+    ]
   }
 ]

@@ -176,3 +176,35 @@ class IndependentHistoryTests(unittest.TestCase):
         self.fixture.edges.pop()
         self.fixture.segments[-1]["warnings"].append(INDEPENDENT_HISTORY_WARNING)
         self.assertEqual((), self.assess())
+
+    def test_later_membership_does_not_erase_sole_dated_predecessor_provenance(self):
+        self.split_chain_donor()
+        self.fixture.lineage["symbol_occupancy_evidence"] = [
+            item for item in self.fixture.lineage["symbol_occupancy_evidence"] if item.get("asset_id") != "old0"
+        ]
+        self.fixture.edges[0] = replace(
+            self.fixture.edges[0],
+            effective_date=date(2025, 1, 3),
+            predecessor_symbol="NEXT",
+            successor_symbol="NEXT",
+        )
+        proofs = self.assess()
+        self.assertEqual(1, len(proofs))
+        self.assertEqual("OLD", proofs[0].interval.historical_symbol)
+        result = self.resolve(proofs)
+        self.assertEqual("OLD", result["correlated"][0]["historical_symbol"])
+        self.assertEqual("old1", result["correlated"][0]["canonical_security"]["alpaca_asset_id"])
+
+        # A real extra occupant cannot be explained by a split after the handoff.
+        self.fixture.lineage["symbol_occupancy_evidence"].append(
+            {"symbol": "OLD", "asset_id": "old0", "cusip": "old-cusip0"}
+        )
+        self.assertEqual((), self.assess())
+
+    def test_earlier_foreign_arrival_still_needs_its_own_provenance(self):
+        self.split_chain_donor()
+        self.fixture.lineage["symbol_occupancy_evidence"] = [
+            item for item in self.fixture.lineage["symbol_occupancy_evidence"] if item.get("asset_id") != "old0"
+        ]
+        self.fixture.edges[0] = replace(self.fixture.edges[0], predecessor_symbol="FOREIGN")
+        self.assertEqual((), self.assess())

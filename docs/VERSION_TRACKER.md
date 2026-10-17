@@ -11,6 +11,40 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Added
 
+- Standalone pricing v7 / lineage v4 / public API v10 / operator evidence v3 distinguish exact initial auxiliary
+  rejection from successful emptiness and hard acquisition failure. Metadata discovery and identity candidates are
+  retained; absent dependencies join locks, reverse closure, recovery and reader/export freshness checks. No price
+  copies, ticker exceptions, new identity rules or blanket reprocessing of completed sources.
+- Public API v9 / Bloodhound export v7 retain accepted Arrow output in RAM and serialize once at the end, packing row
+  groups across IDs. `--memory-mib` (default/maximum 8192) shares retained capacity with a dynamically limited read
+  cache and reserves working headroom. Memory exhaustion aborts without omissions or disk spill. No output file is
+  created during acquisition; post-serialization freshness, exact values, source policy and atomic publication remain.
+- Public API v8 / Bloodhound export v6 add RAM-only cumulative read/reuse counters, conservative decoded-row
+  accounting, uncontested-history fast paths, exact alias reuse without source competition, and unchanged-receipt
+  reuse under the existing freshness handshake. Fixed projection constraints are compiled once without changing
+  arithmetic. The exporter prints the ledger once to stderr after success; no ledger file or footer field is added.
+- Public API v7 / Bloodhound export v5 stream completed groups through one locked context, share decoded payloads
+  across their IDs and release working data on close. A compact retained token supports final freshness checks without
+  reopening lineage evidence. Deterministic physical order is now source group, series ID, date; global collisions
+  abort before publication even when earlier groups have staged rows. Equal-view intervals and verified rational
+  witnesses are reused under unchanged numeric checks. Consumer, operational and boundary contracts describe this path.
+- Bloodhound export v4 permits explicit `--cache-mib 6144` within an 8 GiB process allowance. The default remains
+  2048 MiB; only the accepted CLI budget changes, not calculations, acceptance policy or source data.
+- Public API v6 and Bloodhound export v3 add bounded generation-selected RAM reuse, exact-view assembly reuse and
+  lightweight locked final freshness checks. Export defaults to a 2048 MiB cache; `--cache-mib 0` disables cross-call
+  reuse. Numerical calculations, acceptance policy, source selection and schema are unchanged. No disk cache or
+  source copies are created; usage, memory headroom and cache authority are documented in their owning guides.
+- Bloodhound export v2 replaces `--allow-partial` with `--include-all-passed`: unchanged conversion checks accept or
+  reject whole public-ID histories independently; diagnostics go to stderr only. The Parquet and stdout contain no
+  omission ledger or partial marker, and footer mappings/provenance describe only identities with published rows.
+- Bloodhound export v1: standalone offline 18-column Parquet conversion, exact source OHLC/raw-unit preservation,
+  joint eight-view split-factor inference and embedded public-ID mapping. Public API v5 adds metadata-only source/group
+  projections and same-snapshot history evidence. No producer/rule change, source rewrite or worker restart.
+
+- Public API v4 adds one-snapshot `StandaloneReader.get_histories`, multiple/repeated reader `--type` values and
+  `--all-types`. Single-view output stays compatible; multiple-view JSON groups by adjustment and CSV labels each
+  row. Per-call physical-alias reuse avoids repeated gzip reads. No producer/rule versions, store layout, downloads,
+  or background-worker restart change; consumer syntax and output contracts are documented in Public API.
 - Public API v2 adds `StandaloneReader` and `read_alpaca_pricing.py`: explicit-store, source-scoped resolved-ID
   histories; exact JSON/CSV stdout; metadata-only resolution; shared producer locks with busy-by-default handling;
   no downloads, datastore writes or new catalogue. `DataLibrary` keeps its online-only combined-store contract.
@@ -58,6 +92,13 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Modified
 
+- Correlation transform v52 accepts a historical split endpoint whose exact UUID/CUSIP has a unique later accepted
+  rename to its current lookup label. Rule 4 also resolves a complete current traded suffix anchored by exact dividend
+  evidence after an unrelated former issue's departure, excluding the intervening synthetic carry-forward interval.
+  Incoming traversal for independently dated donor certificates is scoped before its handoff so later membership
+  does not erase earlier provenance. No ticker-specific rule, pricing rewrite or registry reordering is introduced.
+- The contributor research loop treats established public facts as the benchmark, separates unanswered questions
+  from internal UUID mapping, and scopes uncertainty to unsupported intervals rather than entire histories.
 - Standalone lineage v3 separates the one-worker guard from brief group-publication locking. All standalone readers
   use sorted shared pricing locks and bounded re-selection, so unrelated work no longer blocks completed reads.
   Public API v3 adopts that handshake. The SQLite protocol header upgrades once; compatible v2 receipts and month
@@ -132,6 +173,203 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+### Correlation v52 consolidated handoff — 2026-10-17
+
+- **Completed the original 414 comparison groups.** A donor-certificate interaction required 27 follow-up group
+  comparisons, including 20 additional unique groups: the final union is **434 groups / 1,305 sources**. Both v51
+  and v52 used the same approved inputs and the production three-pass fixed point. All eight adjustment views agree
+  on the changes; there are no remaining comparison errors. Of these sources, 596 change and 709 remain identical.
+- The accepted effects are distinct, not a single resolved-count score:
+
+  | Effect | Source-sessions | Meaning |
+  |---|---:|---|
+  | Newly attributed | 4,739 | Supported history previously withheld: GLOW 581, GLBL 521, MCVT 141, LOGC 855, MCHB 2,429 and SATLW 212. |
+  | Incorrect assignments removed | 5,338 | Thirteen sources' constant zero-volume/zero-trade carry-forwards; these are not observations of a traded security. |
+  | Historical label corrected | 1,756 | NHIQ-source history is attributed to its historical NH label. |
+  | Membership-only changes | 756,214 | Accepted continuing split membership changes public-ID fingerprints; not a historical owner change. |
+  | Unresolved reason clarified | 1,857 | Already-unassigned synthetic bridges remain unassigned with the specific reason. |
+
+  Counts are source-sessions, not deduplicated public-ID histories, and are not multiplied by eight views. Split
+  membership, historical ownership and adjustment values remain separate decisions. No source prices were repaired.
+- The consolidated check caught two collateral label regressions before acceptance: 475 PROG and 60 CHG sessions.
+  Scoping incoming donor traversal before the certified handoff preserves those histories without rejecting valid
+  later membership. Fresh primary-source research supported the bounded MCVT, MCHB and SATLW recoveries. Confirmed
+  facts and their internal-mapping limits were retained once in the existing ignored research reference.
+- Actual `build_alpaca_lineage.py` publication completed for **24 selected groups / 64 sources** in **185.53 seconds**,
+  with no failures. This covers every source with a non-membership-only effect plus BIOR, LUXH, META and PANW controls.
+  All selected pricing generations and normalized identity evidence are unchanged from the approved comparison.
+  PANW's auxiliary delegation reconfirmed the rejected label without withholding PANW; no pricing generation changed.
+  Published assignment counts and changed intervals match the accepted comparison across all eight views.
+- The supported `StandaloneReader` successfully read **51 distinct public IDs / 65,113 deduplicated identity-sessions**
+  across all eight views, with equal session grids and passing final freshness checks. This includes separate GLOW
+  ETF and GLOW/OBLG/TWAV histories, the recovered MCHB and SATLW prefixes, PANW versus CYBR, and distinct reused FB
+  identities. A second actual CLI invocation returned **24 unchanged groups**, zero failures.
+- **692 repository tests passed in 62.331 seconds**, with ResourceWarnings treated as errors. Ruff lint/format
+  (186 Python files), `git diff --check`, all **277 local documentation links/anchors**, complete README coverage,
+  and the downloader, lineage, evidence, reader and Bloodhound CLI help checks passed.
+- **Release scope:** the rule changes and this comparison batch are accepted; the whole unresolved universe is not
+  declared solved. Publication was selected-case, not a full-store rerun: **64 receipts use v52; 19,971 still use v51**
+  at handoff. The existing reader correctly requires current-rule receipts; those older groups need a normal lineage
+  catch-up before consumption with this code. No freshness bypass was added. Neither the separate `DataLibrary`
+  online catalogue nor the completed Bloodhound Parquet was rebuilt. Remaining historical questions include the
+  earlier GLBL issuer history and LUXH's narrow November 2022 trading/process-date discrepancy; successful reads do
+  not certify every unaffected inherited assignment.
+
+### Auxiliary acquisition regression — 2026-10-17
+
+- Traced the complete latest full-run failure set: **27 starting labels** had pricing but no lineage publication.
+  Every failure reached a discovered auxiliary which the bars endpoint explicitly rejected. Provider metadata for
+  those labels remained useful. The old independent ownership calculation was not the cause of PANW's absence.
+- The first new regression test failed against the prior implementation, then passed with the fix. **677 tests passed
+  in 63.990 seconds**, with ResourceWarnings treated as errors. Ten focused tests cover the positive case, hard-error
+  counterexamples, partial page/view rejection, metadata failure, range expansion, reuse/refresh, recovery, later price
+  arrival, cached readers/export tokens and offline evidence. Ruff lint/format (184 Python files), `git diff --check`,
+  **277 local links/anchors** and complete README documentation coverage passed.
+- Actual `build_alpaca_lineage.py` publication completed for all **27 previously failed starting labels**, spanning
+  **20 dependency groups / 33 actual sources**, with zero failures and zero unresolved rows in these groups. Four
+  previously missing dependencies were acquired normally: ITRMF, NBRVF, SPIEF and SPIEQ. No existing pricing copies
+  were made. **22 rejected auxiliary labels** retain metadata rather than fabricated prices.
+- There are **31 newly published sources**, including the four acquired dependencies. The two already published
+  warrant sources, ASPSW/ASPSZ, retain their pricing generations, UUIDs and all boundary contents except the schema
+  version. The normal public reader successfully consumed **25 public IDs / 42,942 deduplicated identity-sessions**
+  across all eight views, with matching session grids and passing final freshness checks.
+- PANW has **2,711 sessions**, 2016-01-04 through 2026-10-14, under public ID
+  `315fde4f2b19201b2b2e4ed9d8945379f58289a1461b2dde143b7d6d7a122052`, matching its retained identity.
+  CYBR remains separate. The previously requested `/tmp/top_500.csv` now has 331 IDs, 169 blanks and no US-country
+  blanks. Neither the Bloodhound Parquet nor the separate `DataLibrary` online catalogue was rebuilt.
+- **Remaining review, not accepted as solved:** the metadata-only baseline census covered 20,004 lineage receipts;
+  2,217 sources contain 1,087,268 unresolved raw source-sessions. Of those sources, 265 have some retained assignments,
+  and 44 have fewer assigned sessions now. Counts alone do not adjudicate them. None of the 1,674 sources with zero
+  identity candidates had retained assignments either. This acquisition checkpoint used correlation v51. The v52
+  handoff above subsequently closes the reviewed evidence shapes; it does not adjudicate all remaining unresolved
+  histories or all 44 count decreases. No full-universe rerun was made.
+
+### Offline Bloodhound conversion — 2026-10-16
+
+- Export v7 / API v9, **2026-10-17**: the actual export function passed the real **100-ID / 163,443-row** comparison
+  using a RAM-only output adapter (normal published-source reads). All 18 columns, identity mappings and factor reports
+  match exactly; one serialization produced two row groups. **360 unique gzip files required exactly 360 decompressions**,
+  with no cache eviction. Retained Arrow buffers used 21,905,407 bytes, or 25,182,207 bytes including conservative
+  per-table charges. This is equivalence/I/O-count evidence, not a measured full-export disk speedup.
+  **667 repository tests passed in 59.339 seconds**, with ResourceWarnings treated as errors; Ruff lint/format
+  (182 Python files), actual CLI help and `git diff --check` passed. Targeted tests cover zero acquisition-time output
+  files, one packed serialization, post-write freshness, shared cache limits and fatal no-spill memory exhaustion.
+  All 274 local Markdown links/anchors and complete README coverage passed. The full RAM-output run launched at
+  **2026-10-17 00:41:45 UTC**, with `--memory-mib 8192 --cache-mib 6144 --include-all-passed --wait`, targeting
+  `/tmp/alpaca_blood_hound.parquet`. Completion is pending at this launch checkpoint.
+  **Completed 2026-10-17 01:29 UTC** (about 47 minutes): **13,534 identities / 18,782,903 rows** published atomically
+  to `/tmp/alpaca_blood_hound.parquet` (627,176,451 bytes; 598.12 MiB), after all 14,785 consumed-group checks passed.
+  All 20,004 source locators were considered; 84 source/identity checks were rejected under the all-passed policy.
+  Peak RSS was **3,483.21 MiB**. Acquisition samples consistently reported zero disk writes; final serialization used
+  one `write_table` call and produced **144 packed row groups**. The RAM-only ledger reported no cache evictions and
+  20,004 unchanged source-receipt reuses. Final footer-only verification confirmed the exact 18-column schema,
+  mapping uniqueness/counts/row totals, accepted-only metadata and no leftover temporary file. No full source reread,
+  benchmark output, disk cache, source copy or diagnostic sidecar was created.
+  The user-requested v6 interruption exited cleanly before publication at **11,811 accepted IDs / 16,424,286 rows**;
+  its temporary file was removed. No source data was changed.
+- Export v6 / API v8: **659 repository tests passed in 58.001 seconds**, with ResourceWarnings treated as errors.
+  The retained 100-ID / 163,443-row in-memory production-path workload improved from **16.28–16.39 s** to
+  **10.94–10.96 s** (about 33% less elapsed time). All 18 columns, identity mappings and factor reports match exactly.
+  A further numeric-cache prototype took **11.08–11.09 s**, slightly slower, and was discarded. This established
+  diminishing returns; the retained implementation is frozen for the final full export. These timings describe
+  this corpus, not a guaranteed full-universe speedup. Trials created no disk benchmark output or source copies.
+  Ruff lint/format (181 Python files) and `git diff --check` also passed. The final full export launched at
+  **2026-10-16 23:42:06 UTC**, targeting `/tmp/alpaca_blood_hound.parquet` with
+  `--include-all-passed --wait --cache-mib 6144`; completion is pending at this checkpoint.
+- Export v5 / API v7: **657 repository tests passed in 60.133 seconds** with ResourceWarnings treated as errors.
+  Ruff lint/format (181 Python files), 273 local Markdown links/anchors with complete README coverage, and
+  `git diff --check` passed. Eight new group-context tests cover ordinary/batch equality, once-only metadata reads,
+  shared decoded payloads across IDs, release on close, caller mutation, consumer exception identity, locks and final
+  freshness without reopening lineage. Streamed export tests cover late collision cleanup and moving snapshots.
+- The existing **100-ID / 163,443-row corpus** matches **all 18 columns exactly** after sorting by series ID/date;
+  every identity mapping and factor report also matches. Physical row order and converter version change deliberately.
+  This was an output-equivalence check, not a cache-size benchmark. The temporary derived output was removed;
+  retained pricing and lineage data were not copied or modified.
+- At the user's request, the v4 run was interrupted after **708 accepted IDs / 978,839 staged rows**, with no final
+  publication. The actual v5 streaming CLI restarted at **2026-10-16 23:14 UTC**, targeting the same
+  `/tmp/alpaca_blood_hound.parquet` with `--include-all-passed --wait --cache-mib 6144`. Completion remains pending at
+  this launch checkpoint; dated launch records do not establish current worker status.
+- Export v4: **649 repository tests passed in 57.213 seconds**, including the explicit 6144 MiB CLI option;
+  Ruff lint/format (179 Python files) and `git diff --check` passed. At the user's request, the 2 GiB-cache run was
+  stopped during source selection and restarted at **2026-10-16 22:46:03 UTC** with `--cache-mib 6144`, the same
+  all-passed policy and destination. No cache-size benchmark was run; this changes the allowance, not the calculations.
+  Completion is not established by this launch checkpoint.
+- Export v3 / API v6: **648 repository tests passed in 58.121 seconds** with ResourceWarnings treated as errors.
+  Ruff lint/format (179 Python files), 272 local Markdown links/anchors and complete README coverage, actual CLI help
+  and `git diff --check` passed. Thirteen new cache tests cover eviction, caller mutation, changed inputs, live locks,
+  missing/symlinked payloads, exact-view assembly reuse and counterexamples, plus cached/uncached Parquet equality.
+  A CLI regression also covers disabling the cache and rejecting invalid budgets before opening the store.
+- On the same existing **100-public-ID / 163,443-row corpus**, the uncached/full-evidence final-check control took
+  **40.15 s**; caching plus lightweight checks took **32.97 s**; adding exact-view assembly reuse took **25.46 s**.
+  All three produced the same Parquet SHA-256
+  `7bed54131110f91012317671887b2d54897a328dd2ceb9dd6bd3275936a7a7ed` under the same v3 writer contract.
+  The final process used **25.36 CPU s**, peaked at **558.7 MiB RSS**, and retained **324 MiB** of accounted cache.
+  Requested read bytes fell from **555 MB to 213 MB**; these are process read counters, not physical disk reads.
+  These sequential, warm-cache-sensitive measurements establish this corpus's equivalence and improvement, not a
+  full-universe ETA or maximum RSS guarantee. Temporary derived benchmark outputs were removed; source files were
+  not copied, downloaded or modified.
+- The v2 all-passed run was interrupted during source selection to apply this optimization; it published no final
+  file. The actual v3 full-roster CLI was restarted at **2026-10-16 22:37 UTC**, targeting
+  `/tmp/alpaca_blood_hound.parquet` with `--include-all-passed --wait` and the default 2048 MiB cache. Completion and
+  full-universe memory/performance remain unverified at this checkpoint; this dated launch is not live job status.
+- Export v2: **634 repository tests passed in 55.612 seconds**, including **28 projection/Parquet/CLI tests**.
+  Ruff lint/format (177 Python files), 271 local Markdown links/anchors and complete README coverage, CLI help,
+  runtime version/changelog validation and `git diff --check` passed. Coverage includes continuing past a rejected
+  identity, rejection of an entire history for one bad date, independent IDs in one group, stderr-only diagnostics,
+  clean footer/stdout, empty-window filtering, all-rejected output cleanup and fatal writer/snapshot failures.
+- A bounded real CLI run selected BHVN and NVDA groups: three public IDs were considered, BHVN was rejected by the
+  unchanged factor checks, and NVDA/MLNX published **3,796 rows across two identities**. The footer contained no
+  rejected ID or omission fields; stdout contained only output/rows/identities. The temporary test artifact was
+  removed, with no source writes or downloads.
+- The first strict full-roster run selected **13,618 public IDs** from **20,004 source locators**, then stopped after
+  19 successful conversions on BHVN's incompatible raw/split observations for **2022-09-23**. No final Parquet was
+  published; temporary output was removed and source data remained unchanged. This demonstrates a full-universe
+  conversion failure under the existing numeric contract, not grounds to relax it or repair upstream data here.
+- Earlier v1 implementation checkpoint follows; its bounded Parquet retains the v1 footer contract.
+
+- **627 tests passed** in **54.309 seconds**, with ResourceWarnings treated as errors. New coverage comprises
+  22 factor tests, 21 projection/Parquet/CLI tests and 10 public-reader evidence tests. This includes exact rational
+  preference only inside the joint bounds, genuine fractional ratios, thin-volume rounding, incompatible eight-view
+  evidence, generation changes even for initially unreadable partial selections, no-clobber publication, and identical
+  bytes for fixed synthetic inputs/writer versions.
+- The analytical joint-factor projection agreed with an independent numerical optimizer on **500 generated cases**
+  (319 feasible, 181 infeasible). This tests the mathematics, not provider action semantics.
+- The actual standalone CLI exported **100 public IDs with one historical ticker each**, excluding GOOG/GOOGL from
+  this test corpus: **163,443 rows**, **zero failures**, **123 constant split regimes**, all with evidence-supported
+  exact rational selections. The bounded artifact is `data/bloodhound_export_validation/single_ticker_100.parquet`
+  (7,932,665 bytes). No production exclusion of GOOG/GOOGL was introduced.
+- Arrow and DuckDB checks found zero duplicate keys, non-midnight timestamps, nonfinite values, invalid prices or
+  factors, negative volumes, all-adjusted OHLC geometry failures, or dollar-volume/adjustment-ratio discrepancies.
+  Largest conditional selected-factor relative-error bound in this corpus was **8.9068e-6**; that is a bound under
+  the declared inference model, not an independently established market-truth error.
+- `ruff check .`, `ruff format --check .` (**177 Python files**), executable `--help`, runtime changelog validation,
+  local Markdown links/anchors, complete README documentation coverage and `git diff --check` passed.
+
+Reviewed current and archived Bloodhound Yahoo, Massive, merged and Alpaca construction code, contracts, manifests
+and Parquet footers; their old outputs were not assumed correct. Source pricing/lineage files were not modified,
+no price API requests or source copies were made. At that bounded checkpoint no full-universe export or Bloodhound
+backtest/registration was run; the later strict full-roster attempt is recorded above. Only the bounded derived
+Parquet was retained; interim test output was replaced, not archived.
+
+Remaining limits: rounding/multiplicativity/constant-regime assumptions are explicit; hidden small share changes and
+provider adjustment vintage are not recoverable with certainty from eight rounded views. Dated exchange/type remain
+unknown, and output is not independently share-action certified or admitted to Bloodhound's configured catalogue.
+
+### Multiple standalone adjustment views — 2026-10-16
+
+- **574 tests passed** in **51.667 seconds**, with ResourceWarnings treated as errors. The 46 reader tests cover
+  multi/repeated type selection, compound names, all eight views, single-view compatibility, one-snapshot reads,
+  physical-alias reuse without a persistent cache, distinct adjusted values, and no partial output after a late error.
+- `ruff check .`, `ruff format --check .` (**170 files**), `git diff --check`, reader `--help`, and **257 local Markdown
+  links/anchors** with complete README coverage passed.
+- Live GOOG reads from January 1 returned **197 sessions per view** for both `--type raw all` and repeated `--type`
+  flags, selecting the same group generation. The first close was **315.32 raw / 314.70 fully adjusted**.
+  `--all-types --format csv` returned **1,576 data rows** (eight views × 197 sessions), plus one labelled header.
+  Observed runtimes were **0.23 seconds** for two JSON views and **0.39 seconds** for all-eight CSV output.
+
+This is consumer API v4 only. No pricing publication, producer/rule change, data copy or worker restart was performed
+for this feature. The live check is scoped to GOOG, not an all-store correctness or performance claim.
 
 ### Concurrent standalone reads — 2026-10-16
 
@@ -504,10 +742,11 @@ complete current-store audit coverage.
 
 | Boundary or transform | Version | Role |
 |---|---:|---|
-| Standalone pricing source | 6 | Whole-ticker workers, shared rate budget, compact storage, endpoint validator, and trusted pending-date handoff. |
-| Standalone lineage | 3 | One-worker guard, brief group publication gate, concurrent readers, compatible v2 calculation reuse and recovery. |
+| Standalone pricing source | 7 | Exact initial symbol-rejection outcome; existing compact storage, shared rate budget, validators and handoff. |
+| Standalone lineage | 4 | Metadata-only rejected auxiliaries; locked absent inputs, reverse closure, recovery and compatible v2/v3 reuse. |
 | Clean-room run ledger | 1 | Immutable scope, checkpoints, exhaustive audit, completion, and activation authority. |
-| Public consumer API | 3 | Separate online-only `DataLibrary` and source-scoped standalone reader with concurrent group snapshots. |
+| Public consumer API | 10 | Online-only `DataLibrary`; standalone groups with bounded reuse and actual/absent input freshness. |
+| Bloodhound export | 7 | RAM-held Arrow output, shared retained-memory allowance, one packed serialization and atomic 18-column publication. |
 | Monthly pricing source | 2 | Month storage, aliases, inventories, and selected-month replacement. |
 | Monthly validation | 3 | Reusable month results and predecessor seams. |
 | Lineage source | 2 | Normalized evidence bound to source and validation generations. |
@@ -517,8 +756,8 @@ complete current-store audit coverage.
 | Availability | 1 | Per-candidate online/offline decision. |
 | Catalogue publication | 2 | Snapshot and bounded affected-closure catalogue selection. |
 | Validation transform | 19 | Established daily-bar and dataset rules. |
-| Correlation transform | 51 | Dated occupancy, bounded traded episodes, independent raw-history attribution, retired-label continuity and scoped membership. |
-| Operator lineage evidence | 2 | Actual workflow evidence, published decision paths and compact transient prefix assessments; no second resolver. |
+| Correlation transform | 52 | Historical split-endpoint labels, dividend-backed reused-symbol suffixes, bounded episodes and independently attributed continuity. |
+| Operator lineage evidence | 3 | Actual workflow and paths; expose changed formerly absent inputs during offline inspection. |
 | Catalogue engine | 5 | Content-addressed source/security objects and inventories. |
 | Warning transform | 6 | Established advisory rules. |
 | Detailed history transform | 7 | Established source-selection and history assembly semantics. |
@@ -532,7 +771,8 @@ Exact constants and changelog paths are listed in [Development](development.md#v
 
 Standalone pricing, lineage and source-scoped resolved reading are implemented; integration with `DataLibrary`'s
 online catalogue is not. The new reader requires a source symbol even when selecting a public ID; it does not provide
-a global live catalogue or universe-wide export. Unrelated lineage groups can publish during a read.
+a global live online catalogue. The separate Bloodhound converter can enumerate existing published groups; it cannot
+make unresolved/unpublished identities available. Unrelated lineage groups can publish during a read.
 Lineage's no-cold-read continuation
 covers the explicit single-identity reuse gate. Context-dependent multi-identity cases and rollover calculate the
 affected chronology using trusted inputs, not an upstream audit. A full evidence diagnostic can read closed session

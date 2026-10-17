@@ -11,8 +11,20 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 
 from libs.alpaca_end_of_day_reader.history import _resolve_bar_candidates
-from libs.alpaca_lineage_build.contract import LineageBusyError, document_digest, reusable_versions
-from libs.alpaca_lineage_build.storage import reader_snapshot, select_inputs
+from libs.alpaca_lineage_build.acquisition import check_unavailable_pricing, unavailable_pricing
+from libs.alpaca_lineage_build.contract import (
+    LineageBusyError,
+    document_digest,
+    reusable_versions,
+    selected_document,
+)
+from libs.alpaca_lineage_build.storage import (
+    check_store,
+    publication_lock,
+    read_index,
+    reader_snapshot,
+    select_inputs,
+)
 from libs.alpaca_pricing_download.contract import (
     ADJUSTMENTS,
     COLUMNS,
@@ -23,6 +35,8 @@ from libs.alpaca_pricing_download.contract import (
     timestamp,
 )
 from libs.alpaca_pricing_download.storage import load_source, read_document, read_update, regular_path
+
+from ._standalone_cache import GenerationCache
 
 
 class StandaloneReaderError(RuntimeError):
@@ -76,12 +90,12 @@ def _identity(segment):
     return segment["security_identity"]["security_id"]
 
 
-def _matches(assignments, symbol):
+def _matches(assignments, symbol=None):
     selected = {
         _identity(segment)
         for source_symbol, items in assignments.items()
         for _, _, segment in items
-        if source_symbol == symbol or segment.get("historical_symbol") == symbol
+        if symbol is None or source_symbol == symbol or segment.get("historical_symbol") == symbol
     }
     results = []
     for public_id in sorted(selected):
@@ -103,11 +117,93 @@ def _matches(assignments, symbol):
     return results
 
 
-def _rows(root, source, kind, adjustment):
+def _group_securities(assignments):
+    securities = _matches(assignments)
+    for security in securities:
+        matching = [
+            (source, segment)
+            for source, items in assignments.items()
+            for _, _, segment in items
+            if _identity(segment) == security["public_id"]
+        ]
+        security["read_symbol"] = min(source for source, _ in matching)
+        security["latest_tickers"] = sorted(
+            {
+                segment["historical_symbol"]
+                for _, segment in matching
+                if segment["to"] == security["last_session"]
+            }
+        )
+    return securities
+
+
+def _group_evidence(assignments, sources, receipts, generations, generation):
+    """Project published evidence, without inferring metadata or action ownership.
+
+    A dependency group can contain unrelated securities. Action symbols, current
+    asset lookups and the request's asof are evidence, not historical ownership,
+    dated listing metadata or an adjustment-calculation timestamp.
+    """
+    securities = _group_securities(assignments)
+    projected = {}
+    for symbol, items in assignments.items():
+        compact = {}
+        for adjustment, _, segment in items:
+            value = {
+                name: segment.get(name)
+                for name in (
+                    "from",
+                    "to",
+                    "historical_symbol",
+                    "canonical_security",
+                    "security_identity",
+                    "ticker_ownership_interval",
+                )
+            }
+            key = document_digest(value)
+            if key not in compact:
+                compact[key] = {**value, "adjustments": []}
+            if adjustment not in compact[key]["adjustments"]:
+                compact[key]["adjustments"].append(adjustment)
+        projected[symbol] = {
+            "lineage_generation": generations[symbol],
+            "pricing_generation": receipts[symbol]["source_sha256"],
+            "pricing_request": sources[symbol]["latest_request"],
+            "history_start": sources[symbol]["history_start"],
+            "processed_through": receipts[symbol]["processed_through"],
+            "evidence": receipts[symbol]["evidence"],
+            "assignments": list(compact.values()),
+        }
+    return {
+        "generation": generation,
+        "source_symbols": sorted(sources),
+        "securities": securities,
+        "sources": projected,
+    }
+
+
+def _selected_path(cache, root, relative):
+    # Only reused inside one locked read call. A later snapshot starts fresh.
+    key = "selected_path", root, relative
+    if key not in cache:
+        cache[key] = regular_path(root, relative)
+    return cache[key]
+
+
+def _rows(root, source, kind, adjustment, cache, retained=None):
     # Only the selected physical payload is opened. Alias equality and source
     # validation belong to the downloader, not to this consumer.
     relative = source["boundaries"][kind]["manifest"]
-    manifest = read_document(regular_path(root, relative))
+    manifest_path = _selected_path(cache, root, relative)
+    if manifest_path not in cache:
+        cache[manifest_path] = (
+            retained.document(manifest_path, source["boundaries"][kind]["sha256"])
+            if retained is not None
+            else read_document(manifest_path)
+        )
+    elif retained is not None:
+        retained.ledger.record("manifest_reuses")
+    manifest = cache[manifest_path]
     if (
         manifest.get("schema_version") not in SUPPORTED_VERSIONS
         or manifest.get("symbol") != source["symbol"]
@@ -120,59 +216,131 @@ def _rows(root, source, kind, adjustment):
     if entry["storage"] not in {"file", "exact_copy"}:
         raise StandaloneReaderError("unsupported pricing storage selection")
     relative = str(PurePosixPath(relative).parent / entry["file"])
-    return decode_csv(regular_path(root, relative).read_bytes())
+    payload = _selected_path(cache, root, relative)
+    if payload not in cache:
+        cache[payload] = (
+            retained.rows(payload, entry["sha256"]) if retained is not None else decode_csv(payload.read_bytes())
+        )
+    elif retained is not None:
+        retained.ledger.record("payload_reuses")
+    return cache[payload]
 
 
-def _history(assignments, sources, store, public_id, adjustment):
-    candidates, coverage = defaultdict(list), defaultdict(set)
+def _history(assignments, sources, store, public_id, adjustment, cache, retained=None):
+    selected = []
     for symbol, items in assignments.items():
         by_boundary = defaultdict(list)
         for view, kind, segment in items:
             if view == adjustment and _identity(segment) == public_id:
                 by_boundary[kind].append(segment)
         for kind, segments in by_boundary.items():
-            root = regular_path(store, f"end_of_day/pricing/{symbol}")
-            rows = _rows(root, sources[symbol], kind, adjustment)
+            root = _selected_path(cache, store, f"end_of_day/pricing/{symbol}")
+            rows = _rows(root, sources[symbol], kind, adjustment, cache, retained)
             for segment in segments:
                 start, end = segment["row_start"], segment["row_end"]
                 if not 1 <= start <= end <= len(rows):
                     raise StandaloneReaderError("lineage row selection exceeds its pricing boundary")
-                for row in rows[start - 1 : end]:
-                    coverage[symbol].add(row[0])
-                    candidates[row[0]].append(
-                        {
-                            "values": dict(zip(COLUMNS, row)),
-                            "provenance": {
-                                "source_id": symbol,
-                                "symbol": symbol,
-                                "historical_symbol": segment["historical_symbol"],
-                            },
-                            "integrity_error_ids": [],
-                        }
-                    )
+                selected.append((symbol, kind, rows, start, end, segment["historical_symbol"]))
+    # Exact physical aliases with identical row selections and overlap policy
+    # need only one assembly. Keep raw's different source policy in the key.
+    # Decoded rows remain alive in this call's cache, so their object IDs are stable.
+    key = (
+        "assembled_history",
+        public_id,
+        adjustment != "raw",
+        tuple((symbol, kind, id(rows), start, end, label) for symbol, kind, rows, start, end, label in selected),
+    )
+    if key in cache:
+        # Public view results remain independently mutable.
+        return [{**bar, "tickers": list(bar["tickers"])} for bar in cache[key]]
+    observations, overlaps, coverage = {}, {}, defaultdict(set)
+    for symbol, _, rows, start, end, label in selected:
+        for row in rows[start - 1 : end]:
+            coverage[symbol].add(row[0])
+            observation = row, symbol, label
+            if row[0] in observations:
+                overlaps.setdefault(row[0], [observations[row[0]]]).append(observation)
+            else:
+                observations[row[0]] = observation
     # Reuse the established history-source policy, not a new identity rule:
     # adjusted overlaps prefer strictly broader correlated coverage, then the
     # historical ticker; raw overlaps use the historical ticker. Unsettled
     # conflicts fail, and exact aliases collapse to a single observation.
-    bars, _ = _resolve_bar_candidates(
-        candidates,
-        {symbol: frozenset(values) for symbol, values in coverage.items()},
-        allow_strict_superset_selection=adjustment != "raw",
-    )
-    result, sessions = [], set()
-    for bar in bars:
-        session = timestamp(bar["timestamp"]).astimezone(NEW_YORK).date().isoformat()
+    if not overlaps:
+        # There is no ownership/price competition to resolve. Preserve exact
+        # approved values and their sole label without building comparison keys
+        # or temporary resolution/provenance records for every observation.
+        chosen = ((row, [label]) for _, (row, _, label) in sorted(observations.items()))
+    else:
+        candidates = {
+            instant: [
+                {
+                    "values": dict(zip(COLUMNS, row)),
+                    "provenance": {"source_id": symbol, "symbol": symbol, "historical_symbol": label},
+                    "integrity_error_ids": [],
+                }
+                for row, symbol, label in items
+            ]
+            for instant, items in overlaps.items()
+        }
+        bars, _ = _resolve_bar_candidates(
+            candidates,
+            {symbol: frozenset(values) for symbol, values in coverage.items()},
+            allow_strict_superset_selection=adjustment != "raw",
+        )
+        resolved = {bar["timestamp"]: bar for bar in bars}
+
+        def selected_rows():
+            for instant, (row, _, label) in sorted(observations.items()):
+                if instant in resolved:
+                    bar = resolved[instant]
+                    yield (
+                        tuple(bar[column] for column in COLUMNS),
+                        sorted({p["historical_symbol"] for p in bar["provenance"]}),
+                    )
+                else:
+                    yield row, [label]
+
+        chosen = selected_rows()
+    if retained is not None:
+        retained.ledger.record("uncontested_observations", len(observations) - len(overlaps))
+    result, sessions, session_reuses = [], set(), 0
+    for row, tickers in chosen:
+        session_key = "session", row[0]
+        if session_key not in cache:
+            cache[session_key] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+        else:
+            session_reuses += 1
+        session = cache[session_key]
         if session in sessions:
             raise StandaloneReaderError("multiple observations for one daily session")
         sessions.add(session)
-        result.append(
-            {
-                "session": session,
-                "tickers": sorted({p["historical_symbol"] for p in bar["provenance"]}),
-                **{column: bar[column] for column in COLUMNS},
-            }
-        )
+        record = {"session": session, "tickers": tickers}
+        record.update(zip(COLUMNS, row))
+        result.append(record)
+    cache[key] = result
+    if not overlaps:
+        # Raw/adjusted source policies are equivalent when there is no choice.
+        # Exact payload/range/label aliases can then share this assembly too.
+        cache[(key[0], key[1], not key[2], key[3])] = result
+    if retained is not None:
+        retained.ledger.record("session_reuses", session_reuses)
     return result
+
+
+def _read_views(assignments, sources, store, public_id, adjustments, start, end, retained=None):
+    views, cache = {}, {}
+    for adjustment in adjustments:
+        bars = _history(assignments, sources, store, public_id, adjustment, cache, retained)
+        # Bounds follow source selection, never change the winning source.
+        bars = [
+            bar
+            for bar in bars
+            if (start is None or bar["session"] >= start.isoformat())
+            and (end is None or bar["session"] <= end.isoformat())
+        ]
+        views[adjustment] = {"bar_count": len(bars), "bars": bars}
+    return views
 
 
 class StandaloneReader:
@@ -184,7 +352,7 @@ class StandaloneReader:
     Results are snapshots of one completed group, not promises of online status.
     """
 
-    def __init__(self, store: Path | str, *, wait: bool = False):
+    def __init__(self, store: Path | str, *, wait: bool = False, cache_bytes: int = 0):
         from . import _validate_api_change_log
 
         _validate_api_change_log()
@@ -192,13 +360,42 @@ class StandaloneReader:
             raise ValueError("wait must be a boolean")
         self.store = Path(store).absolute()
         self.wait = wait
+        self._cache = GenerationCache(cache_bytes)
+
+    def cache_info(self) -> dict:
+        """Return bounded RAM-cache accounting; the cache is never a source selector."""
+        return self._cache.info()
 
     @contextmanager
-    def _snapshot(self, symbol):
+    def _snapshot(self, symbol, *, include_assignments=True, reuse_documents=False):
         try:
-            with reader_snapshot(self.store, lambda root: select_inputs(root, symbol), wait=self.wait) as snap:
+            loader = self._cache.document if self._cache.maximum_bytes else None
+            if reuse_documents:
+                # Private to this lock handshake: parse each selected document
+                # once, with no serialization merely to cache it. Nothing from
+                # this private dictionary is exposed to callers.
+                documents = {}
+
+                def loader(path, generation):
+                    key = path, generation
+                    if key not in documents:
+                        documents[key] = selected_document(path, generation)
+                        self._cache.ledger.record("selected_document_reads")
+                    else:
+                        self._cache.ledger.record("selected_document_reuses")
+                    return documents[key]
+
+            with reader_snapshot(
+                self.store,
+                lambda root: select_inputs(root, symbol, selected_loader=loader),
+                wait=self.wait,
+                selected_loader=loader,
+                include_boundaries=include_assignments,
+            ) as snap:
                 seed = snap["receipts"][symbol]
                 expected = seed["input_sources"]
+                absent = unavailable_pricing(seed)
+                check_unavailable_pricing(self.store, absent, snap["locked"])
                 sources, assignments, generations = {}, {}, {}
                 for name in sorted(expected):
                     pricing = regular_path(self.store, f"end_of_day/pricing/{name}")
@@ -216,15 +413,18 @@ class StandaloneReader:
                         raise StandaloneReaderError("lineage is missing or uses older rules; run lineage first")
                     if (
                         receipt["input_sources"] != expected
+                        or unavailable_pricing(receipt) != absent
                         or receipt["source_sha256"] != expected[name]
                         or receipt["pricing_boundaries"] != source["boundaries"]
                         or receipt["anchor_month"] != source["anchor_month"]
                     ):
                         raise StandaloneReaderError("lineage group selects different input generations")
                     sources[name] = source
-                    assignments[name] = tuple(_assignments(snap["boundaries"][name], receipt))
+                    if include_assignments:
+                        assignments[name] = tuple(_assignments(snap["boundaries"][name], receipt))
                     generations[name] = snap["entries"][name]["sha256"]
-                yield assignments, sources, document_digest(generations)
+                receipts = {name: snap["receipts"][name] for name in expected}
+                yield assignments, sources, document_digest(generations), receipts, generations
         except LineageBusyError as error:
             raise ReaderBusyError(str(error)) from error
         except StandaloneReaderError:
@@ -242,7 +442,7 @@ class StandaloneReader:
         from . import API_VERSION
 
         symbol = _symbol(symbol)
-        with self._snapshot(symbol) as (assignments, _, generation):
+        with self._snapshot(symbol) as (assignments, _, generation, _, _):
             return {
                 "api_version": API_VERSION,
                 "boundary": "standalone_ticker_resolution",
@@ -251,6 +451,91 @@ class StandaloneReader:
                 "matches": _matches(assignments, symbol),
             }
 
+    def list_published_sources(self) -> dict:
+        """List existing indexed source publications, without opening prices.
+
+        This is a roster of publication locators, not an online catalogue or a
+        promise that each source is currently readable. Resolve groups through
+        get_evidence/get_histories; compare generations to detect changed inputs.
+        """
+        from . import API_VERSION
+
+        try:
+            check_store(self.store)
+            root = regular_path(self.store, "end_of_day/lineage")
+            with publication_lock(root, wait=self.wait):
+                if regular_path(root, ".pending.json").exists():
+                    raise StandaloneReaderError("lineage publication incomplete; resume lineage first")
+                index = read_index(root)
+                generations = {symbol: entry["sha256"] for symbol, entry in index["symbols"].items()}
+            return {
+                "api_version": API_VERSION,
+                "boundary": "standalone_published_sources",
+                "generation": document_digest(generations),
+                "sources": [
+                    {"symbol": symbol, "generation": generation} for symbol, generation in generations.items()
+                ],
+            }
+        except LineageBusyError as error:
+            raise ReaderBusyError(str(error)) from error
+        except StandaloneReaderError:
+            raise
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+            raise StandaloneReaderError(f"cannot read standalone publication: {error}") from error
+
+    def get_evidence(self, symbol: str) -> dict:
+        """Read a completed group's published evidence and resolved assignments.
+
+        Securities include a source locator and all latest observed labels; a
+        tie is not silently broken. No prices are decoded and no rules replayed.
+        Asset metadata is a provider lookup snapshot, not a dated listing fact.
+        Corporate actions remain group evidence, not assigned security events.
+        """
+        from . import API_VERSION
+
+        symbol = _symbol(symbol)
+        with self._snapshot(symbol) as (assignments, sources, generation, receipts, generations):
+            return {
+                "api_version": API_VERSION,
+                "boundary": "standalone_group_evidence",
+                "symbol": symbol,
+                **_group_evidence(assignments, sources, receipts, generations, generation),
+            }
+
+    def get_generation(self, symbol: str) -> str:
+        """Check current receipts/pricing/pending work without loading assignment boundaries.
+
+        Uses the same lock handshake and freshness gates as a history read. This
+        checks a previously consumed boundary; it does not reconstruct its content.
+        """
+        symbol = _symbol(symbol)
+        with self._snapshot(symbol, include_assignments=False) as (_, _, generation, _, _):
+            return generation
+
+    @contextmanager
+    def open_group(self, symbol: str):
+        """Consume a completed group's full histories under one lock handshake.
+
+        The returned snapshot exposes a compact summary and explicit-ID history
+        reads. Closing releases all working data and pricing locks; its small
+        freshness token can still check_current() before downstream publication.
+        """
+        from ._standalone_group import GroupSnapshot
+
+        symbol = _symbol(symbol)
+        manager = self._snapshot(symbol, reuse_documents=True)
+        snapshot = manager.__enter__()
+        group = None
+        try:
+            group = GroupSnapshot(self, symbol, *snapshot)
+            yield group
+        finally:
+            if group is not None:
+                group.close()
+            # Do not inject consumer exceptions into _snapshot's owner-error
+            # translation. A downstream publication failure must retain its type.
+            manager.__exit__(None, None, None)
+
     def get_history(self, symbol: str, adjustment: str = "raw", *, public_id=None, start=None, end=None) -> dict:
         """Read a resolved continuation, with inclusive session bounds.
 
@@ -258,16 +543,52 @@ class StandaloneReader:
         is required. Bounds filter values, never guess which identity was intended.
         Numeric CSV values remain exact strings; no float conversion occurs.
         """
+        result = self.get_histories(symbol, (adjustment,), public_id=public_id, start=start, end=end)
+        return {
+            "api_version": result["api_version"],
+            "boundary": "standalone_resolved_pricing",
+            "generation": result["generation"],
+            "symbol": result["symbol"],
+            "security": result["security"],
+            "adjustment": adjustment,
+            "range": result["range"],
+            **result["views"][adjustment],
+        }
+
+    def get_histories(
+        self,
+        symbol: str,
+        adjustments=ADJUSTMENTS,
+        *,
+        public_id=None,
+        start=None,
+        end=None,
+        include_evidence=False,
+    ) -> dict:
+        """Read distinct requested views from one snapshot, in first-requested order.
+
+        adjustments is a nonempty list/tuple of exact view names; commas belong
+        to compound names. Physical aliases share decoded rows within the call;
+        optional bounded RAM caching also retains them across calls. Selection,
+        overlap policy and inclusive bounds match get_history.
+        include_evidence adds the published group evidence from this same locked
+        snapshot, never an independently selected or reacquired metadata view.
+        """
         from . import API_VERSION
 
         symbol = _symbol(symbol)
-        if adjustment not in ADJUSTMENTS:
+        if type(include_evidence) is not bool:
+            raise ValueError("include_evidence must be a boolean")
+        if not isinstance(adjustments, (tuple, list)) or not adjustments:
+            raise ValueError("adjustments must be a nonempty list or tuple")
+        if any(adjustment not in ADJUSTMENTS for adjustment in adjustments):
             raise ValueError("unsupported adjustment")
+        adjustments = tuple(dict.fromkeys(adjustments))
         public_id = _public_id(public_id) if public_id is not None else None
         start, end = _date(start, "start"), _date(end, "end")
         if start is not None and end is not None and start > end:
             raise ValueError("start must not be after end")
-        with self._snapshot(symbol) as (assignments, sources, generation):
+        with self._snapshot(symbol) as (assignments, sources, generation, receipts, generations):
             matches = _matches(assignments, symbol)
             if public_id is None:
                 if len(matches) > 1:
@@ -278,29 +599,33 @@ class StandaloneReader:
             selected = next((item for item in matches if item["public_id"] == public_id), None)
             if selected is None:
                 raise StandaloneReaderError("public ID is unavailable for this ticker")
-            if adjustment not in selected["adjustments"]:
+            if any(adjustment not in selected["adjustments"] for adjustment in adjustments):
                 raise StandaloneReaderError("adjustment is unavailable for this public ID")
-            bars = _history(assignments, sources, self.store, public_id, adjustment)
-            # Apply bounds after source selection so changing the query window
-            # cannot change which adjusted series wins an overlapping session.
-            bars = [
-                bar
-                for bar in bars
-                if (start is None or bar["session"] >= start.isoformat())
-                and (end is None or bar["session"] <= end.isoformat())
-            ]
+            views = _read_views(
+                assignments,
+                sources,
+                self.store,
+                public_id,
+                adjustments,
+                start,
+                end,
+                self._cache if self._cache.maximum_bytes else None,
+            )
             return {
                 "api_version": API_VERSION,
-                "boundary": "standalone_resolved_pricing",
+                "boundary": "standalone_resolved_pricing_views",
                 "generation": generation,
                 "symbol": symbol,
                 "security": selected,
-                "adjustment": adjustment,
                 "range": {
                     "start": start.isoformat() if start else None,
                     "end": end.isoformat() if end else None,
                     "inclusive": True,
                 },
-                "bar_count": len(bars),
-                "bars": bars,
+                "views": views,
+                **(
+                    {"evidence": _group_evidence(assignments, sources, receipts, generations, generation)}
+                    if include_evidence
+                    else {}
+                ),
             }

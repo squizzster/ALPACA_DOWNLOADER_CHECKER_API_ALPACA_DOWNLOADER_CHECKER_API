@@ -25,6 +25,7 @@ from alpaca_end_of_day import StandaloneReader
 reader = StandaloneReader("data_pricing")
 choices = reader.resolve_ticker("GOOG")  # metadata only; no price payloads
 history = reader.get_history("GOOG", "all", start="2026-10-01", end="2026-10-14")
+views = reader.get_histories("GOOG", ["raw", "all"], start="2026-10-01", end="2026-10-14")
 ```
 
 The symbol locates an existing published source and its dependency group. Resolution returns every ID assigned to
@@ -43,6 +44,64 @@ History results are JSON-compatible dictionaries with `security`, `adjustment`, 
 numeric pricing fields as **exact strings**, including volume and trade count. All eight adjustment modes below are
 supported; `all` means fully adjusted, not every mode. A valid range without observations returns an empty array.
 
+`get_histories` accepts a nonempty list/tuple of exact adjustment names (all eight by default), removes duplicates in
+first-requested order, and reads them under **one snapshot and lock set**. Its result has shared `generation`,
+`symbol`, `security` and `range` metadata, with `views[adjustment] = {"bar_count": ..., "bars": [...]}`. Each view keeps
+its own observed sessions and established source-selection policy; no cross-view session intersection is imposed.
+Any unavailable or conflicting requested view fails the entire request. By default, manifest and decoded payload
+reuse is in-memory for that call only: exact-copy aliases do not reopen the same gzip. Views also reuse history
+assembly when payloads, row selections, dated labels and overlap policy are identical. Returned views remain
+independently mutable; raw and adjusted overlap policies remain distinct.
+
+API v5 adds metadata-only `list_published_sources()` and `get_evidence(symbol)`. The first returns existing source
+locators and receipt generations, including entries that may be stale or unresolved; it is not an online catalogue.
+The second selects a completed group and returns resolved `securities` with `read_symbol`, `latest_tickers` (ties are
+explicit), source generations/requests, compact dated assignments and normalized published evidence. Dependency
+membership does not attribute every group action to every security. Current asset lookups are not historical listing
+facts, and request `asof` is not the adjustment vintage. `get_histories(..., include_evidence=True)` includes this
+projection under the **same** locked snapshot as its bars. Compare returned generations when composing several calls.
+
+API v6 adds optional cross-call RAM reuse: `StandaloneReader(store, cache_bytes=2 * 1024**3)` retains selected JSON
+and immutable decoded rows up to that accounted cache budget; the default is zero. `cache_info()` reports the budget,
+retained bytes, entries, hits and misses. This budget is not a whole-process memory cap: active histories, returned
+results and caller work need additional memory. No disk cache is created. Every call still selects current receipts,
+checks pending work and acquires the same locks; changed or missing files cannot silently reuse old cache entries.
+
+`get_generation(symbol)` returns the freshly selected group generation using that same locked freshness check,
+without loading assignment boundaries or prices. It is useful for checking an already-consumed snapshot before a
+downstream publication; it does not authenticate payloads or pin future calls to that generation.
+
+API v7 adds a group context for batch consumers:
+
+```python
+with reader.open_group("NVDA") as group:
+    for security in group.summary["securities"]:
+        history = group.get_histories(public_id=security["public_id"])
+        # Consume this complete eight-view history before requesting the next ID.
+group.check_current()  # optional freshness gate before downstream publication
+```
+
+The context selects one completed group and holds its shared pricing locks through consumption. `summary` contains
+all resolved group IDs, latest labels and selecting source references; it omits normalized action evidence and detailed
+assignments. Explicit-ID reads use the same history assembly as `get_histories`, returning all eight full histories
+with this compact summary as `evidence`. Working documents are parsed once per handshake; the configured RAM budget
+bounds decoded data retained between IDs in this group. Closing releases locks and working data. History reads then
+fail; `summary` and `check_current()` remain usable through a small retained token. The latter checks current index
+selections and locked pricing receipts without reopening approved lineage documents. Caller mutations to returned
+summaries or histories cannot change that token or later reads. Exceptions from consumer code retain their type.
+
+API v8 shares an in-memory read/reuse/eviction ledger across group caches; `cache_info()["ledger"]` reports cumulative
+work even after group working data is released. Conservative tuple/Unicode accounting bounds retained decoded rows.
+Uncontested observations bypass conflict assembly, while overlapping timestamps still use the existing resolver
+with full source coverage. Exact raw/adjusted aliases may share assembly only when there is no source competition.
+Final freshness checks reuse an unchanged pricing receipt's locked file identity; changed files are loaded and
+compared, and current index selections, pending work and locks are always checked. Values and source policy are unchanged.
+
+API v9 adds `group.set_cache_limit(cache_bytes)` between explicit-ID reads. The limit must be a nonnegative integer
+within the reader's configured cap. Shrinking evicts retained entries only as needed; zero disables retained reuse.
+This lets a batch consumer reserve RAM for its growing output without changing values or the snapshot handshake.
+Closing still releases the group cache, and a closed group cannot change its limit.
+
 For overlapping sources, the reader reuses `_resolve_bar_candidates` in
 [`history.py`](../libs/alpaca_end_of_day_reader/history.py): equal observations collapse; differing adjusted bars
 prefer strictly broader correlated session coverage, then a unique source matching the historical ticker; differing
@@ -53,7 +112,7 @@ change source preference; narrow requests can therefore read cold pricing too.
 
 Each method selects one completed group through the [snapshot handshake](technical-contracts.md#lock-delegate-publish-acknowledge)
 and holds its shared pricing locks. Unrelated lineage work can calculate and publish concurrently. Results include a group `generation`; calls
-may select newer publications, unlike the pinned `DataLibrary` instance below. There is no persistent reader cache,
+may select newer publications, unlike the pinned `DataLibrary` instance below. There is no on-disk reader cache,
 index, price copy, repair, acknowledgement, or network request. Busy producers raise `ReaderBusyError` by default;
 `StandaloneReader(store, wait=True)` waits. Missing, stale, incomplete, or incompatible publications raise
 `StandaloneReaderError`. Malformed query arguments raise `ValueError`.
@@ -63,8 +122,18 @@ The standalone CLI writes JSON or CSV to stdout:
 ```bash
 ./read_alpaca_pricing.py --store data_pricing -s GOOG --resolve
 ./read_alpaca_pricing.py --store data_pricing -s GOOG --type all --from 2026-10-01 --to 2026-10-14
+./read_alpaca_pricing.py --store data_pricing -s GOOG --type raw all --from 2026-01-01
+./read_alpaca_pricing.py --store data_pricing -s GOOG --all-types --format csv
 ./read_alpaca_pricing.py --store data_pricing -s FB --public-id <64-hex-id> --format csv
 ```
+
+`--type` accepts several space-separated names or repeated flags (`--type raw --type all`). Compound names such as
+`split,dividend` remain one view; do not use comma-separated selection such as `raw,all`. `--all-types` selects all
+eight and cannot be combined with `--type`. With no selection, the default remains `raw`.
+
+One distinct selected type retains the existing JSON/CSV shape. Multiple types return the `views` JSON structure
+above; CSV adds an `adjustment` column and one header, followed by each type's chronological rows in requested order.
+The command prepares every requested view before printing, so a late view failure produces no partial stdout.
 
 `--start`/`--end` alias `--from`/`--to`. CSV carries session, public ID, historical tickers (pipe-separated when several
 agreeing sources supply labels), timestamp and exact numeric fields. `--resolve` is metadata-only JSON and does not

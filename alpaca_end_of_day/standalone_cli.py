@@ -19,7 +19,17 @@ def build_parser():
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--resolve", action="store_true", help="list matching IDs without reading prices")
     selection.add_argument("--public-id", help="explicit ID when the ticker has been reused")
-    parser.add_argument("--type", dest="adjustment", choices=ADJUSTMENTS, default="raw")
+    types = parser.add_mutually_exclusive_group()
+    types.add_argument(
+        "--type",
+        dest="adjustments",
+        choices=ADJUSTMENTS,
+        nargs="+",
+        action="extend",
+        metavar="ADJUSTMENT",
+        help="one or more exact adjustment names; repeatable; default raw (all means fully adjusted)",
+    )
+    types.add_argument("--all-types", action="store_true", help="read all eight adjustment views together")
     parser.add_argument("--from", "--start", dest="start", help="first session, inclusive (YYYY-MM-DD)")
     parser.add_argument("--to", "--end", dest="end", help="last session, inclusive (YYYY-MM-DD)")
     parser.add_argument("--format", choices=("json", "csv"), default="json", help="stdout format")
@@ -30,17 +40,23 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.resolve and (args.start or args.end or args.format != "json" or args.adjustment != "raw"):
+    adjustments = list(dict.fromkeys(ADJUSTMENTS if args.all_types else (args.adjustments or ["raw"])))
+    if args.resolve and (args.start or args.end or args.format != "json" or adjustments != ["raw"]):
         parser.error("--resolve returns all dated identities as JSON; omit history options")
     try:
         reader = StandaloneReader(args.store, wait=args.wait)
-        result = (
-            reader.resolve_ticker(args.symbol)
-            if args.resolve
-            else reader.get_history(
-                args.symbol, args.adjustment, public_id=args.public_id, start=args.start, end=args.end
+        multiple = len(adjustments) > 1
+        if args.resolve:
+            result = reader.resolve_ticker(args.symbol)
+        else:
+            read = reader.get_histories if multiple else reader.get_history
+            result = read(
+                args.symbol,
+                adjustments if multiple else adjustments[0],
+                public_id=args.public_id,
+                start=args.start,
+                end=args.end,
             )
-        )
         if args.format == "csv":
             columns = (
                 "session",
@@ -55,12 +71,21 @@ def main(argv=None):
                 "trade_count",
                 "vwap",
             )
+            if multiple:
+                columns = ("adjustment", *columns)
             writer = csv.DictWriter(sys.stdout, fieldnames=columns, lineterminator="\n")
             writer.writeheader()
-            for bar in result["bars"]:
-                writer.writerow(
-                    {**bar, "public_id": result["security"]["public_id"], "tickers": "|".join(bar["tickers"])}
-                )
+            views = result["views"] if multiple else {result["adjustment"]: result}
+            for adjustment, history in views.items():
+                for bar in history["bars"]:
+                    row = {
+                        **bar,
+                        "public_id": result["security"]["public_id"],
+                        "tickers": "|".join(bar["tickers"]),
+                    }
+                    if multiple:
+                        row["adjustment"] = adjustment
+                    writer.writerow(row)
         else:
             print(json.dumps(result, indent=2, allow_nan=False))
     except ReaderBusyError as error:

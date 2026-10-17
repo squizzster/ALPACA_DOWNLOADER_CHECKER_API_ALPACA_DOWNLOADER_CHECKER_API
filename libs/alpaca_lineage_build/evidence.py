@@ -13,11 +13,12 @@ from libs.common.us_equity_market_session_calendar import (
 )
 
 from . import storage
+from .acquisition import unavailable_pricing
 from .contract import LineageError, versions
 from .pipeline import closure, run_lineage
 from .pricing import load_pricing
 
-EVIDENCE_VERSION = 2
+EVIDENCE_VERSION = 3
 
 
 def validate_evidence_version():
@@ -162,6 +163,7 @@ class EvidenceCapture:
                 for name, expected in receipt["input_sources"].items()
                 if name not in views or views[name].source_sha256 != expected
             ]
+            changed_inputs.extend(name for name in unavailable_pricing(receipt) if name in views)
             self.sources[symbol] = {
                 "status": "calculated_with_closed_reuse"
                 if resumed

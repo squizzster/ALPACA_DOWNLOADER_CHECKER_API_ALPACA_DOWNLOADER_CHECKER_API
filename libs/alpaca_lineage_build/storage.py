@@ -20,6 +20,7 @@ from libs.alpaca_pricing_download.storage import (
     write_file,
 )
 
+from .acquisition import unavailable_pricing
 from .contract import (
     MAX_CLOSURE,
     SUPPORTED_VERSIONS,
@@ -109,7 +110,7 @@ def writer_lock(store: Path):
         fcntl.flock(worker.fileno(), fcntl.LOCK_EX)
         with publication_lock(root, exclusive=True):
             # Drain v1/v2 writers/readers before activating the new lock order.
-            # Older executables then reject index v3 before taking pricing locks.
+            # Older executables then reject the current protocol before taking pricing locks.
             # Only the protocol header changes: no receipt or prices are rebuilt.
             existing = _index_version(root)
             if existing is not None and existing not in SUPPORTED_VERSIONS:
@@ -119,23 +120,30 @@ def writer_lock(store: Path):
         yield root
 
 
-def select_inputs(root: Path, symbol: str) -> dict:
+def select_inputs(root: Path, symbol: str, *, selected_loader=None) -> dict:
     """Select the published input group without scanning the universe."""
     index = read_index(root, symbol)
-    receipt = read_receipt(root, symbol, index)
+    receipt = read_receipt(root, symbol, index, selected_loader=selected_loader)
     if receipt is None:
         raise LineageError(f"no published lineage for {symbol}")
-    group = receipt["input_sources"]
-    if symbol not in group or not 1 <= len(group) <= MAX_CLOSURE:
+    inputs = receipt["input_sources"]
+    absent = unavailable_pricing(receipt)
+    group = set(inputs) | absent.keys()
+    if symbol not in inputs or set(inputs).intersection(absent) or not 1 <= len(group) <= MAX_CLOSURE:
         raise LineageError("invalid lineage input group")
-    return {
+    selected = {
         name: (index if name == symbol else read_index(root, name))["symbols"].get(name)
         for name in sorted(group)
     }
+    if any(selected[name] is not None for name in absent):
+        raise LineageError("previously unavailable lineage input changed; run lineage first")
+    return selected
 
 
 @contextmanager
-def reader_snapshot(store: Path, select, *, wait=True):
+def reader_snapshot(
+    store: Path, select, *, wait=True, selected_loader=None, include_boundaries=True, include_receipts=True
+):
     """Snapshot selection, release gate, lock prices, reselect; never invert locks.
 
     select(root) returns symbol -> index entry (or None for offline discovery).
@@ -174,10 +182,20 @@ def reader_snapshot(store: Path, select, *, wait=True):
                 if selection() != selected:
                     continue  # Release every price lock before retrying a changed closure.
                 index = {"symbols": {name: entry for name, entry in selected.items() if entry is not None}}
-                receipts = {name: read_receipt(root, name, index) for name in selected}
-                boundaries = {
-                    name: read_boundaries(root, receipt) for name, receipt in receipts.items() if receipt
-                }
+                receipts = (
+                    {name: read_receipt(root, name, index, selected_loader=selected_loader) for name in selected}
+                    if include_receipts
+                    else {}
+                )
+                boundaries = (
+                    {
+                        name: read_boundaries(root, receipt, selected_loader=selected_loader)
+                        for name, receipt in receipts.items()
+                        if receipt
+                    }
+                    if include_boundaries
+                    else {}
+                )
             yield {
                 "receipts": receipts,
                 "boundaries": boundaries,
@@ -254,19 +272,23 @@ def _update_index(root: Path, entries: dict) -> None:
         raise LineageError("cannot publish lineage dependency index") from error
 
 
-def read_receipt(root: Path, symbol: str, index: dict) -> dict | None:
+def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) -> dict | None:
     entry = index["symbols"].get(symbol)
     if entry is None:
         return None
-    value = selected_document(path_at(root, f"{symbol}/lineage.manifest.json"), entry["sha256"])
+    value = (selected_loader or selected_document)(
+        path_at(root, f"{symbol}/lineage.manifest.json"), entry["sha256"]
+    )
     if value.get("symbol") != symbol or value.get("schema_version") not in SUPPORTED_VERSIONS:
         raise LineageError("invalid lineage receipt")
     return value
 
 
-def read_boundaries(root: Path, receipt: dict) -> dict:
+def read_boundaries(root: Path, receipt: dict, *, selected_loader=None) -> dict:
     return {
-        kind: selected_document(path_at(root, f"{receipt['symbol']}/{entry['manifest']}"), entry["sha256"])
+        kind: (selected_loader or selected_document)(
+            path_at(root, f"{receipt['symbol']}/{entry['manifest']}"), entry["sha256"]
+        )
         for kind, entry in receipt["boundaries"].items()
     }
 
@@ -320,7 +342,8 @@ def recover(store: Path, root: Path) -> bool:
     ):
         raise LineageError("unsupported lineage recovery transaction")
     # Same order as publication/readers: price locks BEFORE the publication gate.
-    with pricing_locks(store, journal["sources"]), publication_lock(root, exclusive=True):
+    group = set(journal["sources"]) | set(journal.get("unavailable_pricing", ()))
+    with pricing_locks(store, group), publication_lock(root, exclusive=True):
         finish_publication(store, root, journal)
     return True
 
@@ -357,6 +380,9 @@ def publish(store: Path, root: Path, index: dict, receipts: dict, boundaries: di
         "retire": retire,
         "index_updates": updated,
         "sources": {symbol: receipt["source_sha256"] for symbol, receipt in receipts.items()},
+        "unavailable_pricing": sorted(
+            {name for receipt in receipts.values() for name in unavailable_pricing(receipt)}
+        ),
         "notices": notices,
     }
     # Caller already owns the complete pricing group and the worker-only lock.

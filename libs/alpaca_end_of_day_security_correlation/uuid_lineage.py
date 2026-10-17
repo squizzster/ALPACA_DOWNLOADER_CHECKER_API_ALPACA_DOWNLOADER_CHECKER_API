@@ -79,9 +79,43 @@ def _positive_rate(value: object) -> Decimal | None:
     return rate
 
 
+def _split_endpoint_uses_historical_label(symbol, cusip, asset, effective_date, accepted_edges):
+    """A later same-issue rename can explain a current lookup's newer spelling.
+
+    This authenticates a split endpoint, not rows or ticker ownership dates.
+    Never traverse another split, a merger or a merely connected component.
+    """
+    if asset.get("symbol") == symbol:
+        return True
+    current, after, visited = symbol, effective_date, set()
+    while current not in visited:
+        visited.add(current)
+        outgoing = [
+            edge
+            for edge in accepted_edges
+            if (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+            == (current, cusip, asset["id"])
+        ]
+        if current == asset.get("symbol"):
+            return not outgoing
+        if len(outgoing) != 1:
+            return False
+        edge = outgoing[0]
+        if (
+            edge.edge_type != "name_change"
+            or edge.successor_asset_id != asset["id"]
+            or edge.successor_cusip != cusip
+            or edge.effective_date <= after
+        ):
+            return False
+        current, after = edge.successor_symbol, edge.effective_date
+    return False
+
+
 def _identity_preserving_split_edge(
     action: dict[str, Any],
     lineage: dict[str, Any],
+    accepted_edges: tuple[UuidLineageEdge, ...],
 ) -> UuidLineageEdge | None:
     action_type = action.get("action_type")
     if action_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES:
@@ -118,7 +152,10 @@ def _identity_preserving_split_edge(
     successor_asset = exact_cusip_lookup_asset(lineage, new_cusip)
     if predecessor_asset is None or successor_asset is None:
         return None
-    if predecessor_asset.get("symbol") != symbol or successor_asset.get("symbol") != symbol:
+    if not all(
+        _split_endpoint_uses_historical_label(symbol, cusip, asset, effective_date, accepted_edges)
+        for cusip, asset in ((old_cusip, predecessor_asset), (new_cusip, successor_asset))
+    ):
         return None
     predecessor_asset_id = predecessor_asset["id"]
     successor_asset_id = successor_asset["id"]
@@ -331,10 +368,6 @@ def build_uuid_lineage_edges(
     for action in corporate_actions:
         if not isinstance(action, dict):
             continue
-        split_edge = _identity_preserving_split_edge(action, lineage)
-        if split_edge is not None:
-            edges.append(split_edge)
-            continue
         edge_candidate = _name_change_edge_candidate(action)
         completed = complete_stock_merger_endpoints(action, lineage)
         if edge_candidate is None:
@@ -401,6 +434,14 @@ def build_uuid_lineage_edges(
                 successor_cusip=edge_candidate.successor_cusip,
             )
         )
+    # Resolve name changes first: an exact accepted later rename can explain a
+    # split endpoint's current spelling, independently of provider action order.
+    accepted_transitions = tuple(edges)
+    for action in corporate_actions:
+        if isinstance(action, dict):
+            split_edge = _identity_preserving_split_edge(action, lineage, accepted_transitions)
+            if split_edge is not None:
+                edges.append(split_edge)
     edges, adoption_issues = _exclude_adopted_target_joins(edges, lineage)
     evidence_issues.extend(adoption_issues)
     edges.sort(key=lambda edge: (edge.effective_date, edge.edge_type, edge.action_id))

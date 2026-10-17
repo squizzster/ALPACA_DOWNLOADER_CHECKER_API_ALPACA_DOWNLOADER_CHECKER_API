@@ -98,8 +98,8 @@ published history to prove that it works, for example, but it cannot change a ba
 
 | Boundary | Version | Immediate inputs | Owned output |
 |---|---:|---|---|
-| Standalone pricing source | 6 | Exact ticker label, request range/asof, eight complete REST bar responses, and previously published pricing | Three compact pricing boundaries, source-bound endpoint validator, and trusted locked pending-date handoff. |
-| Standalone lineage | 2 | Published compact pricing, pending dates, prior approved assignments, and normalized identity evidence | Twin chronological assignment boundaries and durable acknowledgement; one lineage worker. |
+| Standalone pricing source | 7 | Exact ticker label, request range/asof, eight complete REST bar responses, and previously published pricing | Three compact pricing boundaries, source-bound endpoint validator, and trusted locked pending-date handoff. |
+| Standalone lineage | 4 | Published compact pricing, pending dates, prior approved assignments, and normalized identity evidence | Twin chronological assignment boundaries and durable acknowledgement; one lineage worker. |
 | Clean-room run ledger | 1 | Ordered universe/file digests, fixed request range, owning contract versions, per-label provider resolution, and canonical transaction outcomes | Immutable run identity, resolution and terminal outcome records, full-audit report, completion receipt, and optional activation receipt. |
 | Monthly pricing source | 2 | One canonical symbol, selected replacement partitions, and eight Alpaca adjustment responses; request identity is bound downstream | Deterministic month payloads, exact-copy aliases, month receipts, and structural source inventory. |
 | Monthly validation | 3 | One published source generation, the exclusive request end, validation transform v19, and the tracked market calendar | Per-month row/dataset findings, predecessor seams, compact ticker summary, and validation generation. |
@@ -109,7 +109,7 @@ published history to prove that it works, for example, but it cannot change a ba
 | Identity candidate | 2 | Published correlation partitions and lineage reports, plus the current catalogue base in affected mode | A restartable private snapshot or affected-closure aggregation with provisional offline state. |
 | Availability | 1 | Candidate, warning set, published histories, and lineage evidence | Exactly one online/offline/lineage-gap decision for every candidate identity. |
 | Catalogue publication | 2 | Candidate and availability generations, current retention state, and catalogue engine v5 | Incremental source/security objects, inventories, retention state, and the final catalogue receipt. |
-| Public API | 2 | A completed catalogue for `DataLibrary`, or a completed standalone group for `StandaloneReader` | Separate online-only catalogue reads and source-scoped resolved histories; no new persisted reader artifacts. |
+| Public API | 10 | A completed catalogue for `DataLibrary`, or a completed standalone group for `StandaloneReader` | Separate online-only catalogue reads and source-scoped resolved histories; no new persisted reader artifacts. |
 
 The standalone pricing, clean-room ledger, eight monthly boundary, and older transformation changelogs are runtime-validated arrays under
 [`resources/`](../resources/). Array position is the version; entries never contain an explicit `version` key.
@@ -201,7 +201,7 @@ symbols and all eight adjustment requests sequentially; it has no worker option.
 
 ## Standalone pricing-source contract
 
-Owner: `libs/alpaca_pricing_download/`; entrypoint: `download_alpaca_pricing.py`; source contract: **6**.
+Owner: `libs/alpaca_pricing_download/`; entrypoint: `download_alpaca_pricing.py`; source contract: **7**.
 The store marker/layout remains v3. The only additional persistent artifact is the per-ticker endpoint validator.
 The downloader requests a ticker, preserves its returned pricing, publishes pending dates, and stops. Asset UUIDs,
 public IDs, lineage, row allocation, and catalogue decisions are outside this boundary.
@@ -359,8 +359,8 @@ Standalone lineage consumes this handoff; `StandaloneReader` consumes its comple
 ## Standalone lineage contract
 
 Owner: [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/); entrypoint:
-[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **3**. Compatible v1/v2 receipts,
-indexes and recovery journals remain parseable. Only the explicit v2 exception below permits prior-version reuse.
+[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **4**. Compatible v1–v3 receipts,
+indexes and recovery journals remain parseable. Only the explicit v2/v3 exception below permits prior-version reuse.
 The standalone pricing store/marker remains unchanged. Lineage acquires asset/CUSIP and corporate-action evidence itself, but requests
 pricing only through the downloader. It reuses the existing ownership, row-allocation, UUID-membership and
 `security_id` transforms; it does not publish online status or the public catalogue.
@@ -396,9 +396,11 @@ Whole-group reuse precedes metadata acquisition and price loading. `process_grou
 [`pipeline.py`](../libs/alpaca_lineage_build/pipeline.py) returns `unchanged` only when:
 
 - metadata refresh was not requested;
-- every source in the known dependency group has published pricing and a lineage receipt;
+- every actual source in the known dependency group has published pricing and a lineage receipt;
+- any absent dependencies exactly match the group's recorded unavailable-pricing outcomes and remain locked/absent;
 - no source in that group has a pending pricing notice; and
-- every receipt selects the current pricing-source digest and passes `reusable_versions`.
+- every receipt selects the same complete set of current pricing-source digests and unavailable outcomes, and passes
+  `reusable_versions`.
 
 The build CLI then performs no price-payload read, lineage-boundary read, provider request, correlation calculation
 or publication for that group. Checking the small source document's digest is an input-generation comparison, not
@@ -406,9 +408,10 @@ another authentication of the bars. Completed unresolved and empty histories qua
 read boundaries and session grids to explain the retained result; see the [operator evidence contract](#operator-lineage-evidence).
 
 `versions()` in [`contract.py`](../libs/alpaca_lineage_build/contract.py) includes the lineage, identity-report and
-correlation versions plus the calendar digest. `reusable_versions` accepts exact equality or lineage v2 with every
-other field equal: v3 changes locking, not calculations. This exception applies to whole-group reuse, month resume,
-metadata acquisition and readers; it neither rewrites v2 receipts nor accepts v1 or changed rules/calendar. All other
+correlation versions plus the calendar digest. `reusable_versions` accepts exact equality or lineage v2/v3 with every
+other field equal: v3 changes locking and v4 fixes failed auxiliary acquisition, not completed row decisions. This
+exception applies to whole-group reuse, month resume, metadata acquisition and readers; it neither rewrites old
+receipts nor accepts v1 or changed rules/calendar. All other
 version changes invalidate reuse. Readable older schemas are not automatically reusable.
 
 When acquisition is required, ordinary action acquisition starts at the **previously active month**, retaining older
@@ -461,7 +464,7 @@ retries, at most three times. Selected receipts/boundaries are loaded under the 
 while consuming the snapshot. Never wait for a pricing lock while holding the publication gate. Unrelated groups can
 calculate and publish during a read. A pending journal still prevents reads until recovery; no partial commit is exposed.
 
-At worker startup, the publication gate drains old-protocol users before upgrading SQLite `user_version` to 3.
+At worker startup, the publication gate drains old-protocol users before upgrading SQLite `user_version` to 4.
 Only the protocol header changes; prices and existing receipts stay intact. Older executables reject that index
 before taking pricing locks. New readers refuse the old header until the worker upgrades it. Do not run old binaries
 against an upgraded store, unlink either lock inode, or bypass the locks with direct file reads.
@@ -475,10 +478,39 @@ application import. It selects approved assignments, applies the month overlay, 
 work. It does not read price payloads, acquire metadata, or rerun identity rules. These identity checks prevent mixed
 generations; the approved facts themselves are trusted.
 
+### Unavailable auxiliary pricing
+
+`BarsClient` preserves only an exact HTTP 400 `invalid symbol: <requested symbol>` as
+`BarsSymbolUnavailable`. The downloader converts that into `InitialPricingUnavailable` only when no source existed
+and no page or adjustment view has succeeded. Successful empty responses remain normal acquired sources.
+
+`process_group` may continue only for an **auxiliary** label without held prices or a prior lineage publication.
+The explicitly selected seed still fails. A generic 400/404, mismatched error label, credentials/transport failure,
+later-page/view rejection, or rejection while updating held pricing remains a hard failure. Names such as `CONTRA`,
+inactive/nontradable flags and CUSIP-shaped labels are not requestability rules: real tradable and historical issues
+can share these characteristics.
+
+The existing group receipt's `unavailable_pricing` map retains each exact rejection, request range/as-of context and
+normal metadata report. `acquire_unpriced` queries metadata independently without fabricating a download or empty
+price series. Its discovered relationships still expand the closure; available sources run the unchanged correlation
+cascade with all their identity candidates. Missing cross-source prices cannot certify an ownership comparison.
+
+`input_sources` contains only real published pricing sources. All absent dependencies participate in reverse closure,
+sorted locks and recovery. Readers—including cached reads and export freshness tokens—refuse the old publication
+if an absent input gains a source, pending publication or lineage receipt. Its stable downloader lock must remain.
+Offline evidence reports newly present inputs as changed rather than silently treating the old result as fresh.
+
+An unchanged group trusts its recorded outcome, just as it trusts unchanged metadata; it does not retry the endpoint
+on every read/run. Changed pricing or `--refresh-metadata` reconsiders it through normal acquisition. An expanded
+group request range/as-of also rechecks the rejection and metadata. This is a local snapshot, not a promise that
+the provider will reject that label forever. No permanent exclusion, fake security, pricing copy or extra audit tree
+is introduced. [`acquisition.py`](../libs/alpaca_lineage_build/acquisition.py) owns the absence freshness checks.
+
 ### Standalone resolved reader handoff
 
 `StandaloneReader._snapshot` in [`standalone.py`](../alpaca_end_of_day/standalone.py) uses the shared `reader_snapshot`
-handshake above, opening existing lock inodes read-only for the seed receipt's `input_sources`. It selects
+handshake above, opening existing lock inodes read-only for the seed receipt's `input_sources` and unavailable
+auxiliaries. It selects
 only those indexed receipts, not the entire universe. Every group receipt must select the same input generations,
 compatible owning versions and matching pricing boundaries/anchor; pending journals or pricing notices prevent a read.
 Group pricing locks remain held through price assembly. Default acquisition is nonblocking; waiting is explicit.
@@ -487,6 +519,133 @@ The reader applies the same completed-years/year/month overlay and consumes corr
 their IDs. Comparing small source-document identities binds generations; no payload digest audit or domain-rule rerun
 occurs. The returned group generation is derived from selected receipt identities, not a new on-disk catalogue.
 Lookup and history selection semantics belong in the [consumer contract](public-api.md#standalone-resolved-pricing-reader).
+
+Optional RAM reuse is owned by `GenerationCache` in
+[`_standalone_cache.py`](../alpaca_end_of_day/_standalone_cache.py). Selected documents and decoded rows are keyed by
+published generation and physical file identity; an LRU bounds accounted retained memory. Public JSON results are
+independent copies, decoded tuples are immutable, and per-call history reuse requires identical contributors, row
+ranges, labels and overlap policy. Live index, source receipts, pending work and locks are never bypassed by a hit.
+`get_generation` performs that same freshness handshake without reopening approved assignment boundaries or prices.
+
+`open_group` uses the same handshake and `_read_views` assembly. Its private per-handshake document cache avoids
+serializing and reparsing selected JSON. `GroupSnapshot` in
+[`_standalone_group.py`](../alpaca_end_of_day/_standalone_group.py) shares decoded payloads across explicit-ID reads
+within the configured budget, then drops assignments, sources and working cache on close. Its retained private token
+binds the already-consumed lineage selections, pricing generations, boundaries and anchor. `check_current` reacquires
+the same lock set, compares index selections and current pricing receipts, and checks pending work. Matching selected
+generations inherit the consumed boundary's approval; no lineage receipt, assignment or price payload is reopened.
+An unchanged locked pricing-receipt file identity avoids rereading its JSON; a changed identity requires loading and
+comparing the approved generation, boundaries and anchor. File identity is a reuse check, not new approval authority.
+Only competing timestamps enter the existing resolver, with full contributing-source coverage preserved. Exact
+raw/adjusted aliases share assembled histories only without competition. The RAM-only ledger counts reads and reuse
+across group-cache lifetimes; it creates no persistent record.
+`GroupSnapshot.set_cache_limit` resizes this reuse within the configured reader cap; an LRU evicts only when the
+new limit requires it. It does not discard returned histories or change their source selection.
+
+## Bloodhound conversion contract
+
+The versioned owner is [`libs/alpaca_bloodhound_export/`](../libs/alpaca_bloodhound_export/). It consumes only the
+published standalone reader's eight views. It never downloads, changes lineage/source preference, copies source
+stores, fills missing sessions, or incorporates another provider's bars. `asof` selects a symbol mapping, not a
+historical adjustment vintage. The converter can detect inconsistent stored views; it cannot make an older coherent
+snapshot current without new acquisition by the owning downloader.
+
+### Output arithmetic
+
+For each resolved public-ID/session, [`project_history`](../libs/alpaca_bloodhound_export/projection.py) uses:
+
+```text
+adjusted_OHLC          = stored all-view OHLC converted once to float64
+raw_close             = stored raw close converted once to float64
+volume                = stored raw volume converted once to float64
+dollar_volume         = raw_close * volume
+adjustment_ratio      = adjusted_close / raw_close
+split_adjustment_ratio = jointly inferred provider split factor S
+ohlcv_series_id       = 1 + int(public_id, 16) % (2**63 - 1)
+```
+
+The complete selected ID set is collision-checked before writing. Full IDs remain in the footer; integer IDs never
+pass through float. Membership-derived public IDs may change when membership changes: this is not a permanent
+cross-generation numbering contract. Latest observed ticker is display metadata, not a historical ticker claim.
+Two identities can legitimately share that label. Ties are errors, not lexicographic choices.
+
+The exact ordered 18-column Arrow schema is owned by `command_line.schema`; dates are timezone-free nanosecond
+midnights on the pinned calendar. Prices/factors must be finite and positive, volume nonnegative, and all-adjusted
+OHLC geometry valid. Raw fractional volume is preserved subject only to float64 representation. Unknown historical
+type/exchange use `UNKNOWN`, optional metadata is null, and rows sort by integer ID/session. There is no universe-wide
+calendar coverage claim or automatic Bloodhound input registration.
+
+Acceptance is atomic per public ID: the complete held eight-view history must pass conversion before any of its rows
+are written, even when the requested date window is smaller. `--include-all-passed` changes batch failure handling,
+not the numerical or identity checks: a rejected identity contributes no rows while other passing identities remain
+eligible. Footer identity mappings and supporting groups describe only identities with published rows. Rejected or
+unassigned sources, rejected IDs and empty date-window selections are diagnostics on stderr, never an omissions ledger
+inside the Parquet. Snapshot changes, ID collisions and output failures still abort the entire export.
+
+### Joint split-factor inference
+
+[`infer_split_factors`](../libs/alpaca_bloodhound_export/factors.py) treats split, dividend and spin-off factors as
+positive `S,D,O`. Seven adjusted views constrain `S,D,O,S*D,S*O,D*O,S*D*O` jointly using open/high/low/close/VWAP.
+It does **not** intersect independent total/split midpoints and assume those choices form one consistent solution.
+In log coordinates, the constraints are linear. Analytical elimination projects the full feasible set onto `log(S)`;
+the selected S is then checked against an actual shared D/O witness for every session.
+
+Numerical allowances are **model assumptions**, not guarantees of the downloader's exact-decimal boundary:
+adjusted price absolute error 0.01, raw price absolute error 0.000001, split-adjusted volume absolute error 1 share.
+Positive raw volume contributes reciprocal split-volume bounds; zero/one adjusted volume removes only the upper
+bound, not its informative lower bound. Zero raw and adjusted volumes supply no volume evidence. Reverse-split
+factors above one are allowed. Incompatible intervals fail explicitly.
+All four split-containing volume views constrain S. The other three adjusted volume views must equal raw exactly;
+identical volume aliases are not counted as independent precision evidence.
+
+Split factors are piecewise constant over maximal consecutive sessions with a common joint-feasible S interval.
+An aggregate reciprocal-volume anchor selects within that intersection; price/neutral anchors apply when volume is
+uninformative. The factor is rechecked against every row. This avoids inventing daily share-denomination changes from
+integer-volume rounding. It does not pool or reconstruct adjusted OHLC. Full held history is calculated before date
+clipping, so CLI window changes cannot change retained rows' factors or labels.
+
+Within a narrow feasible regime interval (relative width at most 1%), prefer a clean exact rational when uniquely
+simplest: orient S or its reciprocal above one, search denominators 1–1000, and accept only a unique numerator at
+the first denominator with a feasible candidate. Recheck the joint constraints for every session. Otherwise keep
+the volume/price anchor; never force a convenient ratio outside the evidence. These search bounds are explicit
+estimation policy, not provider facts. The footer retains exact rational strings and their reciprocals. For a
+16-for-1 forward split the price factor is 1/16; a 3-for-2 split gives 2/3. Stored factors can accumulate several
+actions, so a clean ratio does not claim that one corporate action of that size occurred.
+
+That constant-regime choice is an inference: a tiny real action hidden inside rounding-compatible intervals cannot
+be distinguished from rounding alone; inferred regime boundaries are not independently established action dates.
+Feasible bounds and uncertainty remain in the footer, not false extra price
+precision. Eight views cannot independently establish genuine legal share-unit semantics or all provider adjustment
+vintages. The output therefore does not claim Bloodhound's independently certified causal-share-volume capability.
+
+### Evidence and publication boundary
+
+The design reviewed Bloodhound's current and archived Yahoo, Massive, merged and Alpaca builders and actual Parquet
+schemas. Older 17-column/integer-volume files are not the current template. Yahoo source normalization is not Alpaca
+raw units; merged split-only prices are not total-return prices. The old eight-view reconstruction had independent
+midpoint, zero-volume and low-price defects, so its benchmark was not treated as proof. Current provider semantics are
+described in [Alpaca historical bars](https://docs.alpaca.markets/us/reference/stockbars): splits alter prices/volume,
+cash dividends and spin-offs alter prices. Runtime inference nevertheless uses only the disk snapshot.
+
+The public reader owns exact values and identity/source selection. The converter owns its float/schema projection,
+conditional factor model, ID mapping and output publication. It freezes the source roster, then consumes each group
+once in sorted locator order, with IDs sorted within the group. Discovery and conversion share that one group
+snapshot. Whole-ID checks precede writing any rows of that identity. Global collision checks accumulate across groups;
+a late collision discards earlier staged rows before publication. This replaces the former full-universe prepass
+and global-ID physical ordering. It trusts approved upstream receipts instead of re-authenticating payloads.
+Selected groups are pinned by their existing generations; the roster and retained group tokens are checked once at
+the end, without reconstructing assignment evidence or holding a full-export global producer lock. A detected change
+aborts. `OutputMemory` in [`memory.py`](../libs/alpaca_bloodhound_export/memory.py) retains accepted single-chunk Arrow
+tables and concatenates them without copying their buffers. The RAM allowance reserves working headroom and charges
+output buffers plus per-table overhead; each group's decoded-data cache receives only the remaining retained allowance,
+up to its configured cap. Memory exhaustion is an export failure, never a reason to reject an otherwise valid ID.
+There is no disk spill and no output file during acquisition. One final `write_table` call packs row groups across
+IDs; this is not a promise of one OS write. Only then are current selections and tokens checked, before the footer and
+atomic publication. Temporary output is on the destination filesystem and is removed on failure. All metadata fits the
+Parquet footer; no source copy or persistent audit tree is made. Exact equal-view
+price intervals and already-verified rational-factor witnesses are reused without changing bounds or constraints.
+The fixed 28 projection inequalities are compiled once, retaining their evaluation order and arithmetic. Cache
+configuration and counters do not enter the Parquet, so cached and uncached runs can produce identical bytes.
 
 ## Operator lineage evidence
 

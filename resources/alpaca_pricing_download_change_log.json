@@ -28,5 +28,11 @@
     "modifications": [
       "Add trusted published-boundary and effective-view loaders for the standalone lineage handoff. Ordinary locked consumption trusts producer-approved receipts and exact-copy aliases without recalculating payload or logical digests; explicit authentication remains separate. Preserve the v3 layout, ticker lock/notice protocol, and readability of v1-v5 pricing boundaries and validators."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve the provider's exact single-symbol invalid-symbol rejection as a typed acquisition outcome only before the first successful page/view of a new source; keep partial acquisitions, established inputs, generic errors, credentials and transport failures hard failures without changing stored pricing.",
+      "Include the requested symbol and adjustment in other terminal bars HTTP errors while retaining shared rate limiting, Retry-After handling and bounded retries."
+    ]
   }
 ]

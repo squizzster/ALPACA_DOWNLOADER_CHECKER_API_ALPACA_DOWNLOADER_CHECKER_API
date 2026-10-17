@@ -5,6 +5,7 @@ from pathlib import Path
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, symbol_label
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
 
+from .acquisition import check_unavailable_pricing, unavailable_pricing
 from .contract import LineageError, document_digest, reusable_versions
 from .storage import reader_snapshot, select_inputs
 
@@ -20,6 +21,7 @@ def read_lineage(store, symbol):
         receipt = snap["receipts"][symbol]
         if not reusable_versions(receipt["versions"]):
             raise LineageError("lineage rules changed; process pending lineage work")
+        check_unavailable_pricing(store, unavailable_pricing(receipt), snap["locked"])
         for dependency, expected in receipt["input_sources"].items():
             pricing = regular_path(store, f"end_of_day/pricing/{dependency}")
             if dependency not in snap["locked"] or regular_path(pricing, ".pending.json").exists():

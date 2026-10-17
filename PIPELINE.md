@@ -59,7 +59,9 @@ locking, and overlap semantics live in
    the full evidence range. Discover newly related labels to a bounded fixed point.
 4. If related pricing is missing or has insufficient request coverage, release pricing locks and delegate to the
    downloader. Then reacquire the full lock set and reload the latest notices and inputs. Published empty responses
-   are acquired evidence, not missing downloads. No separate request queue is created.
+   are acquired evidence, not missing downloads. An exact initial rejection of an absent auxiliary is a separate
+   [requestability outcome](docs/technical-contracts.md#unavailable-auxiliary-pricing): retain its metadata and discover
+   related inputs without withholding independently supported prices. No separate request queue is created.
 5. Reuse approved closed single-identity assignments when their input/evidence/continuity gates hold; calculate only
    the active month. Otherwise run the established preliminary, cross-source and fixed-point correlation passes over
    the affected chronology. Do not repeat pricing authentication or market-price validation.
@@ -84,12 +86,23 @@ defines the trust boundary, bounded work, chronological reuse and internal downs
    selecting the same pricing generations, without pending work. No universe scan or new persisted index is needed.
 3. Apply the published month-over-year assignment overlay. Return every matching public ID for resolution, or require
    an explicit ID when several match. Unresolved rows do not become history; resolved portions remain usable.
-4. Load only the selected adjustment's contributing payloads through their manifest aliases. Assemble one ID's
-   continuation using the established history-source selection policy, then filter inclusive session dates.
+4. Load the selected adjustments' contributing payloads through their manifest aliases, reusing physical payloads
+   within this call. All requested views share one snapshot; assemble each continuation with its established
+   history-source selection policy, then filter inclusive session dates.
 5. Release the locks and return exact values as JSON or CSV. No downloads, pricing copies, lineage calculations,
    upstream re-audits, or online-availability decisions occur.
 
 See the [consumer contract](docs/public-api.md#standalone-resolved-pricing-reader) for lookup scope and source preference.
+
+The [Bloodhound converter](docs/operations.md#bloodhound-parquet-export) enumerates published source locators through
+that same public reader and freezes the source roster. It opens one completed group at a time, discovers its IDs and
+converts each full eight-view history before closing that group. It preserves provider all-adjusted OHLC/raw units,
+infers a joint split factor, then applies date filters. It retains accepted Arrow output in RAM, shares decoded rows
+within the remaining RAM allowance, and releases each group's working data on close. At the end it serializes once
+to a temporary output, packing row groups across IDs. Retained compact tokens check selected generations once afterward
+without reopening lineage documents or prices. Global ID collisions abort before publication. It atomically publishes the Parquet with its
+identity mapping in the footer. No producer rule, acquisition, historical assignment or source file changes.
+The [conversion contract](docs/technical-contracts.md#bloodhound-conversion-contract) owns the numeric assumptions.
 
 The existing combined cascade below has one calculation owner per boundary. A downstream stage consumes a trusted completed boundary, never
 repeats that boundary's rule calculation, and never writes its artifacts. Publication-time authentication and ordinary
@@ -309,6 +322,11 @@ Consequential gates include:
   A complete initial episode before physical reuse needs a nearby exact terminal event and an independently supported
   current suffix. A middle episode needs its own nearby departure; an anchored current suffix can use a nearby exact
   acquirer action. Shared grids, complete calendars and competing-owner vetoes apply across all eight views.
+  A current suffix can also be anchored by a positive cash dividend for its exact current CUSIP after an unrelated
+  former issue's accepted departure inside the shared inert bridge. Complete action coverage, exact active identity,
+  no connecting membership edge and no competing structural or occupancy evidence are required. This assigns the
+  complete observed suffix, not an invented inception date; the preceding synthetic bridge stays unassigned, including
+  rows before a delayed departure processing date. Resolving the departed issue's successor is not a prerequisite.
 - One-session transition inference uses exact distinct symbol identities, a dated action and matching session grids;
   an explicitly superseded action cannot support it. Conflicting action-endpoint UUID/CUSIP evidence alone does not
   erase the original inference. Exact gates are owned by `assess_one_session_distinct_uuid_transition` in
@@ -362,6 +380,9 @@ mixed source, including a donor anchored by exact dated occupancy, a sole known 
 same-label split chain. A leading constant zero-trade donor pad is compared in full before trimming; matching only an isolated island is
 insufficient. A complete initial prefix may end at a shared inert bridge when the exact outgoing action was processed
 later inside that bridge. Conflicting owners, missing observations and recursive donor inference reject the proof.
+Incoming split-chain traversal is limited to events before the handoff being certified. A later incoming membership
+edge does not revoke that earlier dated donor; every additional known predecessor-label occupant must still be
+explained by the earlier same-label chain, and the existing branch and ambiguity guards remain.
 These certificates can distinguish an as-of branch at rule 8 or let the gap guard reach rule 9. They assign only the
 supported interval and do not change membership or claim the remainder. Compact comparison assessments are transient
 operator evidence, not another persistent pricing or audit boundary.
@@ -377,8 +398,11 @@ Row allocation and UUID membership are separate calculations. UUID-lineage edges
 - an authenticated identity-preserving same-symbol split edge.
 
 A same-symbol split edge requires one dated action, positive directionally consistent rates, distinct old/new CUSIPs,
-no ticker change, and exactly one successful US-equity endpoint lookup for each CUSIP. Both assets must carry the
-action symbol and different UUIDs. It records provenance but never routes a price row.
+no ticker change, and exactly one successful US-equity endpoint lookup for each CUSIP, with different UUIDs. Each
+lookup either carries the action symbol or reaches its current symbol through a unique later accepted name-change
+chain preserving that exact UUID and CUSIP. Branches, recurrence, nonchronological paths, mergers and split traversal
+cannot explain the newer spelling. Evaluate accepted name changes before these split endpoints. The resulting split
+edge preserves the historical action labels and joins membership only; it never routes a price row.
 
 An immediately corrective next-day name change that preserves the predecessor UUID supersedes the earlier edge. The
 earlier action remains an evidence issue but does not join its unrelated successor. This is the correlation transform

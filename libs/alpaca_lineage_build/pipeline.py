@@ -2,13 +2,14 @@
 
 from pathlib import Path
 
-from libs.alpaca_pricing_download.contract import HISTORY_START, symbol_label
+from libs.alpaca_pricing_download.contract import HISTORY_START, InitialPricingUnavailable, symbol_label
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
 
 from . import storage
+from .acquisition import check_unavailable_pricing, unavailable_pricing
 from .contract import MAX_ACQUISITION_WAVES, MAX_CLOSURE, LineageError, reusable_versions, validate_version
-from .metadata import EvidenceClient, acquire, dependencies
+from .metadata import EvidenceClient, acquire, acquire_unpriced, dependencies
 from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
 from .transform import correlate, make_publication
@@ -52,6 +53,7 @@ def process_group(
     group = closure(index, {seed})
     acquisition_waves = 0
     metadata_cache = {}
+    unavailable = {}
     evidence_client = EvidenceClient(identity_client)
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
         required = None
@@ -65,41 +67,57 @@ def process_group(
             end = max(
                 (source["latest_request"]["end_exclusive"][:10] for source in sources.values()), default=None
             )
+            # Reload after delegation: concurrent publication outranks a remembered
+            # rejection. Never turn a held source into an unavailable auxiliary.
+            unavailable = {
+                name: value
+                for name, value in unavailable.items()
+                if name not in sources
+                and value["request"]["start"][:10] == start
+                and value["request"]["end_exclusive"][:10] == end
+            }
+            previous = {symbol: storage.read_receipt(root, symbol, index) for symbol in sorted(sources)}
+            notices = {
+                symbol: notice
+                for symbol in sorted(sources)
+                if (notice := read_update(regular_path(store, f"end_of_day/pricing/{symbol}"))) is not None
+            }
+            selected = {name: storage.document_digest(source) for name, source in sources.items()}
+            prior_unavailable = unavailable_pricing(previous.get(seed))
+            if (
+                not refresh
+                and seed in sources
+                and not notices
+                and set(group) - sources.keys() == prior_unavailable.keys()
+                and all(
+                    prior is not None
+                    and prior["source_sha256"] == selected[symbol]
+                    and prior["input_sources"] == selected
+                    and unavailable_pricing(prior) == prior_unavailable
+                    and reusable_versions(prior["versions"])
+                    for symbol, prior in previous.items()
+                )
+            ):
+                check_unavailable_pricing(store, prior_unavailable, locked)
+                if observer is not None:
+                    observer(
+                        store=store,
+                        receipts=previous,
+                        boundaries={
+                            name: storage.read_boundaries(root, item) for name, item in previous.items()
+                        },
+                        inputs=None,
+                        reports=None,
+                        notices={},
+                        resumed=False,
+                    )
+                return {"symbol": seed, "status": "unchanged", "processed": sorted(sources)}
             required = {
                 symbol: {"from": start, "end_exclusive": end}
                 for symbol in sorted(group)
-                if symbol not in sources
+                if symbol not in sources and symbol not in unavailable
             }
             if not required:
-                previous = {symbol: storage.read_receipt(root, symbol, index) for symbol in sorted(group)}
-                notices = {
-                    symbol: notice
-                    for symbol in sorted(group)
-                    if (notice := read_update(regular_path(store, f"end_of_day/pricing/{symbol}"))) is not None
-                }
-                if (
-                    not refresh
-                    and not notices
-                    and all(
-                        previous[symbol] is not None
-                        and previous[symbol]["source_sha256"] == storage.document_digest(sources[symbol])
-                        and reusable_versions(previous[symbol]["versions"])
-                        for symbol in group
-                    )
-                ):
-                    if observer is not None:
-                        observer(
-                            store=store,
-                            receipts=previous,
-                            boundaries={
-                                name: storage.read_boundaries(root, item) for name, item in previous.items()
-                            },
-                            inputs=None,
-                            reports=None,
-                            notices={},
-                            resumed=False,
-                        )
-                    return {"symbol": seed, "status": "unchanged", "processed": sorted(group)}
                 old_boundaries = {
                     symbol: storage.read_boundaries(root, prior) if prior else None
                     for symbol, prior in previous.items()
@@ -111,7 +129,7 @@ def process_group(
                     symbol: load_pricing(
                         store, symbol, active_only=resume, previous_boundaries=old_boundaries[symbol]
                     )
-                    for symbol in sorted(group)
+                    for symbol in sorted(sources)
                 }
                 evidence, deps, assets = {}, {}, set()
                 for symbol, view in inputs.items():
@@ -130,6 +148,14 @@ def process_group(
                     evidence[symbol] = metadata_cache[key]
                     deps[symbol] = dependencies(evidence[symbol], symbol)
                     assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
+                for symbol, missing in sorted(unavailable.items()):
+                    # Prices and metadata have different provider endpoints. Keep
+                    # discovering real relationships even when bars reject a label.
+                    if "evidence" not in missing:
+                        missing["evidence"] = acquire_unpriced(symbol, missing["request"], evidence_client)
+                    auxiliary = missing["evidence"]
+                    deps[symbol] = dependencies(auxiliary, symbol)
+                    assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
                 expanded = closure(index, group.union(*(set(values) for values in deps.values())), assets)
                 if expanded != group:
                     group = expanded
@@ -143,6 +169,7 @@ def process_group(
                     ):
                         required[symbol] = {"from": start, "end_exclusive": end}
                 if not required:
+                    check_unavailable_pricing(store, unavailable, locked)
                     if resume and not can_resume(
                         inputs[seed], previous[seed], old_boundaries[seed], evidence[seed]
                     ):
@@ -166,7 +193,7 @@ def process_group(
                             view,
                             evidence[symbol],
                             reports[symbol],
-                            deps[symbol],
+                            sorted(set(deps[symbol]) | unavailable.keys()),
                             prior,
                             old,
                             resume_closed=resume,
@@ -174,6 +201,8 @@ def process_group(
                         receipts[symbol]["input_sources"] = {
                             name: item.source_sha256 for name, item in inputs.items()
                         }
+                        if unavailable:
+                            receipts[symbol]["unavailable_pricing"] = unavailable
                     storage.publish(store, root, index, receipts, boundaries, notices)
                     # Inspection observes the actual publication while the same
                     # locks still protect its inputs. It never runs another resolver.
@@ -190,11 +219,12 @@ def process_group(
                     return {
                         "symbol": seed,
                         "status": "processed",
-                        "processed": sorted(group),
+                        "processed": sorted(sources),
                         "acknowledged": sorted(notices),
                         "unresolved_rows": sum(item["unresolved_rows"] for item in receipts.values()),
                         "pricing_acquisition_waves": acquisition_waves,
                         "reused_closed_boundaries": resume,
+                        "unavailable_pricing": sorted(unavailable),
                     }
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
@@ -205,9 +235,16 @@ def process_group(
                 raise LineageError("pricing dependencies did not settle within three acquisition waves")
             acquisition_waves += 1
             for symbol, request in required.items():
-                download_pricing(
-                    store, symbol, request["end_exclusive"], client=pricing_client, from_date=request["from"]
-                )
+                try:
+                    download_pricing(
+                        store, symbol, request["end_exclusive"], client=pricing_client, from_date=request["from"]
+                    )
+                except InitialPricingUnavailable as error:
+                    if symbol == seed or symbol in sources or symbol in index["symbols"]:
+                        raise
+                    # This is a provider requestability fact, not a successful empty
+                    # price response or permission to discard an identity candidate.
+                    unavailable[symbol] = error.evidence
     raise LineageError("lineage dependency discovery did not settle")
 
 

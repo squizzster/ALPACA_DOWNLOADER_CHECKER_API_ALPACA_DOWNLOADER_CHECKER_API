@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 
-from .contract import DownloadError
+from .contract import BarsSymbolUnavailable, DownloadError
 
 REQUESTS_PER_MINUTE = 199
 
@@ -130,9 +130,26 @@ class BarsClient:
                     delay = retry_after_seconds((error.headers or {}).get("Retry-After"), self.wall_time())
                     # Even an exhausted ticker must leave the other workers paused.
                     self.limiter.defer(delay)
+                unavailable = False
+                if error.code == 400:
+                    try:
+                        body = parse_response(error.read(2048))
+                        symbol = parameters.get("symbols")
+                        unavailable = (
+                            isinstance(symbol, str)
+                            and "," not in symbol
+                            and body.get("message") == f"invalid symbol: {symbol}"
+                        )
+                    except (DownloadError, OSError, http.client.HTTPException):
+                        pass  # A malformed error is not proof of symbol rejection.
                 error.close()
+                if unavailable:
+                    raise BarsSymbolUnavailable(symbol, error.code) from error
                 if not retry or attempt == 5:
-                    raise DownloadError(f"Alpaca bars request failed: HTTP {error.code}") from error
+                    raise DownloadError(
+                        f"Alpaca bars request failed for {parameters.get('symbols')}/"
+                        f"{parameters.get('adjustment')}: HTTP {error.code}"
+                    ) from error
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
                 if attempt == 5:
                     raise DownloadError(f"Alpaca bars transport failed: {type(error).__name__}") from error
@@ -159,7 +176,12 @@ class BarsClient:
         rows = []
         tokens = set()
         while True:
-            document = self._get(parameters)
+            try:
+                document = self._get(parameters)
+            except BarsSymbolUnavailable as error:
+                if tokens:
+                    raise DownloadError(f"symbol rejected after a successful pricing page: {symbol}") from error
+                raise
             bars = document.get("bars")
             if not isinstance(bars, dict) or set(bars) - {symbol}:
                 raise DownloadError("bar response does not belong to the requested ticker")

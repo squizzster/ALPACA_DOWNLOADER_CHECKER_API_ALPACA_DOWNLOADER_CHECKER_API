@@ -19,5 +19,12 @@
       "Use selection, sorted shared pricing locks, and bounded re-selection for all standalone readers; preserve publication recovery and publish-before-acknowledge ordering.",
       "Upgrade only the SQLite protocol header to exclude old lock ordering; reuse v2 publications when all pricing, identity, correlation, report and calendar versions still match, without rewriting their receipts or prices."
     ]
+  },
+  {
+    "modifications": [
+      "Distinguish a missing auxiliary label explicitly rejected by the bars endpoint from failed or incomplete acquisition; continue the normal identity cascade for available inputs without manufacturing empty prices or suppressing candidate identities.",
+      "Retain the rejected request and separately acquired metadata in the existing group receipt, discover its downstream dependencies, and include these absent inputs in reverse dependency closure, reader locks and recovery. Later pricing arrival invalidates the publication.",
+      "Trust unchanged group generations and identical recorded absence outcomes until pricing changes or explicit metadata refresh; recheck acquisition after range expansion. Preserve existing completed v2/v3 assignments and their pricing boundaries."
+    ]
   }
 ]

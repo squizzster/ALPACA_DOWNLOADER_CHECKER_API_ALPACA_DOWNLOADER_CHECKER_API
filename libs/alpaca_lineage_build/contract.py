@@ -8,8 +8,8 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 3
-SUPPORTED_VERSIONS = (1, 2, 3)
+VERSION = 4
+SUPPORTED_VERSIONS = (1, 2, 3, 4)
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
 
@@ -32,14 +32,14 @@ def versions() -> dict:
 
 
 def reusable_versions(published: dict) -> bool:
-    """V3 changes locking only; v2 calculations remain valid with identical inputs.
+    """V3 locking and v4 auxiliary acquisition preserve completed v2/v3 decisions.
 
     Do not generalize this exception to other execution or rule versions. Older
     readable schemas are not necessarily reusable, and all other version fields
     must still match exactly.
     """
     current = versions()
-    return published == current or published == {**current, "lineage": 2}
+    return any(published == {**current, "lineage": version} for version in (2, 3, VERSION))
 
 
 def validate_version() -> None:

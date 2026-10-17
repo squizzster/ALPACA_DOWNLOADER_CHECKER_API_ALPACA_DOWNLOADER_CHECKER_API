@@ -55,10 +55,15 @@ def _same_label_split_chain(lineage, edges, handoff):
     visited = {current}
     before = handoff.effective_date
     while True:
+        # Certify the history before this handoff. A later split may join an ID
+        # backfilled onto the old label, without contradicting its dated donor.
+        # Extra known occupants still need the complete earlier same-label chain.
         incoming = {
             (edge.predecessor_asset_id, edge.effective_date)
             for edge in edges
-            if edge.successor_asset_id == current and edge.predecessor_asset_id != current
+            if edge.successor_asset_id == current
+            and edge.predecessor_asset_id != current
+            and edge.effective_date < before
         }
         if not incoming:
             break
@@ -72,7 +77,6 @@ def _same_label_split_chain(lineage, edges, handoff):
         ]
         if (
             predecessor in visited
-            or when >= before
             or any(
                 edge.edge_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
                 or edge.predecessor_symbol != symbol

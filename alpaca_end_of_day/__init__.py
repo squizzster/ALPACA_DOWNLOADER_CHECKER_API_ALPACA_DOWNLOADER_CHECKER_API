@@ -40,7 +40,7 @@ from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 3
+API_VERSION = 10
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 ADJUSTMENTS = tuple(ALPACA_ADJUSTMENT_MODES)
 FLAT_ONLINE_CSV_COLUMNS = (

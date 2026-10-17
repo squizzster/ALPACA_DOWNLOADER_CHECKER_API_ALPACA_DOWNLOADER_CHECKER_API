@@ -11,7 +11,9 @@ from .contract import (
     NEW_YORK,
     VALIDATOR_FILE,
     VERSION,
+    BarsSymbolUnavailable,
     DownloadError,
+    InitialPricingUnavailable,
     build_boundary,
     digest,
     json_bytes,
@@ -259,10 +261,18 @@ def download_pricing(
                 "currency": "USD",
                 "timeframe": "1Day",
             }
-            views = {
-                adjustment: transform(client.fetch(symbol, adjustment, start, end), start, end)
-                for adjustment in ADJUSTMENTS
-            }
+            views = {}
+            for adjustment in ADJUSTMENTS:
+                try:
+                    views[adjustment] = transform(client.fetch(symbol, adjustment, start, end), start, end)
+                except BarsSymbolUnavailable as error:
+                    if previous is None and attempt == 0 and not views and error.symbol == symbol:
+                        raise InitialPricingUnavailable(request, error) from error
+                    # Held prices or an earlier successful view are contradictory
+                    # evidence, even when that earlier view happened to be empty.
+                    raise DownloadError(
+                        f"symbol rejected during an established pricing acquisition: {symbol}"
+                    ) from error
             if any(
                 month_of(row) < start.strftime("%Y-%m") or month_of(row) > anchor
                 for rows in views.values()

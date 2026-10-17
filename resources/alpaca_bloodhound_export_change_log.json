@@ -1,0 +1,46 @@
+[
+  {
+    "modifications": [
+      "Add an offline standalone Bloodhound Parquet converter over the public standalone reader, with deterministic public-ID projection, latest observed ticker labels and atomic single-file publication.",
+      "Preserve all-adjusted OHLC and raw close/volume; infer a separate provider split factor jointly across all eight views using full-history constant split regimes and evidence-bounded exact rational preference under explicit numerical assumptions, without external data, price smoothing or corporate-action certification.",
+      "Embed full public-ID mappings, source generations, numerical assumptions and explicit partial-export outcomes in the Parquet footer; reject invalid output and changed inputs without publishing a partial file by default."
+    ]
+  },
+  {
+    "modifications": [
+      "Replace --allow-partial with --include-all-passed: attempt all selected public-ID histories under unchanged conversion checks and publish only complete passing identities; snapshot changes and writer failures still abort.",
+      "Keep rejection diagnostics and counts on stderr only. Remove omission records, selected counts and partial status from the Parquet footer and stdout; retain identity mappings and group provenance only for identities with published rows."
+    ]
+  },
+  {
+    "modifications": [
+      "Use a bounded generation-keyed reader RAM cache, defaulting to 2048 MiB with --cache-mib 0 as an uncached control; create no persistent cache or source copies.",
+      "Use the public reader's lightweight locked generation check at final publication instead of reconstructing assignment evidence; preserve eight-view calculations, acceptance checks, schema, identity mapping and output ordering."
+    ]
+  },
+  {
+    "modifications": [
+      "Permit an explicitly selected reader RAM cache up to 6144 MiB for an 8 GiB process allowance, retaining the 2048 MiB default and headroom for active histories and the writer; numeric conversion and publication behavior are unchanged."
+    ]
+  },
+  {
+    "modifications": [
+      "Stream completed groups in deterministic source-locator order, sorting IDs within each group, instead of pre-reading the universe and revisiting groups in global-ID order; emit actual processed-locator progress and retain only compact tokens for final freshness checks.",
+      "Enforce global ID collision and generation gates before atomic publication, discarding staged output on any collision or moving snapshot; retain whole-ID acceptance and stderr-only rejection diagnostics.",
+      "Reuse exact equal-view price intervals within each session and reuse already verified rational-factor witnesses when collecting statistics; numerical formulas, all view constraints and conversion acceptance remain unchanged."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume the public reader's exact uncontested-history, path, timestamp and cache-accounting optimizations, and compile fixed projection inequalities once with unchanged operation order; retain all column values, factor reports and whole-ID acceptance checks.",
+      "Print the in-memory cache/read ledger to stderr after successful publication; keep it out of the Parquet, stdout summary and disk sidecars."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain accepted Arrow output in RAM and serialize it in one Parquet write after acquisition; pack row groups across IDs without changing row order, values, mappings, factor checks or whole-ID acceptance.",
+      "Share an explicit memory allowance between retained output and dynamically limited decoded-data caches with reserved working headroom; memory exhaustion aborts the entire export without omissions or disk spill.",
+      "Defer all output-file creation until collection succeeds, then retain post-serialization freshness checks and atomic publication; progress and memory diagnostics remain stderr-only."
+    ]
+  }
+]
