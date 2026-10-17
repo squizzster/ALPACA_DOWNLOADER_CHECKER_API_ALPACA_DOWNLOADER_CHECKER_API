@@ -4,7 +4,10 @@ from dataclasses import replace
 from datetime import date, timedelta
 from types import SimpleNamespace
 
-from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import TickerOwnershipInterval
+from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import (
+    AppliedOwnershipIntervalRule,
+    TickerOwnershipInterval,
+)
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
 from libs.alpaca_end_of_day_security_correlation.terminal_episode import assess_terminal_traded_episode
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
@@ -222,11 +225,126 @@ class TerminalEpisodeTests(unittest.TestCase):
         owner = replace(owner, end_date_exclusive=date(2023, 9, 1))
         self.assertIsNone(self.assess([owner]))
 
-    def test_initial_same_day_terminal_falls_through_when_exclusive_owner_ends_before_last_row(self):
+    def test_initial_same_day_stock_terminal_still_falls_through(self):
         owner, _ = self.initial_run_before_reuse()
         when = self.sessions[-1]
         self.lineage["corporate_actions"][0]["effective_date"] = when.isoformat()
         self.assertIsNone(self.assess([replace(owner, end_date_exclusive=when)]))
+
+    def initial_cash_terminal(self):
+        owner, later = self.initial_run_before_reuse()
+        event = self.lineage["corporate_actions"][0]
+        event.update(action_type="cash_merger", effective_date=self.sessions[-1].isoformat(), rate="24")
+        event.pop("acquirer_symbol")
+        event.pop("acquirer_cusip")
+        owner = replace(
+            owner,
+            end_date_exclusive=self.sessions[-1],
+            applied_rules=(
+                AppliedOwnershipIntervalRule(3, "cash_merger_acquiree_terminal_boundary", (event["id"],)),
+            ),
+        )
+        return owner, later
+
+    def test_cash_closing_day_trades_belong_to_departing_episode_without_changing_interval(self):
+        owner, later = self.initial_cash_terminal()
+        episode = self.assess([owner])
+        self.assertEqual((self.sessions[0], self.sessions[-1]), (episode.first, episode.last))
+        self.assertFalse(owner.contains(episode.last))
+        result = correlate_download_rows(
+            self.work[0][0].rows, self.work[0][1], self.lineage, [owner], terminal_episode=episode
+        )
+        self.assertEqual([5, len(later)], [item["row_count"] for item in result["correlated"]])
+        self.assertEqual([], result["uncorrelated"])
+        self.assertEqual(
+            [["terminal"], ["current-lookup"]],
+            [item["security_identity"]["member_alpaca_asset_ids"] for item in result["correlated"]],
+        )
+        self.assertEqual(4, result["correlated"][0]["correlation_rule"]["order"])
+        self.assertNotIn("terminal_action_inside_later_reuse_gap", result["correlated"][0]["warnings"])
+
+    def test_cash_terminal_flat_but_traded_final_session_is_not_synthetic(self):
+        owner, _ = self.initial_cash_terminal()
+        for download, _, _ in self.work:
+            download.rows[4].update(o="24", h="24", l="24", c="24")
+        self.assertEqual(self.sessions[-1], self.assess([owner]).last)
+
+    def test_untraded_cash_boundary_keeps_supported_prefix_and_leaves_last_row_unresolved(self):
+        owner, later = self.initial_cash_terminal()
+        for key in ("v", "n"):
+            with self.subTest(missing=key):
+                self.work[-1][0].rows[4][key] = "0"
+                episode = self.assess([owner])
+                self.assertEqual(self.sessions[-2], episode.last)
+                result = correlate_download_rows(
+                    self.work[0][0].rows, self.work[0][1], self.lineage, [owner], terminal_episode=episode
+                )
+                self.assertEqual([4, len(later)], [item["row_count"] for item in result["correlated"]])
+                self.assertEqual([1], [item["row_count"] for item in result["uncorrelated"]])
+                self.work[-1][0].rows[4][key] = "100"
+
+    def test_cash_terminal_does_not_reach_past_event_or_accept_unlinked_invalid_action(self):
+        owner, _ = self.initial_cash_terminal()
+        event = self.lineage["corporate_actions"][0]
+        self.assertIsNone(self.assess([replace(owner, applied_rules=())]))
+        for value in ("0", "-1", "NaN", "Infinity", None):
+            with self.subTest(rate=value):
+                event["rate"] = value
+                self.assertIsNone(self.assess([owner]))
+        event["rate"] = "24"
+        event["effective_date"] = self.sessions[-2].isoformat()
+        self.assertIsNone(self.assess([replace(owner, end_date_exclusive=self.sessions[-2])]))
+
+    def test_cash_terminal_competing_stock_transition_or_owner_still_vetoes(self):
+        owner, _ = self.initial_cash_terminal()
+        competing = replace(
+            owner,
+            asset_id="current-lookup",
+            cusip="other",
+            start_date_inclusive=self.sessions[-1],
+            end_date_exclusive=None,
+        )
+        self.assertIsNone(self.assess([owner, competing]))
+        self.lineage["corporate_actions"].append(
+            {**self.lineage["corporate_actions"][0], "id": "stock-exchange", "action_type": "stock_merger"}
+        )
+        self.assertIsNone(self.assess([owner]))
+
+    def test_repeated_cash_evidence_does_not_create_competing_owners(self):
+        owner, _ = self.initial_cash_terminal()
+        next_day = self.sessions[-1] + timedelta(days=1)
+        self.lineage["corporate_actions"].append(
+            {**self.lineage["corporate_actions"][0], "id": "settlement", "effective_date": next_day.isoformat()}
+        )
+        intervals = [owner, replace(owner, end_date_exclusive=next_day)]
+        episode = self.assess(intervals)
+        self.assertEqual(self.sessions[-1], episode.last)
+        self.assertFalse(episode.terminated_during_reuse_gap)
+        for download, _, _ in self.work:
+            download.rows[4].update(v="0", n="0")
+        # Existing next-day terminal evidence still covers the full prefix; a
+        # second same-owner observation is not a new ownership ambiguity.
+        self.assertEqual(self.sessions[-1], self.assess(intervals).last)
+
+    def test_unknown_competing_cash_issue_cannot_evade_same_day_conflict_guard(self):
+        owner, _ = self.initial_cash_terminal()
+        self.lineage["corporate_actions"].append(
+            {
+                **self.lineage["corporate_actions"][0],
+                "id": "unknown-issue",
+                "acquiree_cusip": "333333333",
+            }
+        )
+        self.assertIsNone(self.assess([owner]))
+
+    def test_cash_terminal_preserves_extra_occupant_later_birth_and_missing_view_guards(self):
+        owner, _ = self.initial_cash_terminal()
+        self.assertIsNone(self.assess([replace(owner, start_date_inclusive=self.sessions[2])]))
+        self.lineage["identities"].append({"id": "third", "symbol": "OLD"})
+        self.assertIsNone(self.assess([owner]))
+        self.lineage["identities"].pop()
+        self.work.pop()
+        self.assertIsNone(self.assess([owner]))
 
     def test_initial_run_rejects_later_owner_birth_extra_occupant_and_missing_endpoint(self):
         owner, _ = self.initial_run_before_reuse()

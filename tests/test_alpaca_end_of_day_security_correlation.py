@@ -3122,8 +3122,9 @@ class RowCorrelationTests(unittest.TestCase):
                 {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
                 {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
                 {"order": 12, "name": "unique_uuid_candidate_with_warnings"},
-                {"order": 13, "name": "unresolved_uuid_candidates"},
-                {"order": 14, "name": "stable_continuous_ticker_identity_set"},
+                {"order": 13, "name": "bounded_retired_name_change_continuation"},
+                {"order": 14, "name": "unresolved_uuid_candidates"},
+                {"order": 15, "name": "stable_continuous_ticker_identity_set"},
             ],
             row_correlation_rule_order(),
         )

@@ -302,6 +302,30 @@ def _inactive_observed_split_component(symbol, lineage, candidate_ids, edges, fi
     }
 
 
+def _matching_dividend_overlap(earlier, later, start, end):
+    """Compare the whole overlap, not just the payments shared by both records."""
+    ledgers = []
+    for dividends in (earlier, later):
+        ledger = {}
+        for session, payments in dividends.items():
+            if not start <= session <= end:
+                continue
+            signatures = set()
+            for payment in payments:
+                try:
+                    record = date.fromisoformat(payment["record_date"])
+                    payable = date.fromisoformat(payment["payable_date"])
+                    rate = Decimal(str(payment["rate"]))
+                except (KeyError, TypeError, ValueError, InvalidOperation):
+                    return False
+                if not isinstance(payment.get("foreign"), bool) or not isinstance(payment.get("special"), bool):
+                    return False
+                signatures.add((rate, record, payable, payment["foreign"], payment["special"]))
+            ledger[session] = signatures
+        ledgers.append(ledger)
+    return bool(ledgers[0]) and ledgers[0] == ledgers[1]
+
+
 def _inactive_successive_dividend_history(symbol, lineage, candidate_ids, first_session, last_session):
     assets, known = _source_label_assets(symbol, lineage)
     if (
@@ -342,7 +366,7 @@ def _inactive_successive_dividend_history(symbol, lineage, candidate_ids, first_
         return None
     action = terminal[0]
     if (
-        action.get("action_type") not in ("cash_merger", "stock_and_cash_merger")
+        action.get("action_type") not in ("cash_merger", "stock_and_cash_merger", "stock_merger")
         or action.get("acquiree_symbol") != symbol
     ):
         return None
@@ -351,12 +375,36 @@ def _inactive_successive_dividend_history(symbol, lineage, candidate_ids, first_
         return None
     try:
         when = date.fromisoformat(action["effective_date"])
-        cash = Decimal(str(action["cash_rate"]))
+        rates = [
+            Decimal(str(action[field]))
+            for field in (
+                ("acquiree_rate", "acquirer_rate") if action["action_type"] == "stock_merger" else ("cash_rate",)
+            )
+        ]
     except (KeyError, TypeError, ValueError, InvalidOperation):
         return None
-    if when < last_session or not cash.is_finite() or cash <= 0:
+    if when < last_session or any(not rate.is_finite() or rate <= 0 for rate in rates):
         return None
-    epochs = {asset_id: set() for asset_id in candidate_ids}
+    if action["action_type"] == "stock_merger":
+        acquirer = exact_cusip_lookup_asset(lineage, action.get("acquirer_cusip"))
+        if (
+            acquirer is None
+            or acquirer["id"] in known
+            or not action.get("acquirer_symbol")
+            or action["acquirer_symbol"] == symbol
+            or acquirer.get("symbol") != action["acquirer_symbol"]
+        ):
+            return None
+        try:
+            if (
+                when > last_session
+                and expected_market_session_coverage(last_session.isoformat(), when.isoformat()).session_count
+                > 4
+            ):
+                return None
+        except MarketCalendarError:
+            return None
+    epochs = {asset_id: {} for asset_id in candidate_ids}
     for dividend in lineage.get("corporate_actions", []):
         if (
             dividend.get("action_type") != "cash_dividend"
@@ -374,16 +422,23 @@ def _inactive_successive_dividend_history(symbol, lineage, candidate_ids, first_
             return None
         if not rate.is_finite() or rate <= 0 or not first_session <= session <= last_session:
             return None
-        epochs[owner["id"]].add(session)
+        epochs[owner["id"]].setdefault(session, []).append(dividend)
     if any(not sessions for sessions in epochs.values()):
         return None
     ordered = sorted((min(sessions), max(sessions), asset_id) for asset_id, sessions in epochs.items())
-    if ordered[-1][2] != anchors[0]["id"] or any(
-        earlier[1] >= later[0] for earlier, later in zip(ordered, ordered[1:])
-    ):
+    if ordered[-1][2] != anchors[0]["id"]:
         return None
+    for earlier, later in zip(ordered, ordered[1:]):
+        if earlier[0] >= later[0] or earlier[1] >= later[1]:
+            return None
+        if earlier[1] >= later[0] and not _matching_dividend_overlap(
+            epochs[earlier[2]], epochs[later[2]], later[0], earlier[1]
+        ):
+            return None
     # Dated dividends corroborate successive occupants; their dates are not
-    # extrapolated into UUID cutovers. The existing identity-set output stays null.
+    # extrapolated into UUID cutovers. Identical overlapping distributions are
+    # provider backfill corroboration, not two competing economic payees.
+    # Historical UUID/CUSIP fields stay null; the acquirer is not joined.
     return {
         "asset_id": anchors[0]["id"],
         "terminal_corporate_action_id": action.get("id"),
@@ -438,6 +493,7 @@ def apply_terminal_continuous_ticker_fallback(
     source_rows=None,
     adjustment_consensus=None,
     closed_history_evidence=None,
+    rule_order=TERMINAL_FALLBACK_RULE_ORDER,
 ) -> dict[str, list[dict[str, Any]]]:
     """Promote only a fully unresolved, anchored, gapless ticker identity set."""
     correlated_segments = branches[CORRELATED_BRANCH]
@@ -553,7 +609,7 @@ def apply_terminal_continuous_ticker_fallback(
     )
     evaluation = {
         "rule": {
-            "order": TERMINAL_FALLBACK_RULE_ORDER,
+            "order": rule_order,
             "name": TERMINAL_FALLBACK_RULE_NAME,
         },
         "eligible": eligible,

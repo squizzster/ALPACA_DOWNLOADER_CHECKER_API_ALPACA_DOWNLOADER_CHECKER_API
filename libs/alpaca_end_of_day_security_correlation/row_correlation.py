@@ -24,6 +24,7 @@ from .predecessor_prefix import (
     IndependentHistoricalInterval,
     PredecessorPrefix,
 )
+from .retired_continuation import RETIRED_CONTINUATION_RULE, RetiredContinuation
 from .security_identity import security_identity_for_alpaca_assets
 from .settings import CORRELATED_BRANCH, UNCORRELATED_BRANCH
 from .source_continuity import (
@@ -73,6 +74,7 @@ class _RowDecision:
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
     historical_symbol: str | None = None
     use_rule_identity_basis: bool = False
+    component_only: bool = False
 
     def grouping_key(self) -> tuple:
         if self.branch == CORRELATED_BRANCH:
@@ -91,6 +93,7 @@ class _RowDecision:
                 self.current_symbol_reuse,
                 self.historical_symbol,
                 self.use_rule_identity_basis,
+                self.component_only,
             )
         return (
             self.branch,
@@ -132,6 +135,7 @@ class _RowRuleContext:
     adopted_target_pairs: frozenset[tuple[str, str]] = frozenset()
     retired_source_selection: bool = False
     retired_lower_bound: date | None = None
+    retired_continuation: RetiredContinuation | None = None
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -771,6 +775,21 @@ def _apply_latest_dated_ownership_interval_rule(
     )
 
 
+def _apply_retired_continuation_rule(context: _RowRuleContext) -> _RowDecision | None:
+    episode = context.retired_continuation
+    if episode is None or not episode.first <= context.session_date <= episode.last:
+        return None
+    return _RowDecision(
+        branch=CORRELATED_BRANCH,
+        asset_id=episode.anchor_asset_id,
+        historical_symbol=context.requested_symbol,
+        identity_confidence="action_and_observed_handoff_supported_continuity",
+        warning_codes=("historical_uuid_unknown_successor_component_supported",),
+        use_rule_identity_basis=True,
+        component_only=True,
+    )
+
+
 def _apply_unresolved_uuid_candidates_rule(context: _RowRuleContext) -> _RowDecision:
     candidate_objects = identity_candidates_for_symbol(
         context.lineage,
@@ -849,6 +868,10 @@ ROW_CORRELATION_RULES = (
         apply=_apply_unique_uuid_candidate_rule,
     ),
     RowCorrelationRule(
+        name=RETIRED_CONTINUATION_RULE,
+        apply=_apply_retired_continuation_rule,
+    ),
+    RowCorrelationRule(
         name="unresolved_uuid_candidates",
         apply=_apply_unresolved_uuid_candidates_rule,
     ),
@@ -886,7 +909,7 @@ def _decide_row(context: _RowRuleContext) -> _RowDecision:
 
 def _canonical_security(
     security_id: str,
-    asset_id: str,
+    asset_id: str | None,
     cusip: str | None,
 ) -> dict[str, Any]:
     return {
@@ -966,6 +989,7 @@ def correlate_download_rows(
     departure_prefix: DatedDeparturePrefix | None = None,
     independent_history: tuple[IndependentHistoricalInterval, ...] = (),
     retired_lower_bound: date | None = None,
+    retired_continuation: RetiredContinuation | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     requested_symbol = source["requested_symbol"]
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
@@ -1050,6 +1074,7 @@ def correlate_download_rows(
                 adopted_target_pairs=adopted_target_pairs,
                 retired_source_selection=retired_selection,
                 retired_lower_bound=retired_lower_bound,
+                retired_continuation=retired_continuation,
             )
         )
         correlated_rows.append(
@@ -1122,7 +1147,7 @@ def correlate_download_rows(
                     "historical_symbol": historical_symbol,
                     "canonical_security": _canonical_security(
                         security_identity.security_id,
-                        decision.asset_id,
+                        None if decision.component_only else decision.asset_id,
                         decision.cusip,
                     ),
                     "security_identity": security_identity.as_report_object(),
@@ -1178,4 +1203,5 @@ def correlate_download_rows(
         source_rows=rows,
         adjustment_consensus=adjustment_consensus,
         closed_history_evidence=closed_history_evidence,
+        rule_order=len(ROW_CORRELATION_RULES) + 1,
     )

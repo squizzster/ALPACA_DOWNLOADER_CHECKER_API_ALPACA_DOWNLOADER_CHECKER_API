@@ -92,6 +92,25 @@ of every runtime receipt. Installed code and selected publications can have diff
 
 ### Modified
 
+- Documentation-only consolidated lineage checkpoint accepts the implemented baseline through correlation v55,
+  reconciles Groups 1–3 with the earlier completed comparison/acquisition work, and explicitly leaves the selected
+  Group 4 investigation pending. It separates code acceptance, selected publication, whole-store catch-up and
+  downstream catalogue/export work; no new rule or runtime-version change is introduced by this verification pass.
+- Correlation transform v55 recognizes a traded cash-closing session at the end of a uniquely anchored initial
+  episode before unrelated ticker reuse. Rule 4 retains its placement, exact-identity and competing-owner gates;
+  untraded event-day rows do not erase the supported prefix. No global interval, membership or datastore redesign.
+- Correlation transform v54 extends the existing inactive dividend-history fallback to nearby stock-only departures
+  and fully agreeing overlapping payment epochs. It preserves predecessor-only membership, unknown UUID/CUSIP
+  vintages, stronger rule precedence and the existing cash-departure path. The upstream eligibility check and a
+  production three-pass regression test cover the same shape; no registry reorder or ticker-specific exception.
+- Correlation transform v53 adds bounded retired-label continuation after the stronger row rules. A unique provider
+  name-change path, agreeing exact successor identity and an informative observed handoff can recover an existing
+  component's history without inventing its historical UUID/CUSIP. Later reuse, inert padding, incompatible occupants
+  and competing replacements at intermediate nodes remain excluded. Source descriptors include feed/timeframe, and
+  terminal fallback reporting derives its position from the registry. Ticker suffixes are not identity rules.
+- The contributor loop now records the first evidence-group lessons: screen before grouping, research representative
+  and contrasting evidence shapes, distinguish temporal corroboration from exact-price proof, check intermediate
+  relationships, and cache approved comparison inputs in RAM before one consolidated review and selected publication.
 - Correlation transform v52 accepts a historical split endpoint whose exact UUID/CUSIP has a unique later accepted
   rename to its current lookup label. Rule 4 also resolves a complete current traded suffix anchored by exact dividend
   evidence after an unrelated former issue's departure, excluding the intervening synthetic carry-forward interval.
@@ -173,6 +192,145 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+### Consolidated lineage release checkpoint — 2026-10-17
+
+The accepted implementation baseline is correlation **v55**. It includes the earlier completed
+[434-group comparison](#correlation-v52-consolidated-handoff--2026-10-17), acquisition recovery and subsequent
+three evidence-shape iterations. This checkpoint reviews the accumulated changes and reruns the repository gate;
+it does not repeat the already completed same-input impact comparisons or introduce another rule.
+
+| Research group | Version | Checkpoint disposition |
+|---|---:|---|
+| 1 — Retired-label continuation | 53 | Accepted implementation and selected publication; detailed scope below. |
+| 2 — Inactive dividend-backed identity continuity | 54 | Accepted implementation and selected publication; detailed scope below. |
+| 3 — Cash-closing boundaries before unrelated reuse | 55 | Accepted implementation and selected publication; detailed scope below. |
+| 4 — Overlapping ownership without source scope | None | Selected only: 24 sources / 11,941 stored unresolved source-sessions; POLY is the first proposed case. No rule change or acceptance claimed. |
+
+Groups 1–3 recovered **22,438 source-sessions**, not multiplied by eight views, without the previously assigned-row
+losses/reassignments or existing membership changes checked in their respective comparisons. An accepted iteration
+does not mean every candidate in its original shortlist was resolved. Group 4's screening count is a mixed-version
+stored-state count, not a completed v55 replay or a promise that every observation can be recovered.
+
+- Fresh full gate: **719 tests passed in 62.813 seconds**, **zero skips**, with ResourceWarnings treated as errors.
+  Ruff lint and formatting passed for **188 Python files**. All **281 local documentation links/anchors** and complete
+  README coverage passed, as did `git diff --check` and runtime validation of the **55-entry changelog**. Its first
+  52 entries are unchanged; there is exactly one new entry for each of v53, v54 and v55.
+- The normal production CLI, with acquisition enabled and no forced refresh, returned **eight unchanged groups /
+  18 sources** in **0.409 seconds**, with zero failures. Selected group generations remain identical. Seeds were
+  AT, CAI, FLY, AAAP, AHL, PLT, IVH and BOAS.WS; no pricing acquisition was required.
+- Fresh supported-reader consumption passed for **eight public IDs / 7,511 identity-sessions**, all eight views,
+  in **0.542 seconds**. It covers all three newly recovered cash-closing histories, their unrelated current occupants,
+  and prior-group IVH/BOAS.WS controls. Recorded recovery ranges and counts match, session grids agree, final freshness
+  checks pass, and a bare reused CAI request still raises `AmbiguousTickerError`.
+- Pricing is unchanged: no copies, repair, redownload or whole-universe run. This verification adds no runtime
+  behavior or version. Earlier checkpoints' uncommitted-work notes describe those earlier checkpoints, not this
+  consolidated acceptance.
+
+**Release boundary:** the implemented rules and selected standalone publications are accepted for continued work.
+Older stored groups still need normal lineage catch-up before current-version reads; this pass does not perform that
+catch-up. Group 4 remains the next research task. `DataLibrary` catalogue availability and Bloodhound regeneration
+remain separate operations, neither performed nor claimed by this checkpoint. This is a reproducible code baseline,
+not a claim that every unresolved history or every stored assignment has been independently established as correct.
+
+### Correlation v55 cash-closing / ticker-reuse group — 2026-10-17
+
+- Screened 202 gap-blocked histories and selected 63 with exact dated departure candidates. The v54 baseline has
+  54,764 unassigned raw source-sessions in that group. One correction recovers **4,240** (7.7%): **AT 1,351**,
+  **CAI 1,484**, **FLY 1,405**. The other 60 sources / 50,524 unassigned sessions retain their decisions; different
+  shapes are deferred, not forced into this cash-only rule.
+- Fresh independent research for each changed case established a cash closing on the last observed session and
+  suspension the following trading day. Exact provider CUSIP lookups establish the internal retired identities;
+  backfilled current names do not. Confirmed public facts and their limits are retained in the existing ignored
+  research file, never used as production ticker/date overrides.
+- The full 7,392-source multi-identity metadata screen found 178 cash-departure candidates, narrowed by necessary
+  two-occupant/inactive-former/active-current gates to 64 potential sources. Compared these, all 63 group targets and
+  controls through the production three-pass path: **117 complete dependency groups / 356 sources**, using the same
+  RAM-cached inputs. Only the three intended reports change. All eight views agree on recoveries, with no lost or
+  reassigned prior rows, changed existing public IDs/membership, or changed UUID relationship graph. Final diagnostic
+  and duplicate-action handling was rechecked on its 12-group / 44-source scope with unchanged assignments.
+- Real normal CLI publication covered **18 sources / eight groups** in **40.27 seconds**, with zero failures and
+  zero pricing-acquisition waves. Published chronological assignments match the reviewed candidate; normalized
+  evidence and pricing generations are unchanged. All eight seeds returned `unchanged` on a normal repeat.
+- `StandaloneReader` consumed **eight public IDs / 7,511 identity-sessions** across all eight views in **0.59 seconds**,
+  including all three recovered ranges, their separately identified current occupants, IVH and the prior warrant
+  control. Freshness checks pass; a reused ticker without an explicit ID remains ambiguous. This does not publish
+  combined-catalogue availability or rebuild Bloodhound. No pricing was copied, repaired or redownloaded.
+- **719 tests passed in 62.234 seconds**, with ResourceWarnings treated as errors. Focused tests cover cash-event-day
+  trades, flat traded prices, untraded partial-history handling, post-event rejection, unknown competing CUSIPs,
+  duplicate actions, exact action/interval support, missing views and preserved stock-transition/occupant vetoes.
+  Ruff lint/format (188 Python files), all 280 local documentation links/anchors, complete README coverage,
+  `git diff --check` and runtime validation of the 55-entry changelog passed. Changes were uncommitted at that checkpoint.
+
+### Correlation v54 inactive-identity group — 2026-10-17
+
+- Closed this group iteration, not every unresolved history. The 41-source multiple-identity group contained 49,067
+  unassigned raw source-sessions. One extension of the existing terminal fallback recovers **5,545** (11.3%):
+  **IVH 1,809**, **MINDP 2,070**, **TEAF 1,666**. The remaining 38 sources / 43,522 sessions need other evidence
+  shapes or retain their existing exclusions; they are not claimed resolved.
+- Compared actual v53/v54 production three-pass reports on identical RAM-cached inputs across **38 complete groups /
+  168 sources**, plus a **7-source prior-group control** with the candidate disabled/enabled. Every adjustment view
+  has the same recoveries, no lost/reassigned previously attributed rows, and no changed existing membership or IDs.
+  The three recovered predecessor components exclude ACP, MIND common and TYG respectively. Historical UUID/CUSIP
+  vintages remain null. LSXMA and the reused-note counter-shape remain unchanged.
+- One metadata-only necessary-shape screen covered all 7,392 indexed multi-identity sources. Of 26 structural
+  candidates, the helper changes only the three above; complete affected groups were already in the comparison.
+  Fresh independent researchers established the three continuities and LSXMA's distinct issue/reclassification caveat.
+  Confirmed facts were retained separately in the existing ignored research file, not injected into production.
+- Real CLI publication covered **22 sources / six groups**, with zero pricing acquisition waves. Selected chronological
+  documents exactly match the reviewed candidate; pricing generations and normalized evidence are unchanged.
+  The development MINDP publication was rerun with metadata refresh after correcting an upstream cash-only eligibility
+  precheck. That integration gap is now covered by a production three-pass test, not only a helper test.
+  A normal repeat of all six selected seeds returned `unchanged`.
+- `StandaloneReader` read **six IDs / 7,609 identity-sessions** across all eight views, including every recovered
+  interval and the prior warrant-group control. This proves standalone consumption, not combined-catalogue availability
+  or Bloodhound admission. No prices were copied/repaired, and neither downstream product was rebuilt.
+- **711 tests passed in 62.391 seconds**, with ResourceWarnings treated as errors. Ruff lint/format (188 Python files)
+  passed. Focused tests cover complete overlap equality, unmatched distributions, qualified names, extra occupants,
+  tied/contained epochs, stock endpoint/ratio/date guards, and predecessor/acquirer separation.
+  All 279 local documentation links/anchors and complete README coverage passed, as did `git diff --check` and
+  runtime validation of the 54-entry correlation changelog. Changes remain uncommitted at this checkpoint.
+
+### Correlation v53 first new evidence group — 2026-10-17
+
+- Reviewed the **78-source retired/rename-linked subgroup** using fresh, independent research for the Graf-derived
+  warrants, VIACA's delayed processing boundary and BOA/Selina public warrants. Primary records establish the
+  external histories; stored provider evidence establishes the internal mapping. Confirmed facts and narrow research
+  limits are retained in the existing ignored research reference, never read by production rules.
+- The metadata impact screen considered the 20,035 indexed sources, inspected 7,618 with the necessary dependency
+  and known-identity shape, and found 945 metadata candidates, mostly already assigned by stronger rules. The only
+  additionally unresolved candidate outside the initial dependency closure was LGL.RT; its complete group was added.
+  BCACW's group supplies a negative control where related common/unit identities do not establish warrant identity.
+- The final same-input production replay covers **68 dependency groups / 387 sources**: the original 66 groups plus
+  those two controls. The original 374 sources compare v52 against v53; the additional 13 control sources compare
+  the production cascade with the candidate assessment disabled/enabled. Across all eight views,
+  **12,653 source-sessions in 32 sources** gain attribution to **30 existing public IDs**. No previously assigned row
+  changes owner, label, UUID membership or ID; no remaining unresolved reason
+  changes. This is not 12,653 newly created securities, and the eight views are consistency checks, not independent
+  ownership confirmations. Existing pricing is unchanged.
+- The generic rule is row rule **13**, after existing ownership and gap decisions and before unresolved output.
+  Research review caught a missing intermediate-node replacement check; the final code and regression test include
+  it. The motivating Graf chain gains 1,107 source-sessions while its inert bridge and unrelated later reuse stay
+  unassigned. VIACA gains 24 sessions without merging share classes; BOAS.WS gains 395 public-warrant sessions.
+- Actual normal `build_alpaca_lineage.py` publication completed **31 affected/control groups / 197 sources** in
+  **348.84 seconds**, with zero failures and zero pricing-acquisition waves. All selected pricing generations,
+  normalized evidence and final boundary assignments match the approved comparison. Acquisition was enabled;
+  no forced download, price copy or source repair was used.
+- `StandaloneReader` read **38 distinct public IDs / 41,136 deduplicated identity-sessions** across all eight views,
+  with equal session grids, every recovered interval present and passing final freshness checks. These are the
+  30 extended histories plus control identities, not every inherited identity in the dependency groups.
+  A second actual CLI run returned **31 unchanged groups**, zero failures and no stderr output.
+- **702 tests passed in 62.126 seconds**, with ResourceWarnings treated as errors. Ruff lint/format (188 Python files),
+  `git diff --check`, maintained local documentation links/anchors, README coverage and the downloader, lineage,
+  evidence, reader and Bloodhound command help checks passed. The converter's executable has no `.py` suffix.
+- **Closed scope, not universal resolution:** the target missing-identity category falls from 25,646 to **12,993**
+  unassigned source-sessions. A further 1,467 pre-existing undated-reuse sessions are unchanged: **14,460 unresolved
+  source-sessions across 47 of the original 78 sources** remain. This includes intentional padding/reuse exclusions
+  and still-to-do evidence shapes, not permission to guess or proof that every remaining observation is unresolvable.
+- The selected store now has **197 v53, 64 v52 and 19,774 v51 receipts**. Older groups still require normal lineage
+  catch-up before reading with the current rules. No whole-store rerun, separate `DataLibrary` catalogue publication
+  or Bloodhound regeneration was performed. This checkpoint accepts the bounded rule and selected publication,
+  not every unaffected inherited assignment or every unresolved family.
 
 ### Correlation v52 consolidated handoff — 2026-10-17
 
@@ -756,7 +914,7 @@ complete current-store audit coverage.
 | Availability | 1 | Per-candidate online/offline decision. |
 | Catalogue publication | 2 | Snapshot and bounded affected-closure catalogue selection. |
 | Validation transform | 19 | Established daily-bar and dataset rules. |
-| Correlation transform | 52 | Historical split-endpoint labels, dividend-backed reused-symbol suffixes, bounded episodes and independently attributed continuity. |
+| Correlation transform | 55 | Traded cash-closing sessions in independently anchored pre-reuse histories; supported prefixes retained, unrelated identities kept separate. |
 | Operator lineage evidence | 3 | Actual workflow and paths; expose changed formerly absent inputs during offline inspection. |
 | Catalogue engine | 5 | Content-addressed source/security objects and inventories. |
 | Warning transform | 6 | Established advisory rules. |

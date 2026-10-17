@@ -445,6 +445,36 @@ def assess_dated_departure_prefix(symbol, lineage, intervals, work_items):
     return DatedDeparturePrefix(start, end, qualified[0])
 
 
+def _same_day_cash_termination(symbol, cusip, when, lineage, intervals):
+    """A cash closing date need not exclude that day's departing-issue trades."""
+    supporting = {
+        action_id
+        for interval in intervals
+        for rule in interval.applied_rules
+        for action_id in rule.supporting_action_ids
+    }
+    cash = False
+    for action in lineage.get("corporate_actions", []):
+        kind = action.get("action_type")
+        role = "old" if kind == "name_change" else "acquiree"
+        if (
+            kind not in ("name_change", "cash_merger", "stock_merger")
+            or action.get(role + "_symbol") != symbol
+            or action.get("process_date" if kind == "name_change" else "effective_date") != when.isoformat()
+        ):
+            continue
+        if kind != "cash_merger" or action.get(role + "_cusip") != cusip:
+            return False
+        try:
+            rate = Decimal(str(action.get("rate")))
+        except InvalidOperation:
+            return False
+        if not rate.is_finite() or rate <= 0:
+            return False
+        cash |= action.get("id") in supporting
+    return cash
+
+
 def assess_terminal_traded_episode(symbol, lineage, intervals, work_items):
     candidates = terminal_episode_candidates(symbol, lineage)
     if not candidates:
@@ -502,8 +532,9 @@ def assess_terminal_traded_episode(symbol, lineage, intervals, work_items):
     expected = expected_market_session_coverage(start.isoformat(), (end + timedelta(days=1)).isoformat())
     if tuple(session.isoformat() for session in sessions[episode_start:prior_end]) != expected.session_dates:
         return None
-    qualified = set()
+    qualified = {}
     for when, asset_id, cusip in candidates:
+        episode_end = end
         # Event processing and the last trading session can differ by a few
         # sessions. That tolerance supports a terminal episode, not a new birth.
         left, right = sorted((when, end))
@@ -515,18 +546,32 @@ def assess_terminal_traded_episode(symbol, lineage, intervals, work_items):
                 continue
         else:
             endpoint = exact_cusip_lookup_asset(lineage, cusip)
+            owner_intervals = [
+                interval
+                for interval in intervals
+                if interval.identity_key() == (symbol, cusip, asset_id)
+                and interval.end_date_exclusive == when
+                and interval.contains(start)
+            ]
+            same_day_cash = (
+                initial
+                and when == end
+                and _same_day_cash_termination(symbol, cusip, when, lineage, owner_intervals)
+            )
             if initial and (
                 left != right
                 and expected_market_session_coverage(left.isoformat(), right.isoformat()).session_count > 4
-                or not any(
-                    interval.identity_key() == (symbol, cusip, asset_id)
-                    and interval.end_date_exclusive == when
-                    and interval.contains(start)
-                    and interval.contains(end)
-                    for interval in intervals
-                )
+                or not any(interval.contains(end) or same_day_cash for interval in owner_intervals)
             ):
                 continue
+            if same_day_cash and any(
+                not _traded_prices(values[prior_end - 1 : prior_end]) for values, _ in views.values()
+            ):
+                # An untraded event-day observation does not establish ownership
+                # of that row, but must not erase the independently bounded prefix.
+                if prior_end - episode_start < 2:
+                    continue
+                episode_end = sessions[prior_end - 2]
             known = (
                 {
                     item.get("id")
@@ -553,7 +598,8 @@ def assess_terminal_traded_episode(symbol, lineage, intervals, work_items):
                 and item["asset"].get("id")
             )
             if (
-                not end < when < gap.right_observed_session
+                not (end < when or same_day_cash)
+                or when >= gap.right_observed_session
                 or endpoint.get("status") != "inactive"
                 or asset_id == gap.current_asset_id
                 or known != {asset_id, gap.current_asset_id}
@@ -580,8 +626,16 @@ def assess_terminal_traded_episode(symbol, lineage, intervals, work_items):
             if (item.get("symbol"), item.get("cusip")) == (symbol, cusip)
         ):
             continue
-        qualified.add((asset_id, cusip))
+        previous_end, previous_date = qualified.get((asset_id, cusip), (episode_end, when))
+        qualified[asset_id, cusip] = (max(previous_end, episode_end), min(previous_date, when))
     if len(qualified) != 1:
         return None
-    asset_id, cusip = qualified.pop()
-    return TerminalTradedEpisode(start, end, asset_id, cusip, gap is not None, initial_before_reuse_gap=initial)
+    (asset_id, cusip), (episode_end, departure_date) = next(iter(qualified.items()))
+    return TerminalTradedEpisode(
+        start,
+        episode_end,
+        asset_id,
+        cusip,
+        gap is not None and end < departure_date,
+        initial_before_reuse_gap=initial,
+    )

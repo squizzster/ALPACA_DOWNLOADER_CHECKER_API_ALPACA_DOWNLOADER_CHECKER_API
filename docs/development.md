@@ -40,6 +40,9 @@ doubles; no retained runtime data or live API calls are needed.
 decisions from fresh calculation, and keeps offline inspection read-only. `tests/test_alpaca_predecessor_prefix.py`
 checks exact independent prefix attribution, counterexamples and the shared three-pass fixed point. These supplement
 the ordered-rule and identity-membership coverage in `tests/test_alpaca_end_of_day_security_correlation.py`.
+`tests/test_alpaca_retired_continuation.py` checks bounded action-backed continuation with an unavailable historical
+UUID: the real three-pass path, unknown canonical fields, later reuse, different warrant series, intermediate-node
+replacement conflicts, overlapping/noninformative episodes and exact zero-to-four-session handoff limits.
 
 `tests/test_alpaca_standalone_reader.py` exercises `alpaca_end_of_day.StandaloneReader` and its actual CLI using the
 real standalone publishers with synthetic provider doubles. It covers exact values, compact overlays/rollover,
@@ -222,6 +225,44 @@ removes repeated broad audits; it does not skip required correctness checks or r
 - Supported intervals can be published without pretending the remaining history is solved. Neither blanket rejection
   nor wholesale restoration of an earlier output is the objective.
 - A rule is accepted for its behavior in the complete cascade, not merely for passing its motivating example.
+
+### Working through an evidence-shape group
+
+Use cheap receipt/metadata screening to propose a group, not to declare its members equivalent or resolved. Start
+with a representative case and its nearest counterexample. Research a materially different issue or transition
+within the affected scope before acceptance; a second case can validate the same concept without requiring another
+rule. Prefer one or two well-supported changes, and explicitly defer cases needing different evidence.
+
+The first retired-label group supplied these reusable lessons:
+
+- Missing historical lookup identity is not the same as missing continuity evidence. An explicit issue-specific
+  action path and an observed handoff can identify an existing continuing component without inventing a past UUID.
+- Distinguish exact-price agreement from temporal corroboration. Adjacent episodes strengthen an independently
+  established relationship; adjacency alone does not establish one. A processing date may lag the trading cutover.
+- Interpret a complete path, including intermediate competing replacements, rather than validating only its endpoints.
+- Similar suffixes are discovery clues, not equivalence rules. A company can have several different public warrants;
+  units, common shares and private warrants do not become the same issue through a shared stem.
+- A present OTC or inactive endpoint does not erase historical identity. Delisting, suspension, liquidation and
+  contractual expiry answer different questions; a source establishing one must not be cited as establishing another.
+- Cache approved inputs in RAM for the baseline/candidate comparison. Screen the full potentially affected scope,
+  replay complete dependency groups once at the batch boundary, and publish selected affected groups plus controls
+  through the real CLI. This avoids copying prices and repeating whole-store audits without weakening acceptance.
+
+Retain confirmed public facts separately from the internal mapping and from unresolved research questions. A
+successfully researched example validates a concept; it does not prove every vendor row or every unrelated member
+of a dependency group. Keep the exact measured outcome in the dated version checkpoint, not in the generic rule.
+
+The subsequent inactive-identity group adds three process lessons: matching current names can hide a real issue
+change; duplicate economic records may corroborate continuity without dating a vendor UUID cutover; and a correct
+fallback is ineffective if an upstream eligibility check prevents it running. Include a real fixed-point integration
+test, compare complete overlaps rather than their matching intersection, and research newly affected shapes before
+acceptance. A terminal event explains cessation; it does not combine the acquiring security's earlier prices.
+
+The cash-closing group distinguishes transaction closing, suspension and delisting dates. Interpret an informative
+observed closing-day session at the episode boundary rather than changing every ownership interval's exclusivity.
+Positive volume and trades can exist at one flat price; flatness alone is not synthetic padding. An uncertain final
+row must not erase an independently supported prefix. Check competing actions even when their identity lookup failed,
+and verify the real reader keeps unrelated old/current uses of a ticker separately selectable by public ID.
 
 ### Success, repeatability and minimal retention
 

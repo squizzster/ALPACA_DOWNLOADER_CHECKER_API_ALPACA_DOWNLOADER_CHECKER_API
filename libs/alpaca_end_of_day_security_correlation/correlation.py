@@ -20,6 +20,7 @@ from .predecessor_prefix import (
     assess_predecessor_prefixes,
 )
 from .publication import lineage_evidence_sha256, publish_security_correlation
+from .retired_continuation import assess_retired_continuation
 from .row_correlation import (
     correlate_download_rows,
     download_session_dates,
@@ -251,7 +252,7 @@ def build_security_correlation_report(
                 len({item.get("id") for item in lineage.get("identities", []) if item.get("symbol") == symbol})
                 > 1
                 and any(
-                    action.get("action_type") in ("cash_merger", "stock_and_cash_merger")
+                    action.get("action_type") in ("cash_merger", "stock_and_cash_merger", "stock_merger")
                     and action.get("acquiree_symbol") == symbol
                     for action in lineage.get("corporate_actions", [])
                 )
@@ -264,6 +265,17 @@ def build_security_correlation_report(
         and all(not has_prolonged_carry_forward(download.rows) for download, _, _ in authenticated_work_items)
     )
     retired_lower_bound = retired_history_lower_bound(symbol, intervals, authenticated_work_items)
+    retired_continuation = (
+        assess_retired_continuation(
+            symbol,
+            lineage,
+            authenticated_work_items,
+            correlation_loader=correlation_loader,
+            source_rows_loader=source_rows_loader,
+        )
+        if complete_source
+        else None
+    )
     for authenticated_download, source, _ in authenticated_work_items:
         file_branches = correlate_download_rows(
             authenticated_download.rows,
@@ -280,6 +292,7 @@ def build_security_correlation_report(
             closed_history_evidence=closed_history_evidence,
             independent_history=independent_history,
             retired_lower_bound=retired_lower_bound,
+            retired_continuation=retired_continuation,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]
@@ -300,6 +313,8 @@ def build_security_correlation_report(
             "download_sha256": authenticated_download.manifest["sha256"],
             "rows": source_row_count,
             "adjustment": authenticated_download.manifest["adjustment"],
+            "feed": source["feed"],
+            "timeframe": source["timeframe"],
             "pipeline_state": authenticated_download.pipeline_state,
             "validation_pipeline_version": PIPELINE_VERSION,
             "download_sha256_authenticated": True,

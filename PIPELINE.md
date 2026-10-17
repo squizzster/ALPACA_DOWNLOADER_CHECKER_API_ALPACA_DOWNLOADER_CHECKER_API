@@ -305,8 +305,9 @@ this order:
 10. `latest_dated_ownership_interval_overlapping_claims`
 11. `requested_symbol_dated_uuid_interval`
 12. `unique_uuid_candidate_with_warnings`
-13. `unresolved_uuid_candidates`
-14. `stable_continuous_ticker_identity_set`, the terminal fallback after the registry
+13. `bounded_retired_name_change_continuation`
+14. `unresolved_uuid_candidates`
+15. `stable_continuous_ticker_identity_set`, the terminal fallback after the registry
 
 Consequential gates include:
 
@@ -322,6 +323,13 @@ Consequential gates include:
   A complete initial episode before physical reuse needs a nearby exact terminal event and an independently supported
   current suffix. A middle episode needs its own nearby departure; an anchored current suffix can use a nearby exact
   acquirer action. Shared grids, complete calendars and competing-owner vetoes apply across all eight views.
+  For an initial episode, a supporting cash-merger date may include that day's observed trades: closing is not
+  necessarily a pre-open suspension. The exact inactive departing issue and separately supported active reuse must
+  be the only known occupants. Positive volume and trade count in every view permit the event-day row; without them,
+  retain only the supported earlier prefix. Same-day competing departures (including unmapped CUSIPs), stock/name
+  transitions and later observations do not receive this exception. Exclusive ownership intervals and UUID membership
+  remain unchanged. The owner is
+  [`_same_day_cash_termination`](libs/alpaca_end_of_day_security_correlation/terminal_episode.py), within rule 4's episode assessment.
   A current suffix can also be anchored by a positive cash dividend for its exact current CUSIP after an unrelated
   former issue's accepted departure inside the shared inert bridge. Complete action coverage, exact active identity,
   no connecting membership edge and no competing structural or occupancy evidence are required. This assigns the
@@ -362,12 +370,31 @@ Consequential gates include:
   future successors gain no exception. This stays inside the requested-label rule; earlier gap/as-of vetoes still win.
 - Exact component-separation or positive cash-dividend ex-date evidence can establish occupancy from that date onward.
   It does not establish inception, end a prior episode, or override a competing positive ownership interval.
+- Rule 13 can recover a complete informative initial episode when the retired symbol lookup returns 404 and a
+  unique chronological provider name-change path reaches agreeing exact successor symbol/CUSIP identity. All known
+  occupants must be compatible with that existing component. Matching eight-view grids, feed, timeframe and selected
+  generations are required; the immediate successor's informative history must start strictly later with at most four
+  missing expected sessions. Stop before the recorded departure or first prolonged shared inert bridge, trimming
+  trailing inert rows. Later reuse and synthetic padding gain no attribution. Competing replacements are checked at
+  every traversed node, not only the original label; splits alone do not defeat continuation.
+  [`assess_retired_continuation`](libs/alpaca_end_of_day_security_correlation/retired_continuation.py) owns these gates.
+  This is action-backed, temporally corroborated continuity, not rule 9's exact-price donor proof. It uses an existing
+  component ID without inventing a historical UUID, CUSIP, ownership interval or membership edge. Unknown historical
+  fields remain null. Earlier gap and ownership decisions retain precedence. Similar ticker stems or `.WS` suffixes
+  are not identity evidence: separate warrant series, common shares and units must remain distinct.
 - The terminal fallback requires a gapless source, stable same-ticker candidates, one current anchor, agreeing names,
   and no missing or unexpected sessions.
 - The fallback can also assign complete informative observed history to an exact inactive split component or narrowly
   supported successive dividend identities. It requires complete grids and no prolonged synthetic carries. Known
   component membership need not establish the per-session UUID/CUSIP vintage; those fields remain null when unknown.
   An inactive split component does not require invented termination metadata or a join to the acquiring security.
+  For dividend-supported identities, exact-CUSIP payment epochs must advance toward the unique current anchor.
+  Overlap is allowed only when the complete economic payment ledgers agree throughout it, including unmatched-date,
+  amount, record/payable-date and foreign/special checks. Qualified names, exchange/type and all known occupants must
+  agree; names or a shared coupon alone are insufficient. A nearby stock-only departure can close this observed
+  history when exact endpoints and positive ratios agree, without joining the acquirer. Existing cash-departure
+  behavior remains. [`_inactive_successive_dividend_history`](libs/alpaca_end_of_day_security_correlation/terminal_fallback.py)
+  owns the inference; `build_security_correlation_report` includes it in the closed-history eligibility check.
 
 Rule 9 is assessed once per source by `assess_predecessor_prefixes` in
 [`predecessor_prefix.py`](libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py), using the shared cross-source
