@@ -4,7 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -176,14 +176,15 @@ class PricingDownloadTests(unittest.TestCase):
 
     def test_either_endpoint_mismatch_replaces_all_history_including_new_days(self):
         self.run_download()
-        for index in (0, -1):
+        for offset, index in enumerate((0, -1)):
             with self.subTest(endpoint=index):
+                end = f"2026-10-{15 + offset:02d}"
                 revised = list(self.bars)
                 revised[index] = {**revised[index], "c": Decimal("777.1234567890123456789")}
                 # A non-endpoint revision must also arrive through the full replacement.
                 revised[1] = {**revised[1], "vw": Decimal("888.00000000000000001")}
                 revised.append(bar("2026-10-14"))
-                client, result = self.run_download("2026-10-15", revised)
+                client, result = self.run_download(end, revised)
                 self.assertEqual(result["mode"], "full_refresh")
                 self.assertEqual(result["consistency_check"], "mismatch")
                 self.assertEqual(
@@ -193,21 +194,21 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertTrue(
                     all(call[2] == timestamp("2016-01-01T00:00:00Z") for call in client.calls[16:24])
                 )
-                expected = transform(
-                    revised, timestamp("2016-01-01T00:00:00Z"), timestamp("2026-10-15T00:00:00Z")
-                )
+                expected = transform(revised, timestamp("2016-01-01T00:00:00Z"), timestamp(end + "T00:00:00Z"))
                 self.assertTrue(
                     all(rows == expected for rows in read_pricing_views(self.store, "GOOG").values())
                 )
                 self.assertFalse((self.root / ".pending.json").exists())
                 self.assertFalse((self.root / ".staging").exists())
-                self.run_download("2026-10-15", self.bars, refresh_all=True)
+                self.run_download(end, self.bars, refresh_all=True)
 
     def test_mismatch_in_any_adjustment_or_field_triggers_full_refresh(self):
         self.run_download()
+        end = date(2026, 10, 14)
         for adjustment in ADJUSTMENTS:
             for field in ("o", "h", "l", "c", "v", "n", "vw"):
                 with self.subTest(adjustment=adjustment, field=field):
+                    end += timedelta(days=1)
                     client = FakeClient(self.bars)
                     original_fetch = client.fetch
 
@@ -221,17 +222,17 @@ class PricingDownloadTests(unittest.TestCase):
                         ]
 
                     with patch.object(client, "fetch", side_effect=revised):
-                        result = download_pricing(self.store, "GOOG", "2026-10-14", client=client)
+                        result = download_pricing(self.store, "GOOG", end.isoformat(), client=client)
                     self.assertEqual(result["mode"], "full_refresh")
                     self.assertEqual(result["consistency_check"], "mismatch")
-                    self.run_download(refresh_all=True)
+                    self.run_download(end.isoformat(), refresh_all=True)
 
     def test_single_session_checked_once_per_view_and_empty_history_has_no_probes(self):
         self.run_download(bars=[])
-        client, result = self.run_download(bars=[bar("2026-10-01")])
+        client, result = self.run_download("2026-10-15", bars=[bar("2026-10-01")])
         self.assertEqual(result["consistency_check"], "no_stored_sessions")
         self.assertEqual(len(client.calls), 16)
-        client, result = self.run_download(bars=[bar("2026-10-01"), bar("2026-10-13")])
+        client, result = self.run_download("2026-10-16", bars=[bar("2026-10-01"), bar("2026-10-13")])
         self.assertEqual(result["consistency_check"], "matched")
         self.assertEqual(len(client.calls), 24)
         self.assertTrue(all(call[2] == timestamp("2026-10-01T04:00:00Z") for call in client.calls[:8]))
@@ -239,7 +240,7 @@ class PricingDownloadTests(unittest.TestCase):
     def test_only_endpoints_are_probed_not_the_last_five_sessions(self):
         rows = [bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13)]
         self.run_download(bars=rows)
-        client, result = self.run_download(bars=rows)
+        client, result = self.run_download("2026-10-15", bars=rows)
         self.assertEqual(result["consistency_check"], "matched")
         starts = {call[2] for call in client.calls[:16]}
         self.assertEqual(starts, {timestamp("2026-10-01T04:00:00Z"), timestamp("2026-10-13T04:00:00Z")})
@@ -247,22 +248,22 @@ class PricingDownloadTests(unittest.TestCase):
     def test_last_session_comes_from_authoritative_month_not_stale_year(self):
         self.run_download()
         updated = self.bars + [bar("2026-10-13")]
-        self.run_download(bars=updated)
-        client, result = self.run_download(bars=updated)
+        self.run_download("2026-10-15", bars=updated)
+        client, result = self.run_download("2026-10-16", bars=updated)
         self.assertEqual(result["mode"], "update")
         self.assertEqual({call[2] for call in client.calls[1:16:2]}, {timestamp("2026-10-13T04:00:00Z")})
 
     def test_empty_active_month_uses_year_or_completed_endpoints(self):
-        for rows in (self.bars[:-1], self.bars[:2]):
+        for offset, rows in enumerate((self.bars[:-1], self.bars[:2])):
             with self.subTest(last=rows[-1]["t"]):
-                self.run_download(bars=rows, refresh_all=True)
-                client, result = self.run_download(bars=rows)
+                self.run_download(f"2026-10-{14 + offset:02d}", bars=rows, refresh_all=True)
+                client, result = self.run_download(f"2026-10-{15 + offset:02d}", bars=rows)
                 self.assertEqual(result["consistency_check"], "matched")
                 self.assertEqual(client.calls[1][2].date(), timestamp(rows[-1]["t"]).date())
 
     def test_missing_endpoint_triggers_full_replacement(self):
         self.run_download()
-        _client, result = self.run_download(bars=self.bars[1:])
+        _client, result = self.run_download("2026-10-15", bars=self.bars[1:])
         self.assertEqual(result["consistency_check"], "mismatch")
         self.assertEqual(result["mode"], "full_refresh")
         self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), len(self.bars) - 1)
@@ -286,14 +287,14 @@ class PricingDownloadTests(unittest.TestCase):
         rows = [bar("2016-01-04", "123.000"), bar("2026-10-01", "123.000")]
         self.run_download(bars=rows)
         equivalent = [bar("2016-01-04", "1.23E+2"), bar("2026-10-01", "123")]
-        _client, result = self.run_download(bars=equivalent)
+        _client, result = self.run_download("2026-10-15", bars=equivalent)
         self.assertEqual(result["mode"], "update")
         self.assertEqual(result["consistency_check"], "matched")
 
     def test_timestamp_mismatch_also_triggers_full_refresh(self):
         self.run_download()
         revised = [{**self.bars[0], "t": "2016-01-04T06:00:00Z"}] + self.bars[1:]
-        _client, result = self.run_download(bars=revised)
+        _client, result = self.run_download("2026-10-15", bars=revised)
         self.assertEqual(result["mode"], "full_refresh")
 
     def test_full_refresh_failure_after_mismatch_preserves_every_file(self):
@@ -336,7 +337,7 @@ class PricingDownloadTests(unittest.TestCase):
         before = snapshot(self.root)
         revised = [{**self.bars[0], "c": 0.1}] + self.bars[1:]
         with self.assertRaisesRegex(DownloadError, "not float"):
-            self.run_download(bars=revised)
+            self.run_download("2026-10-15", bars=revised)
         self.assertEqual(before, snapshot(self.root))
 
     def test_interrupted_automatic_refresh_recovers_without_mixing_old_prices(self):
@@ -387,8 +388,6 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertEqual(before[relative], after[relative])
 
     def test_repeating_identical_request_does_not_rewrite_any_files(self):
-        self.run_download()
-        # First update changes the request provenance from full history to current month.
         self.run_download()
         before = snapshot(self.root)
         _client, result = self.run_download()

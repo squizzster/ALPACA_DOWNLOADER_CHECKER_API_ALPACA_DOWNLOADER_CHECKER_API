@@ -175,6 +175,7 @@ def download_pricing(
     client,
     refresh_all: bool = False,
     from_date: str | None = None,
+    on_check=None,
 ) -> dict:
     validate_version()
     symbol = symbol_label(symbol)
@@ -197,7 +198,7 @@ def download_pricing(
     fsync_directory(source_parent)
     fsync_directory(source_parent.parent)
     with ticker_lock(root, exclusive=True):
-        recovered = recover(root)
+        recovered = recover(root, on_check=on_check)
         previous = load_source(root, symbol)
         if previous is None and any(path.name != ".download.lock" for path in root.iterdir()):
             raise DownloadError("ticker directory contains unowned files; refusing acquisition")
@@ -206,6 +207,22 @@ def download_pricing(
             if end < previous_end:
                 raise DownloadError("request end cannot move backwards, including during full refresh")
         stored_start = timestamp(previous.get("history_start", HISTORY_START)) if previous is not None else None
+        history_start = requested_start or stored_start or timestamp(HISTORY_START)
+        if previous is not None and end == previous_end and history_start == stored_start and not refresh_all:
+            # The completed request boundary is authoritative, even for an empty
+            # response or a weekend. Advance the boundary (or force) to probe again.
+            return {
+                "symbol": symbol,
+                "anchor_month": previous["anchor_month"],
+                "request": previous["latest_request"],
+                "mode": "unchanged",
+                "consistency_check": "not_required",
+                "updated_boundaries": [],
+                "files_written": 0,
+                "recovered": recovered,
+                "requests": 0,
+                "changed": False,
+            }
         endpoints = read_validator(root, previous) if previous is not None else None
         if endpoints is None:
             endpoints = (
@@ -222,16 +239,7 @@ def download_pricing(
             raise DownloadError(
                 f"from date {from_date} would exclude previously stored sessions from {old_extent['from']}"
             )
-        history_start = requested_start or stored_start or timestamp(HISTORY_START)
         extending = stored_start is not None and history_start < stored_start
-        if previous is not None:
-            if recovered and end == previous_end and not refresh_all and not extending:
-                return {
-                    "symbol": symbol,
-                    "anchor_month": previous["anchor_month"],
-                    "recovered": True,
-                    "requests": 0,
-                }
         check = "not_required"
         if previous is not None and not refresh_all:
             if not any(endpoints.values()):
@@ -339,7 +347,14 @@ def download_pricing(
             else _changed_range(views, read_boundary(root, previous, "current_month"))
         )
         written = publish(
-            root, previous, source, documents, payloads, update=update, repair_payloads=refresh_all
+            root,
+            previous,
+            source,
+            documents,
+            payloads,
+            update=update,
+            repair_payloads=refresh_all,
+            on_check=on_check,
         )
         return {
             "symbol": symbol,

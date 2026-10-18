@@ -6,8 +6,9 @@ and separates unrelated securities that reuse the same symbol.
 
 The standalone downloader and lineage builder are independent siblings using `data_pricing/`. Compact completed-years,
 current-year and current-month boundaries reduce file churn. Up to three whole-ticker download workers share a
-199-request/minute budget; one lineage worker consumes locked update notices. Completed boundaries are trusted and
-unchanged work is reused, without repeated upstream audits or duplicate pricing copies.
+199-request/minute budget; one lineage worker consumes changed inputs and their affected ticker links. Disposable
+store-level work hints make unchanged repeat runs cheap; deleting them restores receipt-based checking. Completed
+receipts remain authoritative, without repeated upstream audits or duplicate pricing copies.
 
 `alpaca_end_of_day.StandaloneReader` and [`read_alpaca_pricing.py`](read_alpaca_pricing.py) read resolved histories as
 exact values or CSV without downloads or store writes. Unrelated lineage work does not block completed groups.

@@ -26,5 +26,19 @@
       "Retain the rejected request and separately acquired metadata in the existing group receipt, discover its downstream dependencies, and include these absent inputs in reverse dependency closure, reader locks and recovery. Later pricing arrival invalidates the publication.",
       "Trust unchanged group generations and identical recorded absence outcomes until pricing changes or explicit metadata refresh; recheck acquisition after range expansion. Preserve existing completed v2/v3 assignments and their pricing boundaries."
     ]
+  },
+  {
+    "modifications": [
+      "Select pending source checks from a disposable shared work list and owning-version changes from the existing lineage index; rebuild list coverage only after a successful full scan when the list is missing or incomplete.",
+      "Acknowledge inspected hints only after durable group completion, preserve newer hints during recovery, and keep source receipts and assignment boundaries authoritative without linking them to the optional work list.",
+      "Build reverse ticker and shared-UUID lookups once per invocation and update affected entries after publication; preserve the same dependency closure, correlation rules and compatible v2-v4 decisions."
+    ]
+  },
+  {
+    "modifications": [
+      "Reuse approved group metadata when only correlation rules changed and all actual input generations, recorded absent inputs, metadata/report versions and calendar still match, with no pending pricing notices or explicit metadata refresh.",
+      "Recalculate and publish the complete affected group under the current rules using its stored evidence, preserving downloader handoff, explicit refresh, changed-input acquisition and existing receipt authority without adding a cache or artifact.",
+      "Preserve completed v2-v5 decisions when every other owning version and input still matches."
+    ]
   }
 ]

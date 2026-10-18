@@ -5,33 +5,32 @@ from pathlib import Path
 from libs.alpaca_pricing_download.contract import HISTORY_START, InitialPricingUnavailable, symbol_label
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
+from libs.alpaca_pricing_download.update_checks import (
+    acknowledge_checks,
+    begin_checks,
+    complete_checks,
+    read_checks,
+)
 
 from . import storage
 from .acquisition import check_unavailable_pricing, unavailable_pricing
-from .contract import MAX_ACQUISITION_WAVES, MAX_CLOSURE, LineageError, reusable_versions, validate_version
+from .contract import (
+    MAX_ACQUISITION_WAVES,
+    MAX_CLOSURE,
+    LineageError,
+    reusable_metadata_versions,
+    reusable_versions,
+    validate_version,
+)
 from .metadata import EvidenceClient, acquire, acquire_unpriced, dependencies
 from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
+from .selection import DependencyGraph
 from .transform import correlate, make_publication
 
 
-def closure(index, seeds, asset_ids=()):
-    symbols, assets = set(seeds), set(asset_ids)
-    while True:
-        previous = (set(symbols), set(assets))
-        for symbol, entry in index["symbols"].items():
-            if (
-                symbol in symbols
-                or symbols.intersection(entry["dependencies"])
-                or assets.intersection(entry["asset_ids"])
-            ):
-                symbols.add(symbol)
-                symbols.update(entry["dependencies"])
-                assets.update(entry["asset_ids"])
-        if len(symbols) > MAX_CLOSURE:
-            raise LineageError(f"lineage closure exceeds {MAX_CLOSURE} labels; no notices consumed")
-        if (symbols, assets) == previous:
-            return symbols
+def closure(index, seeds, asset_ids=(), *, graph=None):
+    return (graph or DependencyGraph(index["symbols"])).closure(seeds, asset_ids)
 
 
 def _current_sources(store, locked):
@@ -47,10 +46,20 @@ def _current_sources(store, locked):
 
 
 def process_group(
-    store, root, seed, *, identity_client, pricing_client=None, refresh=False, index=None, observer=None
+    store,
+    root,
+    seed,
+    *,
+    identity_client,
+    pricing_client=None,
+    refresh=False,
+    index=None,
+    observer=None,
+    graph=None,
 ):
     index = storage.read_index(root) if index is None else index
-    group = closure(index, {seed})
+    graph = graph or DependencyGraph(index["symbols"])
+    group = closure(index, {seed}, graph=graph)
     acquisition_waves = 0
     metadata_cache = {}
     unavailable = {}
@@ -58,6 +67,7 @@ def process_group(
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
         required = None
         with storage.pricing_locks(store, group) as locked:
+            checks = read_checks(store, locked)
             sources = _current_sources(store, locked)
             # A missing seed is missing pricing, just like a related label. With
             # no published range, None delegates defaults to the downloader.
@@ -84,7 +94,7 @@ def process_group(
             }
             selected = {name: storage.document_digest(source) for name, source in sources.items()}
             prior_unavailable = unavailable_pricing(previous.get(seed))
-            if (
+            reuse_metadata = (
                 not refresh
                 and seed in sources
                 and not notices
@@ -94,11 +104,14 @@ def process_group(
                     and prior["source_sha256"] == selected[symbol]
                     and prior["input_sources"] == selected
                     and unavailable_pricing(prior) == prior_unavailable
-                    and reusable_versions(prior["versions"])
+                    and reusable_metadata_versions(prior["versions"])
                     for symbol, prior in previous.items()
                 )
-            ):
+            )
+            if reuse_metadata:
                 check_unavailable_pricing(store, prior_unavailable, locked)
+                unavailable = prior_unavailable
+            if reuse_metadata and all(reusable_versions(prior["versions"]) for prior in previous.values()):
                 if observer is not None:
                     observer(
                         store=store,
@@ -111,6 +124,7 @@ def process_group(
                         notices={},
                         resumed=False,
                     )
+                acknowledge_checks(store, checks, sources)
                 return {"symbol": seed, "status": "unchanged", "processed": sorted(sources)}
             required = {
                 symbol: {"from": start, "end_exclusive": end}
@@ -134,18 +148,23 @@ def process_group(
                 evidence, deps, assets = {}, {}, set()
                 for symbol, view in inputs.items():
                     prior = previous[symbol]
-                    full = refresh or (
-                        prior is not None
-                        and (
-                            not reusable_versions(prior["versions"])
-                            or notices.get(symbol, {}).get("from", prior["anchor_month"] + "-01")
-                            < prior["anchor_month"] + "-01"
+                    if reuse_metadata:
+                        # Only the downstream rules changed. Consume the approved
+                        # evidence directly, then recalculate the complete group.
+                        evidence[symbol] = prior["evidence"]
+                    else:
+                        full = refresh or (
+                            prior is not None
+                            and (
+                                not reusable_versions(prior["versions"])
+                                or notices.get(symbol, {}).get("from", prior["anchor_month"] + "-01")
+                                < prior["anchor_month"] + "-01"
+                            )
                         )
-                    )
-                    key = (symbol, view.source_sha256, full)
-                    if key not in metadata_cache:
-                        metadata_cache[key] = acquire(view, evidence_client, prior, refresh=full)
-                    evidence[symbol] = metadata_cache[key]
+                        key = (symbol, view.source_sha256, full)
+                        if key not in metadata_cache:
+                            metadata_cache[key] = acquire(view, evidence_client, prior, refresh=full)
+                        evidence[symbol] = metadata_cache[key]
                     deps[symbol] = dependencies(evidence[symbol], symbol)
                     assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
                 for symbol, missing in sorted(unavailable.items()):
@@ -156,7 +175,9 @@ def process_group(
                     auxiliary = missing["evidence"]
                     deps[symbol] = dependencies(auxiliary, symbol)
                     assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
-                expanded = closure(index, group.union(*(set(values) for values in deps.values())), assets)
+                expanded = closure(
+                    index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
+                )
                 if expanded != group:
                     group = expanded
                     continue  # Release every pricing lock before taking an enlarged, sorted set.
@@ -203,7 +224,8 @@ def process_group(
                         }
                         if unavailable:
                             receipts[symbol]["unavailable_pricing"] = unavailable
-                    storage.publish(store, root, index, receipts, boundaries, notices)
+                    storage.publish(store, root, index, receipts, boundaries, notices, checks=checks)
+                    graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
                     # Inspection observes the actual publication while the same
                     # locks still protect its inputs. It never runs another resolver.
                     if observer is not None:
@@ -271,19 +293,32 @@ def run_lineage(
     with storage.writer_lock(store) as root:
         recovered = storage.recover(store, root)
         index = storage.read_index(root)
-        selected = (
-            list(dict.fromkeys(symbols))
-            if symbols is not None
-            else local_symbols(store, pending=not all_symbols)
-        )
+        checks = read_checks(store)
+        if checks["epoch"] is None:
+            checks = begin_checks(store)
+        full_scan = symbols is None and not checks["complete"]
+        if symbols is not None:
+            selected = list(dict.fromkeys(symbols))
+        else:
+            # The list is disposable: only a completed full scan establishes its
+            # coverage. Thereafter all/pending use hints and the existing index,
+            # not thousands of individual source/lineage receipts.
+            selected = list(checks["checks"])
+            if full_scan:
+                selected.extend(local_symbols(store, pending=False))
+                selected.extend(index["symbols"])
+            elif refresh:
+                selected.extend(index["symbols"])
         # A changed rule/calendar version invalidates processed inputs even without
         # a new pricing notice. Default pending mode picks up that explicit work.
         if symbols is None:
             selected.extend(
                 symbol
                 for symbol, entry in index["symbols"].items()
-                if not reusable_versions(entry.get("versions")) and symbol not in selected
+                if not reusable_versions(entry.get("versions"))
             )
+        selected = list(dict.fromkeys(selected))
+        graph = DependencyGraph(index["symbols"])
         for label in selected:
             try:
                 symbol = symbol_label(label)
@@ -298,6 +333,7 @@ def run_lineage(
                     refresh=refresh,
                     index=index,
                     observer=observer,
+                    graph=graph,
                 )
                 processed.update(result["processed"])
             except (RuntimeError, OSError, ValueError) as error:
@@ -305,6 +341,8 @@ def run_lineage(
             results.append(result)
             if storage.path_at(root, ".pending.json").exists():
                 break  # Recovery must finish before another group can publish.
+        if full_scan and not any(item["status"] in {"failed", "waiting_for_pricing"} for item in results):
+            complete_checks(store, checks["epoch"])
     return {
         "workers": 1,
         "recovered": recovered,

@@ -201,8 +201,9 @@ symbols and all eight adjustment requests sequentially; it has no worker option.
 
 ## Standalone pricing-source contract
 
-Owner: `libs/alpaca_pricing_download/`; entrypoint: `download_alpaca_pricing.py`; source contract: **7**.
-The store marker/layout remains v3. The only additional persistent artifact is the per-ticker endpoint validator.
+Owner: `libs/alpaca_pricing_download/`; entrypoint: `download_alpaca_pricing.py`; source contract: **8**.
+The store marker/layout remains v3. Per-ticker endpoint validators retain their existing format; two optional
+store-level scheduling caches are described under [disposable update checks](#disposable-update-checks).
 The downloader requests a ticker, preserves its returned pricing, publishes pending dates, and stops. Asset UUIDs,
 public IDs, lineage, row allocation, and catalogue decisions are outside this boundary.
 
@@ -268,7 +269,7 @@ mapping rather than rediscovering equality. Gzip uses level 5 and `mtime=0`; emp
 
 The source receipt selects exactly three manifest paths and hashes. Boundary receipts bind owner, version, anchor,
 contributing request, row counts, timestamps, logical digests, and payload sizes/hashes. Request metadata does not imply retained
-rows were re-downloaded. Unchanged v1–v5 pricing receipts remain readable inside the same v3 store; old layouts are not
+rows were re-downloaded. Unchanged v1–v7 pricing receipts remain readable inside the same v3 store; old layouts are not
 automatically migrated.
 
 ### First/last comparison validator
@@ -286,7 +287,11 @@ to guess ownership. No separate endpoint files, raw-response archive, or new sto
 
 ### Update or replace
 
-Before an ordinary update, request the **first and last effective stored session in every adjustment view**, once
+After recovery, an identical completed request end and retained history start returns unchanged before validator or
+price-payload reads and provider requests. This reuses the requested boundary, including a successful empty response;
+it does not assert the provider's historical data is immutable. Force bypasses this shortcut.
+
+Before advancing an ordinary request boundary, request the **first and last effective stored session in every adjustment view**, once
 if they are the same session. Probes use the update's `asof`, not each probe day's mapping. Compare timestamps and
 every numeric field exactly, ignoring equivalent numeric spelling.
 
@@ -356,11 +361,48 @@ selection and incomplete-publication checks are not a repeated data audit. The s
 Standalone lineage consumes this handoff; `StandaloneReader` consumes its completed assignments and pricing.
 `DataLibrary` catalogue integration remains separate work.
 
+### Disposable update checks
+
+`lineage_update_check.sqlite3` at the store root is a disposable work list, owned by
+[`update_checks.py`](../libs/alpaca_pricing_download/update_checks.py). It contains one state row
+(`epoch`, `complete`, monotonically increasing `revision`) and one row per pending ticker (`symbol`, `revision`).
+It contains no source hashes, receipt paths, prices, identity assignments or audit history. No published receipt
+references it. SQLite updates only affected rows and removes its temporary journal after each commit.
+
+Pricing queues a hint under its ticker lock after successful staging, before installing the recovery journal or
+changing any published source. This also invalidates an older batch memo before an interruption becomes recoverable.
+Provenance-only changes and empty initial publications therefore remain discoverable even without changed-date
+notices. Recovery queues again, and deletion/recreation during publication preserves a hint in the replacement file.
+An interrupted publication may leave an extra hint; the existing receipts decide what work is actually needed.
+
+A missing list is incomplete, never proof that nothing changed. A normal lineage invocation creates an incomplete
+list, scans local sources plus indexed entries once, and marks coverage complete only at successful exit. Explicit
+ticker runs cannot establish global coverage. Later ordinary runs read this list and the existing lineage index,
+select incompatible versions, and open only affected groups. Within each group the usual receipt/version gates
+still decide reuse. Forward, reverse and shared-UUID relationships are indexed once in RAM per invocation.
+
+Hints are acknowledged only for successfully inspected or published inputs. The temporary lineage recovery journal
+may record the inspected epoch/revisions; these never enter permanent receipts. Epoch changes or newer per-ticker
+revisions prevent old work from clearing new hints, including a byte-identical forced publication. Arrivals after
+selection remain queued for the next invocation. Failed/waiting fallback work cannot establish complete coverage.
+
+`download_completion.json`, owned by [`completion.py`](../libs/alpaca_pricing_download/completion.py), is a separate
+optional memo written only after a successful batch exit. It retains the ordered normalized selection, requested
+end/start and downloader version, plus the work list's epoch/revision. It is replaced, not appended. An identical
+non-forced batch can reuse it without individual ticker locks or receipt reads. Every pricing publication invalidates
+it before changing source files; only a batch whose own events account for its complete revision interval may write
+a new memo. Concurrent unrelated publication conservatively prevents reuse. The ordinary source-receipt path remains
+the fallback, and deleting either cache invalidates this batch shortcut.
+
+These optimizations assume the supported publishers record mutations. Out-of-band edits or older executables are
+not discovered by an unchanged cache; discard both caches after restoring or importing store content. Cache deletion
+changes scheduling cost, not receipt validity or published facts. Public readers do not use either cache as authority.
+
 ## Standalone lineage contract
 
 Owner: [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/); entrypoint:
-[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **4**. Compatible v1–v3 receipts,
-indexes and recovery journals remain parseable. Only the explicit v2/v3 exception below permits prior-version reuse.
+[`build_alpaca_lineage.py`](../build_alpaca_lineage.py); contract **6**. Compatible v1–v5 receipts,
+indexes and recovery journals remain parseable. Only the explicit v2–v5 exception below permits prior-version reuse.
 The standalone pricing store/marker remains unchanged. Lineage acquires asset/CUSIP and corporate-action evidence itself, but requests
 pricing only through the downloader. It reuses the existing ownership, row-allocation, UUID-membership and
 `security_id` transforms; it does not publish online status or the public catalogue.
@@ -408,16 +450,25 @@ another authentication of the bars. Completed unresolved and empty histories qua
 read boundaries and session grids to explain the retained result; see the [operator evidence contract](#operator-lineage-evidence).
 
 `versions()` in [`contract.py`](../libs/alpaca_lineage_build/contract.py) includes the lineage, identity-report and
-correlation versions plus the calendar digest. `reusable_versions` accepts exact equality or lineage v2/v3 with every
-other field equal: v3 changes locking and v4 fixes failed auxiliary acquisition, not completed row decisions. This
+correlation versions plus the calendar digest. `reusable_versions` accepts exact equality or lineage v2–v5 with every
+other field equal: v3 changes locking, v4 fixes failed auxiliary acquisition, v5 changes work selection, and v6 reuses
+approved metadata for rule-only recalculation. These changes preserve completed row decisions. This
 exception applies to whole-group reuse, month resume, metadata acquisition and readers; it neither rewrites old
 receipts nor accepts v1 or changed rules/calendar. All other
 version changes invalidate reuse. Readable older schemas are not automatically reusable.
 
+If only the correlation version differs, `reusable_metadata_versions` permits the same complete group-input gate
+to reuse its approved evidence. Source generations, group membership, recorded unavailable outcomes, metadata/report
+versions and calendar must still match; pending pricing notices and explicit refresh prevent reuse. Recorded absent
+inputs remain locked and checked. Lineage then loads trusted pricing and recalculates the complete affected group
+with current rules. It does not reuse obsolete assignments or reacquire the unchanged upstream evidence. New inputs,
+new dependencies and incompatible metadata contracts retain their existing acquisition path. No cache or artifact
+is added for this distinction.
+
 When acquisition is required, ordinary action acquisition starts at the **previously active month**, retaining older
 normalized actions. Exact asset/CUSIP lookups are refreshed. Newly discovered labels acquire their full requested
 evidence range. First use,
-an older pricing invalidation, changed rules/calendar, or explicit metadata refresh reacquires the full evidence
+an older pricing invalidation, incompatible versions, or explicit metadata refresh reacquires the full evidence
 range. Historical provider corrections outside the resumed window require explicit refresh; matching prices are
 not claimed to prove metadata freshness. Conflicting current action identities fail before publication.
 
@@ -464,7 +515,7 @@ retries, at most three times. Selected receipts/boundaries are loaded under the 
 while consuming the snapshot. Never wait for a pricing lock while holding the publication gate. Unrelated groups can
 calculate and publish during a read. A pending journal still prevents reads until recovery; no partial commit is exposed.
 
-At worker startup, the publication gate drains old-protocol users before upgrading SQLite `user_version` to 4.
+At worker startup, the publication gate drains old-protocol users before upgrading SQLite `user_version` to 6.
 Only the protocol header changes; prices and existing receipts stay intact. Older executables reject that index
 before taking pricing locks. New readers refuse the old header until the worker upgrades it. Do not run old binaries
 against an upgraded store, unlink either lock inode, or bypass the locks with direct file reads.

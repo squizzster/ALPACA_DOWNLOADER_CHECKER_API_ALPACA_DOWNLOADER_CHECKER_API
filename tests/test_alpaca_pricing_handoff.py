@@ -96,7 +96,7 @@ class PricingHandoffTests(unittest.TestCase):
         self.download(bars=rows)
         self.consume()
         revised = rows[:2] + [bar("2026-10-05", "999")] + rows[3:]
-        result = self.download(bars=revised)
+        result = self.download("2026-10-15", bars=revised)
         self.assertEqual(result["mode"], "update")
         self.assertEqual(result["consistency_check"], "matched")
         self.assertEqual(storage.read_document(self.notice), {"from": "2026-10-05", "to": "2026-10-05"})
@@ -106,7 +106,7 @@ class PricingHandoffTests(unittest.TestCase):
         self.download(bars=rows)
         self.consume()
         revised = rows[:2] + [bar("2026-10-05", "999"), bar("2026-10-07", "888")] + rows[4:]
-        self.download(bars=revised)
+        self.download("2026-10-15", bars=revised)
         self.assertEqual(storage.read_document(self.notice), {"from": "2026-10-05", "to": "2026-10-07"})
 
     def test_full_refresh_replaces_pending_incremental_range_with_all_history(self):

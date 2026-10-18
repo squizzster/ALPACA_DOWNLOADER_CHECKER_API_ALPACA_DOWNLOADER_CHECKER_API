@@ -32,9 +32,9 @@ class PricingValidatorTests(unittest.TestCase):
         self.root = self.store / "end_of_day/pricing/GOOG"
         self.rows = [bar("2016-01-04", "100"), bar("2020-01-02", "100"), bar("2026-10-01", "100")]
 
-    def run_download(self, rows=None, **kwargs):
+    def run_download(self, rows=None, *, end="2026-10-14", **kwargs):
         return download_pricing(
-            self.store, "GOOG", "2026-10-14", client=FakeClient(self.rows if rows is None else rows), **kwargs
+            self.store, "GOOG", end, client=FakeClient(self.rows if rows is None else rows), **kwargs
         )
 
     def consume(self):
@@ -65,7 +65,7 @@ class PricingValidatorTests(unittest.TestCase):
             return original(path)
 
         with patch.object(Path, "read_bytes", no_cold):
-            result = self.run_download(self.rows + [bar("2026-10-13")])
+            result = self.run_download(self.rows + [bar("2026-10-13")], end="2026-10-15")
         self.assertEqual(result["mode"], "update")
         self.assert_validator()
 
@@ -100,7 +100,7 @@ class PricingValidatorTests(unittest.TestCase):
                 side_effect=AssertionError("bootstrap"),
             ),
         ):
-            self.assertEqual(self.run_download()["mode"], "update")
+            self.assertEqual(self.run_download(end="2026-10-15")["mode"], "update")
         after = snapshot(self.root)
         for name in ("completed_years.raw.csv.gz", "2026/raw.csv.gz"):
             self.assertEqual(before[name], after[name])
@@ -116,7 +116,7 @@ class PricingValidatorTests(unittest.TestCase):
         (self.root / "source.manifest.json").write_bytes(json_bytes(source))
         (self.root / VALIDATOR_FILE).unlink()
         cold = (self.root / "completed_years.raw.csv.gz").stat()
-        self.run_download()
+        self.run_download(end="2026-10-15")
         self.assert_validator()
         self.assertEqual((self.root / "completed_years.raw.csv.gz").stat().st_ino, cold.st_ino)
         self.assertEqual((self.root / "completed_years.raw.csv.gz").stat().st_mtime_ns, cold.st_mtime_ns)
@@ -124,23 +124,23 @@ class PricingValidatorTests(unittest.TestCase):
             "libs.alpaca_pricing_download.download._stored_endpoints",
             side_effect=AssertionError("repeated bootstrap"),
         ):
-            self.run_download()
+            self.run_download(end="2026-10-16")
 
     def test_validator_damage_fails_without_provider_calls(self):
         self.run_download()
         (self.root / VALIDATOR_FILE).write_text("{}")
         client = FakeClient(self.rows)
         with self.assertRaisesRegex(DownloadError, "validator checksum"):
-            download_pricing(self.store, "GOOG", "2026-10-14", client=client)
+            download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertFalse(client.calls)
 
     def test_post_acquisition_probes_only_first_session_in_each_view(self):
         self.run_download()
         client = FakeClient(self.rows)
-        download_pricing(self.store, "GOOG", "2026-10-14", client=client)
+        download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertEqual(len(client.calls), 32)
         self.assertEqual({call[2] for call in client.calls[-8:]}, {timestamp("2016-01-04T05:00:00Z")})
-        self.assertEqual(set(client.asofs), {"2026-10-14"})
+        self.assertEqual(set(client.asofs), {"2026-10-15"})
 
     def test_changed_provider_after_probes_restarts_once_as_full_history(self):
         self.run_download()
@@ -154,7 +154,7 @@ class PricingValidatorTests(unittest.TestCase):
             return original(symbol, adjustment, start, end, **kwargs)
 
         with patch.object(client, "fetch", side_effect=flip):
-            result = download_pricing(self.store, "GOOG", "2026-10-14", client=client)
+            result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertTrue(result["restarted"])
         self.assertEqual(result["mode"], "full_refresh")
         self.assertTrue(all(row[4] == "50" for row in read_pricing_views(self.store, "GOOG")["raw"]))
@@ -171,7 +171,7 @@ class PricingValidatorTests(unittest.TestCase):
             return original(symbol, adjustment, start, end, **kwargs)
 
         with patch.object(client, "fetch", side_effect=change_tail):
-            result = download_pricing(self.store, "GOOG", "2026-10-14", client=client)
+            result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertTrue(result["restarted"])
         self.assertEqual(result["mode"], "full_refresh")
 
@@ -188,16 +188,16 @@ class PricingValidatorTests(unittest.TestCase):
             return rows
 
         with patch.object(client, "fetch", side_effect=unstable), self.assertRaisesRegex(DownloadError, "twice"):
-            download_pricing(self.store, "GOOG", "2026-10-14", client=client)
+            download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertEqual(len(client.calls), 48)
         self.assertEqual(snapshot(self.store), before)
 
     def test_replacement_notice_includes_removed_edges_and_unconsumed_dates(self):
         self.run_download()
         self.consume()
-        self.run_download(self.rows[1:2])
+        self.run_download(self.rows[1:2], end="2026-10-15")
         self.assertEqual(storage.read_update(self.root), {"from": "2016-01-04", "to": "2026-10-01"})
-        self.run_download(self.rows[1:2], refresh_all=True)
+        self.run_download(self.rows[1:2], end="2026-10-15", refresh_all=True)
         self.assertEqual(storage.read_update(self.root), {"from": "2016-01-04", "to": "2026-10-01"})
         self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), 1)
         self.assert_validator()
@@ -273,9 +273,9 @@ class PricingValidatorTests(unittest.TestCase):
 
         updated = self.rows + [bar("2026-10-13")]
         with patch.object(storage.os, "replace", side_effect=interrupted), self.assertRaises(OSError):
-            self.run_download(updated)
+            self.run_download(updated, end="2026-10-15")
         with patch.object(FakeClient, "fetch", side_effect=AssertionError("recovery fetched")):
-            self.assertTrue(self.run_download(updated)["recovered"])
+            self.assertTrue(self.run_download(updated, end="2026-10-15")["recovered"])
         self.assert_validator()
 
     def test_from_cannot_truncate_even_on_force(self):

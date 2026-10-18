@@ -48,7 +48,8 @@ storage ownership, not price values or security ownership; see the
 
 The standalone **downloader** execution boundary is **one worker, one ticker transaction**: a worker owns its ticker
 from lock acquisition through all probes, adjustment downloads, and publication. At most three workers run concurrently;
-only the in-memory request budget/cooldown is shared across tickers. Workers never split one ticker's adjustments.
+the in-memory request budget/cooldown is shared across tickers. Workers never split one ticker's adjustments.
+The batch may reuse an optional completion memo after an entirely successful exit.
 
 The lineage twin has **one worker per store across processes**. Its unit of work is a complete dependency group,
 which can contain several ticker labels; the downloader's worker count does not apply to lineage. Its three
@@ -56,6 +57,12 @@ chronological boundaries include the month-over-year overlay. The dependency ind
 not shared security ownership. Completed groups are restart checkpoints, and approved upstream values are consumed
 without re-audit. Exact reuse, continuation and lock gates belong to the
 [standalone lineage contract](technical-contracts.md#standalone-lineage-contract).
+
+The downloader also maintains one disposable store-level list of changed ticker labels. Lineage consumes those hints
+and uses its existing dependency index to include affected links. A successful fallback scan establishes coverage at
+invocation exit; deleting the list restores that scan. These scheduling caches contain no pricing or identity facts,
+and published receipts never reference them. Their [contract](technical-contracts.md#disposable-update-checks)
+separates completion and invalidation from the authoritative per-source publications.
 
 The existing combined catalogue workflow remains:
 
@@ -186,8 +193,8 @@ not publish a catalogue, make online-availability decisions, or expose unresolve
 
 | Boundary | Owner | Responsibility |
 |---|---|---|
-| Standalone pricing | [`libs/alpaca_pricing_download/`](../libs/alpaca_pricing_download/) | Batch CLI, ticker REST requests, exact conversion, source-bound endpoint validator, three pricing boundaries, recoverable publication, and locked pending-date handoff; no security identity work. |
-| Standalone lineage | [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/) | One-worker CLI, chronological evidence resumption, trusted pricing adapter, affected dependency closure, existing identity transforms, twin assignment boundaries, and publish-before-acknowledge recovery. |
+| Standalone pricing | [`libs/alpaca_pricing_download/`](../libs/alpaca_pricing_download/) | Batch CLI and completion memo, ticker REST requests, exact conversion, source-bound endpoint validator, three pricing boundaries, recoverable publication, changed-input hints and locked pending-date handoff; no security identity work. |
+| Standalone lineage | [`libs/alpaca_lineage_build/`](../libs/alpaca_lineage_build/) | One-worker CLI, disposable hint consumption, chronological evidence resumption, trusted pricing adapter, affected dependency closure, existing identity transforms, twin assignment boundaries, and publish-before-acknowledge recovery. |
 | Consumer library | [`alpaca_end_of_day/`](../alpaca_end_of_day/__init__.py) | Online-only catalogue, search, ticker resolution, typed history, and flat export. |
 | Standalone resolved consumption | [`standalone.py`](../alpaca_end_of_day/standalone.py), [`standalone_cli.py`](../alpaca_end_of_day/standalone_cli.py) | Source-scoped public-ID lookup, coherent shared-lock reads, exact history assembly and JSON/CSV stdout; no new datastore artifact. |
 | Bloodhound conversion | [`libs/alpaca_bloodhound_export/`](../libs/alpaca_bloodhound_export/) | Consumer-side eight-view factor inference, 18-column projection, collision-checked IDs and atomic single-file export; no provider requests or producer changes. |

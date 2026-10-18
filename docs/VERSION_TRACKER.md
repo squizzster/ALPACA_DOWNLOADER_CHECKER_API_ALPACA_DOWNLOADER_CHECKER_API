@@ -9,6 +9,14 @@ not current worker status or blanket approval of every runtime receipt.
 
 ## Current state
 
+**2026-10-18 update:** standalone pricing **v8** and lineage **v6** are implemented and verified.
+Repeated requests reuse completed work; changed inputs follow affected ticker links through a disposable work list.
+Rule-only lineage changes reuse approved metadata when the complete group still matches.
+The [verification checkpoint](#correlation-only-metadata-reuse--2026-10-18) covers the full **748-test** suite.
+Correlation remains **v55**; production catch-up and the research backlog below are unchanged.
+The [read-only timing preflight](#read-only-timing-preflight--2026-10-18) identified the coupling of rule-only catch-up
+to metadata refresh. Lineage **v6** separates those decisions.
+
 As of **2026-10-17**, the accepted lineage code baseline is **`ada3975` / correlation v55**. It includes the earlier
 [434-group comparison](#correlation-v52-consolidated-handoff--2026-10-17),
 [auxiliary-acquisition/PANW fix](#auxiliary-acquisition-regression--2026-10-17), and these research iterations:
@@ -41,6 +49,14 @@ CLI/reader checks. These are code and selected-publication results, not whole-un
 
 ### Added
 
+- Standalone lineage v6 reuses approved metadata for correlation-only recalculation when all group inputs and the
+  metadata contract still match. Changed inputs, pending notices, new dependencies and explicit refresh retain their
+  acquisition path. Locked absent inputs remain part of the group. No new cache, artifact or correlation rule.
+- Standalone pricing v8 / lineage v5 add disposable store-level update hints and a successful-exit downloader batch
+  memo. Identical completed date ranges reuse receipts without live probes; advancing the boundary retains endpoint
+  checks. Lineage selects changed inputs, affected ticker links and incompatible versions; missing hints restore a
+  receipt scan, whose successful exit establishes coverage. Existing receipts remain authoritative and compatible
+  v2–v4 lineage decisions remain reusable. No production catch-up or frozen pricing mutation is part of this change.
 - Standalone pricing v7 / lineage v4 / public API v10 / operator evidence v3 distinguish exact initial auxiliary
   rejection from successful emptiness and hard acquisition failure. Metadata discovery and identity candidates are
   retained; absent dependencies join locks, reverse closure, recovery and reader/export freshness checks. No price
@@ -122,6 +138,11 @@ CLI/reader checks. These are code and selected-publication results, not whole-un
 
 ### Modified
 
+- Read-only full-store timing preflight records shared planning cost, the older-rule backlog and a bounded
+  stored-evidence calculation sample. The resulting lineage-v6 change separates rule-only recalculation from metadata
+  refresh; its contract, execution path, operation and focused verification are documented in their existing homes.
+- Documented repeated-run reuse, disposable-cache deletion, changed-input selection, fallback coverage and the
+  supported-writer assumption in the existing architecture, pipeline, operational and contract guides.
 - Documentation-only current-state refactor: compact README and direct status pointer; one current group/backlog
   summary here; dated verification kept separate; optional Parquet dependency clarified. Detailed ownership, rule,
   identity, locking, recovery and research-loop guidance remains in its existing authoritative files.
@@ -225,6 +246,75 @@ source-through-public boundary versions do not change because their serialized c
 are unchanged.
 
 ## Verification status
+
+### Correlation-only metadata reuse — 2026-10-18
+
+- Narrow lineage-v6 change to the existing group reuse gate: unchanged approved metadata survives a correlation-only
+  version change; the affected group still recalculates with current rules. Other invalidation and explicit-refresh
+  behavior remains. Exactly one v6 changelog entry was appended; prior entries are unchanged.
+- **13 focused tests passed in 377.304 seconds**, including all nine new regression tests and existing arrival,
+  refresh, daily continuation and publication-recovery checks. ResourceWarnings were treated as errors. Ruff lint
+  and formatting (**193 Python files**) passed; **299 local links/anchors**, all ten maintained documents and complete
+  README coverage passed.
+- Fresh full gate: **748 tests passed in 1032.095 seconds**, **zero skips**, with ResourceWarnings treated as errors
+  under Python **3.11.13**. The saved local output is `experimental_temp/metadata_reuse_20261018_verified.log`.
+  Test temporary stores stayed under `/data2/alpaca/experimental_temp`; no production catch-up or pricing mutation
+  was run. `git diff --check` passed. The earlier **739-test** result below records the preceding lineage-v5 checkpoint.
+
+### Repeated-run reuse — 2026-10-18
+
+- Fresh full gate: **739 tests passed in 3067.857 seconds**, **zero skips**, with ResourceWarnings treated as errors
+  under Python **3.11.13**. The saved local output is `experimental_temp/update_checks_20261018_verified.log`.
+  Test temporary stores stayed under `/data2/alpaca/experimental_temp`; no production download, pricing rewrite or
+  lineage catch-up was run.
+- Ruff **0.15.21** lint and formatting passed for **192 Python files**. Nine maintained CLI `--help` calls passed.
+  Local documentation links/anchors, complete README coverage of all ten maintained documents and `git diff --check`
+  passed. These remain local checks; the repository has no CI workflow.
+- Regression coverage includes five identical downloads without payload reads or network requests; endpoint probes
+  on request advancement; affected reverse links and shared UUIDs; provenance-only changes; deleted/recreated hints;
+  interrupted publication recovery; and successful-exit batch memo invalidation before a recoverable publication.
+  Synthetic **6,000-entry** selections forbid per-ticker processing on unchanged downloader and lineage repeats.
+- Exactly one changelog entry was appended for each of pricing **v8** and lineage **v5**; prior entries are unchanged.
+  Existing receipts remain authoritative, compatible v2–v4 lineage decisions remain reusable, and correlation/public
+  API versions are unchanged. Missing hints restore receipt discovery; only a successful fallback scan records full
+  coverage. Concurrent newer hints survive acknowledgement.
+- These results establish behavior, not full-store restart timing. Older-rule production publications still need
+  legitimate catch-up, and deleting the disposable caches restores discovery cost. The lineage-v6 follow-up is
+  recorded above.
+
+### Read-only timing preflight — 2026-10-18
+
+- The existing **9,383,936-byte** index selects **20,035 sources / 14,803 dependency groups**. **20,017 sources /
+  14,795 groups** require correlation-v55 catch-up; all indexed identity-report versions and calendar digests already
+  match. Correlation counts are v51: **19,752**, v52: **64**, v53: **190**, v54: **11**, v55: **18**. Both disposable
+  scheduling caches are absent, so the first normal run still needs fallback discovery and coverage establishment.
+- Shared planning used the production index loader, version gate and dependency graph, opening no individual
+  receipts or prices. The first observed pass took **23.397 seconds**; four same-process repeats took
+  **0.233–0.301 seconds**. Initial Python imports separately took **75.751 seconds**; the later sample's imports took
+  **0.080 seconds**. These distinguish first-access and warm costs, not a timed end-to-end producer invocation.
+- A stratified **64-source** receipt sample had **64 matching pricing generations**, no pending dated notices and
+  the same exclusive end, **2026-10-15**. Those checks took **253.105 seconds** in this environment. Eight complete
+  groups (**22 sources**, one to five per group, covering stored correlation v51–v55) then ran the existing three-pass
+  correlation and constructed proposed publications in RAM using approved stored evidence. All completed; correlation
+  took **0.209–5.545 seconds per group**, with total local load/calculation/construction **2.838–47.556 seconds**.
+  This bounded timing sample is not a whole-store impact audit or a reliable linear estimate of catch-up duration.
+- Existing dependency links include **22 labels across 20 groups** with no pricing source or lineage index entry.
+  A complete catch-up must handle their acquisition/requestability through the existing boundary; an all-store
+  `--no-download` run cannot be assumed to finish successfully.
+- At this preflight, the v5 `process_group` path treated a correlation-version mismatch as a full metadata-refresh reason. Successful
+  metadata acquisition for the **20,017** incompatible sources therefore requires at least **40,034** identity requests
+  (one action query and one symbol lookup each). At the configured 199/minute pace this alone implies about
+  **3 hours 21 minutes**, before CUSIP lookups, new dependencies, pagination, retries, price acquisition, calculation
+  or publication. This is a conditional request floor, not a completion ETA.
+- The identified follow-up was to reuse approved metadata for correlation-only recalculation when its own contract,
+  input coverage and dependencies remain valid; keep explicit refresh and actual input changes separate. It is now
+  implemented in lineage v6, with verification recorded above. The preflight itself made no runtime change or
+  production publication. The sample made **zero provider requests** and opened **430 distinct runtime files**,
+  including **66 gzip payloads**, below the 5,000-file concern.
+  Existing receipts and prices were preserved.
+- Ignored evidence: `experimental_temp/full_store_preflight_20261018.json`,
+  `experimental_temp/full_store_bounded_probe_20261018.json` and its matching `.py`/`.log`. Runtime code remains the
+  code covered by the **739-test** gate at this preflight; the later v6 implementation has a separate verification entry.
 
 ### Current-state documentation refactor — 2026-10-17
 
@@ -925,8 +1015,8 @@ complete current-store audit coverage.
 
 | Boundary or transform | Version | Role |
 |---|---:|---|
-| Standalone pricing source | 7 | Exact initial symbol-rejection outcome; existing compact storage, shared rate budget, validators and handoff. |
-| Standalone lineage | 4 | Metadata-only rejected auxiliaries; locked absent inputs, reverse closure, recovery and compatible v2/v3 reuse. |
+| Standalone pricing source | 8 | Identical-boundary reuse, successful-exit batch memo and disposable changed-input hints; live probes on advancement. |
+| Standalone lineage | 6 | Changed-input selection, disposable hints and approved metadata reuse for rule-only recalculation; compatible v2–v5 decisions. |
 | Clean-room run ledger | 1 | Immutable scope, checkpoints, exhaustive audit, completion, and activation authority. |
 | Public consumer API | 10 | Online-only `DataLibrary`; standalone groups with bounded reuse and actual/absent input freshness. |
 | Bloodhound export | 7 | RAM-held Arrow output, shared retained-memory allowance, one packed serialization and atomic 18-column publication. |
@@ -962,8 +1052,8 @@ affected chronology using trusted inputs, not an upstream audit. A full evidence
 grids even when normal processing reuses assignments.
 
 Standalone lineage remains one worker per store. Reads can still wait on their own pricing group or a brief commit;
-an incomplete publication prevents reads until recovery. `--all` restarts skip unchanged
-calculations but still scan dependencies and receipts; no full-store restart-time guarantee has been established.
+an incomplete publication prevents reads until recovery. Default/`--all` repeats use shared work hints and the existing
+index; deleting hints restores a receipt scan. No full-store restart-time guarantee has been established.
 See [restart and reader limits](operations.md#restart-and-catch-up). Multi-worker lineage and priority scheduling were
 investigated, not implemented. The v3 change removes whole-invocation reader blocking, not writer serialization.
 
@@ -971,6 +1061,9 @@ Older metadata corrections outside the resumed month window require explicit ref
 pricing-refresh policy, not exhaustive historical correction detection. The focused publications and broader read-only
 comparisons do not establish complete current-universe correctness or throughput. Historical run summaries below are
 not a live monitor; no whole-universe acceptance or performance claim is made by this documentation pass.
+The [timing preflight](#read-only-timing-preflight--2026-10-18) measured shared planning and bounded local calculation,
+not complete catch-up. Lineage v6 removes metadata acquisition for eligible rule-only changes; local recalculation,
+publication and genuinely changed or missing inputs still incur work.
 
 The research loop is not an implemented automatic scheduler. Some unit/warrant histories remain insufficiently
 anchored; adjacent/backfilled action records can leave membership gaps, and synthetic pre-listing carry-forwards need
@@ -979,7 +1072,7 @@ all historical legal CUSIPs, or prove adjusted-price equivalence across aliases.
 case limits are retained locally, not injected as executable ticker rules.
 
 The standalone pricing downloader has at most three ticker workers with one shared 199-request/minute limiter.
-A normal populated-ticker update uses up to 32 requests before pagination/retries: 16 initial probes, eight acquisitions,
+A populated-ticker update advancing its request boundary uses up to 32 requests before pagination/retries: 16 initial probes, eight acquisitions,
 and eight final first-session probes.
 For 18,092 such tickers that implies roughly 48.5 hours at the configured rate, before latency. `--all` is functional,
 not yet demonstrated as a daily universe service. Request batching/performance work is separate from this boundary change.

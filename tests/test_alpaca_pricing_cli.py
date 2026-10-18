@@ -11,7 +11,11 @@ from unittest.mock import patch
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from libs.alpaca_pricing_download import command_line
+from libs.alpaca_pricing_download import storage as pricing_storage
+from libs.alpaca_pricing_download.completion import COMPLETION_FILE, completed_batch, remember_batch, request_key
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
+from libs.alpaca_pricing_download.storage import initialize_store
+from libs.alpaca_pricing_download.update_checks import CHECK_FILE, begin_checks, queue_check, read_checks
 
 
 class PricingCliTests(unittest.TestCase):
@@ -153,6 +157,91 @@ class PricingCliTests(unittest.TestCase):
             code, result, _ = self.invoke("-s", "BAD/TICKER", "-s", "BROKEN", "-s", "GOOG")
         self.assertEqual(code, 1)
         self.assertEqual([value["status"] for value in result["results"]], ["failed", "failed", "updated"])
+        self.assertFalse((self.store / COMPLETION_FILE).exists())
+
+    def test_successful_batch_repeats_without_individual_receipts_or_provider_calls(self):
+        self.assertEqual(self.invoke("-s", "GOOG", "-s", "MSFT")[0], 0)
+        before = snapshot(self.store)
+        with (
+            patch.object(command_line, "download_pricing", side_effect=AssertionError("individual receipt")),
+            patch.object(self.client, "fetch", side_effect=AssertionError("provider request")),
+        ):
+            for _ in range(4):
+                code, result, _ = self.invoke("-s", "GOOG", "-s", "MSFT")
+                self.assertEqual(code, 0)
+                self.assertTrue(all(item["status"] == "unchanged" for item in result["results"]))
+        self.assertEqual(before, snapshot(self.store))
+
+    def test_deleting_either_cache_falls_back_to_completed_source_receipts(self):
+        self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
+        before = snapshot(self.store / "end_of_day")
+        for filename in (COMPLETION_FILE, CHECK_FILE):
+            with self.subTest(filename=filename):
+                (self.store / filename).unlink()
+                with (
+                    patch.object(command_line, "download_pricing", wraps=download_pricing) as download,
+                    patch.object(self.client, "fetch", side_effect=AssertionError("provider request")),
+                ):
+                    self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
+                self.assertEqual(download.call_count, 1)
+                self.assertTrue((self.store / COMPLETION_FILE).exists())
+                self.assertEqual(before, snapshot(self.store / "end_of_day"))
+        self.assertFalse(read_checks(self.store)["complete"])
+
+    def test_advanced_boundary_and_force_bypass_completed_batch(self):
+        self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
+        self.client.calls.clear()
+        with patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2026, 10, 15)):
+            code, result, _ = self.invoke("-s", "GOOG")
+            self.assertEqual(code, 0)
+            self.assertEqual(result["results"][0]["consistency_check"], "matched")
+            self.assertEqual(len(self.client.calls), 32)
+            self.client.calls.clear()
+            code, result, _ = self.invoke("-s", "GOOG", "--force-download")
+            self.assertEqual(code, 0)
+            self.assertEqual(result["results"][0]["mode"], "full_refresh")
+            self.assertTrue(self.client.calls)
+
+    def test_other_publisher_invalidates_memo_and_prevents_claiming_batch_completion(self):
+        self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
+        request = request_key(["GOOG"], "2026-10-14", None)
+        self.assertTrue(completed_batch(self.store, request))
+        before = read_checks(self.store, ())
+        own = queue_check(self.store, "GOOG")
+        queue_check(self.store, "OTHER")
+        self.assertFalse(completed_batch(self.store, request))
+        remember_batch(self.store, request, before, [own])
+        self.assertFalse(completed_batch(self.store, request))
+        self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
+        self.assertTrue(completed_batch(self.store, request))
+
+    def test_interrupted_force_invalidates_memo_before_recovery_journal_is_installed(self):
+        self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
+        request = request_key(["GOOG"], "2026-10-14", None)
+        self.client.bars = [bar("2016-01-04", "50"), bar("2026-10-13", "50")]
+        with patch.object(pricing_storage, "_finish_publication", side_effect=OSError("stopped before install")):
+            self.assertEqual(self.invoke("-s", "GOOG", "--force-download")[0], 1)
+        self.assertTrue((self.store / "end_of_day/pricing/GOOG/.pending.json").exists())
+        self.assertFalse(completed_batch(self.store, request))
+        with patch.object(self.client, "fetch", side_effect=AssertionError("recovery reacquired pricing")):
+            code, result, _ = self.invoke("-s", "GOOG")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["results"][0]["status"], "recovered")
+        self.assertTrue(completed_batch(self.store, request))
+
+    def test_large_completed_batch_uses_shared_cache_without_opening_ticker_receipts(self):
+        initialize_store(self.store)
+        before = begin_checks(self.store)
+        symbols = [f"T{number}" for number in range(6000)]
+        request = request_key(symbols, "2026-10-14", None)
+        remember_batch(self.store, request, before, [])
+        with (
+            patch.object(command_line, "selected_symbols", return_value=symbols),
+            patch.object(command_line, "download_pricing", side_effect=AssertionError("individual receipt")),
+        ):
+            code, result, _ = self.invoke("--all")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["succeeded"], 6000)
 
     def test_selection_and_end_modes_are_mutually_exclusive(self):
         for args in (
@@ -205,6 +294,6 @@ class PricingCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(result["results"][0]["status"], "empty")
         self.client.bars = [bar("2026-10-13")]
-        self.invoke("-s", "GOOG")
+        self.invoke("-s", "GOOG", "--force-download")
         _, result, _ = self.invoke("-s", "GOOG")
         self.assertEqual(result["results"][0]["status"], "unchanged")

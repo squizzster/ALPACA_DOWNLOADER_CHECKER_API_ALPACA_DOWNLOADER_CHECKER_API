@@ -19,6 +19,7 @@ from libs.alpaca_pricing_download.storage import (
     ticker_lock,
     write_file,
 )
+from libs.alpaca_pricing_download.update_checks import acknowledge_checks, read_checks
 
 from .acquisition import unavailable_pricing
 from .contract import (
@@ -312,16 +313,32 @@ def _install(root: Path, journal: dict) -> None:
 
 
 def _acknowledge(store: Path, journal: dict) -> None:
-    for symbol, expected in sorted(journal["notices"].items()):
+    expected_checks = journal.get("checks")
+    current_checks = read_checks(store, journal["sources"]) if expected_checks else None
+    acknowledged = []
+    for symbol in sorted(journal["sources"]):
         root = regular_path(store, f"end_of_day/pricing/{symbol}")
         if regular_path(root, ".pending.json").exists():
             continue  # Downloader recovery still owns that input.
         source = load_source(root, symbol)
+        if current_checks and (
+            current_checks["epoch"] != expected_checks["epoch"]
+            or (
+                symbol in current_checks["checks"]
+                and current_checks["checks"][symbol] != expected_checks["checks"].get(symbol)
+            )
+        ):
+            continue  # Lost coverage or a newer hint cannot acknowledge an older snapshot.
         # A crash releases pricing locks. Never consume a newer notice merely
         # because it has exactly the same from/to dates as the older one.
         if source is not None and document_digest(source) == journal["sources"][symbol]:
-            if read_update(root) == expected:
+            expected = journal["notices"].get(symbol)
+            if expected is not None and read_update(root) == expected:
                 acknowledge_update(root, expected)
+            if read_update(root) is None:
+                acknowledged.append(symbol)
+    if expected_checks:
+        acknowledge_checks(store, expected_checks, acknowledged)
 
 
 def finish_publication(store: Path, root: Path, journal: dict) -> None:
@@ -348,7 +365,9 @@ def recover(store: Path, root: Path) -> bool:
     return True
 
 
-def publish(store: Path, root: Path, index: dict, receipts: dict, boundaries: dict, notices: dict) -> None:
+def publish(
+    store: Path, root: Path, index: dict, receipts: dict, boundaries: dict, notices: dict, *, checks=None
+) -> None:
     documents, retire = {}, []
     updated = {}
     for symbol, receipt in receipts.items():
@@ -385,6 +404,11 @@ def publish(store: Path, root: Path, index: dict, receipts: dict, boundaries: di
         ),
         "notices": notices,
     }
+    if checks is not None:
+        journal["checks"] = {
+            "epoch": checks["epoch"],
+            "checks": {symbol: revision for symbol, revision in checks["checks"].items() if symbol in receipts},
+        }
     # Caller already owns the complete pricing group and the worker-only lock.
     with publication_lock(root, exclusive=True):
         atomic_json(path_at(root, ".pending.json"), journal)

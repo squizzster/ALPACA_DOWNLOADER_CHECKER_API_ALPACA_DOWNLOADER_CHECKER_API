@@ -12,7 +12,7 @@ from test_alpaca_lineage_build import IdentityClient, asset, calendar_bars
 from test_alpaca_pricing_download import FakeClient, FakeClock, snapshot
 
 from alpaca_end_of_day import StandaloneReader, StandaloneReaderError
-from libs.alpaca_lineage_build import storage
+from libs.alpaca_lineage_build import contract, pipeline, storage
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.evidence import output_evidence
 from libs.alpaca_lineage_build.pipeline import run_lineage
@@ -152,6 +152,27 @@ class AuxiliaryAcquisitionTests(unittest.TestCase):
                 self.assertIsNone(self.receipt("BUYER"))
                 self.assertTrue(self.notice("BUYER").exists())
 
+    def test_rule_only_change_reuses_locked_absence_and_approved_auxiliary_metadata(self):
+        identities = self.prepare_entitlement()
+        pricing, requests = self.rejected_client()
+        first = run_lineage(self.store, ["BUYER"], identity_client=identities, pricing_client=pricing)
+        self.assertEqual(first["failed"], 0, first)
+        previous = self.receipt("BUYER")
+        count = identities.request_count
+        with (
+            patch.object(contract, "CORRELATION_VERSION", contract.CORRELATION_VERSION + 1),
+            patch.object(pipeline, "acquire", side_effect=AssertionError("metadata reacquisition")),
+            patch.object(pipeline, "acquire_unpriced", side_effect=AssertionError("auxiliary reacquisition")),
+            patch.object(pipeline, "download_pricing", side_effect=AssertionError("pricing acquisition")),
+        ):
+            result = run_lineage(self.store, ["BUYER"], identity_client=identities)
+            self.assertEqual(result["failed"], 0, result)
+            self.assertEqual(result["results"][0]["status"], "processed")
+            self.assertEqual(self.receipt("BUYER")["versions"], contract.versions())
+        self.assertEqual(self.receipt("BUYER")["unavailable_pricing"], previous["unavailable_pricing"])
+        self.assertEqual(identities.request_count, count)
+        self.assertEqual(len(requests), 1)
+
     def test_metadata_failure_is_not_hidden_by_bars_rejection(self):
         identities = self.prepare_entitlement()
         pricing, _ = self.rejected_client()
@@ -231,7 +252,7 @@ class AuxiliaryAcquisitionTests(unittest.TestCase):
         before = snapshot(self.store / "end_of_day/pricing/BUYER")
         rejection, _ = self.rejected_client()
         with self.assertRaises(DownloadError) as raised:
-            download_pricing(self.store, "BUYER", "2026-10-15", client=rejection)
+            download_pricing(self.store, "BUYER", "2026-10-16", client=rejection)
         self.assertNotIsInstance(raised.exception, InitialPricingUnavailable)
         self.assertEqual(before, snapshot(self.store / "end_of_day/pricing/BUYER"))
         client = FakeClient([])

@@ -24,9 +24,14 @@ def build_parser():
     )
     choice.add_argument("--file", type=Path, help="headerless CSV or one ticker per line")
     choice.add_argument(
-        "--all", action="store_true", dest="all_symbols", help="all locally downloaded tickers, not the universe"
+        "--all",
+        action="store_true",
+        dest="all_symbols",
+        help="update local lineage using changed-input hints; scan receipts if hints are missing",
     )
-    choice.add_argument("--pending", action="store_true", help="consume pending pricing notices (default)")
+    choice.add_argument(
+        "--pending", action="store_true", help="update changed inputs and outdated lineage versions (default)"
+    )
     parser.add_argument("--workers", type=int, choices=(1,), default=1, help="exactly one lineage worker")
     parser.add_argument(
         "--refresh-metadata",

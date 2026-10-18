@@ -9,9 +9,12 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import timedelta
 from pathlib import Path
 
-from .contract import DownloadError
+from .completion import completed_batch, remember_batch, request_key
+from .contract import DownloadError, validate_version
 from .download import download_pricing, parse_date, request_end
 from .http import BarsClient
+from .storage import initialize_store
+from .update_checks import begin_checks, read_checks
 
 MAX_WORKERS = 3
 
@@ -19,7 +22,8 @@ MAX_WORKERS = 3
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Download ticker pricing only; check the first and last stored sessions before updating, "
+            "Download ticker pricing only; reuse an identical completed request boundary, "
+            "check the first and last stored sessions before advancing it, "
             "and replace all history on a mismatch. No identity, lineage, or catalogue work."
         )
     )
@@ -79,6 +83,7 @@ def selected_symbols(arguments) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        validate_version()
         symbols = selected_symbols(arguments)
         end_text = arguments.request_end
         if arguments.to_date is not None:
@@ -87,14 +92,33 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.from_date is not None:
             parse_date(arguments.from_date)
         client = BarsClient(os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", ""))
+        request = request_key(symbols, end, arguments.from_date)
+        reused = not arguments.refresh_all and completed_batch(arguments.store, request)
+        if reused:
+            initialize_store(arguments.store.absolute())
+        before = read_checks(arguments.store.absolute(), ())
+        if before["epoch"] is None and arguments.store.is_dir():
+            initialize_store(arguments.store.absolute())
+            before = begin_checks(arguments.store.absolute())
     except (DownloadError, OSError, ValueError, OverflowError, csv.Error) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+
+    events = []
 
     def update_ticker(symbol):
         # One worker owns the entire ticker boundary, including its lock, probes,
         # all adjustment views, bounded restart, and final publication.
         try:
+            if reused:
+                return {
+                    "symbol": symbol,
+                    "status": "unchanged",
+                    "mode": "unchanged",
+                    "requests": 0,
+                    "files_written": 0,
+                    "changed": False,
+                }
             result = download_pricing(
                 arguments.store,
                 symbol,
@@ -102,10 +126,13 @@ def main(argv: list[str] | None = None) -> int:
                 client=client,
                 refresh_all=arguments.refresh_all,
                 from_date=arguments.from_date,
+                on_check=events.append,
             )
             result["status"] = (
                 "recovered"
-                if "mode" not in result
+                if result.get("recovered") and result.get("requests") == 0
+                else "unchanged"
+                if result.get("mode") == "unchanged"
                 else "empty"
                 if not result["has_data"]
                 else "updated"
@@ -142,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
                     index, symbol = following
                     pending[pool.submit(update_ticker, symbol)] = index
     failed = sum(result["status"] == "failed" for result in results)
+    if not failed and not reused:
+        try:
+            remember_batch(arguments.store, request, before, events)
+        except (DownloadError, OSError, ValueError) as error:
+            # This optional memo never changes the completed per-ticker outcomes.
+            print(f"completed-batch memo unavailable: {error}", file=sys.stderr)
     print(
         json.dumps(
             {

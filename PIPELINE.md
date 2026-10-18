@@ -16,10 +16,12 @@ resolved reader consumes the compact twins directly as described below.
 1. Select and deduplicate repeated symbols, a CSV/line file, or the tracked universe. Freeze one request end and run
    at most three ticker workers. One worker owns one entire ticker transaction through steps 2–8; adjustments are not
    separate jobs. All workers share one paced 199-request-per-rolling-minute budget and HTTP retry cooldown.
-   Ticker failures are reported and do not stop the remaining batch; final results retain input order.
+   Ticker failures are reported and do not stop the remaining batch; final results retain input order. An identical
+   successful batch with an unchanged publication revision reuses its optional memo without opening ticker receipts.
 2. Take the ticker's exclusive lock and finish interrupted publication. Reject backwards ends and any `FROM` that
    excludes stored observations, including on force. Recovering an old request does not suppress explicit force.
-3. Before ordinary acquisition, compare live first/last sessions with the published validator in all eight views,
+   An identical completed end and retained history start returns unchanged before payload reads or provider calls.
+3. Before advancing an ordinary request boundary, compare live first/last sessions with the published validator in all eight views,
    using the update's symbol-mapping date. Older sources bootstrap the validator once from their stored pricing.
 4. Initial acquisition, empty history, endpoint mismatch, earlier `FROM`, or force selects full acquisition from the
    retained history start (default 2016). Otherwise request the stored active month through the new end.
@@ -34,8 +36,11 @@ resolved reader consumes the compact twins directly as described below.
 7. Calculate pending work from actually changed session dates, extending any unconsumed range. Full replacement
    covers old, new, and pending date extents, including removed sessions. Force is also a clean replacement; no clipped
    edges are retained. An unchanged ordinary acquisition creates no new work notice.
-8. Verify the CSV/gzip round trip, stage only changed files, and journal publication. Install pricing with its source
+8. Verify the CSV/gzip round trip and stage only changed files. Queue a disposable ticker hint before installing the
+   recovery journal or changing published files, including provenance-only changes. Install pricing with its source
    receipt last, retire superseded partitions, publish the pending notice, clear the journal, and release the lock.
+9. After every selected ticker succeeds, record the batch memo if its publication revisions exclude concurrent
+   publishers. Failed batches retain their individual completed receipts but establish no batch shortcut.
 
 The year snapshot includes the active month as observed at initial acquisition or consolidation; subsequent month
 updates do not rewrite it. Consumption replaces its overlapping month rather than appending duplicate observations.
@@ -47,16 +52,20 @@ locking, and overlap semantics live in
 
 ## Standalone lineage execution
 
-1. Take the single lineage-worker lock and finish any interrupted publication. Select pending notices, explicit
-   symbols/file, or all locally published sources; changed rule/calendar versions also invalidate their prior results.
+1. Take the single lineage-worker lock and finish any interrupted publication. Explicit symbols/file select their
+   groups. Default/`--all` runs select disposable changed-input hints and incompatible indexed versions. Missing or
+   incomplete hints trigger one fallback scan of local source receipts. Metadata refresh adds all indexed sources.
+   Build forward, reverse and UUID lookups once in RAM from the existing index.
 2. Expand the dependency closure through old relationships and UUID evidence. Lock known pricing inputs in sorted
    order. Trust completed pricing receipts; reject an incomplete pricing transaction without repairing it. A missing
    starting ticker takes the same downloader handoff as step 4; absent a published range, use downloader defaults.
    Before loading price rows or acquiring metadata, return `unchanged` for a completed group satisfying the
    [reuse gate](docs/technical-contracts.md#resume-and-invalidation). Otherwise continue through the stages below.
-3. Resume corporate-action acquisition from the previously active month, retaining earlier normalized evidence;
-   refresh asset/CUSIP lookups. First acquisition, older invalidation, changed rules, or `--refresh-metadata` acquires
-   the full evidence range. Discover newly related labels to a bounded fixed point.
+3. If only correlation rules changed and the complete group's inputs and metadata contract still match, consume
+   its approved stored evidence. Otherwise resume corporate-action acquisition from the previously active month,
+   retaining earlier normalized evidence, and refresh asset/CUSIP lookups. First acquisition, older invalidation,
+   incompatible versions or `--refresh-metadata` acquires the full evidence range. Discover newly related labels
+   to a bounded fixed point.
 4. If related pricing is missing or has insufficient request coverage, release pricing locks and delegate to the
    downloader. Then reacquire the full lock set and reload the latest notices and inputs. Published empty responses
    are acquired evidence, not missing downloads. An exact initial rejection of an absent auxiliary is a separate
@@ -68,11 +77,14 @@ locking, and overlap semantics live in
 6. Publish completed-years, year snapshot and authoritative month assignments. Preserve unchanged receipts; retire
    consolidated month/year files. Ambiguous rows remain explicitly unassigned; dependency relationships never merge IDs.
 7. Take the brief publication gate while holding group pricing locks. Install the affected group under a recoverable transaction, update its small dependency index, then acknowledge
-   exactly the handled pricing notices. A crash may repeat acknowledgement but cannot consume a newer generation.
+   exactly the handled pricing notices and inspected hints. A crash may repeat acknowledgement but cannot consume a
+   newer generation or hint. Update the in-memory dependency lookup for the affected entries.
+8. At successful fallback-scan exit, mark that still-existing hint file's coverage complete. Failures, waiting work,
+   deletion/recreation and arrivals during the run cannot silently clear outstanding work.
 
 No public catalogue is produced. The [lineage contract](docs/technical-contracts.md#standalone-lineage-contract)
 defines the trust boundary, bounded work, chronological reuse and internal downstream handoff. The
-[restart guide](docs/operations.md#restart-and-catch-up) distinguishes pending work from an all-local-source scan.
+[restart guide](docs/operations.md#restart-and-catch-up) explains changed-work selection and fallback scans.
 
 ## Standalone reader execution
 

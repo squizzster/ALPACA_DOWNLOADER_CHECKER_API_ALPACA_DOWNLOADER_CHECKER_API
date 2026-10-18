@@ -352,7 +352,7 @@ def _discard_staging(root: Path) -> None:
     fsync_directory(root)
 
 
-def _finish_publication(root: Path, journal: dict) -> None:
+def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event=None) -> None:
     if journal.get("schema_version") not in SUPPORTED_VERSIONS or not isinstance(journal.get("writes"), list):
         raise DownloadError("invalid pricing publication journal")
     writes = journal["writes"]
@@ -390,6 +390,15 @@ def _finish_publication(root: Path, journal: dict) -> None:
         regular_path(root, relative)
         if relative in targets or relative == "source.manifest.json":
             raise DownloadError("cannot retire a selected publication target")
+    # Recovery queues too: a deleted cache must not hide a resumed publication.
+    from .update_checks import queue_check, read_checks
+
+    store = root.parents[2]
+    event = check_event
+    if event is None:
+        event = queue_check(store, root.name)
+        if on_check is not None:
+            on_check(event)
     for index, entry in enumerate(writes):
         target = regular_path(root, entry["path"])
         staged = regular_path(root, f".staging/write-{index:03d}")
@@ -433,6 +442,11 @@ def _finish_publication(root: Path, journal: dict) -> None:
     _discard_staging(root)
     regular_path(root, ".pending.json").unlink()
     fsync_directory(root)
+    if read_checks(store, ())["epoch"] != event[0]:
+        # Deletion/recreation during publication cannot lose this change.
+        event = queue_check(store, root.name)
+        if on_check is not None:
+            on_check(event)
 
 
 def _check_publication_entry(relative, checksum) -> None:
@@ -458,10 +472,10 @@ def _check_publication_entry(relative, checksum) -> None:
         raise DownloadError("unsafe pricing publication or retirement entry")
 
 
-def recover(root: Path) -> bool:
+def recover(root: Path, *, on_check=None) -> bool:
     pending = regular_path(root, ".pending.json")
     if pending.exists():
-        _finish_publication(root, read_document(pending))
+        _finish_publication(root, read_document(pending), on_check=on_check)
         return True
     _discard_staging(root)
     return False
@@ -476,6 +490,7 @@ def publish(
     *,
     update: dict | None = None,
     repair_payloads: bool = False,
+    on_check=None,
 ) -> int:
     old_files = owned_files(root, previous) if previous is not None else {}
     retained = {VALIDATOR_FILE: source["validator"]["sha256"]} if "validator" in source else {}
@@ -534,9 +549,16 @@ def publish(
         # Create journal through an atomic rename so partial JSON is never recovery authority.
         journal_stage = staging / f"write-{len(changed) + (notice is not None):03d}"
         write_file(journal_stage, json_bytes(journal))
+        # Invalidate completion before the journal is visible, so a stopped
+        # publication cannot be skipped by an older completed-batch memo.
+        from .update_checks import queue_check
+
+        event = queue_check(root.parents[2], source["symbol"])
+        if on_check is not None:
+            on_check(event)
         os.replace(journal_stage, pending)
         fsync_directory(root)
-        _finish_publication(root, journal)
+        _finish_publication(root, journal, on_check=on_check, check_event=event)
     except BaseException:
         if not pending.exists():
             _discard_staging(root)

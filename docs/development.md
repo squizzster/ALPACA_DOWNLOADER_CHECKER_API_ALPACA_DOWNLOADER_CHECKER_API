@@ -307,6 +307,14 @@ Tests use temporary repositories and HTTP doubles. They do not require productio
 prevents ignored bytecode caches. Use `python3.11` explicitly in the current environment: unqualified `python3` is
 Python 3.9.25 and cannot import the repository's Python 3.11 syntax.
 
+`test_alpaca_update_checks.py` exercises disposable hint deletion/reconstruction, provenance-only changes, newer
+arrivals, recovery and affected ticker links. `test_alpaca_pricing_cli.py` covers successful-exit batch reuse and its
+invalidation. Synthetic 6,000-entry cases forbid individual receipt processing on unchanged repeat runs; they do
+not run a production universe or claim live throughput.
+`test_alpaca_lineage_metadata_reuse.py` covers rule-only recalculation from approved metadata and the changed-input,
+new-link, notice, metadata-version and explicit-refresh conditions that retain acquisition. Auxiliary acquisition
+tests also cover reuse of locked absent inputs and their approved evidence.
+
 There is no `.github/workflows/` directory and no other repository CI configuration. Local commands are therefore the
 only automated gate. Ruff is configured in [`pyproject.toml`](../pyproject.toml), but its executable version is not
 pinned. Ruff also scans untracked Python files, so inspect `git status` before interpreting its output. Current tool

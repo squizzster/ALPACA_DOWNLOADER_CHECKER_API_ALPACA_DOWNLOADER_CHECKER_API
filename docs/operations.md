@@ -100,7 +100,9 @@ backfills by full acquisition. Force cannot bypass the no-truncation rule. Backw
 refused. The active month contains the day before the exclusive UTC end: November 1 still completes October.
 Historical end/`asof` dates do not select historical adjustment vintage.
 
-Normal updates first compare the first and last stored sessions in every view against live bars. A match permits
+An identical completed request end and retained start returns unchanged without provider requests or payload reads.
+Repeating the same entirely successful batch can also skip individual ticker receipts using an optional exit memo.
+Advancing the requested end first compares the first and last stored sessions in every view against live bars. A match permits
 active-month acquisition and rollover consolidation; a mismatch selects full replacement from the stored start.
 The comparison uses one source-bound validator JSON, bootstrapped once for older sources. After acquisition only the
 first session per nonempty view is re-requested; inconsistent results permit one full restart, then fail closed.
@@ -119,7 +121,8 @@ remove journal/staging files manually. Unexpected files, checksum changes, and s
 Standard output is one JSON batch summary with `requested`, `succeeded`, `failed`, and per-ticker `results`. Each
 result reports `updated`, `unchanged`, `empty`, `recovered`, or `failed`; successful acquisition also reports mode,
 consistency, boundaries, and writes. Final results retain input order; progress/errors go to standard error in completion
-order. At most the selected worker count of ticker jobs is scheduled at once. No run ledger is created. The precise storage and pending-range
+order. At most the selected worker count of ticker jobs is scheduled at once. The optional batch memo retains only
+the latest successful selection, without a growing run history. The precise storage and pending-range
 rules live in [Technical contracts](technical-contracts.md#standalone-pricing-source-contract).
 
 ## Standalone lineage
@@ -139,8 +142,8 @@ Existing pricing supplies the range for related inputs; selecting lineage does n
 |---|---|
 | `-s` / `--symbol` | Repeat for selected tickers; missing initial/related pricing is acquired as needed. |
 | `--file PATH` | Headerless CSV or one ticker per line. |
-| `--pending` | Pending pricing notices; default selection. Known sources with stale rule/calendar versions are also selected. |
-| `--all` | All locally downloaded tickers, **not** the downloader's tracked universe. |
+| `--pending` | Default: changed-input hints, including provenance-only updates, and stale rule/calendar versions. Missing/incomplete hints trigger a local receipt scan. |
+| `--all` | The same local catch-up scope and changed-input shortcut, **not** the downloader's tracked universe. |
 | `--workers 1` | Exactly one lineage worker; another invocation against the same store waits for it. |
 | `--refresh-metadata` | Reacquire full action/asset evidence for selected work, even without changed prices. |
 | `--no-download` | Disable pricing acquisition only; identity/action requests still occur for work needing calculation. Missing/short pricing coverage leaves notices pending. |
@@ -171,8 +174,8 @@ Choose the selection for the intended work:
 
 | Intent | Selection | Effect on completed work |
 |---|---|---|
-| Consume ordinary pricing updates | `--pending` (also the default) | Current completed groups without notices are not initially scheduled; related or version-invalidated groups can still be selected. |
-| Resume or catch up a full local-source pass | `--all` | Checks local sources and returns `unchanged` for reusable groups. Also synchronizes provenance-only source changes that produced no changed-date notice. |
+| Consume ordinary pricing updates | `--pending` (also the default) | Uses changed-input hints and indexed versions, then checks affected groups and ticker links. |
+| Resume or catch up local sources | `--all` | Uses the same shortcut; an absent/incomplete work list falls back to scanning existing receipts. Provenance-only changes are included in both modes. |
 | Revisit a bounded family | `--symbol TICKER` | Checks the complete dependency group, using the same reuse and publication path. |
 | Deliberately reacquire older identity/action evidence | Add `--refresh-metadata` | Disables the unchanged-group shortcut and requests full metadata for the selected work. |
 
@@ -185,16 +188,26 @@ python3.11 -B build_alpaca_lineage.py --store data_pricing --all --no-download
 This command still needs credentials for unfinished identity work. Omit `--refresh-metadata` for an ordinary restart.
 The exact [reuse gate](technical-contracts.md#resume-and-invalidation) checks input generations, pending notices and
 owning versions before price loading or calculation. It also retains completed empty or unresolved outcomes.
+When only correlation rules changed, unchanged group inputs reuse their approved metadata and recalculate lineage
+locally. Explicit metadata refresh, pending pricing work and changed input groups still use the existing acquisition
+path; a rule-only update does not itself request fresher provider facts.
 
-`--all` snapshots the initial local label list once, after acquiring the worker lock. It can discover related labels
-while running, but it does not continuously discover unrelated downloads arriving later. Each group reads its current
+Default and `--all` snapshot selected work once, after acquiring the worker lock. They can discover related labels
+while running; unrelated downloads arriving later retain hints for the next invocation. Each group reads its current
 published inputs under ticker locks; the invocation does not freeze every pricing generation at launch. If the
 downloader completes after selection, a subsequent pass catches newly available sources. A second simultaneous
 lineage command waits for the existing worker; it does not restart or accelerate it.
 
-Skipping calculation is not a constant-time cursor resume. `--all` still enumerates sources, expands dependency
-groups, acquires locks and reads receipts. The current `closure` implementation scans the dependency index for each
-group. Use `--pending` for ordinary updates; no fixed full-store restart-time guarantee is established.
+With a completed work list, an unchanged repeat reads shared store-level files and examines the existing index in
+memory. It does not enumerate thousands of source directories or open their individual receipts. Missing coverage
+requires a fallback scan once; only a successful scan exit establishes complete coverage. Changed rules/calendar can
+still select substantial real work. There is no measured full-store wall-time guarantee.
+
+`lineage_update_check.sqlite3` and `download_completion.json` at the store root are disposable scheduling caches.
+Deleting the first restores lineage's receipt scan; deleting either disables the downloader's batch shortcut until
+the next successful batch. Existing receipts and dated notices remain authoritative and are never changed merely
+to reconstruct these caches. After an out-of-band restore/import or use of older publishing code, discard both
+caches so the next run rediscovers the store. Keep the actual receipts, locks and recovery journals intact.
 
 Use scoped metadata refresh when older provider corrections need reacquisition. Ordinary updates do not claim to
 detect arbitrary old metadata revisions. Selection and shortcut behavior are owned by `run_lineage`, `local_symbols`

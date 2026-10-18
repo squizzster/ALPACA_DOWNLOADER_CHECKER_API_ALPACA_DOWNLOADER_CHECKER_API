@@ -34,5 +34,12 @@
       "Preserve the provider's exact single-symbol invalid-symbol rejection as a typed acquisition outcome only before the first successful page/view of a new source; keep partial acquisitions, established inputs, generic errors, credentials and transport failures hard failures without changing stored pricing.",
       "Include the requested symbol and adjustment in other terminal bars HTTP errors while retaining shared rate limiting, Retry-After handling and bounded retries."
     ]
+  },
+  {
+    "modifications": [
+      "Reuse an identical completed request end and history start without provider probes, payload reads or publication; retain live endpoint checks when the boundary advances and explicit full-refresh behavior.",
+      "Queue changed source publications, including provenance-only changes and empty sources, in one disposable lineage update check file before visible publication. Recovery and cache recreation retain pending work. Existing pricing receipts and dated notices remain authoritative.",
+      "Write one optional completed-batch memo only at successful exit when publication revisions exclude concurrent writers; reuse identical batches without per-ticker receipt checks, and fall back to existing receipts when either disposable cache is deleted."
+    ]
   }
 ]
