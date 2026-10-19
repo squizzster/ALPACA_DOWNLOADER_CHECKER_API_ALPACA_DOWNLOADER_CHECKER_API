@@ -80,20 +80,136 @@ class UpdateCheckTests(unittest.TestCase):
                 self.assertEqual(self.build(all_symbols=all_symbols)["results"], [])
         self.assertEqual(self.client.request_count, requests)
 
-    def test_deleted_work_list_rebuilds_from_golden_receipts_without_recalculation(self):
+    def test_deleted_work_list_rebuilds_from_source_generations_without_lineage_reads(self):
         self.download()
         self.build()
         before = snapshot(self.store / "end_of_day")
         (self.store / CHECK_FILE).unlink()
         with (
+            patch.object(storage, "read_receipt", side_effect=AssertionError("lineage receipt")),
             patch.object(pipeline, "load_pricing", side_effect=AssertionError("prices")),
             patch.object(pipeline, "acquire", side_effect=AssertionError("metadata")),
             patch.object(pipeline, "correlate", side_effect=AssertionError("calculation")),
         ):
-            self.assertEqual(self.build()["results"][0]["status"], "unchanged")
+            self.assertEqual(self.build()["results"], [])
         self.assertEqual(before, snapshot(self.store / "end_of_day"))
         self.assertTrue(read_checks(self.store)["complete"])
         self.assertEqual(read_checks(self.store)["checks"], {})
+
+    def test_incomplete_large_index_reads_one_source_generation_and_no_lineage_receipts(self):
+        self.download()
+        self.build()
+        (self.store / CHECK_FILE).unlink()
+        index = storage.read_index(self.store / "end_of_day/lineage")
+        current = versions()
+        synthetic = {}
+        for number in range(6000):
+            symbol = f"T{number:04}"
+            source = {"symbol": symbol, "generation": number}
+            synthetic[symbol] = source
+            index["symbols"][symbol] = {
+                "sha256": "0" * 64,
+                "source_sha256": storage.document_digest(source),
+                "dependencies": [],
+                "asset_ids": [],
+                "versions": current,
+            }
+        opened = []
+        load_source = pipeline.load_source
+
+        def selected(root, symbol):
+            opened.append(symbol)
+            return synthetic.get(symbol) or load_source(root, symbol)
+
+        with (
+            patch.object(storage, "read_index", return_value=index),
+            patch.object(pipeline, "load_source", side_effect=selected),
+            patch.object(storage, "read_receipt", side_effect=AssertionError("lineage receipt")),
+            patch.object(pipeline, "process_group", side_effect=AssertionError("unchanged group")),
+        ):
+            self.assertEqual(self.build()["results"], [])
+        self.assertEqual(len(opened), 6001)
+        self.assertTrue(read_checks(self.store)["complete"])
+
+    def test_incomplete_recovery_processes_stale_work_before_source_census(self):
+        self.download()
+        self.build()
+        (self.store / CHECK_FILE).unlink()
+        root = self.store / "end_of_day/lineage"
+        index = storage.read_index(root)
+        receipt = storage.read_receipt(root, "GOOG", index)
+        receipt["schema_version"] = 11
+        receipt["versions"] = {**receipt["versions"], "lineage": 11, "correlation": 54}
+        storage.atomic_json(root / "GOOG/lineage.manifest.json", receipt)
+        storage._update_index(
+            root,
+            {
+                "GOOG": {
+                    **index["symbols"]["GOOG"],
+                    "sha256": storage.document_digest(receipt),
+                    "versions": receipt["versions"],
+                }
+            },
+        )
+        scan = pipeline._source_generation_changes
+
+        def after_stale_work(*args, **kwargs):
+            self.assertEqual(storage.read_index(root)["symbols"]["GOOG"]["versions"], versions())
+            return scan(*args, **kwargs)
+
+        with patch.object(pipeline, "_source_generation_changes", side_effect=after_stale_work):
+            result = self.build()
+        self.assertEqual(result["results"][0]["status"], "processed")
+
+    def test_deleted_work_list_recovers_a_provenance_only_source_change(self):
+        self.download()
+        self.build()
+        result = self.download(end="2026-10-15")
+        self.assertFalse(result["changed"])
+        self.assertFalse((self.store / "end_of_day/manifests/GOOG/update.json").exists())
+        (self.store / CHECK_FILE).unlink()
+        rebuilt = self.build()
+        self.assertEqual(rebuilt["results"][0]["status"], "processed")
+        self.assertTrue(read_checks(self.store)["complete"])
+
+    def test_cache_recreated_during_source_census_stays_incomplete(self):
+        self.download()
+        self.build()
+        (self.store / CHECK_FILE).unlink()
+        load_source = pipeline.load_source
+        replacement = []
+
+        def recreate(root, symbol):
+            source = load_source(root, symbol)
+            if not replacement:
+                (self.store / CHECK_FILE).unlink()
+                replacement.append(begin_checks(self.store))
+            return source
+
+        with patch.object(pipeline, "load_source", side_effect=recreate):
+            self.assertEqual(self.build()["results"], [])
+        current = read_checks(self.store)
+        self.assertEqual(current["epoch"], replacement[0]["epoch"])
+        self.assertFalse(current["complete"])
+
+    def test_hint_arriving_during_source_census_survives_completion(self):
+        self.download()
+        self.build()
+        (self.store / CHECK_FILE).unlink()
+        load_source = pipeline.load_source
+        arrived = []
+
+        def publish_after_selection(root, symbol):
+            source = load_source(root, symbol)
+            if not arrived:
+                arrived.append(self.download("OTHER"))
+            return source
+
+        with patch.object(pipeline, "load_source", side_effect=publish_after_selection):
+            self.assertEqual(self.build()["results"], [])
+        current = read_checks(self.store)
+        self.assertTrue(current["complete"])
+        self.assertEqual(set(current["checks"]), {"OTHER"})
 
     def test_provenance_only_change_is_selected_without_opening_unrelated_group(self):
         self.download()

@@ -8,8 +8,8 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 11
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, VERSION)
+VERSION = 12
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, VERSION)
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
 
@@ -32,14 +32,16 @@ def versions() -> dict:
 
 
 def reusable_versions(published: dict) -> bool:
-    """Locking, acquisition, scheduling and recovery changes preserve v2-v10 decisions.
+    """Execution and trusted-handoff changes preserve v2-v11 decisions.
 
     Do not generalize this exception to other execution or rule versions. Older
     readable schemas are not necessarily reusable, and all other version fields
     must still match exactly.
     """
     current = versions()
-    return any(published == {**current, "lineage": version} for version in (2, 3, 4, 5, 6, 7, 8, 9, 10, VERSION))
+    return any(
+        published == {**current, "lineage": version} for version in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, VERSION)
+    )
 
 
 def reusable_metadata_versions(published: dict) -> bool:
@@ -79,4 +81,4 @@ def selected_document(path: Path, expected: str) -> dict:
     # they do not repeat that audit. expected identifies the selected generation.
     if not isinstance(expected, str) or len(expected) != 64:
         raise LineageError("invalid selected lineage generation")
-    return read_document(path)
+    return read_document(path, published=True)

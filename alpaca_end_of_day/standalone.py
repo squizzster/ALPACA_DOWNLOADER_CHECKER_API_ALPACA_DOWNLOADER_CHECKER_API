@@ -34,7 +34,7 @@ from libs.alpaca_pricing_download.contract import (
     symbol_label,
     timestamp,
 )
-from libs.alpaca_pricing_download.storage import load_source, read_document, read_update, regular_path
+from libs.alpaca_pricing_download.storage import load_source, published_path, read_document, read_update
 
 from ._standalone_cache import GenerationCache
 
@@ -186,7 +186,7 @@ def _selected_path(cache, root, relative):
     # Only reused inside one locked read call. A later snapshot starts fresh.
     key = "selected_path", root, relative
     if key not in cache:
-        cache[key] = regular_path(root, relative)
+        cache[key] = published_path(root, relative)
     return cache[key]
 
 
@@ -398,8 +398,8 @@ class StandaloneReader:
                 check_unavailable_pricing(self.store, absent, snap["locked"])
                 sources, assignments, generations = {}, {}, {}
                 for name in sorted(expected):
-                    pricing = regular_path(self.store, f"end_of_day/pricing/{name}")
-                    if name not in snap["locked"] or regular_path(pricing, ".pending.json").exists():
+                    pricing = published_path(self.store, f"end_of_day/pricing/{name}")
+                    if name not in snap["locked"] or published_path(pricing, ".pending.json").exists():
                         raise StandaloneReaderError("pricing publication incomplete; resume downloader first")
                     source = load_source(pricing, name)
                     if (
@@ -462,9 +462,9 @@ class StandaloneReader:
 
         try:
             check_store(self.store)
-            root = regular_path(self.store, "end_of_day/lineage")
+            root = published_path(self.store, "end_of_day/lineage")
             with publication_lock(root, wait=self.wait):
-                if regular_path(root, ".pending.json").exists():
+                if published_path(root, ".pending.json").exists():
                     raise StandaloneReaderError("lineage publication incomplete; resume lineage first")
                 index = read_index(root)
                 generations = {symbol: entry["sha256"] for symbol, entry in index["symbols"].items()}

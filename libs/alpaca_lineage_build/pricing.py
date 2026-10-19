@@ -31,16 +31,19 @@ class PricingInput:
         return self.downloads[descriptor["file"]]
 
 
-def load_pricing(store: Path, symbol: str, *, active_only=False, previous_boundaries=None) -> PricingInput:
+def load_pricing(
+    store: Path, symbol: str, *, source=None, active_only=False, previous_boundaries=None
+) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
-    root = regular_path(store, f"end_of_day/pricing/{symbol}")
-    source = load_source(root, symbol)
+    selected = source is not None
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+    source = load_source(root, symbol) if source is None else source
     if source is None:
         raise LineageError(f"no published pricing for {symbol}")
     views = (
-        load_published_boundary(root, source, "current_month")
+        load_published_boundary(root, source, "current_month", selected=selected)
         if active_only
-        else load_published_views(root, source)
+        else load_published_views(root, source, selected=selected)
     )
     generation = document_digest(source)
     request = source["latest_request"]
@@ -54,8 +57,13 @@ def load_pricing(store: Path, symbol: str, *, active_only=False, previous_bounda
         "timeframe": request["timeframe"],
     }
     downloads, descriptors = {}, []
+    converted_views = {}
     for adjustment in ADJUSTMENTS:
         values = views[adjustment]
+        rows = converted_views.get(id(values))
+        if rows is None:
+            rows = [dict(zip(FIELDS, row)) for row in values]
+            converted_views[id(values)] = rows
         filename = adjustment.replace(",", "_") + ".csv.gz"
         manifest = {
             "symbol": symbol,
@@ -68,7 +76,7 @@ def load_pricing(store: Path, symbol: str, *, active_only=False, previous_bounda
         downloads[filename] = SimpleNamespace(
             path=Path(filename),  # A logical name, never a file to materialize.
             manifest=manifest,
-            rows=[dict(zip(FIELDS, row)) for row in values],
+            rows=rows,
             pipeline_state="source_published",
             pipeline_diagnostic=None,
             integrity_failure=None,

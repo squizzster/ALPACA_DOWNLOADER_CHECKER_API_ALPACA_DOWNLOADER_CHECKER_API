@@ -214,12 +214,17 @@ class CheckSummaryTests(unittest.TestCase):
         summary.finish_rebuild(self.store, replacement, entries)
         self.assertNotEqual(self.read()["token"][0], old[0])
 
-    def test_rebuild_verifies_source_bound_validator_digest_without_repair(self):
+    def test_rebuild_trusts_published_validator_while_explicit_audit_checks_bytes(self):
+        expected = self.read()["entries"]
         path = self.pricing / "validator_first_last_sessions.json"
         path.write_bytes(path.read_bytes() + b" ")
         before = snapshot(self.store / "end_of_day")
+        projection.rebuild(self.store)
+        self.assertEqual(self.read()["entries"], expected)
         with self.assertRaisesRegex(DownloadError, "checksum differs"):
-            projection.rebuild(self.store)
+            pricing_storage.authenticate_validator(
+                self.pricing, pricing_storage.load_source(self.pricing, "GOOG")
+            )
         self.assertEqual(snapshot(self.store / "end_of_day"), before)
 
     def test_rebuild_rejects_pending_publications_without_recovering_them(self):

@@ -1,3 +1,4 @@
+import gzip
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
@@ -57,6 +58,104 @@ class PricingValidatorTests(unittest.TestCase):
         self.assertEqual(set(document["adjustments"]), set(ADJUSTMENTS))
         self.assertEqual(document["adjustments"]["raw"]["first"][5], "9007199254740993")
         self.assertEqual(len(list(self.root.glob("validator*"))), 1)
+
+    def test_first_read_uses_published_source_validator_and_inventory_without_stat_or_hash(self):
+        self.run_download()
+        with (
+            patch.object(Path, "stat", side_effect=AssertionError("published path inspected")),
+            patch.object(Path, "iterdir", side_effect=AssertionError("published directory scanned")),
+            patch.object(storage, "digest", side_effect=AssertionError("published data rehashed")),
+        ):
+            source = storage.load_source(self.root, "GOOG")
+            endpoints = storage.read_validator(self.root, source)
+            inventory = storage.owned_files(self.root, source)
+            views = storage.read_boundary(self.root, source, "completed_years")
+        self.assertTrue(endpoints["all"])
+        self.assertIn(VALIDATOR_FILE, inventory)
+        self.assertEqual(len(views["all"]), 2)
+
+    def test_publication_uses_recorded_digests_without_opening_previous_payloads(self):
+        self.run_download()
+        read, replace, publish = Path.read_bytes, storage.os.replace, storage.publish
+
+        def from_digest(*args, **kwargs):
+            installed = set()
+
+            def install(source, target):
+                result = replace(source, target)
+                installed.add(Path(target))
+                return result
+
+            def read_new_only(path):
+                if path.suffix == ".gz":
+                    self.assertIn(path, installed, f"publication re-read an old payload: {path}")
+                return read(path)
+
+            with patch.object(Path, "read_bytes", read_new_only), patch.object(storage.os, "replace", install):
+                return publish(*args, **kwargs)
+
+        for end, force in (
+            ("2026-10-15", False),
+            ("2026-11-03", False),
+            ("2027-01-05", False),
+            ("2027-01-05", True),
+        ):
+            with (
+                self.subTest(end=end, force=force),
+                patch("libs.alpaca_pricing_download.download.publish", side_effect=from_digest),
+            ):
+                self.run_download(end=end, refresh_all=force)
+
+    def test_explicit_audit_detects_changed_bytes_without_making_normal_reads_audit(self):
+        self.run_download()
+        source = storage.load_source(self.root, "GOOG")
+        path = self.root / "completed_years.raw.csv.gz"
+        rows = storage.decode_csv(path.read_bytes())
+        replacement = ((rows[0][0], "999", *rows[0][2:]), *rows[1:])
+        path.write_bytes(gzip.compress(storage.csv_bytes(replacement), mtime=0))
+        self.assertEqual(storage.read_boundary(self.root, source, "completed_years")["raw"][0][1], "999")
+        with self.assertRaisesRegex(DownloadError, "checksum"):
+            storage.authenticate_boundary(self.root, source, "completed_years")
+
+    def test_new_publication_still_rejects_symlinked_destinations(self):
+        self.run_download()
+        target = self.root / "2026/Oct/raw.csv.gz"
+        retained = target.with_suffix(".retained")
+        target.rename(retained)
+        target.symlink_to(retained)
+        before = retained.read_bytes()
+        with self.assertRaisesRegex(DownloadError, "symlink"):
+            self.run_download(rows=self.rows + [bar("2026-10-14")], end="2026-10-15")
+        self.assertEqual(retained.read_bytes(), before)
+
+    def test_validator_and_boundary_parse_the_same_bytes_that_were_authenticated(self):
+        self.run_download()
+        source = storage.load_source(self.root, "GOOG")
+        read = Path.read_bytes
+        opened = []
+
+        def once(path):
+            self.assertNotIn(path, opened, "authenticated document was reopened to parse it")
+            opened.append(path)
+            return read(path)
+
+        with patch.object(Path, "read_bytes", once):
+            self.assertIsNotNone(storage.authenticate_validator(self.root, source))
+            for kind, reference in source["boundaries"].items():
+                self.assertEqual(
+                    storage.authenticate_boundary_document(self.root, reference, "GOOG", kind)["symbol"], "GOOG"
+                )
+        self.assertEqual(len(opened), 4)
+
+    def test_authenticated_validator_still_rejects_malformed_or_non_object_json(self):
+        self.run_download()
+        source = storage.load_source(self.root, "GOOG")
+        for data in (b"{", b"[]"):
+            with self.subTest(data=data):
+                (self.root / VALIDATOR_FILE).write_bytes(data)
+                source["validator"]["sha256"] = digest(data)
+                with self.assertRaises(DownloadError):
+                    storage.authenticate_validator(self.root, source)
 
     def test_normal_update_never_opens_cold_or_year_gzip(self):
         self.run_download()
@@ -133,7 +232,7 @@ class PricingValidatorTests(unittest.TestCase):
         self.run_download()
         (self.root / VALIDATOR_FILE).write_text("{}")
         client = FakeClient(self.rows)
-        with self.assertRaisesRegex(DownloadError, "validator checksum"):
+        with self.assertRaisesRegex(DownloadError, "validator owner or inventory"):
             download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertFalse(client.calls)
 

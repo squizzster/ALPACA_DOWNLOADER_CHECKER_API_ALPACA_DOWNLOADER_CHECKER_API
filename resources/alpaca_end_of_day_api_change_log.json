@@ -63,5 +63,10 @@
       "Include deliberately unavailable auxiliary pricing inputs in standalone snapshot locks and freshness tokens; reject a formerly absent input which gains pricing or pending publication, including cached reads and export checks.",
       "Keep public histories and group summaries scoped to actual published price sources; auxiliary metadata remains operator evidence rather than a fabricated security or empty pricing series."
     ]
+  },
+  {
+    "modifications": [
+      "Trust standalone published paths and digest-selected cached content from first consumption without file metadata probes. Select current source receipts after locks are reacquired, preserving changed-generation, pending-publication and missing-input failures without re-auditing payloads."
+    ]
   }
 ]

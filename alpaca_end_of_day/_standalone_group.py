@@ -6,9 +6,9 @@ from libs.alpaca_lineage_build.acquisition import check_unavailable_pricing, una
 from libs.alpaca_lineage_build.contract import LineageBusyError, document_digest
 from libs.alpaca_lineage_build.storage import read_index, reader_snapshot
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
-from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
+from libs.alpaca_pricing_download.storage import load_source, published_path, read_update
 
-from ._standalone_cache import GenerationCache, _file_key
+from ._standalone_cache import GenerationCache
 from .standalone import (
     ReaderBusyError,
     StandaloneReaderError,
@@ -47,11 +47,6 @@ class GroupSnapshot:
                 "pricing": receipts[name]["source_sha256"],
                 "boundaries": deepcopy(source["boundaries"]),
                 "anchor": source["anchor_month"],
-                "source_file": _file_key(
-                    "pricing",
-                    regular_path(reader.store, f"end_of_day/pricing/{name}") / "source.manifest.json",
-                    receipts[name]["source_sha256"],
-                ),
             }
             for name, source in sources.items()
         }
@@ -135,17 +130,15 @@ class GroupSnapshot:
             ) as snapshot:
                 check_unavailable_pricing(self._reader.store, self._unavailable, snapshot["locked"])
                 for name, expected in self._expected.items():
-                    root = regular_path(self._reader.store, f"end_of_day/pricing/{name}")
-                    if name not in snapshot["locked"] or regular_path(root, ".pending.json").exists():
+                    root = published_path(self._reader.store, f"end_of_day/pricing/{name}")
+                    if name not in snapshot["locked"] or published_path(root, ".pending.json").exists():
                         raise StandaloneReaderError("pricing publication incomplete; resume downloader first")
                     if read_update(root) is not None:
                         raise StandaloneReaderError("selected pricing group changed; retry export")
-                    identity = _file_key("pricing", root / "source.manifest.json", expected["pricing"])
-                    if identity == expected["source_file"]:
-                        self._reader._cache.ledger.record("source_receipt_reuses")
-                        continue
+                    # The lock was released. Read only the current selector; the
+                    # earlier digest cannot establish whether a publisher advanced it.
                     source = load_source(root, name)
-                    self._reader._cache.ledger.record("changed_source_receipt_reads")
+                    self._reader._cache.ledger.record("source_receipt_reads")
                     if (
                         source is None
                         or document_digest(source) != expected["pricing"]
@@ -153,7 +146,6 @@ class GroupSnapshot:
                         or source["anchor_month"] != expected["anchor"]
                     ):
                         raise StandaloneReaderError("selected pricing group changed; retry export")
-                    expected["source_file"] = identity
         except LineageBusyError as error:
             raise ReaderBusyError(str(error)) from error
         except StandaloneReaderError:

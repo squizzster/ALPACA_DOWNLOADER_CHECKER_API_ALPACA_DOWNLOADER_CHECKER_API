@@ -10,7 +10,7 @@ from libs.alpaca_security_lineage import (
 
 from .correlation_version import CORRELATION_VERSION, validate_correlation_change_log
 from .errors import SecurityCorrelationError
-from .evidence import build_ticker_ownership_intervals, ownership_interval_rule_order
+from .evidence import ownership_interval_rule_order
 from .frozen_downloads import read_authenticated_frozen_download
 from .identity_partition import assess_one_session_distinct_uuid_transition
 from .predecessor_prefix import (
@@ -37,7 +37,7 @@ from .terminal_episode import (
     has_prolonged_carry_forward,
 )
 from .ticker_reuse_gap import adjustment_session_consensus
-from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
+from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
 
 
 def _source_context(authenticated_download) -> dict[str, Any]:
@@ -89,9 +89,13 @@ def build_security_correlation_report(
     if not isinstance(symbol, str) or not isinstance(local_report, dict) or not isinstance(lineage, dict):
         raise SecurityCorrelationError("lineage API report is missing symbol, local, or lineage objects")
 
-    intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
-    uuid_lineage_edges, uuid_lineage_issues = build_uuid_lineage_edges(lineage)
+    intervals, evidence_issues, uuid_lineage_edges, uuid_lineage_issues = cache.lineage_analysis(lineage)
     evidence_issues.extend(uuid_lineage_issues)
+    adopted_target_pairs = frozenset(
+        (issue["target_asset_id"], issue["acquirer_asset_id"])
+        for issue in uuid_lineage_issues
+        if issue.get("reason_code") == "acquirer_adopted_target_symbol"
+    )
     verified_session_exclusions = verified_session_exclusions_reader(
         repository_root,
         symbol,
@@ -296,6 +300,8 @@ def build_security_correlation_report(
             retired_lower_bound=retired_lower_bound,
             retired_continuation=retired_continuation,
             cache=cache,
+            uuid_lineage_edges=uuid_lineage_edges,
+            adopted_target_pairs=adopted_target_pairs,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]

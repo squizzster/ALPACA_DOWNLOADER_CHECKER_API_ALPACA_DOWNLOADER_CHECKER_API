@@ -529,13 +529,13 @@ class PricingDownloadTests(unittest.TestCase):
     def test_symlink_ticker_refused(self):
         self.run_download()
         (self.store / "end_of_day/pricing/OTHER").symlink_to(self.root, target_is_directory=True)
-        with self.assertRaisesRegex(DownloadError, "symlink"):
+        with self.assertRaisesRegex(DownloadError, "owner"):
             download_pricing(self.store, "OTHER", "2026-10-15", client=FakeClient([]))
 
     def test_gzip_corruption_stops_rollover_before_retirement(self):
         self.run_download()
         (self.root / "2026/raw.csv.gz").write_bytes(b"corruption")
-        with self.assertRaisesRegex(DownloadError, "checksum"):
+        with self.assertRaisesRegex(DownloadError, "compressed pricing payload"):
             self.run_download("2026-11-03", self.bars + [bar("2026-11-02")])
         self.assertTrue((self.root / "2026/Oct/month.manifest.json").exists())
 

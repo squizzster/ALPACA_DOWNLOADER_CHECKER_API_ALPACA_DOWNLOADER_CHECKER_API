@@ -13,9 +13,9 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VERSION = 14
+VERSION = 15
 # Existing boundary payloads/receipts remain valid after an explicit directory move.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, VERSION)
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, VERSION)
 VALIDATOR_FILE = "validator_first_last_sessions.json"
 ADJUSTMENTS = (
     "raw",

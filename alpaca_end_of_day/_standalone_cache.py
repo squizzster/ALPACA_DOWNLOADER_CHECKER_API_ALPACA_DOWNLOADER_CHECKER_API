@@ -1,7 +1,6 @@
 """Bounded, generation-selected RAM reuse; never an on-disk cache."""
 
 import json
-import stat
 import sys
 from collections import OrderedDict
 from threading import RLock
@@ -48,20 +47,8 @@ class ReadLedger:
 
 
 def _file_key(kind, path, generation):
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode):
-        raise LineageError(f"cached input must be a regular file, not a symlink: {path}")
-    # Retain ordinary missing/replaced-file behavior without hashing source data.
-    return (
-        kind,
-        str(path),
-        generation,
-        info.st_dev,
-        info.st_ino,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
+    # The producer's selected generation is authoritative, including on first use.
+    return kind, str(path), generation
 
 
 class GenerationCache:
@@ -95,9 +82,6 @@ class GenerationCache:
             self.misses += 1
             self.ledger.record("cache_misses")
             value = loader()
-            if len(key) == 8 and key[0] in {"document", "rows"}:
-                self.ledger.record("cached_file_loads")
-                self.ledger.record("cached_file_bytes", key[5])
             if not self.maximum_bytes:
                 return value
             # Include keys, entry bookkeeping and OrderedDict node headroom.
@@ -116,20 +100,30 @@ class GenerationCache:
             raise LineageError("invalid selected lineage generation")
         if not self.maximum_bytes:
             return selected_document(path, generation)
+
         # Bytes are privately retained; each caller gets independent mutable JSON.
         # Published generation equality is authority, not an mtime or a new audit.
-        packed = self._load(
-            _file_key("document", path, generation), lambda: json_bytes(selected_document(path, generation))
-        )
+        def load():
+            packed = json_bytes(selected_document(path, generation))
+            self.ledger.record("cached_file_loads")
+            self.ledger.record("cached_file_bytes", len(packed))
+            return packed
+
+        packed = self._load(_file_key("document", path, generation), load)
         return json.loads(packed)
 
     def rows(self, path, generation):
         if not isinstance(generation, str) or len(generation) != 64:
             raise LineageError("invalid selected pricing generation")
+
         # Decoded tuples and strings are immutable. Aliases share this exact entry.
-        return self._load(
-            _file_key("rows", path, generation), lambda: decode_csv(path.read_bytes()), measure=_rows_size
-        )
+        def load():
+            packed = path.read_bytes()
+            self.ledger.record("cached_file_loads")
+            self.ledger.record("cached_file_bytes", len(packed))
+            return decode_csv(packed)
+
+        return self._load(_file_key("rows", path, generation), load, measure=_rows_size)
 
     def info(self):
         with self._lock:

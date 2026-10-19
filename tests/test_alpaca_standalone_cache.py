@@ -163,17 +163,32 @@ class StandaloneCacheTests(unittest.TestCase):
             finally:
                 os.close(descriptor)
 
-    def test_warm_cache_rejects_missing_or_symlinked_payload(self):
+    def test_first_and_cached_consumption_do_not_stat_published_inputs(self):
+        pricing = self.store / "end_of_day/pricing/TEST"
+        lineage = self.store / "end_of_day/lineage/TEST"
+        stat = Path.stat
+
+        def no_published_stat(path, *args, **kwargs):
+            if path.is_relative_to(pricing) or path.is_relative_to(lineage):
+                self.assertEqual(path.name, ".pending.json", f"published input inspected: {path}")
+            return stat(path, *args, **kwargs)
+
+        for reader in (self.reader, self.cached()):
+            with patch.object(Path, "stat", no_published_stat):
+                first = reader.get_histories("TEST")
+                self.assertEqual(reader.get_histories("TEST"), first)
+
+    def test_selected_generation_reuses_cached_payload_without_filesystem_revalidation(self):
         cached = self.cached()
-        cached.get_histories("TEST")
+        expected = cached.get_histories("TEST")
         payload = next((self.store / "end_of_day/pricing/TEST").glob("*.csv.gz"))
         moved = payload.with_suffix(".retained")
         payload.rename(moved)
+        self.assertEqual(cached.get_histories("TEST"), expected)
         with self.assertRaises(StandaloneReaderError):
-            cached.get_histories("TEST")
+            self.reader.get_histories("TEST")  # A cold reader must still open the required payload.
         payload.symlink_to(moved)
-        with self.assertRaisesRegex(StandaloneReaderError, "symlink"):
-            cached.get_histories("TEST")
+        self.assertEqual(cached.get_histories("TEST"), expected)
 
     def test_cached_reader_preserves_overlap_source_policy(self):
         self.renamed_pair(differing=True)

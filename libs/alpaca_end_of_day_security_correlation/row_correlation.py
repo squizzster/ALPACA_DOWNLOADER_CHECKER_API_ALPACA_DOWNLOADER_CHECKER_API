@@ -15,6 +15,7 @@ from .episode_partition import PARTITION_RULE_NAME, DistinctUuidEpisodePartition
 from .errors import SecurityCorrelationError
 from .evidence import (
     TickerOwnershipInterval,
+    build_ticker_ownership_intervals,
     identity_candidates_for_symbol,
 )
 from .identity_partition import OneSessionDistinctUuidTransition
@@ -209,6 +210,19 @@ class CorrelationCache:
         self._sessions = {}
         self._downloads = {}
         self._decisions = {}
+        self._lineage = {}
+
+    def lineage_analysis(self, lineage):
+        """Build immutable evidence structure once for the complete rule group."""
+        key = id(lineage)
+        cached = self._lineage.get(key)
+        if cached is None:
+            intervals, interval_issues = build_ticker_ownership_intervals(lineage)
+            edges, edge_issues = build_uuid_lineage_edges(lineage)
+            cached = (lineage, intervals, tuple(interval_issues), edges, tuple(edge_issues))
+            self._lineage[key] = cached
+        _, intervals, interval_issues, edges, edge_issues = cached
+        return intervals, list(interval_issues), edges, list(edge_issues)
 
     def _prepare(self, rows):
         key = id(rows)
@@ -1038,21 +1052,27 @@ def correlate_download_rows(
     retired_lower_bound: date | None = None,
     retired_continuation: RetiredContinuation | None = None,
     cache: CorrelationCache | None = None,
+    uuid_lineage_edges: list[UuidLineageEdge] | None = None,
+    adopted_target_pairs: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     requested_symbol = source["requested_symbol"]
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
-    uuid_lineage_edges, uuid_lineage_issues = build_uuid_lineage_edges(lineage)
+    if uuid_lineage_edges is None or adopted_target_pairs is None:
+        calculated_edges, uuid_lineage_issues = build_uuid_lineage_edges(lineage)
+        if uuid_lineage_edges is None:
+            uuid_lineage_edges = calculated_edges
+        if adopted_target_pairs is None:
+            adopted_target_pairs = frozenset(
+                (issue["target_asset_id"], issue["acquirer_asset_id"])
+                for issue in uuid_lineage_issues
+                if issue.get("reason_code") == "acquirer_adopted_target_symbol"
+            )
     retired_selection = False
     if selected_interval is None:
         selected_interval = retired_source_identity(
             requested_symbol, lineage, intervals, uuid_lineage_edges, source["asof"]
         )
         retired_selection = selected_interval is not None
-    adopted_target_pairs = frozenset(
-        (issue["target_asset_id"], issue["acquirer_asset_id"])
-        for issue in uuid_lineage_issues
-        if issue.get("reason_code") == "acquirer_adopted_target_symbol"
-    )
     row_routing_edges = [
         edge for edge in uuid_lineage_edges if edge.edge_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
     ]

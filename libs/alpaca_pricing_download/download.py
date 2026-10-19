@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
@@ -292,11 +293,15 @@ def download_pricing(
     anchor = (end - timedelta(days=1)).strftime("%Y-%m")
     store = Path(store).absolute()
     initialize_store(store)
-    source_parent = regular_path(store, "end_of_day/pricing")
-    source_parent.mkdir(parents=True, exist_ok=True)
-    root = regular_path(store, f"end_of_day/pricing/{symbol}")
-    root.mkdir(exist_ok=True)
-    with ticker_lock(root, exclusive=True):
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(ticker_lock(root, exclusive=True))
+        except FileNotFoundError:
+            # Only acquisition of a new ticker creates and validates its paths.
+            regular_path(store, "end_of_day/pricing").mkdir(parents=True, exist_ok=True)
+            regular_path(store, f"end_of_day/pricing/{symbol}").mkdir(exist_ok=True)
+            locks.enter_context(ticker_lock(root, exclusive=True, create=True))
         recovered = recover(root, on_check=on_check)
         previous = load_source(root, symbol)
         if previous is None and any(path.name != ".download.lock" for path in root.iterdir()):
@@ -447,7 +452,7 @@ def read_pricing_views(store: Path | str, symbol: str) -> dict:
     store = Path(store).absolute()
     if read_document(store / "store.manifest.json") != STORE_DOCUMENT:
         raise DownloadError("not a standalone pricing store")
-    root = regular_path(store, f"end_of_day/pricing/{symbol}")
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     with ticker_lock(root, exclusive=False):
         return _read_locked_views(root, symbol)
 

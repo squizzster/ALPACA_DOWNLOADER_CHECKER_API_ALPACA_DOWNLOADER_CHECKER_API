@@ -33,7 +33,7 @@ from .contract import (
 )
 
 
-def path_at(root: Path, relative: str) -> Path:
+def path_at(root: Path, relative: str, *, published=False) -> Path:
     parts = PurePosixPath(relative).parts
     if (
         not parts
@@ -46,14 +46,14 @@ def path_at(root: Path, relative: str) -> Path:
     path = root
     for part in parts:
         path = path / part
-        if path.is_symlink():
+        if not published and path.is_symlink():
             raise LineageError(f"lineage cannot traverse a symlink: {path}")
     return path
 
 
-def atomic_json(path: Path, value: dict) -> None:
+def atomic_json(path: Path, value: dict, *, compare=True) -> None:
     data = json_bytes(value)
-    if path.exists() and path.read_bytes() == data:
+    if compare and path.exists() and path.read_bytes() == data:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path_at(path.parent, "." + path.name + ".writing")
@@ -154,7 +154,7 @@ def reader_snapshot(
     def selection():
         # New lock order must not overlap an executable using the old order.
         # The worker upgrades this header under the old shared/exclusive gate.
-        if _index_version(root) not in {None, 6, 7, 8, 9, 10, VERSION}:
+        if _index_version(root) not in {None, 6, 7, 8, 9, 10, 11, VERSION}:
             raise LineageError("lineage lock protocol needs upgrade; run lineage first")
         if path_at(root, ".pending.json").exists():
             raise LineageError("lineage publication incomplete; resume lineage first")
@@ -167,10 +167,13 @@ def reader_snapshot(
             locked = set()
             for symbol in sorted(selected):
                 symbol_label(symbol)
-                pricing = regular_path(store, f"end_of_day/pricing/{symbol}")
-                if not pricing.exists():
+                pricing = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+                try:
+                    stream = locks.enter_context((pricing / ".download.lock").open("rb"))
+                except FileNotFoundError:
+                    if selected[symbol] is not None:
+                        raise
                     continue
-                stream = locks.enter_context(regular_path(pricing, ".download.lock").open("rb"))
                 try:
                     fcntl.flock(stream.fileno(), fcntl.LOCK_SH | (0 if wait else fcntl.LOCK_NB))
                 except BlockingIOError as error:
@@ -205,16 +208,20 @@ def reader_snapshot(
 
 
 @contextmanager
-def pricing_locks(store: Path, symbols):
+def pricing_locks(store: Path, symbols, *, known=()):
     # Never nest consume_pricing_update: acquire the complete known set in one order.
     with ExitStack() as stack:
         locked = set()
         for symbol in sorted(set(symbols)):
             symbol_label(symbol)
-            root = regular_path(store, f"end_of_day/pricing/{symbol}")
-            if root.exists():
+            root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+            try:
                 stack.enter_context(ticker_lock(root, exclusive=True))
-                locked.add(symbol)
+            except FileNotFoundError:
+                if symbol in known:
+                    raise
+                continue
+            locked.add(symbol)
         yield locked
 
 
@@ -273,31 +280,64 @@ def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) 
     if entry is None:
         return None
     value = (selected_loader or selected_document)(
-        path_at(root, f"{symbol}/lineage.manifest.json"), entry["sha256"]
+        path_at(root, f"{symbol}/lineage.manifest.json", published=True), entry["sha256"]
     )
     if value.get("symbol") != symbol or value.get("schema_version") not in SUPPORTED_VERSIONS:
         raise LineageError("invalid lineage receipt")
     return value
 
 
+class ReceiptCache:
+    """One selected generation per symbol, scoped to a single writer-lock lifetime."""
+
+    def __init__(self, root, index, *, capacity=None):
+        if capacity is not None and (type(capacity) is not int or capacity < 1):
+            raise ValueError("receipt cache capacity must be positive")
+        self.root = root
+        self.index = index
+        self.capacity = capacity
+        self.receipts = {}
+
+    def _remember(self, symbol, value):
+        self.receipts.pop(symbol, None)
+        self.receipts[symbol] = value
+        while self.capacity is not None and len(self.receipts) > self.capacity:
+            self.receipts.pop(next(iter(self.receipts)))
+
+    def read(self, symbol):
+        entry = self.index["symbols"].get(symbol)
+        if entry is None:
+            self.receipts.pop(symbol, None)
+            return None
+        generation = entry["sha256"]
+        cached = self.receipts.get(symbol)
+        if cached is None or cached[0] != generation:
+            cached = generation, read_receipt(self.root, symbol, self.index)
+        self._remember(symbol, cached)
+        return cached[1]
+
+    def published(self, receipts):
+        for symbol, receipt in receipts.items():
+            self._remember(symbol, (self.index["symbols"][symbol]["sha256"], receipt))
+
+
 def read_boundaries(root: Path, receipt: dict, *, selected_loader=None) -> dict:
     return {
         kind: (selected_loader or selected_document)(
-            path_at(root, f"{receipt['symbol']}/{entry['manifest']}"), entry["sha256"]
+            path_at(root, f"{receipt['symbol']}/{entry['manifest']}", published=True), entry["sha256"]
         )
         for kind, entry in receipt["boundaries"].items()
     }
 
 
-def _install(root: Path, journal: dict) -> None:
+def _install(root: Path, journal: dict, *, compare=True) -> None:
     # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
     for relative, value in sorted(journal["documents"].items()):
-        atomic_json(path_at(root, relative), value)
+        atomic_json(path_at(root, relative), value, compare=compare)
     for relative in journal["retire"]:
-        path = path_at(root, relative)
-        if path.exists():
-            path.unlink()
+        path = path_at(root, relative, published=journal["schema_version"] >= 12)
+        path.unlink(missing_ok=True)
         parent = path.parent
         while parent != root and parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
@@ -305,8 +345,17 @@ def _install(root: Path, journal: dict) -> None:
     _update_index(root, journal["index_updates"])
 
 
-def _acknowledge(store: Path, journal: dict) -> None:
+def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
     expected_checks = journal.get("checks")
+    if sources is not None:
+        # Selection, publication and acknowledgement share the same pricing locks.
+        # Only recovery can encounter a newer source or notice. Hint deletion still
+        # compares epoch/revision in its transaction, since that database is disposable.
+        for symbol, expected in journal["notices"].items():
+            acknowledge_update(store / "end_of_day/pricing" / symbol, expected, selected=True)
+        if expected_checks:
+            acknowledge_checks(store, expected_checks, journal["sources"])
+        return
     current_checks = read_checks(store, journal["sources"]) if expected_checks else None
     acknowledged = []
     for symbol in sorted(journal["sources"]):
@@ -326,25 +375,33 @@ def _acknowledge(store: Path, journal: dict) -> None:
         # because it has exactly the same from/to dates as the older one.
         if source is not None and document_digest(source) == journal["sources"][symbol]:
             expected = journal["notices"].get(symbol)
-            if expected is not None and read_update(root) == expected:
+            current = read_update(root)
+            if expected is not None and current == expected:
                 acknowledge_update(root, expected)
-            if read_update(root) is None:
+                current = None
+            if current is None:
                 acknowledged.append(symbol)
     if expected_checks:
         acknowledge_checks(store, expected_checks, acknowledged)
 
 
-def finish_publication(store: Path, root: Path, journal: dict) -> None:
+def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None, sources=None) -> None:
+    """Normal publication retains locked inputs; recovery must select them afresh."""
     from libs.alpaca_pricing_download.check_summary import invalidate, summary_path
 
     from .check_summary import refresh
 
-    invalidate(store, journal["sources"], owner="lineage")
-    _install(root, journal)
-    if summary_path(store).exists():
+    if receipts is None:
+        invalidate(store, journal["sources"], owner="lineage")
+    # A fresh journal contains only known changes. Recovery may already have
+    # installed some of them, so compare existing files only on that path.
+    _install(root, journal, compare=receipts is None)
+    if receipts is None and summary_path(store).exists():
         index = {"symbols": journal["index_updates"]}
-        refresh(store, {symbol: read_receipt(root, symbol, index) for symbol in journal["sources"]})
-    _acknowledge(store, journal)
+        receipts = {symbol: read_receipt(root, symbol, index) for symbol in journal["sources"]}
+    if receipts is not None:
+        refresh(store, receipts, sources=sources)
+    _acknowledge(store, journal, sources=sources)
     path_at(root, ".pending.json").unlink()
 
 
@@ -366,19 +423,27 @@ def recover(store: Path, root: Path) -> bool:
 
 
 def publish(
-    store: Path, root: Path, index: dict, receipts: dict, boundaries: dict, notices: dict, *, checks=None
+    store: Path,
+    root: Path,
+    index: dict,
+    receipts: dict,
+    boundaries: dict,
+    notices: dict,
+    *,
+    checks=None,
+    previous=None,
+    sources=None,
 ) -> None:
     documents, retire = {}, []
     updated = {}
     for symbol, receipt in receipts.items():
-        old = read_receipt(root, symbol, index)
+        old = read_receipt(root, symbol, index) if previous is None else previous[symbol]
         old_paths = {entry["manifest"] for entry in old["boundaries"].values()} if old else set()
         new_paths = {entry["manifest"] for entry in receipt["boundaries"].values()}
         retire.extend(f"{symbol}/{path}" for path in sorted(old_paths - new_paths))
         for kind, value in boundaries[symbol].items():
             if old is None or old["boundaries"][kind] != receipt["boundaries"][kind]:
                 documents[f"{symbol}/{receipt['boundaries'][kind]['manifest']}"] = value
-        documents[f"{symbol}/lineage.manifest.json"] = receipt
         updated[symbol] = {
             "sha256": document_digest(receipt),
             "source_sha256": receipt["source_sha256"],
@@ -386,12 +451,10 @@ def publish(
             "asset_ids": receipt["asset_ids"],
             "versions": receipt["versions"],
         }
-    # Stage only changed JSON. Never stage or copy a pricing payload.
-    documents = {
-        relative: value
-        for relative, value in documents.items()
-        if not path_at(root, relative).exists() or path_at(root, relative).read_bytes() != json_bytes(value)
-    }
+        if index["symbols"].get(symbol, {}).get("sha256") != updated[symbol]["sha256"]:
+            documents[f"{symbol}/lineage.manifest.json"] = receipt
+    # Published generation references already identify changed JSON; do not reopen
+    # old payloads to repeat that comparison. Installation remains idempotent.
     journal = {
         "schema_version": VERSION,
         "boundary": "alpaca_lineage_transaction",
@@ -415,5 +478,5 @@ def publish(
 
         invalidate(store, receipts, owner="lineage")
         atomic_json(path_at(root, ".pending.json"), journal)
-        finish_publication(store, root, journal)
+        finish_publication(store, root, journal, receipts=receipts, sources=sources)
     index["symbols"].update(updated)

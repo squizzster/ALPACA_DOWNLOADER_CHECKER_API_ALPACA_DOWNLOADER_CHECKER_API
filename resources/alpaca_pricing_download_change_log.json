@@ -77,5 +77,11 @@
       "Remove application-forced disk synchronization while retaining closed temporary files, atomic replacement, ticker locks and publication journals. Use SQLite synchronous=OFF with disk rollback journals and let producer queries recover interrupted transactions before consuming work hints or summary state.",
       "Discard guarded unjournaled staging under the ticker lock before optimized append publication, allowing retries after abrupt process termination. Preserve v1-v13 pricing, request boundaries and all completed data."
     ]
+  },
+  {
+    "modifications": [
+      "Trust completed source receipts, endpoint validators, boundary inventories and payloads from first consumption. Normal reads open required data directly; authenticate_* owns explicit audits. Compare new output digests with the recorded inventory and retire owned files without reading old bytes; explicit repair replaces supplied payloads.",
+      "Preserve v1-v14 pricing and publication formats, validating new destinations and outputs and recovering interrupted journals at their owning boundaries. Avoid opening the disposable work-hint database when there are no selected hints to acknowledge."
+    ]
   }
 ]

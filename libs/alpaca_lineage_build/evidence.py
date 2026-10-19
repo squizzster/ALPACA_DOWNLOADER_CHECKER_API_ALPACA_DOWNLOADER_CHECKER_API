@@ -6,7 +6,7 @@ from pathlib import Path
 
 from libs.alpaca_end_of_day_security_correlation.terminal_fallback import TERMINAL_FALLBACK_RULE_NAME
 from libs.alpaca_pricing_download.contract import NEW_YORK, symbol_label, timestamp
-from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
+from libs.alpaca_pricing_download.storage import load_source, published_path, read_update
 from libs.common.us_equity_market_session_calendar import (
     MarketCalendarError,
     compare_observed_to_expected_sessions,
@@ -216,11 +216,12 @@ def inspect_offline(store, symbol, capture):
     with storage.reader_snapshot(store, select) as snap:
         views, notices = {}, {}
         for name in sorted(snap["locked"]):
-            pricing = regular_path(store, f"end_of_day/pricing/{name}")
-            if regular_path(pricing, ".pending.json").exists():
+            pricing = published_path(store, f"end_of_day/pricing/{name}")
+            if published_path(pricing, ".pending.json").exists():
                 raise LineageError(f"{name}: pricing publication incomplete; resume downloader first")
-            if load_source(pricing, name) is not None:
-                views[name] = load_pricing(store, name)
+            source = load_source(pricing, name)
+            if source is not None:
+                views[name] = load_pricing(store, name, source=source)
             notice = read_update(pricing)
             if notice is not None:
                 notices[name] = notice

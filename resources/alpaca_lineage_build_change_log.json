@@ -71,5 +71,12 @@
       "Remove application-forced disk synchronization and use the shared SQLite connection policy with synchronous=OFF and disk rollback journals. Let the writer's version query recover interrupted index transactions under existing locks while public readers remain read-only.",
       "Retain publication journals, atomic replacements, publish-before-acknowledge ordering, compatible v2-v10 decisions and v6-v10 reader locking. Power-loss durability is outside the application contract; process-interruption recovery remains supported."
     ]
+  },
+  {
+    "modifications": [
+      "Trust indexed publications from first consumption: open required receipts directly, carry locked sources and notices through publication, and fail missing indexed inputs without implicit redownload. When disposable hint coverage is incomplete, inventory once and compare only atomic source generations; matching inputs never open lineage receipts. Bound genuine metadata prefetch and receipt retention to 1,000 dependency members, and skip old boundaries whose schema cannot be reused.",
+      "Stop correlation after the first repeated complete group report, share authenticated exact-copy pricing rows across adjustment adapters, and build immutable ownership and UUID evidence once per group. Retain the three-pass non-convergence failure ceiling.",
+      "Preserve compatible v2-v11 lineage decisions, publication formats and reader locking. Keep producer path validation and explicit audits at their owning boundaries."
+    ]
   }
 ]

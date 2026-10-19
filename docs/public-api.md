@@ -66,6 +66,7 @@ Separate calls can select different generations.
 `cache_bytes=N` enables bounded cross-call RAM reuse; default zero. `cache_info()` reports usage.
 A group can reduce retention with `set_cache_limit(N)` within that cap. This is not a process memory
 limit. Caching never bypasses current receipt selection, locks or pending-work checks.
+The published digest selects cached content directly; first and cached reads do not revalidate file metadata.
 
 Equal overlapping observations collapse. Conflicting adjusted bars prefer strictly broader correlated
 coverage, then a unique source matching the historical ticker; raw bars use only the latter preference.

@@ -139,14 +139,18 @@ class StandaloneGroupTests(unittest.TestCase):
         with self.assertRaisesRegex(StandaloneReaderError, "lineage group changed"):
             group.check_current()
 
-    def test_unchanged_source_is_reused_without_rereading_approved_receipt(self):
+    def test_freshness_reads_current_selector_without_inspecting_its_file_metadata(self):
         with self.reader.open_group("TEST") as group:
             pass
-        with patch(
-            "alpaca_end_of_day._standalone_group.load_source", side_effect=AssertionError("receipt reread")
-        ):
+        stat = Path.stat
+
+        def no_source_stat(path, *args, **kwargs):
+            self.assertNotEqual(path.name, "source.manifest.json")
+            return stat(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", no_source_stat):
             group.check_current()
-        self.assertEqual(self.reader.cache_info()["ledger"]["source_receipt_reuses"], 1)
+        self.assertEqual(self.reader.cache_info()["ledger"]["source_receipt_reads"], 1)
 
     def test_snapshot_holds_pricing_lock_and_final_check_respects_producer_lock(self):
         path = self.store / "end_of_day/pricing/TEST/.download.lock"

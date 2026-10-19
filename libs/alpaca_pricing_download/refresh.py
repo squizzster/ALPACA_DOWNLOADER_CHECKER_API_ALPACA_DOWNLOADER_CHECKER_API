@@ -24,7 +24,7 @@ def prepare_refresh(store, symbols):
     store = Path(store).absolute()
     prepared = []
     for symbol in sorted({symbol_label(value) for value in symbols}):
-        root = regular_path(store, f"end_of_day/pricing/{symbol}")
+        root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
         with ticker_lock(root, exclusive=False):
             if regular_path(root, ".pending.json").exists():
                 raise DownloadError(f"{symbol}: finish interrupted pricing publication before checking")

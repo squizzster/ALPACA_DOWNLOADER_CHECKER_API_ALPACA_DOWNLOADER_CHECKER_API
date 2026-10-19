@@ -23,27 +23,28 @@ def stored_active(receipt):
     return (asset.get("status"), asset.get("symbol"), asset.get("class")) == ("active", symbol, "us_equity")
 
 
-def project(store, receipt):
+def project(store, receipt, *, source=None):
     if not stored_active(receipt):
         return None
     symbol = receipt["symbol"]
-    root = regular_path(store, f"end_of_day/pricing/{symbol}")
-    source = load_source(root, symbol)
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+    source = load_source(root, symbol) if source is None else source
     if source is None:
         raise LineageError(f"missing published pricing for summary: {symbol}")
     return summary.price_entry(root, source)
 
 
-def refresh(store, receipts):
+def refresh(store, receipts, *, sources=None):
     """Caller owns the selected pricing locks and has installed the lineage receipt."""
     if not summary.summary_path(store).exists():
         return
     entries = {}
     for symbol, receipt in receipts.items():
-        root = regular_path(store, f"end_of_day/pricing/{symbol}")
-        if regular_path(root, ".pending.json").exists():
-            continue  # Pricing recovery still owns this input; leave its summary invalidated.
-        entries[symbol] = project(store, receipt)
+        if sources is None:
+            root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+            if regular_path(root, ".pending.json").exists():
+                continue  # Recovery must select again after the interruption released locks.
+        entries[symbol] = project(store, receipt, source=None if sources is None else sources[symbol])
     summary.replace_entries(store, entries)
 
 
@@ -66,7 +67,7 @@ def rebuild(store, *, progress=None):
         token = summary.begin_rebuild(store)
 
         def selected(symbol):
-            pricing = regular_path(store, f"end_of_day/pricing/{symbol}")
+            pricing = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
             with ticker_lock(pricing, exclusive=False):
                 if regular_path(pricing, ".pending.json").exists():
                     raise LineageError(f"finish interrupted pricing publication for {symbol}")

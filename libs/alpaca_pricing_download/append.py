@@ -6,6 +6,7 @@ consumes its in-memory summary; it does not repeat provider history checks.
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
@@ -64,9 +65,7 @@ def _cohorts(needs):
 
 def _publish_append(store, entry, need, bars):
     symbol = entry["symbol"]
-    root = regular_path(store, f"end_of_day/pricing/{symbol}")
-    if not root.is_dir():
-        raise DownloadError(f"{symbol}: approved pricing source is missing")
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     window = need["ranges"][0]
     start, end = timestamp(window["start"]), timestamp(window["end_exclusive"])
     views = {name: transform(bars[name], start, end) for name in ADJUSTMENTS}
@@ -81,17 +80,18 @@ def _publish_append(store, entry, need, bars):
             or previous["latest_request"]["asof"] != entry["asof"]
         ):
             raise DownloadError(f"{symbol}: source coverage changed after the approved handoff")
-        endpoints = read_validator(root, previous)
+        endpoints = read_validator(root, previous, published=True)
         if not endpoints or not endpoints["all"] or not same_row(endpoints["all"][-1], entry["last_all"]):
             raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
         for name, rows in views.items():
             if rows and endpoints[name] and timestamp(rows[0][0]) <= timestamp(endpoints[name][-1][0]):
                 raise DownloadError(f"{symbol}: append would overlap approved {name} history")
         # Read only the hot month. Approved history is retained, never requested again.
-        month = load_published_boundary(root, previous, "current_month")
+        read_selected = partial(load_published_boundary, selected=True)
+        month = read_selected(root, previous, "current_month")
         combined = _join(month, views)
         anchor = (end - timedelta(days=1)).strftime("%Y-%m")
-        changed_views = updated_boundaries(root, previous, anchor, combined, read=load_published_boundary)
+        changed_views = updated_boundaries(root, previous, anchor, combined, read=read_selected)
         selected = _incremental_endpoints(endpoints, views, start)
         update = session_extent(endpoints_of(views))
         request = {

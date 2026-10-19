@@ -43,7 +43,8 @@ STORE_DOCUMENT = {
 }
 
 
-def regular_path(root: Path, relative: str) -> Path:
+def regular_path(root: Path, relative: str, *, published=False) -> Path:
+    """Confine names lexically; only unselected paths need filesystem inspection."""
     parts = PurePosixPath(relative).parts
     if (
         not parts
@@ -55,9 +56,14 @@ def regular_path(root: Path, relative: str) -> Path:
     path = root
     for part in parts:
         path = path / part
-        if path.is_symlink():
+        if not published and path.is_symlink():
             raise DownloadError(f"pricing paths cannot be symlinks: {path}")
     return path
+
+
+def published_path(root: Path, relative: str) -> Path:
+    """Resolve a published name without asking the filesystem to prove it again."""
+    return regular_path(root, relative, published=True)
 
 
 def write_file(path: Path, data: bytes) -> None:
@@ -65,11 +71,11 @@ def write_file(path: Path, data: bytes) -> None:
         stream.write(data)
 
 
-def read_document(path: Path) -> dict:
-    if path.is_symlink():
+def read_document(path: Path, *, data: bytes | None = None, published=True) -> dict:
+    if not published and path.is_symlink():
         raise DownloadError(f"manifest cannot be a symlink: {path}")
     try:
-        document = json.loads(path.read_bytes())
+        document = json.loads(path.read_bytes() if data is None else data)
     except (ValueError, OSError) as error:
         raise DownloadError(f"cannot read manifest: {path}") from error
     if not isinstance(document, dict):
@@ -103,10 +109,10 @@ def initialize_store(root: Path) -> None:
 
 
 @contextmanager
-def ticker_lock(root: Path, *, exclusive: bool):
+def ticker_lock(root: Path, *, exclusive: bool, create=False):
     # Downloader and update consumer both take EX. Never unlink the stable inode.
-    lock = regular_path(root, ".download.lock")
-    with lock.open("a+b" if exclusive else "rb") as stream:
+    lock = regular_path(root, ".download.lock", published=not create)
+    with lock.open("a+b" if create else "rb") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         try:
             yield
@@ -114,10 +120,10 @@ def ticker_lock(root: Path, *, exclusive: bool):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def update_path(root: Path) -> Path:
+def update_path(root: Path, *, published=False) -> Path:
     if root.parent.name != "pricing" or root.parent.parent.name != "end_of_day":
         raise DownloadError("update manifests require the split pricing/manifests layout")
-    return regular_path(root.parent.parent, f"manifests/{root.name}/update.json")
+    return regular_path(root.parent.parent, f"manifests/{root.name}/update.json", published=published)
 
 
 def validate_update(value: dict) -> dict:
@@ -132,9 +138,17 @@ def validate_update(value: dict) -> dict:
     return value
 
 
-def read_update(root: Path) -> dict | None:
+def read_update(root: Path, *, published=True) -> dict | None:
     """Caller must hold the ticker lock; presence means unprocessed work."""
-    path = update_path(root)
+    path = update_path(root, published=published)
+    if published:
+        # A completed pricing publication owns this fixed-name handoff. Open it
+        # directly; directory inventory and existence probes add no information.
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        return validate_update(read_document(path, data=data, published=True))
     if not path.parent.exists():
         return None
     if any(entry.name != "update.json" for entry in path.parent.iterdir()):
@@ -142,11 +156,11 @@ def read_update(root: Path) -> dict | None:
     return validate_update(read_document(path)) if path.exists() else None
 
 
-def acknowledge_update(root: Path, expected: dict) -> None:
+def acknowledge_update(root: Path, expected: dict, *, selected=False) -> None:
     """Remove only a successfully consumed range, under the same exclusive lock."""
-    if read_update(root) != expected:
+    if not selected and read_update(root) != expected:
         raise DownloadError("pending update changed during consumption")
-    path = update_path(root)
+    path = update_path(root, published=selected)
     path.unlink()
     path.parent.rmdir()
 
@@ -163,10 +177,13 @@ def boundary_paths(anchor: str) -> dict[str, str]:
 
 
 def load_source(root: Path, symbol: str) -> dict | None:
-    path = regular_path(root, "source.manifest.json")
-    if not path.exists():
+    """Read the selecting receipt directly; do not inspect its published files."""
+    path = regular_path(root, "source.manifest.json", published=True)
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
         return None
-    source = read_document(path)
+    source = read_document(path, data=data)
     if (
         type(source.get("schema_version")) is not int
         or source.get("schema_version") not in SUPPORTED_VERSIONS
@@ -209,22 +226,42 @@ def load_source(root: Path, symbol: str) -> dict | None:
     return source
 
 
-def read_validator(root: Path, source: dict) -> dict | None:
+def read_validator(root: Path, source: dict, *, published=True) -> dict | None:
     reference = source.get("validator")
     if reference is None:
         return None
-    path = regular_path(root, VALIDATOR_FILE)
-    if reference.get("file") != VALIDATOR_FILE or digest(path.read_bytes()) != reference.get("sha256"):
+    path = regular_path(root, VALIDATOR_FILE, published=published)
+    if reference.get("file") != VALIDATOR_FILE:
         raise DownloadError("first/last-session validator checksum differs")
-    return validator_endpoints(read_document(path), source["symbol"])
+    data = path.read_bytes()
+    if not published and digest(data) != reference.get("sha256"):
+        raise DownloadError("first/last-session validator checksum differs")
+    return validator_endpoints(read_document(path, data=data, published=published), source["symbol"])
+
+
+def authenticate_validator(root: Path, source: dict) -> dict | None:
+    """Explicit audit; normal consumers use the published validator directly."""
+    return read_validator(root, source, published=False)
 
 
 def boundary_document(root: Path, reference: dict, symbol: str, kind: str) -> dict:
+    """Consume the producer's selected inventory without authenticating it again."""
+    document = read_document(regular_path(root, reference["manifest"], published=True))
+    if (
+        document.get("schema_version") not in SUPPORTED_VERSIONS
+        or document.get("boundary") != "alpaca_pricing_" + kind
+        or document.get("symbol") != symbol
+    ):
+        raise DownloadError("pricing boundary owner differs")
+    return document
+
+
+def authenticate_boundary_document(root: Path, reference: dict, symbol: str, kind: str) -> dict:
     path = regular_path(root, reference["manifest"])
     data = path.read_bytes()
     if digest(data) != reference["sha256"]:
         raise DownloadError(f"boundary manifest changed: {path}")
-    document = read_document(path)
+    document = read_document(path, data=data)
     if (
         document.get("schema_version") not in SUPPORTED_VERSIONS
         or document.get("boundary") != "alpaca_pricing_" + kind
@@ -287,8 +324,16 @@ def boundary_document(root: Path, reference: dict, symbol: str, kind: str) -> di
 
 
 def read_boundary(root: Path, source: dict, kind: str) -> dict:
+    """Normal consumption under a lock after selecting a completed source."""
+    from .handoff import load_published_boundary
+
+    return load_published_boundary(root, source, kind, selected=True)
+
+
+def authenticate_boundary(root: Path, source: dict, kind: str) -> dict:
+    """Explicit audit of the selected manifest, payloads and logical views."""
     reference = source["boundaries"][kind]
-    document = boundary_document(root, reference, source["symbol"], kind)
+    document = authenticate_boundary_document(root, reference, source["symbol"], kind)
     directory = PurePosixPath(reference["manifest"]).parent
     decoded = {}
     views = {}
@@ -309,12 +354,16 @@ def read_boundary(root: Path, source: dict, kind: str) -> dict:
     return views
 
 
-def owned_files(root: Path, source: dict) -> dict[str, str]:
+def owned_files(root: Path, source: dict, *, documents=None) -> dict[str, str]:
     result = {}
     if source.get("validator") is not None:
         result[VALIDATOR_FILE] = source["validator"]["sha256"]
     for kind, reference in source["boundaries"].items():
-        document = boundary_document(root, reference, source["symbol"], kind)
+        document = (
+            boundary_document(root, reference, source["symbol"], kind)
+            if documents is None
+            else documents[reference["manifest"]]
+        )
         result[reference["manifest"]] = reference["sha256"]
         directory = PurePosixPath(reference["manifest"]).parent
         for entry in document["adjustments"]:
@@ -373,7 +422,7 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
         targets.add(relative)
     for relative, checksum in removals.items():
         _check_publication_entry(relative, checksum)
-        regular_path(root, relative)
+        regular_path(root, relative, published=journal["schema_version"] >= 15)
         if relative in targets or relative == "source.manifest.json":
             raise DownloadError("cannot retire a selected publication target")
     # Recovery queues too: a deleted cache must not hide a resumed publication.
@@ -401,8 +450,12 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
     # No prior month/year is retired until the complete replacement is selected.
     parents = set()
     for relative, expected in removals.items():
-        path = regular_path(root, relative)
-        if path.exists():
+        path = regular_path(root, relative, published=journal["schema_version"] >= 15)
+        if journal["schema_version"] >= 15:
+            # The old receipt established ownership. A partial retirement is
+            # idempotent; neither publication nor recovery re-audits old payloads.
+            path.unlink(missing_ok=True)
+        elif path.exists():
             if digest(path.read_bytes()) != expected:
                 raise DownloadError(f"retired pricing file changed; refusing deletion: {relative}")
             path.unlink()
@@ -476,13 +529,26 @@ def publish(
     repair_payloads: bool = False,
     on_check=None,
 ) -> int:
-    old_files = owned_files(root, previous) if previous is not None else {}
+    old_documents = (
+        {
+            reference["manifest"]: boundary_document(root, reference, previous["symbol"], kind)
+            for kind, reference in previous["boundaries"].items()
+        }
+        if previous is not None
+        else {}
+    )
+    old_files = owned_files(root, previous, documents=old_documents) if previous is not None else {}
+    if previous is not None:
+        old_files["source.manifest.json"] = digest(json_bytes(previous))
     retained = {VALIDATOR_FILE: source["validator"]["sha256"]} if "validator" in source else {}
+    retained["source.manifest.json"] = digest(json_bytes(source))
     for kind, reference in source["boundaries"].items():
         relative = reference["manifest"]
         document = documents.get(relative)
         if document is None:
-            document = boundary_document(root, reference, source["symbol"], kind)
+            if previous is None or reference != previous["boundaries"][kind]:
+                raise DownloadError("new pricing boundary requires publication contents")
+            document = old_documents[relative]
         retained[relative] = reference["sha256"]
         directory = PurePosixPath(relative).parent
         for entry in document["adjustments"]:
@@ -493,8 +559,9 @@ def publish(
     outputs["source.manifest.json"] = json_bytes(source)
     changed = []
     for relative, content in outputs.items():
-        path = regular_path(root, relative)
-        if not path.exists() or path.read_bytes() != content:
+        # Compare the new output with the recorded digest, never with old bytes.
+        # Explicit repair replaces every supplied payload, including equal hashes.
+        if old_files.get(relative) != digest(content) or (repair_payloads and relative in payloads):
             changed.append((relative, content))
     notice = None
     existing = read_update(root)
@@ -512,12 +579,6 @@ def publish(
     staging.mkdir()
     pending = regular_path(root, ".pending.json")
     removals = {path: sha for path, sha in old_files.items() if path not in retained}
-    if repair_payloads:
-        # Intact receipts establish ownership. Explicit force may retire a damaged owned gzip.
-        for path in removals:
-            target = regular_path(root, path)
-            if path.endswith(".csv.gz") and target.exists():
-                removals[path] = digest(target.read_bytes())
     journal = {
         "schema_version": VERSION,
         "writes": [{"path": path, "sha256": digest(data)} for path, data in changed],

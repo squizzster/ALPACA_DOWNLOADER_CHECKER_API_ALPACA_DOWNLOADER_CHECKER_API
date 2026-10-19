@@ -32,10 +32,10 @@ def correlate(store, inputs, evidence):
             )
             for symbol, view in sorted(inputs.items())
         }
-        if iteration == 2 and reports != previous:
-            raise LineageError("lineage correlation did not reach its established fixed point")
+        if iteration and reports == previous:
+            return reports
         previous = reports
-    return reports
+    raise LineageError("lineage correlation did not reach its established fixed point")
 
 
 # Persist the decision, not a second audit trail of the rule's changing whole-

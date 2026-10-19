@@ -47,13 +47,13 @@ def refresh_existing(store, *, pricing_client, identity_client, progress=None, c
             progress("lineage", {"selected": len(selected), "processed": 0})
         processed = set()
 
-        def observed(**event):
-            processed.update(event["receipts"])
+        def observed(symbols):
+            processed.update(symbols)
             if progress:
                 progress("lineage", {"selected": len(selected), "processed": len(processed)})
 
         lineage = run_lineage(
-            store, selected, identity_client=identity_client, pricing_client=None, observer=observed
+            store, selected, identity_client=identity_client, pricing_client=None, on_processed=observed
         )
     # Producers maintain the boundary. This reads only its final small snapshot.
     try:

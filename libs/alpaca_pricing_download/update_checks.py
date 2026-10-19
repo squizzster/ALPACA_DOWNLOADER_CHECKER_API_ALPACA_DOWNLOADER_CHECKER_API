@@ -92,8 +92,10 @@ def queue_check(store, symbol):
 
 def acknowledge_checks(store, expected, symbols):
     """Remove only inspected hints; deletion/recreation or a newer update wins."""
+    if not expected["checks"] or expected["epoch"] is None:
+        return
     path = regular_path(Path(store).absolute(), CHECK_FILE)
-    if not expected["checks"] or not path.exists() or expected["epoch"] is None:
+    if not path.exists():
         return
     try:
         with (

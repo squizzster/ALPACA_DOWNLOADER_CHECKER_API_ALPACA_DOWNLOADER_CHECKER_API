@@ -23,7 +23,7 @@ from libs.alpaca_pricing_download import check_summary, command_line, storage
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
-from libs.alpaca_pricing_download.update_checks import CHECK_FILE, read_checks
+from libs.alpaca_pricing_download.update_checks import CHECK_FILE, queue_check, read_checks
 
 
 class UpdateEverythingTests(unittest.TestCase):
@@ -110,6 +110,21 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertEqual(self.calls[0]["start"][:10], "2026-10-16")
         self.assertEqual(self.identity.request_count, identity_calls)
         self.assertEqual(files_snapshot(self.store), before)
+
+    def test_recovery_progress_needs_no_lineage_boundaries_for_unchanged_sources(self):
+        for symbol in self.assets:
+            queue_check(self.store, symbol)
+        events = []
+        with patch.object(lineage_storage, "read_boundaries", side_effect=AssertionError("progress read")):
+            result = update.finish_pending(
+                self.store,
+                pricing_client=self.client,
+                identity_client=self.identity,
+                progress=lambda stage, counts: events.append((stage, counts)),
+            )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(events[-1], ("recovery", {"processed": len(self.assets)}))
+        self.assertEqual({row["status"] for row in result["lineage"]["results"]}, {"unchanged"})
 
     def test_changed_history_is_replaced_in_its_old_span_before_append(self):
         self.live["AAA"][0] = bar("2016-01-04", "456")

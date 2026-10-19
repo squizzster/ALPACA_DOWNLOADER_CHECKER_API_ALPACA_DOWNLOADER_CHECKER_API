@@ -22,7 +22,7 @@ def finish_pending(store, *, pricing_client, identity_client, progress=None):
     selected = sorted(set(pending) | checks["checks"].keys())
     recovered = []
     for symbol in selected:
-        root = pricing_storage.regular_path(store, f"end_of_day/pricing/{symbol}")
+        root = pricing_storage.published_path(store, f"end_of_day/pricing/{symbol}")
         if pricing_storage.regular_path(root, ".pending.json").exists():
             with pricing_storage.ticker_lock(root, exclusive=True):
                 if pricing_storage.recover(root):
@@ -38,10 +38,17 @@ def finish_pending(store, *, pricing_client, identity_client, progress=None):
         )
     processed = set()
 
-    def observed(**event):
-        processed.update(event["receipts"])
+    def observed(symbols):
+        processed.update(symbols)
         if progress:
             progress("recovery", {"processed": len(processed)})
+
+    def scanned(done, total):
+        if progress:
+            progress(
+                "recovery",
+                {"processed": len(processed), "source_generations_checked": done, "source_generations": total},
+            )
 
     # The normal selector owns both pending work and version invalidation. Empty
     # hints alone cannot establish that existing lineage uses the current rules.
@@ -50,7 +57,8 @@ def finish_pending(store, *, pricing_client, identity_client, progress=None):
         pricing_client=pricing_client,
         identity_client=identity_client,
         known_pending=selected,
-        observer=observed,
+        on_processed=observed,
+        on_scanned=scanned,
     )
     return {"pricing_recovered": recovered, "lineage": lineage, "failed": lineage["failed"]}
 
@@ -127,8 +135,8 @@ def update_everything(store, end_date=None, *, pricing_client, identity_client, 
         if selected:
             processed = set()
 
-            def observed(**event):
-                processed.update(event["receipts"])
+            def observed(symbols):
+                processed.update(symbols)
                 if progress:
                     progress("lineage", {"processed": len(processed), "selected": len(selected)})
 
@@ -139,7 +147,7 @@ def update_everything(store, end_date=None, *, pricing_client, identity_client, 
                 selected,
                 pricing_client=pricing_client,
                 identity_client=identity_client,
-                observer=observed,
+                on_processed=observed,
             )
         current_stage = "summary"
         result["summary"] = describe(read_snapshot(store))

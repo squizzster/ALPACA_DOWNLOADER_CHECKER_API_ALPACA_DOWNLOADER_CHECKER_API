@@ -402,7 +402,7 @@ class StandaloneReaderTests(unittest.TestCase):
     def test_publication_holds_gate_and_prices_through_install_and_acknowledge(self):
         original = storage.finish_publication
 
-        def verify(store, root, journal):
+        def verify(store, root, journal, **kwargs):
             for path, directory in ((root, True), (store / "end_of_day/pricing/TEST/.download.lock", False)):
                 fd = os.open(path, os.O_RDONLY | (os.O_DIRECTORY if directory else 0))
                 try:
@@ -410,7 +410,7 @@ class StandaloneReaderTests(unittest.TestCase):
                         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 finally:
                     os.close(fd)
-            return original(store, root, journal)
+            return original(store, root, journal, **kwargs)
 
         with patch.object(storage, "finish_publication", side_effect=verify) as finish:
             result = run_lineage(
@@ -562,17 +562,17 @@ class StandaloneReaderTests(unittest.TestCase):
             self.reader.get_history("TEST")
         self.assertFalse(lock.exists())
 
-    def test_symlink_store_and_source_are_rejected(self):
+    def test_store_path_is_checked_but_selected_source_is_not_reaudited(self):
         link = self.store.parent / "link"
         link.symlink_to(self.store, target_is_directory=True)
         with self.assertRaises(StandaloneReaderError):
             StandaloneReader(link).get_history("TEST")
         source = self.store / "end_of_day/pricing/TEST/source.manifest.json"
+        expected = self.reader.get_history("TEST")
         renamed = source.with_name("renamed.json")
         source.rename(renamed)
         source.symlink_to(renamed)
-        with self.assertRaises(StandaloneReaderError):
-            self.reader.get_history("TEST")
+        self.assertEqual(self.reader.get_history("TEST"), expected)
 
     def test_old_rule_versions_are_not_reinterpreted(self):
         self.change_publication(lambda receipt, _: receipt["versions"].update(correlation=1))

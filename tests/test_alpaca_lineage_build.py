@@ -174,17 +174,44 @@ class LineageBuildTests(unittest.TestCase):
 
     def test_rule_decisions_are_shared_within_one_build_only(self):
         from libs.alpaca_end_of_day_security_correlation import row_correlation
+        from libs.alpaca_lineage_build import transform
 
         self.download()
-        with patch.object(row_correlation, "_decide_row", wraps=row_correlation._decide_row) as decide:
+        build_report = transform.build_security_correlation_report
+        with (
+            patch.object(row_correlation, "_decide_row", wraps=row_correlation._decide_row) as decide,
+            patch.object(
+                row_correlation,
+                "build_ticker_ownership_intervals",
+                wraps=row_correlation.build_ticker_ownership_intervals,
+            ) as intervals,
+            patch.object(
+                row_correlation,
+                "build_uuid_lineage_edges",
+                wraps=row_correlation.build_uuid_lineage_edges,
+            ) as edges,
+            patch.object(transform, "build_security_correlation_report", wraps=build_report) as build,
+        ):
             self.run_build()
             self.assertEqual(len(self.bars), decide.call_count)
+            self.assertEqual(2, build.call_count)
+            self.assertEqual(1, intervals.call_count)
+            self.assertEqual(1, edges.call_count)
             decide.reset_mock()
+            build.reset_mock()
+            intervals.reset_mock()
+            edges.reset_mock()
             self.run_build()
             self.assertEqual(0, decide.call_count)
+            self.assertEqual(0, build.call_count)
+            self.assertEqual(0, intervals.call_count)
+            self.assertEqual(0, edges.call_count)
             self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
             self.run_build()
             self.assertEqual(len(self.bars) + 1, decide.call_count)
+            self.assertEqual(2, build.call_count)
+            self.assertEqual(1, intervals.call_count)
+            self.assertEqual(1, edges.call_count)
 
     def test_repeated_arrival_does_not_create_false_cross_source_identity_partition(self):
         # A later duplicate transition must not manufacture an unresolved gap
@@ -376,7 +403,7 @@ class LineageBuildTests(unittest.TestCase):
         initialize_store(self.store)
         pricing_root = self.store / "end_of_day/pricing/META"
         pricing_root.mkdir(parents=True)
-        with ticker_lock(pricing_root, exclusive=True):
+        with ticker_lock(pricing_root, exclusive=True, create=True):
             pass  # A prior failed acquisition may have left only its stable lock.
         requested = []
 
@@ -676,10 +703,10 @@ class LineageBuildTests(unittest.TestCase):
         self.download()
         original = storage.atomic_json
 
-        def interrupted(path, document):
+        def interrupted(path, document, **kwargs):
             if path.name == "lineage.manifest.json":
                 raise OSError("interrupted after boundary files")
-            return original(path, document)
+            return original(path, document, **kwargs)
 
         with patch.object(storage, "atomic_json", side_effect=interrupted):
             result = run_lineage(self.store, identity_client=IdentityClient())

@@ -3,8 +3,11 @@
 ## Trust and ownership
 
 Each boundary calculates and validates its own output, then publishes its selecting receipt last.
-Downstream `load_*` paths check selection and input identity; they consume approved results without
-re-hashing every payload or repeating upstream rules. `authenticate_*` is explicit audit work.
+Completed receipts are authoritative from first consumption. Readers open only the data needed for the
+work, without existence/symlink inventories, file-stat cache keys, payload hashing or repeated upstream rules.
+After reacquiring locks, read the current selector to detect a newer generation; do not audit its files.
+Publication compares new outputs with recorded digests and validates new destinations and outputs.
+Recovery handles its journal; `authenticate_*` explicitly audits existing data. Forced repair replaces supplied payloads.
 Matching complete input generations permit reuse; changed inputs invalidate their dependent closure.
 Readers refuse incomplete publications and never repair them.
 
@@ -84,6 +87,8 @@ not a promise of globally minimal HTTP calls. CUSIPs stay exact.
 
 Complete groups can be reused only when inputs, dependency/recorded-absence sets and compatible versions
 match, with no pending pricing work or explicit metadata refresh.
+Completed work hints are authoritative. If their coverage is lost, one source-generation census restores it;
+matching entries do not open lineage receipts, and metadata prefetch is bounded to 1,000 dependency members.
 Rule-only changes may reuse approved metadata; they still recalculate affected assignments.
 Ordinary action acquisition resumes from the previously active month; older provider corrections need
 explicit metadata refresh. Closed-assignment reuse has stricter continuity and single-identity gates in

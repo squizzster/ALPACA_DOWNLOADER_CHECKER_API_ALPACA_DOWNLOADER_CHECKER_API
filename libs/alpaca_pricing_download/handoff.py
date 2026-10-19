@@ -1,6 +1,6 @@
 """Internal pricing handoff; no lineage calculation or public consumer API."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -16,17 +16,18 @@ from .storage import (
 )
 
 
-def load_published_boundary(root: Path, source: dict, kind: str) -> dict:
+def load_published_boundary(root: Path, source: dict, kind: str, *, selected=False) -> dict:
     """Trust a published pricing receipt under the caller's ticker lock.
 
     The producer has already authenticated values and exact-copy aliases. This
-    normal handoff decodes selected data; it never recalculates payload digests,
-    logical digests, or validation rules. read_boundary remains the explicit audit.
+    normal handoff decodes selected data without filesystem revalidation or
+    recalculating digests. selected means the caller already checked publication
+    completion under the continuously held lock. read_boundary is the audit path.
     """
-    if regular_path(root, ".pending.json").exists():
+    if not selected and regular_path(root, ".pending.json").exists():
         raise DownloadError("pricing publication is incomplete; resume the downloader")
     reference = source["boundaries"][kind]
-    document = read_document(regular_path(root, reference["manifest"]))
+    document = read_document(regular_path(root, reference["manifest"], published=True), published=True)
     if (
         document.get("schema_version") not in SUPPORTED_VERSIONS
         or document.get("symbol") != source["symbol"]
@@ -42,22 +43,36 @@ def load_published_boundary(root: Path, source: dict, kind: str) -> dict:
             continue
         filename = entry["file"]
         if filename not in decoded:
-            decoded[filename] = decode_csv(regular_path(root, str(parent / filename)).read_bytes())
+            decoded[filename] = decode_csv(
+                regular_path(root, str(parent / filename), published=True).read_bytes()
+            )
         views[entry["adjustment"]] = decoded[filename]
     return views
 
 
-def load_published_views(root: Path, source: dict) -> dict:
+def load_published_views(root: Path, source: dict, *, selected=False) -> dict:
     """Assemble the owner's accepted overlap rule, without re-authenticating it."""
-    cold = load_published_boundary(root, source, "completed_years")
-    year = load_published_boundary(root, source, "current_year")
-    month = load_published_boundary(root, source, "current_month")
-    return {
-        name: cold[name]
-        + tuple(row for row in year[name] if month_of(row) < source["anchor_month"])
-        + month[name]
-        for name in ADJUSTMENTS
-    }
+    if not selected and regular_path(root, ".pending.json").exists():
+        raise DownloadError("pricing publication is incomplete; resume the downloader")
+    cold = load_published_boundary(root, source, "completed_years", selected=True)
+    year = load_published_boundary(root, source, "current_year", selected=True)
+    month = load_published_boundary(root, source, "current_month", selected=True)
+    # Exact-copy aliases are already authenticated by the producing boundary.
+    # Preserve that identity while assembling the three chronological parts so
+    # downstream adapters parse and materialize each distinct history once.
+    active_years, assembled = {}, {}
+    views = {}
+    for name in ADJUSTMENTS:
+        year_rows = year[name]
+        active_year = active_years.get(id(year_rows))
+        if active_year is None:
+            active_year = tuple(row for row in year_rows if month_of(row) < source["anchor_month"])
+            active_years[id(year_rows)] = active_year
+        parts = (id(cold[name]), id(active_year), id(month[name]))
+        if parts not in assembled:
+            assembled[parts] = cold[name] + active_year + month[name]
+        views[name] = assembled[parts]
+    return views
 
 
 @dataclass
@@ -73,7 +88,7 @@ class PricingUpdate:
         source = load_source(self._root, self._root.name)
         if source is None:
             raise DownloadError("no published pricing source")
-        return load_published_views(self._root, source)
+        return load_published_views(self._root, source, selected=True)
 
 
 @contextmanager
@@ -88,11 +103,15 @@ def consume_pricing_update(store: Path | str, symbol: str):
     store = Path(store).absolute()
     if read_document(store / "store.manifest.json") != STORE_DOCUMENT:
         raise DownloadError("not a standalone pricing store")
-    root = regular_path(store, f"end_of_day/pricing/{symbol}")
-    if not root.exists():
-        yield None
-        return
-    with ticker_lock(root, exclusive=True):
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(ticker_lock(root, exclusive=True))
+        except FileNotFoundError:
+            if load_source(root, symbol) is not None:
+                raise DownloadError("published pricing lock is missing")
+            yield None
+            return
         if regular_path(root, ".pending.json").exists():
             raise DownloadError("pricing publication is incomplete; resume the downloader")
         dates = read_update(root)
@@ -102,6 +121,6 @@ def consume_pricing_update(store: Path | str, symbol: str):
         batch = PricingUpdate(dict(dates), root)
         try:
             yield batch
-            acknowledge_update(root, dates)
+            acknowledge_update(root, dates, selected=True)
         finally:
             batch._active = False

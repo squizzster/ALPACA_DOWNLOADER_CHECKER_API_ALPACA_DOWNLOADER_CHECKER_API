@@ -79,6 +79,12 @@ class PricingHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(DownloadError, "no longer locked"):
             batch.read_views()
 
+    def test_exact_copy_adjustments_share_the_assembled_row_tuple(self):
+        self.download()
+        with consume_pricing_update(self.store, "GOOG") as batch:
+            views = batch.read_views()
+        self.assertTrue(all(rows is views["raw"] for rows in views.values()))
+
     def test_pending_range_extends_to_without_moving_from_or_adding_files(self):
         self.download()
         updated = self.bars + [bar("2026-10-14")]
@@ -154,6 +160,14 @@ class PricingHandoffTests(unittest.TestCase):
             self.assertIsNone(batch)
         self.assertFalse((self.store / "end_of_day/pricing/OTHER").exists())
         self.assertFalse((self.store / "end_of_day/manifests").exists())
+
+    def test_missing_lock_does_not_hide_published_pending_work(self):
+        self.download()
+        (self.root / ".download.lock").unlink()
+        with self.assertRaisesRegex(DownloadError, "lock is missing"):
+            with consume_pricing_update(self.store, "GOOG"):
+                self.fail("consumed an unlocked publication")
+        self.assertTrue(self.notice.exists())
 
     def test_failed_consumer_leaves_original_notice_untouched(self):
         self.download()
@@ -234,7 +248,7 @@ class PricingHandoffTests(unittest.TestCase):
         self.assertEqual(before, snapshot(self.store))
         self.notice.unlink()
         self.notice.symlink_to(self.root / "source.manifest.json")
-        with self.assertRaisesRegex(DownloadError, "symlink"):
+        with self.assertRaisesRegex(DownloadError, "only from/to"):
             with consume_pricing_update(self.store, "GOOG"):
                 pass
 
