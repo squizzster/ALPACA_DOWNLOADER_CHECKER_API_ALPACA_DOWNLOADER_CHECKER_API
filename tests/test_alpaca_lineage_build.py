@@ -172,6 +172,20 @@ class LineageBuildTests(unittest.TestCase):
         self.assertEqual(client.request_count, 0)
         self.assertEqual(before, snapshot(self.root))
 
+    def test_rule_decisions_are_shared_within_one_build_only(self):
+        from libs.alpaca_end_of_day_security_correlation import row_correlation
+
+        self.download()
+        with patch.object(row_correlation, "_decide_row", wraps=row_correlation._decide_row) as decide:
+            self.run_build()
+            self.assertEqual(len(self.bars), decide.call_count)
+            decide.reset_mock()
+            self.run_build()
+            self.assertEqual(0, decide.call_count)
+            self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
+            self.run_build()
+            self.assertEqual(len(self.bars) + 1, decide.call_count)
+
     def test_repeated_arrival_does_not_create_false_cross_source_identity_partition(self):
         # A later duplicate transition must not manufacture an unresolved gap
         # and then let the next cascade pass split the accepted UUID membership.

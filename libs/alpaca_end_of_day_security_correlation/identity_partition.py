@@ -238,7 +238,8 @@ def _assess_candidate(
     successor_sessions = sessions_by_symbol.get(candidate.successor.symbol)
     if not predecessor_sessions or not successor_sessions:
         return None
-    observed_sessions = tuple(sorted(set(predecessor_sessions).union(successor_sessions)))
+    observed_set = set(predecessor_sessions).union(successor_sessions)
+    observed_sessions = tuple(sorted(observed_set))
     try:
         coverage = expected_market_session_coverage(
             observed_sessions[0].isoformat(),
@@ -250,7 +251,7 @@ def _assess_candidate(
     expected_set = set(expected_sessions)
     if any(session not in expected_set for session in observed_sessions):
         return None
-    missing = tuple(session for session in expected_sessions if session not in set(observed_sessions))
+    missing = tuple(session for session in expected_sessions if session not in observed_set)
     if len(missing) != 1:
         return None
     missing_position = expected_sessions.index(missing[0])

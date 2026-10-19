@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Any, Callable
@@ -169,13 +170,22 @@ def _parse_session_date(timestamp: object, row_number: int) -> tuple[str, date]:
     return timestamp, utc_timestamp.astimezone(NEW_YORK_TIME_ZONE).date()
 
 
-def _parse_download_rows(rows: list[dict]) -> list[tuple[int, str, date]]:
+def _parse_download_rows(
+    rows: list[dict], *, session_cache: dict[str, date] | None = None
+) -> list[tuple[int, str, date]]:
     parsed_rows = []
     previous_session_date = None
     for row_number, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
             raise SecurityCorrelationError(f"row {row_number}: expected an object")
-        timestamp, session_date = _parse_session_date(row.get("t"), row_number)
+        timestamp = row.get("t")
+        session_date = (
+            session_cache.get(timestamp) if session_cache is not None and isinstance(timestamp, str) else None
+        )
+        if session_date is None:
+            timestamp, session_date = _parse_session_date(timestamp, row_number)
+            if session_cache is not None:
+                session_cache[timestamp] = session_date
         if previous_session_date is not None and session_date <= previous_session_date:
             raise SecurityCorrelationError(f"row {row_number}: session dates are not strictly increasing")
         previous_session_date = session_date
@@ -186,6 +196,43 @@ def _parse_download_rows(rows: list[dict]) -> list[tuple[int, str, date]]:
 def download_session_dates(rows: list[dict]) -> tuple[date, ...]:
     """Return validated, ordered New York session dates for one authenticated download."""
     return tuple(session_date for _, _, session_date in _parse_download_rows(rows))
+
+
+class CorrelationCache:
+    """Reuse computation within one immutable input group, including its rule passes.
+
+    Keep input rows alive so object IDs cannot be recycled. Discard this cache on
+    reload/publication; it is never a cross-run or whole-universe cache.
+    """
+
+    def __init__(self):
+        self._sessions = {}
+        self._downloads = {}
+        self._decisions = {}
+
+    def _prepare(self, rows):
+        key = id(rows)
+        if key not in self._downloads:
+            parsed = _parse_download_rows(rows, session_cache=self._sessions)
+            self._downloads[key] = (rows, parsed, tuple(day for _, _, day in parsed))
+        return self._downloads[key]
+
+    def parsed_rows(self, rows):
+        return self._prepare(rows)[1]
+
+    def session_dates(self, rows):
+        return self._prepare(rows)[2]
+
+    def decisions_for(self, context):
+        # Compare every non-date rule input once per view/pass. Adjustment-specific
+        # assessments and changed cross-source evidence therefore get separate maps.
+        candidates = self._decisions.setdefault(context["requested_symbol"], [])
+        for previous, decisions in candidates:
+            if previous == context:
+                return decisions
+        decisions = {}
+        candidates.append((deepcopy(context), decisions))
+        return decisions
 
 
 def _interval_matches(
@@ -990,6 +1037,7 @@ def correlate_download_rows(
     independent_history: tuple[IndependentHistoricalInterval, ...] = (),
     retired_lower_bound: date | None = None,
     retired_continuation: RetiredContinuation | None = None,
+    cache: CorrelationCache | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     requested_symbol = source["requested_symbol"]
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
@@ -1028,7 +1076,7 @@ def correlate_download_rows(
         dated_same_symbol_predecessors,
         selected_identity_chain_asset_ids,
     )
-    parsed_rows = _parse_download_rows(rows)
+    parsed_rows = cache.parsed_rows(rows) if cache is not None else _parse_download_rows(rows)
 
     ticker_reuse_gap = assess_ticker_reuse_gap(
         tuple(session_date for _, _, session_date in parsed_rows),
@@ -1048,35 +1096,38 @@ def correlate_download_rows(
     )
     # Pricing gaps and ticker occupancy cannot revoke an accepted continuation.
     # Unrelated reused-symbol occupants already have no edge to the prior lineage.
+    context = dict(
+        requested_symbol=requested_symbol,
+        selected_asof_interval=selected_interval,
+        selected_asof_identity_chain_asset_ids=selected_identity_chain_asset_ids,
+        intervals=intervals,
+        lineage=lineage,
+        ticker_reuse_gap=ticker_reuse_gap,
+        distinct_uuid_transition=distinct_uuid_transition,
+        distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
+        current_symbol_reuse=current_symbol_reuse,
+        dated_same_symbol_predecessors=dated_same_symbol_predecessors,
+        predecessor_prefixes=predecessor_prefixes,
+        occupancy_anchors=occupancy_anchors,
+        same_symbol_continuation_ids=continuation_ids,
+        terminal_episode=terminal_episode,
+        bridged_episodes=bridged_episodes,
+        unrelated_cash_acquiree_intervals=unrelated_cash_acquiree_intervals,
+        departure_prefix=departure_prefix,
+        independent_history=independent_history,
+        adopted_target_pairs=adopted_target_pairs,
+        retired_source_selection=retired_selection,
+        retired_lower_bound=retired_lower_bound,
+        retired_continuation=retired_continuation,
+    )
+    decisions = cache.decisions_for(context) if cache is not None else {}
     correlated_rows = []
     for row_number, timestamp, session_date in parsed_rows:
-        decision = _decide_row(
-            _RowRuleContext(
-                session_date=session_date,
-                requested_symbol=requested_symbol,
-                selected_asof_interval=selected_interval,
-                selected_asof_identity_chain_asset_ids=selected_identity_chain_asset_ids,
-                intervals=intervals,
-                lineage=lineage,
-                ticker_reuse_gap=ticker_reuse_gap,
-                distinct_uuid_transition=distinct_uuid_transition,
-                distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
-                current_symbol_reuse=current_symbol_reuse,
-                dated_same_symbol_predecessors=dated_same_symbol_predecessors,
-                predecessor_prefixes=predecessor_prefixes,
-                occupancy_anchors=occupancy_anchors,
-                same_symbol_continuation_ids=continuation_ids,
-                terminal_episode=terminal_episode,
-                bridged_episodes=bridged_episodes,
-                unrelated_cash_acquiree_intervals=unrelated_cash_acquiree_intervals,
-                departure_prefix=departure_prefix,
-                independent_history=independent_history,
-                adopted_target_pairs=adopted_target_pairs,
-                retired_source_selection=retired_selection,
-                retired_lower_bound=retired_lower_bound,
-                retired_continuation=retired_continuation,
+        decision = decisions.get(session_date)
+        if decision is None:
+            decision = decisions[session_date] = _decide_row(
+                _RowRuleContext(session_date=session_date, **context)
             )
-        )
         correlated_rows.append(
             _CorrelatedRow(
                 row_number=row_number,
@@ -1090,10 +1141,11 @@ def correlate_download_rows(
     segment_start = 0
     while segment_start < len(correlated_rows):
         decision = correlated_rows[segment_start].decision
+        grouping_key = decision.grouping_key()
         segment_end = segment_start + 1
         while (
             segment_end < len(correlated_rows)
-            and correlated_rows[segment_end].decision.grouping_key() == decision.grouping_key()
+            and correlated_rows[segment_end].decision.grouping_key() == grouping_key
         ):
             segment_end += 1
         first_row = correlated_rows[segment_start]

@@ -11,6 +11,7 @@ from libs.alpaca_end_of_day_security_correlation.predecessor_prefix import (
     assess_predecessor_prefixes,
 )
 from libs.alpaca_end_of_day_security_correlation.row_correlation import (
+    CorrelationCache,
     correlate_download_rows,
     download_session_dates,
 )
@@ -116,6 +117,16 @@ class PredecessorPrefixTests(unittest.TestCase):
         before = correlate_download_rows(rows(), source, self.lineage, self.intervals)
         after = correlate_download_rows(
             rows(), source, self.lineage, self.intervals, predecessor_prefixes=result
+        )
+        cache = CorrelationCache()
+        self.assertEqual(
+            before, correlate_download_rows(rows(), source, self.lineage, self.intervals, cache=cache)
+        )
+        self.assertEqual(
+            after,
+            correlate_download_rows(
+                rows(), source, self.lineage, self.intervals, predecessor_prefixes=result, cache=cache
+            ),
         )
         self.assertEqual([], before["correlated"])
         self.assertEqual(2, after["correlated"][0]["row_count"])

@@ -22,8 +22,8 @@ from .predecessor_prefix import (
 from .publication import lineage_evidence_sha256, publish_security_correlation
 from .retired_continuation import assess_retired_continuation
 from .row_correlation import (
+    CorrelationCache,
     correlate_download_rows,
-    download_session_dates,
     row_correlation_rule_order,
 )
 from .session_exclusions import read_verified_session_exclusions
@@ -77,8 +77,10 @@ def build_security_correlation_report(
     correlation_loader: Callable[[str], Any] | None = None,
     source_rows_loader: Callable[[str, str], tuple[list[dict], str]] | None = None,
     assess_episode_partitions: bool = True,
+    cache: CorrelationCache | None = None,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
+    cache = cache if cache is not None else CorrelationCache()
     if not isinstance(lineage_report, dict):
         raise SecurityCorrelationError("lineage API returned a non-object report")
     symbol = lineage_report.get("symbol")
@@ -156,7 +158,7 @@ def build_security_correlation_report(
             (
                 authenticated_download,
                 source,
-                download_session_dates(authenticated_download.rows),
+                cache.session_dates(authenticated_download.rows),
             )
         )
 
@@ -293,6 +295,7 @@ def build_security_correlation_report(
             independent_history=independent_history,
             retired_lower_bound=retired_lower_bound,
             retired_continuation=retired_continuation,
+            cache=cache,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]

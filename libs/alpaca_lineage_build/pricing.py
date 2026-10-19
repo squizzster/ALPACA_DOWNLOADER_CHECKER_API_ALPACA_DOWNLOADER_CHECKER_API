@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
-from libs.alpaca_end_of_day_security_correlation.row_correlation import download_session_dates
+from libs.alpaca_end_of_day_security_correlation.row_correlation import CorrelationCache
 from libs.alpaca_end_of_day_security_correlation.session_exclusions import (
     VERIFIED_SESSION_EXCLUSIONS_MANIFEST_TYPE,
     VERIFIED_SESSION_EXCLUSIONS_VERSION,
@@ -128,12 +128,12 @@ def empty_exclusions(_root, symbol):
     }
 
 
-def rule_loaders(inputs: dict, preliminary: dict):
+def rule_loaders(inputs: dict, preliminary: dict, cache: CorrelationCache):
     def sessions(symbol):
         view = inputs.get(symbol)
         if view is None:
             return None
-        grids = [download_session_dates(item.rows) for item in view.downloads.values()]
+        grids = [cache.session_dates(item.rows) for item in view.downloads.values()]
         if any(grid != grids[0] for grid in grids[1:]):
             return None
         return grids[0], tuple(
