@@ -251,19 +251,12 @@ def export(
                 schema(), check_metadata=False
             ):
                 raise ExportError("written Parquet schema or row count differs from conversion")
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
         if replace:
             os.replace(temporary, output)
         else:
             # Atomic no-clobber publication; the temporary name is then removed.
             os.link(temporary, output)
             temporary.unlink()
-        parent = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
         if progress:
             progress(
                 f"published {len(mappings)} identities; {row_count} rows; "

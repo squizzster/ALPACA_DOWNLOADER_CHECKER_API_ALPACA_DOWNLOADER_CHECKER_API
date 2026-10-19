@@ -11,7 +11,6 @@ from libs.alpaca_pricing_download.contract import json_bytes, symbol_label
 from libs.alpaca_pricing_download.storage import (
     STORE_DOCUMENT,
     acknowledge_update,
-    fsync_directory,
     load_source,
     read_document,
     read_update,
@@ -20,6 +19,7 @@ from libs.alpaca_pricing_download.storage import (
     write_file,
 )
 from libs.alpaca_pricing_download.update_checks import acknowledge_checks, read_checks
+from libs.common.sqlite_connections import connect_sqlite
 
 from .acquisition import unavailable_pricing
 from .contract import (
@@ -61,8 +61,6 @@ def atomic_json(path: Path, value: dict) -> None:
         temporary.unlink()  # This writer's reserved, unpublished scratch file.
     write_file(temporary, data)
     os.replace(temporary, path)
-    fsync_directory(path.parent)
-    fsync_directory(path.parent.parent)
 
 
 def check_store(store: Path) -> None:
@@ -89,12 +87,12 @@ def publication_lock(root: Path, *, exclusive=False, wait=True):
         os.close(descriptor)
 
 
-def _index_version(root: Path) -> int | None:
+def _index_version(root: Path, *, readonly=True) -> int | None:
     path = path_at(root, "index.sqlite3")
     if not path.exists():
         return None
     try:
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+        with closing(connect_sqlite(path, readonly=readonly)) as connection:
             return connection.execute("PRAGMA user_version").fetchone()[0]
     except sqlite3.Error as error:
         raise LineageError("cannot load lineage dependency index") from error
@@ -105,7 +103,6 @@ def writer_lock(store: Path):
     check_store(store)
     root = regular_path(store, "end_of_day/lineage")
     root.mkdir(parents=True, exist_ok=True)
-    fsync_directory(root.parent)
     # One permanent inode per store, not per ticker. Readers never take it.
     with path_at(root, ".worker.lock").open("a+b") as worker:
         fcntl.flock(worker.fileno(), fcntl.LOCK_EX)
@@ -113,7 +110,7 @@ def writer_lock(store: Path):
             # Drain v1/v2 writers/readers before activating the new lock order.
             # Older executables then reject the current protocol before taking pricing locks.
             # Only the protocol header changes: no receipt or prices are rebuilt.
-            existing = _index_version(root)
+            existing = _index_version(root, readonly=False)
             if existing is not None and existing not in SUPPORTED_VERSIONS:
                 raise LineageError("unsupported lineage index")
             if existing != VERSION:
@@ -157,7 +154,7 @@ def reader_snapshot(
     def selection():
         # New lock order must not overlap an executable using the old order.
         # The worker upgrades this header under the old shared/exclusive gate.
-        if _index_version(root) not in {None, VERSION}:
+        if _index_version(root) not in {None, 6, 7, 8, 9, 10, VERSION}:
             raise LineageError("lineage lock protocol needs upgrade; run lineage first")
         if path_at(root, ".pending.json").exists():
             raise LineageError("lineage publication incomplete; resume lineage first")
@@ -231,7 +228,7 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
         return empty_index()
     index = empty_index()
     try:
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+        with closing(connect_sqlite(path, readonly=True)) as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] not in SUPPORTED_VERSIONS:
                 raise LineageError("unsupported lineage index")
             statement = "SELECT symbol, receipt FROM symbols"
@@ -256,8 +253,7 @@ def _update_index(root: Path, entries: dict) -> None:
     path = path_at(root, "index.sqlite3")
     path_at(root, "index.sqlite3-journal")
     try:
-        with closing(sqlite3.connect(path)) as connection:
-            connection.execute("PRAGMA synchronous=FULL")
+        with closing(connect_sqlite(path, create=True)) as connection:
             connection.execute("PRAGMA journal_mode=DELETE")
             with connection:
                 connection.execute(
@@ -268,7 +264,6 @@ def _update_index(root: Path, entries: dict) -> None:
                     "INSERT OR REPLACE INTO symbols(symbol, receipt) VALUES (?, ?)",
                     [(symbol, json_bytes(entry).decode()) for symbol, entry in sorted(entries.items())],
                 )
-        fsync_directory(root)
     except sqlite3.Error as error:
         raise LineageError("cannot publish lineage dependency index") from error
 
@@ -303,11 +298,9 @@ def _install(root: Path, journal: dict) -> None:
         path = path_at(root, relative)
         if path.exists():
             path.unlink()
-            fsync_directory(path.parent)
         parent = path.parent
         while parent != root and parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
-            fsync_directory(parent.parent)
             parent = parent.parent
     _update_index(root, journal["index_updates"])
 
@@ -342,10 +335,17 @@ def _acknowledge(store: Path, journal: dict) -> None:
 
 
 def finish_publication(store: Path, root: Path, journal: dict) -> None:
+    from libs.alpaca_pricing_download.check_summary import invalidate, summary_path
+
+    from .check_summary import refresh
+
+    invalidate(store, journal["sources"], owner="lineage")
     _install(root, journal)
+    if summary_path(store).exists():
+        index = {"symbols": journal["index_updates"]}
+        refresh(store, {symbol: read_receipt(root, symbol, index) for symbol in journal["sources"]})
     _acknowledge(store, journal)
     path_at(root, ".pending.json").unlink()
-    fsync_directory(root)
 
 
 def recover(store: Path, root: Path) -> bool:
@@ -411,6 +411,9 @@ def publish(
         }
     # Caller already owns the complete pricing group and the worker-only lock.
     with publication_lock(root, exclusive=True):
+        from libs.alpaca_pricing_download.check_summary import invalidate
+
+        invalidate(store, receipts, owner="lineage")
         atomic_json(path_at(root, ".pending.json"), journal)
         finish_publication(store, root, journal)
     index["symbols"].update(updated)

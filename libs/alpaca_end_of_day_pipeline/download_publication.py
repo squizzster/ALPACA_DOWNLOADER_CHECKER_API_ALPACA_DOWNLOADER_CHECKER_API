@@ -112,7 +112,6 @@ def validate_and_publish_alpaca_download(
                     f"pigz failed with status {pigz_exit_code}: {pigz_stderr or 'no details'}"
                 )
             compressed_download_file.flush()
-            os.fsync(compressed_download_file.fileno())
     except BaseException:
         _terminate_pigz_process(pigz_process)
         compressed_download_temporary_path.unlink(missing_ok=True)
@@ -202,7 +201,6 @@ def validate_and_publish_alpaca_download(
             json.dump(download_manifest, sidecar_manifest_file, separators=(",", ":"))
             sidecar_manifest_file.write("\n")
             sidecar_manifest_file.flush()
-            os.fsync(sidecar_manifest_file.fileno())
         os.replace(compressed_download_temporary_path, download_path)
         os.replace(sidecar_manifest_temporary_path, sidecar_manifest_path)
     except BaseException:
@@ -293,7 +291,6 @@ def deduplicate_authenticated_download_storage(
                 json.dump(updated_manifest, manifest_file, separators=(",", ":"))
                 manifest_file.write("\n")
                 manifest_file.flush()
-                os.fsync(manifest_file.fileno())
             replaced_size = download_path.stat().st_size
             os.replace(hard_link_temporary_path, download_path)
             os.replace(manifest_temporary_path, manifest_path)
@@ -467,7 +464,6 @@ def publish_empirical_adjustment_alias(
             json.dump(alias_manifest, alias_manifest_file, separators=(",", ":"))
             alias_manifest_file.write("\n")
             alias_manifest_file.flush()
-            os.fsync(alias_manifest_file.fileno())
         os.replace(alias_temporary_path, alias_path)
         os.replace(alias_manifest_temporary_path, alias_manifest_path)
     except BaseException:

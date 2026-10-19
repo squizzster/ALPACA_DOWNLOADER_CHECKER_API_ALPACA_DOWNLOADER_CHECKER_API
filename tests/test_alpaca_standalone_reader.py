@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -83,7 +83,10 @@ def selected_reader(store, selected, result):
 class StandaloneReaderTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
+            )
         )
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

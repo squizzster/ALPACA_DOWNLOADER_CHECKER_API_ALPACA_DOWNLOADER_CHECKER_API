@@ -43,14 +43,6 @@ STORE_DOCUMENT = {
 }
 
 
-def fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def regular_path(root: Path, relative: str) -> Path:
     parts = PurePosixPath(relative).parts
     if (
@@ -71,8 +63,6 @@ def regular_path(root: Path, relative: str) -> Path:
 def write_file(path: Path, data: bytes) -> None:
     with path.open("xb") as stream:
         stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
 
 
 def read_document(path: Path) -> dict:
@@ -108,7 +98,6 @@ def initialize_store(root: Path) -> None:
                 staged.unlink()  # Reserved, incomplete initialization; no published data exists.
             write_file(staged, json_bytes(STORE_DOCUMENT))
             os.replace(staged, manifest)
-            fsync_directory(root)
     finally:
         os.close(descriptor)
 
@@ -159,9 +148,7 @@ def acknowledge_update(root: Path, expected: dict) -> None:
         raise DownloadError("pending update changed during consumption")
     path = update_path(root)
     path.unlink()
-    fsync_directory(path.parent)
     path.parent.rmdir()
-    fsync_directory(path.parent.parent)
 
 
 def boundary_paths(anchor: str) -> dict[str, str]:
@@ -349,7 +336,6 @@ def _discard_staging(root: Path) -> None:
     for entry in entries:
         entry.unlink()
     staging.rmdir()
-    fsync_directory(root)
 
 
 def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event=None) -> None:
@@ -396,6 +382,9 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
     store = root.parents[2]
     event = check_event
     if event is None:
+        from .check_summary import invalidate
+
+        invalidate(store, [root.name])
         event = queue_check(store, root.name)
         if on_check is not None:
             on_check(event)
@@ -407,8 +396,6 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
                 raise DownloadError("staged pricing output failed verification")
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged, target)
-            fsync_directory(target.parent)
-            fsync_directory(target.parent.parent)
         if digest(target.read_bytes()) != entry["sha256"]:
             raise DownloadError("installed pricing output failed verification")
     # No prior month/year is retired until the complete replacement is selected.
@@ -419,12 +406,10 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
             if digest(path.read_bytes()) != expected:
                 raise DownloadError(f"retired pricing file changed; refusing deletion: {relative}")
             path.unlink()
-            fsync_directory(path.parent)
         parents.update(parent for parent in path.parents if parent != root and root in parent.parents)
     for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
         if parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
-            fsync_directory(parent.parent)
     if update is not None:
         target = update_path(root)
         staged = regular_path(root, f".staging/write-{len(writes):03d}")
@@ -434,14 +419,13 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
             validate_update(read_document(staged))
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged, target)
-            fsync_directory(target.parent)
-            fsync_directory(target.parent.parent)
-            fsync_directory(target.parent.parent.parent)
         if digest(target.read_bytes()) != update["sha256"]:
             raise DownloadError("installed update manifest failed verification")
+    from .check_summary import refresh_prices
+
+    refresh_prices(root)
     _discard_staging(root)
     regular_path(root, ".pending.json").unlink()
-    fsync_directory(root)
     if read_checks(store, ())["epoch"] != event[0]:
         # Deletion/recreation during publication cannot lose this change.
         event = queue_check(store, root.name)
@@ -545,19 +529,19 @@ def publish(
             write_file(staging / f"write-{index:03d}", content)
         if notice is not None:
             write_file(staging / f"write-{len(changed):03d}", notice)
-        fsync_directory(staging)
         # Create journal through an atomic rename so partial JSON is never recovery authority.
         journal_stage = staging / f"write-{len(changed) + (notice is not None):03d}"
         write_file(journal_stage, json_bytes(journal))
         # Invalidate completion before the journal is visible, so a stopped
         # publication cannot be skipped by an older completed-batch memo.
+        from .check_summary import invalidate
         from .update_checks import queue_check
 
+        invalidate(root.parents[2], [source["symbol"]])
         event = queue_check(root.parents[2], source["symbol"])
         if on_check is not None:
             on_check(event)
         os.replace(journal_stage, pending)
-        fsync_directory(root)
         _finish_publication(root, journal, on_check=on_check, check_event=event)
     except BaseException:
         if not pending.exists():

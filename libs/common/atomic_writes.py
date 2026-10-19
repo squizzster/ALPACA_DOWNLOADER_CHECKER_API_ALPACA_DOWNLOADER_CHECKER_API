@@ -16,7 +16,7 @@ def create_temporary_sibling_path(destination_path: Path | str) -> Path:
 
 
 def write_json_document_atomically(destination_path: Path, document: dict, *, compact: bool) -> None:
-    """Fsync JSON into a sibling temporary file, then atomically replace the destination."""
+    """Close a complete sibling temporary file, then atomically replace the destination."""
     temporary_path = create_temporary_sibling_path(destination_path)
     try:
         with temporary_path.open("w", encoding="utf-8") as json_file:
@@ -26,7 +26,6 @@ def write_json_document_atomically(destination_path: Path, document: dict, *, co
                 json.dump(document, json_file, indent=2)
             json_file.write("\n")
             json_file.flush()
-            os.fsync(json_file.fileno())
         os.replace(temporary_path, destination_path)
     except BaseException:
         temporary_path.unlink(missing_ok=True)

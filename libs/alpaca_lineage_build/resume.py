@@ -32,7 +32,6 @@ def eligible_source(source, previous, notice, *, refresh):
 
 def stable_evidence(previous, current):
     fields = (
-        "asset_lookups",
         "identities",
         "corporate_actions",
         "symbol_occupancy_evidence",
@@ -40,7 +39,18 @@ def stable_evidence(previous, current):
         "unresolved_cusips",
         "queried_symbols",
     )
-    return all(previous[field] == current[field] for field in fields)
+
+    def lookup_facts(evidence):
+        return [
+            {key: value for key, value in lookup.items() if key != "source"}
+            if lookup.get("source") == "asset_catalogue"
+            else lookup
+            for lookup in evidence["asset_lookups"]
+        ]
+
+    return lookup_facts(previous) == lookup_facts(current) and all(
+        previous[field] == current[field] for field in fields
+    )
 
 
 def unique_assignment(segments, asset_id):

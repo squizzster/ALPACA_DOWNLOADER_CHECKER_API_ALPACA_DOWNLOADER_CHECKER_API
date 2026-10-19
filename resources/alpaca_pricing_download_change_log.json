@@ -41,5 +41,41 @@
       "Queue changed source publications, including provenance-only changes and empty sources, in one disposable lineage update check file before visible publication. Recovery and cache recreation retain pending work. Existing pricing receipts and dated notices remain authoritative.",
       "Write one optional completed-batch memo only at successful exit when publication revisions exclude concurrent writers; reuse identical batches without per-ticker receipt checks, and fall back to existing receipts when either disposable cache is deleted."
     ]
+  },
+  {
+    "modifications": [
+      "Add the minimal store-level pricing check summary: eligible ticker, saved request asof and exact last all-adjusted row only; derive counts and a content digest without ticker scans.",
+      "Invalidate affected summary inputs before publication and recovery, and update existing eligible baselines from source-bound validators after installation. Missing or incomplete summaries fail closed; no identity imports or changes to the acquisition strategy."
+    ]
+  },
+  {
+    "modifications": [
+      "Add solver-planned cohort acquisition for complete replacement over each existing ticker's retained start, exclusive end and identity-mapping date, sharing the same acquisition and first-session checks as isolated experiments.",
+      "Guard planned replacement under the ticker publication lock against a changed source receipt or date span; retain existing recoverable publication, pending lineage notices and automatic check-summary updates."
+    ]
+  },
+  {
+    "modifications": [
+      "Select the latest exchange session strictly before the current America/New_York date for automatic downloads, freezing one end per CLI batch. Use the existing exchange calendar across weekends, holidays and daylight-saving changes; fail closed outside calendar coverage.",
+      "Apply the New York midnight completion cutoff to explicit inclusive and exclusive ends as well. Preserve UTC request boundaries, symbol-mapping dates, existing v1-v10 publications and all pricing/lineage handoff formats."
+    ]
+  },
+  {
+    "modifications": [
+      "Add a dedicated approved-history append stage that consumes the existing minimal summary handoff and requests only missing completed sessions in all eight views. Batch compatible ranges with the existing solver labels, up to 8000 symbols within URL and memory budgets, with complete pagination and no repeated historical probes or full-month acquisition.",
+      "Publish under existing ticker locks after checking the handed-off covered end and baseline, retain approved prices, and reuse normal rollover, recovery, pending-notice and summary publication. Expose --append-ready for the staged operator path; normal lineage and exact CUSIP checks remain unchanged."
+    ]
+  },
+  {
+    "modifications": [
+      "Integrate --update-everything as the complete existing-active-universe command, defaulting to the application data_pricing store only for this mode. Freeze one New York-completed end; preserve ordinary explicit-store selection and pricing-only imports.",
+      "Promote shared live-check planning and comparison into the production pricing package while retaining the experimental interface and its existing handoff format. Expose pending summary inputs for bounded journal recovery; add no persistent report, plan, cache or discovery scan. Bound repeated batch-failure diagnostics so a large rejected symbol list cannot multiply into unbounded per-ticker output."
+    ]
+  },
+  {
+    "modifications": [
+      "Remove application-forced disk synchronization while retaining closed temporary files, atomic replacement, ticker locks and publication journals. Use SQLite synchronous=OFF with disk rollback journals and let producer queries recover interrupted transactions before consuming work hints or summary state.",
+      "Discard guarded unjournaled staging under the ticker lock before optimized append publication, allowing retries after abrupt process termination. Preserve v1-v13 pricing, request boundaries and all completed data."
+    ]
   }
 ]

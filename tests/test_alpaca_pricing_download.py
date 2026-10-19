@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 from test_alpaca_pricing_rate_limit import FakeClock
 
 from libs.alpaca_pricing_download import storage
-from libs.alpaca_pricing_download.command_line import build_parser
+from libs.alpaca_pricing_download.command_line import build_parser, main
 from libs.alpaca_pricing_download.contract import (
     ADJUSTMENTS,
     VALIDATOR_FILE,
@@ -66,7 +66,10 @@ def snapshot(root):
 class PricingDownloadTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
+            )
         )
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -547,7 +550,7 @@ class PricingDownloadTests(unittest.TestCase):
 
     def test_cli_requires_explicit_destination(self):
         with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
-            build_parser().parse_args(["--symbol", "GOOG"])
+            main(["--symbol", "GOOG"])
         parsed = build_parser().parse_args(["--symbol", "GOOG", "--store", "/example", "--refresh-all"])
         self.assertTrue(parsed.refresh_all)
 
@@ -599,8 +602,17 @@ class PricingHttpTests(unittest.TestCase):
     def test_pagination_and_symbol_only_endpoint(self):
         requests = []
         responses = [
-            b'{"bars":{"GOOG":[{"t":"first"}]},"next_page_token":"page2"}',
-            b'{"bars":{"GOOG":[{"t":"second"}]},"next_page_token":null}',
+            json_bytes(
+                {
+                    "bars": {
+                        "GOOG": [
+                            {**dict.fromkeys(("o", "h", "l", "c", "v", "n", "vw"), 1), "t": day + "T04:00:00Z"}
+                        ]
+                    },
+                    "next_page_token": token,
+                }
+            )
+            for day, token in (("2026-10-01", "page2"), ("2026-10-02", None))
         ]
 
         def opener(request, **_kwargs):
@@ -612,6 +624,7 @@ class PricingHttpTests(unittest.TestCase):
             "GOOG", "raw", timestamp("2026-10-01T00:00:00Z"), timestamp("2026-10-15T00:00:00Z")
         )
         self.assertEqual(len(result), 2)
+        self.assertEqual([row["t"] for row in result], ["2026-10-01T04:00:00Z", "2026-10-02T04:00:00Z"])
         parameters = [parse_qs(urlparse(request.full_url).query) for request in requests]
         self.assertEqual(parameters[0]["symbols"], ["GOOG"])
         self.assertEqual(parameters[1]["page_token"], ["page2"])

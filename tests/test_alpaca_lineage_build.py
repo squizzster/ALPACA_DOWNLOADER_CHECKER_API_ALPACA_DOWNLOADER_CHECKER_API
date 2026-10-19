@@ -5,7 +5,7 @@ import multiprocessing
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -84,7 +84,10 @@ def lineage_worker(store, ready, entered, release):
 class LineageBuildTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
+            )
         )
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -450,7 +453,10 @@ class LineageBuildTests(unittest.TestCase):
 
         output = io.StringIO()
         with (
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2026, 10, 14)),
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2026, 10, 14, 12, tzinfo=timezone.utc),
+            ),
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"}),
             patch("libs.alpaca_lineage_build.command_line.BarsClient", return_value=PricingClient()),
             patch(

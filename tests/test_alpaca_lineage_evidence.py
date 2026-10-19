@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +25,10 @@ from libs.common.us_equity_market_session_calendar import MarketCalendarError
 class LineageEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2026, 10, 15))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2026, 10, 15, 12, tzinfo=timezone.utc),
+            )
         )
         temporary = self.enterContext(tempfile.TemporaryDirectory())
         self.store = Path(temporary) / "store"

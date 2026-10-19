@@ -1,7 +1,7 @@
 import multiprocessing
 import tempfile
 import unittest
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,7 +22,10 @@ def download_worker(store, ready, entered, release):
             return super().fetch(*args, **kwargs)
 
     ready.set()
-    with patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1)):
+    with patch(
+        "libs.alpaca_pricing_download.download.utc_now",
+        return_value=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
+    ):
         download_pricing(
             store, "GOOG", "2026-10-15", client=BlockingClient([bar("2026-10-01"), bar("2026-10-14")])
         )
@@ -41,7 +44,10 @@ def consume_worker(store, ready, entered, release):
 class PricingHandoffTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
+            )
         )
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

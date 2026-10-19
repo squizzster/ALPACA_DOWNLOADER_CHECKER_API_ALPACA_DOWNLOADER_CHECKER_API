@@ -24,7 +24,6 @@ from libs.alpaca_end_of_day_v6.catalogue import authenticate_catalogue_store
 from libs.alpaca_end_of_day_v6.common import (
     assert_publication_complete,
     canonical_sha256,
-    fsync_directory,
     publication_lock,
     read_json_object,
     replace_json,
@@ -1013,11 +1012,9 @@ def _move_generation_into_place(
         os.replace(live_root, backup_root)
     try:
         os.replace(staging_root, live_root)
-        fsync_directory(repository_root)
     except BaseException:
         if backup_root is not None and backup_root.exists() and not live_root.exists():
             os.replace(backup_root, live_root)
-            fsync_directory(repository_root)
         raise
 
 
@@ -1033,7 +1030,6 @@ def _rollback_activation(
     os.replace(live_root, staging_root)
     if backup_root is not None:
         os.replace(backup_root, live_root)
-    fsync_directory(repository_root)
 
 
 def activate_clean_room_generation(

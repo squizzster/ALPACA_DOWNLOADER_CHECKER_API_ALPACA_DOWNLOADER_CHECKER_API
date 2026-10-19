@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from .contract import VERSION, json_bytes
-from .storage import fsync_directory, read_document, regular_path, write_file
+from .storage import read_document, regular_path, write_file
 from .update_checks import read_checks
 
 COMPLETION_FILE = "download_completion.json"
@@ -53,7 +53,6 @@ def remember_batch(store, request, before, events):
     try:
         write_file(temporary, json_bytes(value))
         os.replace(temporary, target)
-        fsync_directory(store)
     finally:
         if temporary.exists():
             temporary.unlink()

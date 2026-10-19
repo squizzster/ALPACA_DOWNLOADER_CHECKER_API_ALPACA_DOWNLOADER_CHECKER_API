@@ -30,9 +30,7 @@ from libs.download_alpaca_end_of_day_bars.settings import ALPACA_ADJUSTMENT_MODE
 from .common import (
     canonical_sha256,
     document_bytes,
-    durability_batch,
     ensure_publication_lock,
-    fsync_directory,
     read_json_object,
     replace_bytes,
     replace_json,
@@ -134,7 +132,6 @@ def initialize_v6_store(store_root: Path | str) -> None:
     if end_of_day.is_symlink() or not end_of_day.is_dir():
         raise V6Error(f"v6 source root is not a regular directory: {end_of_day}")
     ensure_publication_lock(root)
-    fsync_directory(root)
 
 
 def _session_month(timestamp: object) -> tuple[int, int] | None:
@@ -272,7 +269,6 @@ def _stage_month(directory: Path, document: dict[str, Any], payloads: Mapping[st
         for filename, content in payloads.items():
             replace_bytes(staging / filename, content)
         replace_json(staging / MONTH_MANIFEST, document)
-        fsync_directory(staging)
         _authenticate_month_directory(staging, document["symbol"], document["placement"])
         return staging
     except BaseException:
@@ -293,11 +289,9 @@ def _install_month(directory: Path, staged: Path, expected_document: dict[str, A
         os.replace(directory, backup)
     try:
         os.replace(staged, directory)
-        fsync_directory(directory.parent)
     except BaseException:
         if backup.exists() and not directory.exists():
             os.replace(backup, directory)
-            fsync_directory(directory.parent)
         raise
     shutil.rmtree(backup, ignore_errors=True)
     return True
@@ -414,39 +408,36 @@ def publish_monthly_source(
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         expected_directories: set[Path] = set()
-        with durability_batch():
-            for placement in sorted(placements, key=lambda item: (-1, -1) if item is None else item):
-                placement_name, relative = _placement_parts(placement)
-                directory = symbol_root / relative
-                expected_directories.add(relative)
-                month_rows = {
-                    adjustment: tuple(placements[placement].get(adjustment, ()))
-                    for adjustment in ALPACA_ADJUSTMENT_MODES
+        for placement in sorted(placements, key=lambda item: (-1, -1) if item is None else item):
+            placement_name, relative = _placement_parts(placement)
+            directory = symbol_root / relative
+            expected_directories.add(relative)
+            month_rows = {
+                adjustment: tuple(placements[placement].get(adjustment, ()))
+                for adjustment in ALPACA_ADJUSTMENT_MODES
+            }
+            document, payloads = _month_document(
+                symbol,
+                placement_name,
+                month_rows,
+            )
+            month_receipts.append(
+                {
+                    "placement": placement_name,
+                    "sha256": sha256_bytes(document_bytes(document)),
                 }
-                document, payloads = _month_document(
-                    symbol,
-                    placement_name,
-                    month_rows,
-                )
-                month_receipts.append(
-                    {
-                        "placement": placement_name,
-                        "sha256": sha256_bytes(document_bytes(document)),
-                    }
-                )
-                if _month_is_current(directory, document):
-                    continue
-                staged = _stage_month(directory, document, payloads)
-                if _install_month(directory, staged, document):
-                    changed.append(placement_name)
-            fsync_directory(symbol_root)
+            )
+            if _month_is_current(directory, document):
+                continue
+            staged = _stage_month(directory, document, payloads)
+            if _install_month(directory, staged, document):
+                changed.append(placement_name)
 
         inventory = _source_inventory(symbol, tuple(placements), empty_adjustments)
         inventory_path = symbol_root / SOURCE_MANIFEST
         inventory_changed = replace_json(inventory_path, inventory)
         if inventory_changed and read_json_object(inventory_path, "published source inventory") != inventory:
             raise V6Error(f"published source inventory differs: {symbol}")
-        fsync_directory(symbol_root)
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -559,7 +550,6 @@ def publish_monthly_source_update(
             != revised_inventory
         ):
             raise V6Error(f"published source inventory differs: {symbol}")
-        fsync_directory(symbol_root)
         _inventory_sha256, source_generation = _source_generation_from_inventory(
             symbol_root,
             symbol,

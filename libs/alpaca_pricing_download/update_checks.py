@@ -7,8 +7,10 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 
+from libs.common.sqlite_connections import connect_sqlite
+
 from .contract import DownloadError
-from .storage import fsync_directory, regular_path
+from .storage import regular_path
 
 CHECK_FILE = "lineage_update_check.sqlite3"
 
@@ -22,7 +24,7 @@ def _connect(store):
             if not path.exists():
                 temporary = regular_path(path.parent, ".lineage_update_check." + uuid.uuid4().hex)
                 try:
-                    with closing(sqlite3.connect(temporary, timeout=60)) as connection, connection:
+                    with closing(connect_sqlite(temporary, create=True)) as connection, connection:
                         connection.execute(
                             "CREATE TABLE state "
                             "(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), epoch TEXT NOT NULL, "
@@ -33,14 +35,13 @@ def _connect(store):
                         )
                         connection.execute("INSERT INTO state VALUES (1, ?, 0, 0)", (uuid.uuid4().hex,))
                     os.replace(temporary, path)
-                    fsync_directory(path.parent)
                 finally:
                     if temporary.exists():
                         temporary.unlink()
         finally:
             os.close(descriptor)
     # Never create an empty database if somebody deletes the cache concurrently.
-    return sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=60)
+    return connect_sqlite(path)
 
 
 def read_checks(store, symbols=None):
@@ -49,7 +50,7 @@ def read_checks(store, symbols=None):
     if not path.exists():
         return {"epoch": None, "revision": 0, "complete": False, "checks": {}}
     try:
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=60)) as connection:
+        with closing(connect_sqlite(path)) as connection:
             with connection:
                 connection.execute("BEGIN")
                 epoch, complete, revision = connection.execute(
@@ -96,7 +97,7 @@ def acknowledge_checks(store, expected, symbols):
         return
     try:
         with (
-            closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=60)) as connection,
+            closing(connect_sqlite(path)) as connection,
             connection,
         ):
             connection.execute("BEGIN IMMEDIATE")
@@ -118,7 +119,7 @@ def complete_checks(store, epoch):
         return
     try:
         with (
-            closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=60)) as connection,
+            closing(connect_sqlite(path)) as connection,
             connection,
         ):
             connection.execute("UPDATE state SET complete = 1 WHERE singleton = 1 AND epoch = ?", (epoch,))

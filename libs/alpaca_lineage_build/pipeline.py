@@ -22,7 +22,7 @@ from .contract import (
     reusable_versions,
     validate_version,
 )
-from .metadata import EvidenceClient, acquire, acquire_unpriced, dependencies
+from .metadata import EvidenceClient, acquire, acquire_unpriced, action_requests, dependencies, full_metadata
 from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
 from .selection import DependencyGraph
@@ -45,6 +45,67 @@ def _current_sources(store, locked):
     return result
 
 
+def _reuse_metadata(seed, group, selected, previous, notices, refresh):
+    unavailable = unavailable_pricing(previous.get(seed))
+    return (
+        not refresh
+        and seed in selected
+        and not notices
+        and set(group) - selected.keys() == unavailable.keys()
+        and all(
+            prior is not None
+            and prior["source_sha256"] == selected[symbol]
+            and prior["input_sources"] == selected
+            and unavailable_pricing(prior) == unavailable
+            and reusable_metadata_versions(prior["versions"])
+            for symbol, prior in previous.items()
+        )
+    )
+
+
+def _prefetch_metadata(store, root, selected, index, graph, client, refresh):
+    """Collect selected receipt ranges without opening prices or scanning directories.
+
+    Publication still reloads each group under its normal locks. Requests are
+    cached by exact symbol/date bounds, so changed ranges cannot use old results.
+    """
+    if not client.supports_plans:
+        return
+    visited, requests = set(), set()
+    for label in selected:
+        try:
+            seed = symbol_label(label)
+            if seed in visited:
+                continue
+            group = closure(index, {seed}, graph=graph)
+            visited.update(group)
+            with storage.pricing_locks(store, group) as locked:
+                sources = _current_sources(store, locked)
+                previous = {s: storage.read_receipt(root, s, index) for s in sources}
+                notices = {
+                    s: notice
+                    for s in sources
+                    if (notice := read_update(regular_path(store, f"end_of_day/pricing/{s}"))) is not None
+                }
+                generations = {s: storage.document_digest(source) for s, source in sources.items()}
+                if _reuse_metadata(seed, group, generations, previous, notices, refresh):
+                    continue
+                for symbol, source in sources.items():
+                    requests.update(
+                        action_requests(
+                            symbol,
+                            source.get("history_start", HISTORY_START)[:10],
+                            source["latest_request"]["asof"],
+                            previous[symbol],
+                            refresh=full_metadata(previous[symbol], notices.get(symbol), refresh),
+                        )
+                    )
+        except (RuntimeError, OSError, ValueError):
+            continue  # The normal group path reports this failure without stopping unrelated work.
+    client.prefetch_corporate_actions(requests)
+    client.prefetch_symbols({symbol for symbol, _, _ in requests})
+
+
 def process_group(
     store,
     root,
@@ -56,6 +117,7 @@ def process_group(
     index=None,
     observer=None,
     graph=None,
+    evidence_client=None,
 ):
     index = storage.read_index(root) if index is None else index
     graph = graph or DependencyGraph(index["symbols"])
@@ -63,7 +125,7 @@ def process_group(
     acquisition_waves = 0
     metadata_cache = {}
     unavailable = {}
-    evidence_client = EvidenceClient(identity_client)
+    evidence_client = evidence_client or EvidenceClient(identity_client)
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
         required = None
         with storage.pricing_locks(store, group) as locked:
@@ -94,20 +156,7 @@ def process_group(
             }
             selected = {name: storage.document_digest(source) for name, source in sources.items()}
             prior_unavailable = unavailable_pricing(previous.get(seed))
-            reuse_metadata = (
-                not refresh
-                and seed in sources
-                and not notices
-                and set(group) - sources.keys() == prior_unavailable.keys()
-                and all(
-                    prior is not None
-                    and prior["source_sha256"] == selected[symbol]
-                    and prior["input_sources"] == selected
-                    and unavailable_pricing(prior) == prior_unavailable
-                    and reusable_metadata_versions(prior["versions"])
-                    for symbol, prior in previous.items()
-                )
-            )
+            reuse_metadata = _reuse_metadata(seed, group, selected, previous, notices, refresh)
             if reuse_metadata:
                 check_unavailable_pricing(store, prior_unavailable, locked)
                 unavailable = prior_unavailable
@@ -124,6 +173,9 @@ def process_group(
                         notices={},
                         resumed=False,
                     )
+                from .check_summary import refresh as refresh_check_summary
+
+                refresh_check_summary(store, previous)
                 acknowledge_checks(store, checks, sources)
                 return {"symbol": seed, "status": "unchanged", "processed": sorted(sources)}
             required = {
@@ -153,14 +205,7 @@ def process_group(
                         # evidence directly, then recalculate the complete group.
                         evidence[symbol] = prior["evidence"]
                     else:
-                        full = refresh or (
-                            prior is not None
-                            and (
-                                not reusable_versions(prior["versions"])
-                                or notices.get(symbol, {}).get("from", prior["anchor_month"] + "-01")
-                                < prior["anchor_month"] + "-01"
-                            )
-                        )
+                        full = full_metadata(prior, notices.get(symbol), refresh)
                         key = (symbol, view.source_sha256, full)
                         if key not in metadata_cache:
                             metadata_cache[key] = acquire(view, evidence_client, prior, refresh=full)
@@ -285,7 +330,15 @@ def local_symbols(store: Path, *, pending: bool) -> list[str]:
 
 
 def run_lineage(
-    store, symbols=None, *, identity_client, pricing_client=None, all_symbols=False, refresh=False, observer=None
+    store,
+    symbols=None,
+    *,
+    identity_client,
+    pricing_client=None,
+    all_symbols=False,
+    refresh=False,
+    observer=None,
+    known_pending=(),
 ):
     validate_version()
     store = Path(store).absolute()
@@ -317,8 +370,10 @@ def run_lineage(
                 for symbol, entry in index["symbols"].items()
                 if not reusable_versions(entry.get("versions"))
             )
-        selected = list(dict.fromkeys(selected))
+        selected = list(dict.fromkeys([*selected, *known_pending]))
         graph = DependencyGraph(index["symbols"])
+        evidence_client = EvidenceClient(identity_client)
+        _prefetch_metadata(store, root, selected, index, graph, evidence_client, refresh)
         for label in selected:
             try:
                 symbol = symbol_label(label)
@@ -334,6 +389,7 @@ def run_lineage(
                     index=index,
                     observer=observer,
                     graph=graph,
+                    evidence_client=evidence_client,
                 )
                 processed.update(result["processed"])
             except (RuntimeError, OSError, ValueError) as error:

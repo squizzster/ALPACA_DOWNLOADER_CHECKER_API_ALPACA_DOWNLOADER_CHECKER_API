@@ -1,9 +1,56 @@
 """Resume action acquisition at the previous active month; identity stays separate."""
 
+from collections import defaultdict
+
+from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
+from libs.alpaca_data_api_solver import build_plan, split_action
 from libs.alpaca_pricing_download.contract import DownloadError, symbol_label
-from libs.alpaca_security_lineage.lineage import action_date, action_identity_key, build_identity_report
+from libs.alpaca_security_lineage.lineage import (
+    action_date,
+    action_identity_key,
+    build_identity_report,
+    compact_asset,
+)
+from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY
 
 from .contract import LineageError
+
+
+def action_symbols(value):
+    """Include recipients inside reorganization stock_movements, preserving the event."""
+    if isinstance(value, list):
+        return set().union(*(action_symbols(item) for item in value))
+    if not isinstance(value, dict):
+        return set()
+    result = {
+        item
+        for key, item in value.items()
+        if (key == "symbol" or key.endswith("_symbol")) and isinstance(item, str) and item
+    }
+    for item in value.values():
+        if isinstance(item, (dict, list)):
+            result.update(action_symbols(item))
+    return result
+
+
+def full_metadata(previous, notice, refresh):
+    from .contract import reusable_versions
+
+    return (
+        refresh
+        or previous is not None
+        and (
+            not reusable_versions(previous["versions"])
+            or (notice or {}).get("from", previous["anchor_month"] + "-01") < previous["anchor_month"] + "-01"
+        )
+    )
+
+
+def action_requests(symbol, start, end, previous=None, *, refresh=False):
+    """Known labels only; new labels get the original full range when discovered."""
+    window = WindowClient(None, symbol, previous, refresh)
+    known = previous["evidence"]["queried_symbols"] if previous else ()
+    return [(label, window.lower(label, start), end) for label in sorted({symbol, *known})]
 
 
 class EvidenceClient:
@@ -14,6 +61,13 @@ class EvidenceClient:
         self.assets = {}
         self.actions = {}
         self.by_id = {}
+        self.catalogue = None
+        self.catalogue_attempted = False
+        self.action_error = None
+
+    @property
+    def supports_plans(self):
+        return callable(getattr(self.client, "execute_plan", None))
 
     @property
     def request_count(self):
@@ -22,20 +76,163 @@ class EvidenceClient:
     def get_asset_lookup(self, identifier):
         if identifier not in self.assets:
             self.assets[identifier] = self.client.get_asset_lookup(identifier)
-        return self.assets[identifier]
+        return self._value(self.assets[identifier])
+
+    def get_symbol_lookup(self, symbol):
+        if symbol not in self.assets and self.catalogue is not None and self.catalogue.get(symbol):
+            return {
+                "outcome": "found",
+                "http_status": 200,
+                "asset": self.catalogue[symbol],
+                "source": "asset_catalogue",
+            }
+        return self.get_asset_lookup(symbol)
+
+    @staticmethod
+    def _value(value):
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def _execute(self, action):
+        return self.client.execute_plan({"schema_version": PLAN_VERSION, "steps": [{"actions": [action]}]})[0][0]
+
+    def prefetch_symbols(self, symbols):
+        """Only explicitly typed ticker needs may use the catalogue; CUSIPs never do."""
+        if not self.supports_plans:
+            return
+        pending = sorted({s for s in symbols if s not in self.assets and not (self.catalogue or {}).get(s)})
+        if not pending:
+            return
+        need = {"kind": "asset_lookup", "why": "identity_lookup", "identifiers": pending}
+        if not self.catalogue_attempted:
+            need["lookup_kind"] = "symbol"
+        plan = build_plan({"steps": [{"needs": [need]}]})
+        for action in plan["steps"][0]["actions"]:
+            if action["strategy"] == "asset_catalogue":
+                self.catalogue_attempted = True
+                try:
+                    self._load_catalogue(self._execute(action))
+                except (RuntimeError, OSError, ValueError):
+                    # An optional optimization cannot manufacture a missing-asset outcome.
+                    self.catalogue = None
+            else:
+                identifier = action["deliver"][0]["identifier"]
+                try:
+                    self.assets[identifier] = self._execute(action)
+                except (RuntimeError, OSError, ValueError) as error:
+                    self.assets[identifier] = error
+        if any(action["strategy"] == "asset_catalogue" for action in plan["steps"][0]["actions"]):
+            self.prefetch_symbols(pending)  # Remaining needs are now exact lookups.
+
+    def _load_catalogue(self, assets):
+        if not isinstance(assets, list):
+            raise LineageError("asset catalogue must be an array")
+        catalogue = {}
+        for asset in assets:
+            if not isinstance(asset, dict) or not isinstance(asset.get("symbol"), str) or not asset["symbol"]:
+                raise LineageError("invalid asset catalogue entry")
+            symbol = asset["symbol"]
+            if (
+                any(
+                    not isinstance(asset.get(key), str) or not asset[key]
+                    for key in ("id", "class", "exchange", "name", "status")
+                )
+                or asset["class"] != "us_equity"
+                or not isinstance(asset.get("tradable"), bool)
+            ):
+                catalogue[symbol] = None  # This label needs exact evidence; other valid entries remain useful.
+                continue
+            catalogue[symbol] = None if symbol in catalogue else compact_asset(asset)
+        self.catalogue = catalogue
+
+    def prefetch_corporate_actions(self, requests):
+        if not self.supports_plans:
+            return
+        pending = sorted(set(requests) - self.actions.keys())
+        if not pending:
+            return
+        plan = build_plan(
+            {
+                "steps": [
+                    {
+                        "needs": [
+                            {
+                                "kind": "corporate_actions",
+                                "why": "lineage_evidence",
+                                "symbols": [symbol],
+                                "start": start,
+                                "end": end,
+                            }
+                            for symbol, start, end in pending
+                        ]
+                    }
+                ]
+            }
+        )
+        for action in plan["steps"][0]["actions"]:
+            params = action["request"]["params"]
+            keys = [(s, params["start"], params["end"]) for s in params["symbols"].split(",")]
+            try:
+                self._acquire_action(action)
+            except (RuntimeError, OSError, ValueError) as error:
+                # Other independent date/symbol batches still get their own result.
+                self.actions.update((key, error) for key in keys)
+
+    def _acquire_action(self, action):
+        params = action["request"]["params"]
+        symbols = params["symbols"].split(",")
+        rows = self._checked_actions(self._execute(action))
+        routed = defaultdict(list)
+        ambiguous = False
+        for row in rows:
+            if not params["start"] <= action_date(row) <= params["end"]:
+                raise LineageError("corporate action outside requested dates")
+            labels = action_symbols(row).intersection(symbols)
+            if not labels or row.get("action_type") not in ACTION_TYPE_BY_RESPONSE_KEY.values():
+                ambiguous = True
+            for symbol in labels:
+                routed[symbol].append(row)
+        if ambiguous and len(symbols) > 1:
+            children = []
+            for part in split_action(action):
+                children.extend(self._acquire_action(part))
+            if {action_identity_key(row): row for row in rows} != {
+                action_identity_key(row): row for row in children
+            }:
+                raise LineageError("corporate actions changed during batch routing")
+            return children
+        for symbol in symbols:
+            self._remember(
+                (symbol, params["start"], params["end"]), rows if len(symbols) == 1 else routed[symbol]
+            )
+        return rows
+
+    def _remember(self, key, actions):
+        self.actions[key] = self._checked_actions(actions)
+
+    def _checked_actions(self, actions):
+        unique = {}
+        for action in actions:
+            identity = action_identity_key(action)
+            previous = self.by_id.get(identity)
+            if previous is not None and previous != action:
+                self.action_error = LineageError(f"conflicting corporate-action identity: {identity}")
+                raise self.action_error
+            self.by_id[identity] = action
+            unique[identity] = action
+        return list(unique.values())
 
     def get_corporate_actions(self, symbol, start, end):
+        if self.action_error is not None:
+            raise self.action_error
         key = (symbol, start, end)
         if key not in self.actions:
-            actions = self.client.get_corporate_actions(symbol, start, end)
-            for action in actions:
-                identity = action_identity_key(action)
-                previous = self.by_id.get(identity)
-                if previous is not None and previous != action:
-                    raise LineageError(f"conflicting corporate-action identity: {identity}")
-                self.by_id[identity] = action
-            self.actions[key] = actions
-        return self.actions[key]
+            if self.supports_plans:
+                self.prefetch_corporate_actions([key])
+            else:
+                self._remember(key, self.client.get_corporate_actions(symbol, start, end))
+        return self._value(self.actions[key])
 
 
 class WindowClient:
@@ -43,6 +240,7 @@ class WindowClient:
         self.client, self.symbol = client, symbol
         self.previous = previous
         self.start = None if refresh or previous is None else previous["anchor_month"] + "-01"
+        self.lookup_sources = {}
 
     @property
     def request_count(self):
@@ -51,11 +249,22 @@ class WindowClient:
     def get_asset_lookup(self, identifier):
         return self.client.get_asset_lookup(identifier)
 
+    def get_symbol_lookup(self, symbol):
+        lookup = self.client.get_symbol_lookup(symbol)
+        if "source" in lookup:
+            self.lookup_sources[symbol] = lookup["source"]
+        return lookup
+
+    def lower(self, symbol, start):
+        known = self.previous["evidence"]["queried_symbols"] if self.previous else ()
+        return max(start, self.start) if self.start and symbol in known else start
+
+    def prefetch_corporate_actions(self, symbols, start, end):
+        self.client.prefetch_corporate_actions([(s, self.lower(s, start), end) for s in symbols])
+
     def get_corporate_actions(self, symbol, start, end):
         # Labels newly discovered in this run have no earlier acquisition checkpoint.
-        known = self.previous["evidence"]["queried_symbols"] if self.previous else ()
-        lower = max(start, self.start) if self.start and symbol in known else start
-        current = self.client.get_corporate_actions(symbol, lower, end)
+        current = self.client.get_corporate_actions(symbol, self.lower(symbol, start), end)
         historical = []
         if self.start and symbol == self.symbol:
             historical = [
@@ -67,10 +276,16 @@ class WindowClient:
 
 
 def acquire(view, client, previous=None, *, refresh=False):
-    evidence = build_identity_report(
-        view.symbol, view.local, WindowClient(client, view.symbol, previous, refresh)
-    )
+    window = WindowClient(client, view.symbol, previous, refresh)
+    evidence = build_identity_report(view.symbol, view.local, window)
+    return _finish_evidence(evidence, window)
+
+
+def _finish_evidence(evidence, window):
     evidence.pop("api_request_count", None)
+    for lookup in evidence["asset_lookups"]:
+        if lookup["lookup_kind"] == "symbol" and lookup["lookup"] in window.lookup_sources:
+            lookup["source"] = window.lookup_sources[lookup["lookup"]]
     # The legacy inspector's warning describes its filesystem adapter, not this one.
     evidence["warnings"] = [
         warning
@@ -87,9 +302,9 @@ def acquire_unpriced(symbol, request, client):
         "directory": None,
         "downloads": [],
     }
-    evidence = build_identity_report(symbol, local, client, query_dates=(request["start"][:10], request["asof"]))
-    evidence.pop("api_request_count", None)
-    return evidence
+    window = WindowClient(client, symbol, None, True)
+    evidence = build_identity_report(symbol, local, window, query_dates=(request["start"][:10], request["asof"]))
+    return _finish_evidence(evidence, window)
 
 
 def dependencies(evidence: dict, symbol: str) -> list[str]:

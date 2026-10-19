@@ -8,8 +8,8 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 6
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6)
+VERSION = 11
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, VERSION)
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
 
@@ -32,14 +32,14 @@ def versions() -> dict:
 
 
 def reusable_versions(published: dict) -> bool:
-    """Locking, acquisition and scheduling changes preserve v2-v5 decisions.
+    """Locking, acquisition, scheduling and recovery changes preserve v2-v10 decisions.
 
     Do not generalize this exception to other execution or rule versions. Older
     readable schemas are not necessarily reusable, and all other version fields
     must still match exactly.
     """
     current = versions()
-    return any(published == {**current, "lineage": version} for version in (2, 3, 4, 5, VERSION))
+    return any(published == {**current, "lineage": version} for version in (2, 3, 4, 5, 6, 7, 8, 9, 10, VERSION))
 
 
 def reusable_metadata_versions(published: dict) -> bool:

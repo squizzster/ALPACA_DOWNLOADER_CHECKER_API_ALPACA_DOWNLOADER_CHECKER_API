@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.11
-"""Standalone ticker-pricing downloader. Never invokes the lineage pipeline."""
+"""Pricing entrypoint, including the complete --update-everything workflow."""
 
 from libs.alpaca_pricing_download.command_line import main
 

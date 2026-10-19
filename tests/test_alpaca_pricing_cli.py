@@ -4,7 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +21,10 @@ from libs.alpaca_pricing_download.update_checks import CHECK_FILE, begin_checks,
 class PricingCliTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2026, 10, 14))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2026, 10, 14, 12, tzinfo=timezone.utc),
+            )
         )
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -191,7 +194,10 @@ class PricingCliTests(unittest.TestCase):
     def test_advanced_boundary_and_force_bypass_completed_batch(self):
         self.assertEqual(self.invoke("-s", "GOOG")[0], 0)
         self.client.calls.clear()
-        with patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2026, 10, 15)):
+        with patch(
+            "libs.alpaca_pricing_download.download.utc_now",
+            return_value=datetime(2026, 10, 15, 12, tzinfo=timezone.utc),
+        ):
             code, result, _ = self.invoke("-s", "GOOG")
             self.assertEqual(code, 0)
             self.assertEqual(result["results"][0]["consistency_check"], "matched")

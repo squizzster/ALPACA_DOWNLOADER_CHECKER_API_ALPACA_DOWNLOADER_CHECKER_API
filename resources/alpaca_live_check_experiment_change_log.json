@@ -1,0 +1,14 @@
+[
+  {
+    "modifications": [
+      "Introduce an isolated, opt-in step-2 experiment consuming one trusted last-session summary snapshot, batching exact session/asof requests and exhausting pagination with the existing HTTP retry and rate-limit policy.",
+      "Return a versioned JSON handoff bound to the input digest, with exact comparison counts, changed fields/tickers, missing rows and failures; preserve decimal values and never reopen ticker data or invoke pricing/lineage publication."
+    ]
+  },
+  {
+    "modifications": [
+      "Route live checks and selected full-refresh experiments through the ordered Alpaca API solver; preserve trusted snapshot-only selection and use saved JSON only as an explicit development input.",
+      "Acquire selected changed tickers across shared requests, derive and batch post-acquisition first-session checks, then feed those responses into normal isolated full pricing publication; every differing field remains eligible for full replacement."
+    ]
+  }
+]

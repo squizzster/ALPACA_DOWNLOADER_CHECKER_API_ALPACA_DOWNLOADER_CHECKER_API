@@ -15,7 +15,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 
-from .contract import BarsSymbolUnavailable, DownloadError
+from libs.alpaca_data_api_solver import BAR_URL, build_plan, split_action, validate_version
+from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
+
+from .contract import BarsSymbolUnavailable, DownloadError, timestamp, transform
 
 REQUESTS_PER_MINUTE = 199
 
@@ -106,6 +109,7 @@ class BarsClient:
     ):
         if not key or not secret:
             raise DownloadError("ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY are required")
+        validate_version()
         self.key = key
         self.secret = secret
         self.opener = opener or urllib.request.urlopen
@@ -115,7 +119,7 @@ class BarsClient:
 
     def _get(self, parameters: dict) -> dict:
         request = urllib.request.Request(
-            "https://data.alpaca.markets/v2/stocks/bars?" + urllib.parse.urlencode(parameters),
+            BAR_URL + "?" + urllib.parse.urlencode(parameters),
             headers={"APCA-API-KEY-ID": self.key, "APCA-API-SECRET-KEY": self.secret},
         )
         for attempt in range(6):
@@ -159,40 +163,92 @@ class BarsClient:
     def fetch(
         self, symbol: str, adjustment: str, start: datetime, end: datetime, *, asof: str | None = None
     ) -> list[dict]:
-        # Alpaca's end is inclusive; our durable coverage end is exclusive.
-        parameters = {
-            "symbols": symbol,
-            "timeframe": "1Day",
-            "feed": "sip",
-            "currency": "USD",
-            "start": start.isoformat().replace("+00:00", "Z"),
-            "end": (end - timedelta(microseconds=1)).isoformat().replace("+00:00", "Z"),
-            # Short consistency probes must use the same symbol mapping as the update.
+        need = {
+            "kind": "bars",
+            "why": "boundary_check" if asof is not None else "history_download",
+            "symbols": [symbol],
+            "adjustments": [adjustment],
             "asof": asof if asof is not None else end.date().isoformat(),
-            "adjustment": adjustment,
-            "limit": 10000,
-            "sort": "asc",
+            "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
         }
-        rows = []
+        return self.execute_plan(build_plan({"steps": [{"needs": [need]}]}))[(0, 0, 0, symbol, adjustment)]
+
+    def execute_plan(self, plan, *, metrics=None, on_failure=None):
+        return execute_bar_plan(plan, self._get, metrics=metrics, on_failure=on_failure)
+
+
+def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
+    """Execute the solver's ordered bar actions and route only requested slices."""
+    if plan.get("schema_version") != PLAN_VERSION:
+        raise DownloadError("unsupported API action-plan version")
+    strategies = {"bars_single_range", "bars_multi_range", "bars_boundary_batch"}
+    for step in plan["steps"]:
+        for action in step["actions"]:
+            if action["strategy"] not in strategies or action["request"]["url"] != BAR_URL:
+                raise DownloadError("bar executor received a different API strategy")
+    metrics = metrics if metrics is not None else {}
+    metrics.setdefault("page_requests", 0)
+    metrics.setdefault("oversize_splits", 0)
+    output = {}
+    failed_steps = set()
+
+    def execute(step_index, action):
+        parameters = dict(action["request"]["params"])
+        symbols = parameters["symbols"].split(",")
+        bars = {symbol: [] for symbol in symbols}
         tokens = set()
-        while True:
-            try:
-                document = self._get(parameters)
-            except BarsSymbolUnavailable as error:
-                if tokens:
-                    raise DownloadError(f"symbol rejected after a successful pricing page: {symbol}") from error
+        pagination = action["pagination"]
+        try:
+            while True:
+                metrics["page_requests"] += 1
+                try:
+                    document = get_page(dict(parameters))
+                except BarsSymbolUnavailable as error:
+                    if tokens:
+                        raise DownloadError("symbol rejected after a successful pricing page") from error
+                    raise
+                values = document.get("bars") if isinstance(document, dict) else None
+                if not isinstance(values, dict) or set(values) - bars.keys():
+                    raise DownloadError("bar response does not belong to the requested ticker set")
+                for symbol, rows in values.items():
+                    if not isinstance(rows, list):
+                        raise DownloadError("provider bars are not an array")
+                    bars[symbol].extend(rows)
+                token = document.get(pagination["response_field"])
+                if token is None:
+                    break
+                if not isinstance(token, str) or not token or token in tokens:
+                    raise DownloadError("invalid or repeated pagination token")
+                tokens.add(token)
+                parameters[pagination["parameter"]] = token
+            start = timestamp(parameters["start"])
+            end = timestamp(parameters["end"]) + timedelta(microseconds=1)
+            for rows in bars.values():
+                transform(rows, start, end)
+        except (DownloadError, OSError) as error:
+            cause = error.__cause__ or error
+            if isinstance(cause, urllib.error.HTTPError) and cause.code == 414 and len(symbols) > 1:
+                metrics["oversize_splits"] += 1
+                for replacement in split_action(action):
+                    execute(step_index, replacement)
+                return
+            if on_failure is None:
                 raise
-            bars = document.get("bars")
-            if not isinstance(bars, dict) or set(bars) - {symbol}:
-                raise DownloadError("bar response does not belong to the requested ticker")
-            values = bars.get(symbol, [])
-            if not isinstance(values, list):
-                raise DownloadError("provider bars are not an array")
-            rows.extend(values)
-            token = document.get("next_page_token")
-            if token is None:
-                return rows
-            if not isinstance(token, str) or not token or token in tokens:
-                raise DownloadError("invalid or repeated pagination token")
-            tokens.add(token)
-            parameters["page_token"] = token
+            failed_steps.add(step_index)
+            on_failure(step_index, action, error)
+            return
+        adjustment = parameters["adjustment"]
+        for target in action["deliver"]:
+            lower, upper = timestamp(target["start"]), timestamp(target["end_exclusive"])
+            for symbol in target["symbols"]:
+                output[(step_index, target["need"], target["range"], symbol, adjustment)] = [
+                    row for row in bars[symbol] if lower <= timestamp(row["t"]) < upper
+                ]
+
+    for step_index, step in enumerate(plan["steps"]):
+        for action in step["actions"]:
+            execute(step_index, action)
+        # Callers that continue independent failures must not execute a dependent step.
+        if step_index in failed_steps:
+            break
+    return output

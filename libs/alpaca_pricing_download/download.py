@@ -5,6 +5,11 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from libs.common.us_equity_market_session_calendar import (
+    MarketCalendarError,
+    expected_market_session_coverage,
+)
+
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
@@ -28,7 +33,6 @@ from .storage import (
     STORE_DOCUMENT,
     boundary_document,
     boundary_paths,
-    fsync_directory,
     initialize_store,
     load_source,
     publish,
@@ -41,8 +45,8 @@ from .storage import (
 )
 
 
-def utc_today() -> date:
-    return datetime.now(timezone.utc).date()
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def parse_date(value: str) -> date:
@@ -55,10 +59,31 @@ def parse_date(value: str) -> date:
         raise DownloadError("date must be YYYY-MM-DD") from error
 
 
-def request_end(value: str | None) -> datetime:
-    day = parse_date(value) if value is not None else utc_today()
-    if day > utc_today():
-        raise DownloadError("request end cannot be in the future; --to must be a completed UTC date")
+def request_end(value: str | None, *, now: datetime | None = None) -> datetime:
+    """Freeze a daily-bar boundary only after its session's New York date ends.
+
+    Automatic updates select the latest prior exchange session. Explicit ends
+    retain their UTC representation, but cannot include today's New York date.
+    """
+    instant = utc_now() if now is None else now
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise DownloadError("update clock must include a timezone")
+    today = instant.astimezone(NEW_YORK).date()
+    if value is None:
+        try:
+            coverage = expected_market_session_coverage(HISTORY_START[:10], today.isoformat())
+        except MarketCalendarError as error:
+            raise DownloadError(str(error)) from error
+        if coverage.last_session_date is None:
+            raise DownloadError("no completed exchange session after the historical lower bound")
+        day = parse_date(coverage.last_session_date) + timedelta(days=1)
+    else:
+        day = parse_date(value)
+    if day > today:
+        raise DownloadError(
+            "request end cannot include the current or a future New York date; "
+            "--to must be before today in America/New_York"
+        )
     end = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     if end <= timestamp(HISTORY_START):
         raise DownloadError("request end must be after the historical lower bound")
@@ -167,6 +192,82 @@ def _changed_range(views: dict, previous: dict | None = None) -> dict | None:
     }
 
 
+def updated_boundaries(root, previous, anchor, views, *, full_history=False, read=None):
+    """Consolidate acquired month coverage; only rollover reads older boundaries."""
+    read = read_boundary if read is None else read
+    year_start = anchor[:4] + "-01"
+    changed_views = {}
+    if full_history:
+        # Future consideration: retain clipped edges on force when endpoint values match.
+        # Deliberately not implemented: gap/retention semantics need separate review.
+        # For now every full refresh, including force, is a clean authoritative replacement.
+        changed_views["completed_years"] = _select(views, lambda month: month < year_start)
+        changed_views["current_year"] = _select(views, lambda month: month >= year_start)
+    else:
+        if anchor != previous["anchor_month"]:
+            # Supplied final month values replace the year snapshot's older overlap.
+            year = read(root, previous, "current_year")
+            prefix = _select(year, lambda month: month < previous["anchor_month"])
+            consolidated = _join(prefix, views)
+            changed_views["current_year"] = _select(consolidated, lambda month: month >= year_start)
+            if anchor[:4] != previous["anchor_month"][:4]:
+                completed = read(root, previous, "completed_years")
+                newly_completed = _select(consolidated, lambda month: month < year_start)
+                changed_views["completed_years"] = _join(completed, newly_completed)
+    changed_views["current_month"] = _select(views, lambda month: month == anchor)
+    return changed_views
+
+
+def publish_acquired(
+    root,
+    previous,
+    symbol,
+    anchor,
+    request,
+    history_start,
+    selected_endpoints,
+    changed_views,
+    update,
+    *,
+    repair_payloads=False,
+    on_check=None,
+):
+    """Publish through the original recovery, notice and summary transaction."""
+    paths = boundary_paths(anchor)
+    references = dict(previous["boundaries"]) if previous is not None else {}
+    documents = {}
+    payloads = {}
+    for kind, content in changed_views.items():
+        document, files = build_boundary(symbol, kind, anchor, content, request)
+        relative = paths[kind]
+        documents[relative] = document
+        parent = PurePosixPath(relative).parent
+        payloads.update((str(parent / filename), data) for filename, data in files.items())
+        references[kind] = {"manifest": relative, "sha256": digest(json_bytes(document))}
+    validator = validator_document(symbol, selected_endpoints)
+    documents[VALIDATOR_FILE] = validator
+    source = {
+        "schema_version": VERSION,
+        "boundary": "alpaca_standalone_pricing_source",
+        "symbol": symbol,
+        "anchor_month": anchor,
+        "latest_request": request,
+        "history_start": history_start.isoformat().replace("+00:00", "Z"),
+        "validator": {"file": VALIDATOR_FILE, "sha256": digest(json_bytes(validator))},
+        "boundaries": references,
+    }
+    return publish(
+        root,
+        previous,
+        source,
+        documents,
+        payloads,
+        update=update,
+        repair_payloads=repair_payloads,
+        on_check=on_check,
+    )
+
+
 def download_pricing(
     store: Path | str,
     symbol: str,
@@ -176,6 +277,7 @@ def download_pricing(
     refresh_all: bool = False,
     from_date: str | None = None,
     on_check=None,
+    expected_source_sha256: str | None = None,
 ) -> dict:
     validate_version()
     symbol = symbol_label(symbol)
@@ -194,9 +296,6 @@ def download_pricing(
     source_parent.mkdir(parents=True, exist_ok=True)
     root = regular_path(store, f"end_of_day/pricing/{symbol}")
     root.mkdir(exist_ok=True)
-    fsync_directory(store)
-    fsync_directory(source_parent)
-    fsync_directory(source_parent.parent)
     with ticker_lock(root, exclusive=True):
         recovered = recover(root, on_check=on_check)
         previous = load_source(root, symbol)
@@ -208,6 +307,16 @@ def download_pricing(
                 raise DownloadError("request end cannot move backwards, including during full refresh")
         stored_start = timestamp(previous.get("history_start", HISTORY_START)) if previous is not None else None
         history_start = requested_start or stored_start or timestamp(HISTORY_START)
+        if expected_source_sha256 is not None:
+            if previous is None or digest(json_bytes(previous)) != expected_source_sha256:
+                raise DownloadError("pricing source changed after refresh planning; repeat the live check")
+            if (
+                not refresh_all
+                or history_start != stored_start
+                or end != previous_end
+                or previous["latest_request"]["asof"] != end.date().isoformat()
+            ):
+                raise DownloadError("planned replacement must preserve the stored start, end and asof")
         if previous is not None and end == previous_end and history_start == stored_start and not refresh_all:
             # The completed request boundary is authoritative, even for an empty
             # response or a weekend. Advance the boundary (or force) to probe again.
@@ -298,61 +407,22 @@ def download_pricing(
             if attempt:
                 raise DownloadError("provider pricing changed during acquisition twice; publication unchanged")
             full_history, restarted, check = True, True, "changed_during_acquisition"
-        year_start = anchor[:4] + "-01"
-        changed_views = {}
-        if full_history:
-            # Future consideration: retain clipped edges on force when endpoint values match.
-            # Deliberately not implemented: gap/retention semantics need separate review.
-            # For now every full refresh, including force, is a clean authoritative replacement.
-            changed_views["completed_years"] = _select(views, lambda month: month < year_start)
-            changed_views["current_year"] = _select(views, lambda month: month >= year_start)
-        else:
-            if anchor != previous["anchor_month"]:
-                # Finalize the old active month from this request, not from its last partial download.
-                year = read_boundary(root, previous, "current_year")
-                prefix = _select(year, lambda month: month < previous["anchor_month"])
-                consolidated = _join(prefix, views)
-                changed_views["current_year"] = _select(consolidated, lambda month: month >= year_start)
-                if anchor[:4] != previous["anchor_month"][:4]:
-                    completed = read_boundary(root, previous, "completed_years")
-                    newly_completed = _select(consolidated, lambda month: month < year_start)
-                    changed_views["completed_years"] = _join(completed, newly_completed)
-        changed_views["current_month"] = _select(views, lambda month: month == anchor)
-        paths = boundary_paths(anchor)
-        references = dict(previous["boundaries"]) if previous is not None else {}
-        documents = {}
-        payloads = {}
-        for kind, content in changed_views.items():
-            document, files = build_boundary(symbol, kind, anchor, content, request)
-            relative = paths[kind]
-            documents[relative] = document
-            parent = PurePosixPath(relative).parent
-            payloads.update((str(parent / filename), data) for filename, data in files.items())
-            references[kind] = {"manifest": relative, "sha256": digest(json_bytes(document))}
-        validator = validator_document(symbol, selected_endpoints)
-        documents[VALIDATOR_FILE] = validator
-        source = {
-            "schema_version": VERSION,
-            "boundary": "alpaca_standalone_pricing_source",
-            "symbol": symbol,
-            "anchor_month": anchor,
-            "latest_request": request,
-            "history_start": history_start.isoformat().replace("+00:00", "Z"),
-            "validator": {"file": VALIDATOR_FILE, "sha256": digest(json_bytes(validator))},
-            "boundaries": references,
-        }
+        changed_views = updated_boundaries(root, previous, anchor, views, full_history=full_history)
         update = (
             merge_ranges(old_extent, session_extent(selected_endpoints))
             if full_history
             else _changed_range(views, read_boundary(root, previous, "current_month"))
         )
-        written = publish(
+        written = publish_acquired(
             root,
             previous,
-            source,
-            documents,
-            payloads,
-            update=update,
+            symbol,
+            anchor,
+            request,
+            history_start,
+            selected_endpoints,
+            changed_views,
+            update,
             repair_payloads=refresh_all,
             on_check=on_check,
         )

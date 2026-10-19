@@ -40,5 +40,36 @@
       "Recalculate and publish the complete affected group under the current rules using its stored evidence, preserving downloader handoff, explicit refresh, changed-input acquisition and existing receipt authority without adding a cache or artifact.",
       "Preserve completed v2-v5 decisions when every other owning version and input still matches."
     ]
+  },
+  {
+    "modifications": [
+      "Maintain pricing-check summary membership from the unique stored active same-symbol US-equity lookup; omit inactive, ambiguous and empty sources. Publish changes and recover them with existing pricing locks, without new provider status calls or identity decisions.",
+      "Add offline --rebuild-check-summary and read-only --check-summary operations. Rebuild once from indexed receipts and source-bound endpoint validators; reject concurrent changes and incomplete publications. Preserve prior pricing and lineage receipts, and compatible v2-v6 decisions."
+    ]
+  },
+  {
+    "modifications": [
+      "Add explicit --refresh-existing orchestration: freshly compare the trusted last-session summary, pass differing tickers through batched full same-span pricing replacement, consume their pending lineage work and report the refreshed summary.",
+      "Keep matching pricing unchanged and disable auxiliary pricing acquisition during this mode so no ticker is appended or backfilled; preserve compatible v2-v7 lineage decisions and existing failure/pending-work semantics."
+    ]
+  },
+  {
+    "modifications": [
+      "Collect required metadata ranges from selected pricing and lineage receipts, batch independent corporate-action queries through the API solver, and reuse exact symbol/range responses and asset lookups in memory for the invocation. Preserve unchanged and rule-only reuse, full versus active-month coverage, dependent discovery and publication locks.",
+      "Route complete paginated events including nested recipient symbols; split unrouteable batches and reject conflicting action identities. Use unique asset-catalogue entries only for typed symbol lookups, preserve catalogue provenance in standalone evidence, and retain exact lookups for missing or ambiguous labels and every CUSIP.",
+      "Preserve completed v2-v8 lineage decisions and the v6-v8 reader lock protocol; introduce no persistent cache, audit output, pricing change or identity-rule change."
+    ]
+  },
+  {
+    "modifications": [
+      "Orchestrate known pending-work recovery, a fresh summary-only live check, full replacement of differing histories over their existing spans, batched missing-session append, normal lineage and the refreshed summary under one frozen target end. Always use the normal pending/rule-version selector with known recovery work, including when hints are complete and empty; missing or incomplete disposable work-list coverage uses the established lineage fallback.",
+      "Stop dependent stages on incomplete history checks or replacement/lineage failure, preserve completed independent publications and pending work for retry, and retain normal dependency acquisition and exact CUSIP checks. Preserve compatible v2-v9 lineage decisions and v6-v9 reader locking."
+    ]
+  },
+  {
+    "modifications": [
+      "Remove application-forced disk synchronization and use the shared SQLite connection policy with synchronous=OFF and disk rollback journals. Let the writer's version query recover interrupted index transactions under existing locks while public readers remain read-only.",
+      "Retain publication journals, atomic replacements, publish-before-acknowledge ordering, compatible v2-v10 decisions and v6-v10 reader locking. Power-loss durability is outside the application contract; process-interruption recovery remains supported."
+    ]
   }
 ]

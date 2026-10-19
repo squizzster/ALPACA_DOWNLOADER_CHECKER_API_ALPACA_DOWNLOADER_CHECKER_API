@@ -1,0 +1,14 @@
+[
+  {
+    "modifications": [
+      "Introduce the Alpaca-specific download-needs and ordered JSON action-plan boundary, with five strategies for single-range bars, multi-range bars, boundary batches, exact asset lookups and corporate-action batches.",
+      "Group and deduplicate compatible requests only within independent steps, preserve requested slices and asof mappings, and centralize page limits, request-size policy and oversized-request splitting; existing pricing and metadata transports execute the plans."
+    ]
+  },
+  {
+    "modifications": [
+      "Plan explicitly typed symbol lookups through one US-equity asset catalogue for batches of at least 100 symbols, while keeping untyped, CUSIP and asset-ID lookups exact; catalogue misses and ambiguous labels require a subsequent exact-lookup plan.",
+      "Cap corporate-action batches at 1,000 symbols, retain date and URL bounds, and support catalogue execution and oversized corporate-action request splitting through the existing ordered action boundary."
+    ]
+  }
+]

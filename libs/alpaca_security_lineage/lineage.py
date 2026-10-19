@@ -185,21 +185,25 @@ def build_identity_report(
 
     while pending_symbols:
         while pending_symbols:
-            queried_symbol = pending_symbols.popleft()
-            queried_symbols.append(queried_symbol)
-            queried_actions = client.get_corporate_actions(queried_symbol, start_date, end_date)
-            for action in sorted(
-                queried_actions,
-                key=lambda item: (
-                    action_date(item),
-                    str(item.get("action_type")),
-                    str(item.get("id")),
-                    json.dumps(item, sort_keys=True, separators=(",", ":")),
-                ),
-            ):
-                actions_by_key[action_identity_key(action)] = action
-                for related_symbol in sorted(related_name_change_symbols(action)):
-                    queue_symbol(related_symbol)
+            prefetch = getattr(client, "prefetch_corporate_actions", None)
+            if prefetch is not None:
+                prefetch(list(pending_symbols), start_date, end_date)
+            for _ in range(len(pending_symbols)):
+                queried_symbol = pending_symbols.popleft()
+                queried_symbols.append(queried_symbol)
+                queried_actions = client.get_corporate_actions(queried_symbol, start_date, end_date)
+                for action in sorted(
+                    queried_actions,
+                    key=lambda item: (
+                        action_date(item),
+                        str(item.get("action_type")),
+                        str(item.get("id")),
+                        json.dumps(item, sort_keys=True, separators=(",", ":")),
+                    ),
+                ):
+                    actions_by_key[action_identity_key(action)] = action
+                    for related_symbol in sorted(related_name_change_symbols(action)):
+                        queue_symbol(related_symbol)
 
         actions = sorted(
             actions_by_key.values(),
@@ -211,7 +215,12 @@ def build_identity_report(
                 lookup_key = (lookup_kind, identifier)
                 if lookup_key in asset_lookups_by_key:
                     continue
-                lookup_result = client.get_asset_lookup(identifier)
+                lookup = (
+                    getattr(client, "get_symbol_lookup", client.get_asset_lookup)
+                    if lookup_kind == "symbol"
+                    else client.get_asset_lookup
+                )
+                lookup_result = lookup(identifier)
                 asset = lookup_result["asset"]
                 asset_lookups_by_key[lookup_key] = {
                     "lookup": identifier,

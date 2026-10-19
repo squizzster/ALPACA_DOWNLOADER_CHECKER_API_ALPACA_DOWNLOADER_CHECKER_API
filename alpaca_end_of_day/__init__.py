@@ -978,7 +978,6 @@ class DataLibrary:
                         with os.fdopen(descriptor, "wb") as output:
                             _write_flat_csv_binary_document(output, spool, segments_by_date)
                             output.flush()
-                            os.fsync(output.fileno())
                         os.replace(temporary_path, destination_path)
                     except BaseException:
                         temporary_path.unlink(missing_ok=True)

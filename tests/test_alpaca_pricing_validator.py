@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,7 +24,10 @@ from libs.alpaca_pricing_download.handoff import consume_pricing_update
 class PricingValidatorTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
-            patch("libs.alpaca_pricing_download.download.utc_today", return_value=date(2030, 1, 1))
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2030, 1, 1, 12, tzinfo=timezone.utc),
+            )
         )
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
