@@ -1,6 +1,7 @@
 # Agent instructions
 
 Applies throughout the repository. The user's instructions take precedence.
+You **MUST** always seek user confirmed permission to edit this file.
 
 Read [README.md](README.md), then [Architecture](docs/ARCHITECTURE.md) and the guide relevant to the task.
 Check `git status` before editing. Preserve existing work and verify claims against current code and tests.
