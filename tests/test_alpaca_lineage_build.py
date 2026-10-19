@@ -18,8 +18,9 @@ from libs.alpaca_lineage_build.command_line import build_parser, main
 from libs.alpaca_lineage_build.contract import validate_version
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.reader import read_lineage
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS, timestamp
 from libs.alpaca_pricing_download.download import download_pricing
+from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_pricing_download.storage import initialize_store, ticker_lock
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
@@ -390,6 +391,54 @@ class LineageBuildTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["processed"], ["GOOG", "OLD"])
         self.assertFalse(self.notice("OLD").exists())
         self.assertFalse(self.notice().exists())
+
+    def test_known_lagging_dependency_uses_one_batched_append_plan(self):
+        initial = self.bars
+        self.download(end="2026-10-15", bars=initial)
+        self.download("OLD", end="2026-10-15", bars=initial)
+        action = {
+            "action_type": "name_change",
+            "id": "rename",
+            "process_date": "2026-09-01",
+            "old_symbol": "OLD",
+            "new_symbol": "GOOG",
+            "old_cusip": "111111111",
+            "new_cusip": "111111111",
+        }
+        identities = IdentityClient(
+            {"GOOG": asset("GOOG"), "OLD": asset("GOOG"), "111111111": asset("GOOG")}, [action]
+        )
+        self.run_build(["GOOG"], client=identities)
+        added = [bar("2026-10-15"), bar("2026-10-16")]
+        self.download(end="2026-10-17", bars=initial + added)
+        calls = []
+        pricing = BarsClient("test", "test")
+
+        def page(params):
+            calls.append(dict(params))
+            start, end = timestamp(params["start"]), timestamp(params["end"])
+            return {
+                "bars": {
+                    symbol: [row for row in added if start <= timestamp(row["t"]) <= end]
+                    for symbol in params["symbols"].split(",")
+                }
+            }
+
+        with (
+            patch.object(pricing, "_get", side_effect=page),
+            patch(
+                "libs.alpaca_lineage_build.pipeline.download_pricing",
+                side_effect=AssertionError("known dependency used the single-ticker fallback"),
+            ),
+        ):
+            result = self.run_build(["GOOG"], client=identities, pricing_client=pricing)
+        self.assertEqual(result["dependency_pricing"]["requested"], 1)
+        self.assertEqual(result["dependency_pricing"]["failed"], 0)
+        self.assertEqual(len(calls), 8)
+        self.assertTrue(all(call["symbols"] == "OLD" for call in calls))
+        source = storage.load_source(self.store / "end_of_day/pricing/OLD", "OLD")
+        self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
+        self.assertEqual(result["results"][0]["processed"], ["GOOG", "OLD"])
 
     def test_missing_pricing_without_downloader_retains_notice(self):
         self.download()

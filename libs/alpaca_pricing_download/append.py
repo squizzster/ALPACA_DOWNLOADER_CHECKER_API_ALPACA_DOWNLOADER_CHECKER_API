@@ -5,7 +5,7 @@ consumes its in-memory summary; it does not repeat provider history checks.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
@@ -13,7 +13,15 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .check_summary import assert_current, validate_entry
-from .contract import ADJUSTMENTS, HISTORY_START, DownloadError, timestamp, transform, validate_version
+from .contract import (
+    ADJUSTMENTS,
+    HISTORY_START,
+    DownloadError,
+    symbol_label,
+    timestamp,
+    transform,
+    validate_version,
+)
 from .download import _incremental_endpoints, _join, publish_acquired, request_end, updated_boundaries
 from .endpoints import endpoints_of, same_row, session_extent
 from .handoff import load_published_boundary
@@ -23,16 +31,31 @@ MAX_SYMBOLS = 8000  # Verified live with all eight views and full pagination.
 MAX_ROWS = 200000  # Bound acquired rows across eight views per publication cohort.
 
 
-def append_needs(entries, end):
+def _validate_append_entry(entry):
+    """Accept the active-summary row or an internal empty-source baseline."""
+    if entry.get("last_all") is not None:
+        return validate_entry(entry)
+    if set(entry) != {"symbol", "asof", "last_all"}:
+        raise DownloadError("invalid empty append entry")
+    symbol = symbol_label(entry["symbol"])
+    try:
+        asof = date.fromisoformat(entry["asof"]).isoformat()
+    except (TypeError, ValueError) as error:
+        raise DownloadError("invalid empty append asof") from error
+    return symbol, asof, None
+
+
+def append_needs(entries, end, *, end_by_symbol=None):
     """Pure needs compiler: saved covered end/asof -> frozen missing interval."""
     needs, unchanged, seen = [], [], set()
     for entry in entries:
-        symbol, asof, _ = validate_entry(entry)
+        symbol, asof, _ = _validate_append_entry(entry)
         if symbol in seen:
             raise DownloadError(f"duplicate append ticker: {symbol}")
         seen.add(symbol)
+        target = end if end_by_symbol is None else end_by_symbol[symbol]
         start = timestamp(asof + "T00:00:00Z")
-        if start >= end:
+        if start >= target:
             unchanged.append({"symbol": symbol, "status": "unchanged", "mode": "unchanged", "changed": False})
             continue
         needs.append(
@@ -41,8 +64,8 @@ def append_needs(entries, end):
                 "why": "append_completed_sessions",
                 "symbols": [symbol],
                 "adjustments": list(ADJUSTMENTS),
-                "asof": end.date().isoformat(),
-                "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
+                "asof": target.date().isoformat(),
+                "ranges": [{"start": start.isoformat(), "end_exclusive": target.isoformat()}],
             }
         )
     return needs, unchanged
@@ -81,7 +104,10 @@ def _publish_append(store, entry, need, bars):
         ):
             raise DownloadError(f"{symbol}: source coverage changed after the approved handoff")
         endpoints = read_validator(root, previous, published=True)
-        if not endpoints or not endpoints["all"] or not same_row(endpoints["all"][-1], entry["last_all"]):
+        expected, actual = entry["last_all"], endpoints["all"] if endpoints else None
+        if not endpoints or (expected is None and actual) or (expected is not None and not actual):
+            raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
+        if expected is not None and not same_row(actual[-1], expected):
             raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
         for name, rows in views.items():
             if rows and endpoints[name] and timestamp(rows[0][0]) <= timestamp(endpoints[name][-1][0]):
@@ -125,22 +151,35 @@ def _publish_append(store, entry, need, bars):
         }
 
 
-def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=None):
-    """Consume the approved handoff directly; no disk discovery or history recheck.
-
-    Input is the existing minimal summary snapshot, optionally selection-filtered.
-    Publication checks its covered end and last row under the normal ticker lock.
-    Any new lineage/CUSIP work is still owned by the unchanged lineage consumer.
-    """
+def append_entries(
+    store,
+    entries,
+    end_date=None,
+    *,
+    client,
+    workers=3,
+    progress=None,
+    end_by_symbol=None,
+    before_publish=None,
+):
+    """Batch explicit trusted baselines through the ordinary append publisher."""
     validate_version()
     if workers not in (1, 2, 3):
         raise DownloadError("append workers must be 1, 2 or 3")
     store = Path(store).absolute()
-    end = request_end(end_date)
-    entries = snapshot["entries"]
-    needs, results = append_needs(entries, end)
+    entries = list(entries)
+    if end_by_symbol is not None and set(end_by_symbol) != {entry.get("symbol") for entry in entries}:
+        raise DownloadError("append target map does not match its entries")
+    if end_by_symbol is None:
+        end = request_end(end_date)
+    else:
+        end_by_symbol = {
+            symbol: request_end((value if isinstance(value, datetime) else timestamp(value)).date().isoformat())
+            for symbol, value in end_by_symbol.items()
+        }
+        end = max(end_by_symbol.values()) if end_by_symbol else request_end(end_date)
+    needs, results = append_needs(entries, end, end_by_symbol=end_by_symbol)
     by_symbol = {entry["symbol"]: entry for entry in entries}
-    assert_current(store, snapshot["token"])
     metrics, publishing = {}, False
     for cohort in _cohorts(needs):
         # Different starts remain separate: never overfetch another ticker's approved dates.
@@ -155,7 +194,8 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
             )
             continue
         if not publishing:
-            assert_current(store, snapshot["token"])
+            if before_publish is not None:
+                before_publish()
             publishing = True
 
         def publish_one(item, responses=acquired):
@@ -183,3 +223,23 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
         "results": results,
         "requests": metrics,
     }
+
+
+def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=None):
+    """Consume the approved handoff directly; no disk discovery or history recheck.
+
+    Input is the existing minimal summary snapshot, optionally selection-filtered.
+    Publication checks its covered end and last row under the normal ticker lock.
+    Any new lineage/CUSIP work is still owned by the unchanged lineage consumer.
+    """
+    store = Path(store).absolute()
+    assert_current(store, snapshot["token"])
+    return append_entries(
+        store,
+        snapshot["entries"],
+        end_date,
+        client=client,
+        workers=workers,
+        progress=progress,
+        before_publish=lambda: assert_current(store, snapshot["token"]),
+    )

@@ -12,8 +12,8 @@ from test_alpaca_pricing_download import bar, snapshot
 from libs.alpaca_lineage_build import check_summary, pipeline, storage
 from libs.alpaca_lineage_build.contract import versions
 from libs.alpaca_pricing_download import check_summary as summary
-from libs.alpaca_pricing_download.contract import json_bytes
 from libs.alpaca_pricing_download import storage as pricing_storage
+from libs.alpaca_pricing_download.contract import json_bytes
 
 
 class LineageIOTests(unittest.TestCase):
@@ -110,8 +110,7 @@ class LineageIOTests(unittest.TestCase):
     def test_receipt_cache_capacity_is_a_hard_bound(self):
         index = {
             "symbols": {
-                symbol: {"sha256": symbol, "dependencies": [], "asset_ids": []}
-                for symbol in ("A", "B", "C")
+                symbol: {"sha256": symbol, "dependencies": [], "asset_ids": []} for symbol in ("A", "B", "C")
             }
         }
         with patch.object(storage, "read_receipt", side_effect=lambda _root, symbol, _index: {"symbol": symbol}):

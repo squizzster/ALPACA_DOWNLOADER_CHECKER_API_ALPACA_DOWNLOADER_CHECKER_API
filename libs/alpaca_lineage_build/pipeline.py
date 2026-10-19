@@ -2,7 +2,14 @@
 
 from pathlib import Path
 
-from libs.alpaca_pricing_download.contract import HISTORY_START, InitialPricingUnavailable, symbol_label
+from libs.alpaca_pricing_download.append import append_entries
+from libs.alpaca_pricing_download.check_summary import price_entry
+from libs.alpaca_pricing_download.contract import (
+    HISTORY_START,
+    InitialPricingUnavailable,
+    symbol_label,
+    timestamp,
+)
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
 from libs.alpaca_pricing_download.update_checks import (
@@ -28,7 +35,6 @@ from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
 from .selection import DependencyGraph
 from .transform import correlate, make_publication
-
 
 PREFETCH_MEMBERS = 1000
 
@@ -110,6 +116,104 @@ def _prefetch_metadata(store, root, selected, index, graph, client, refresh, rec
             continue  # The normal group path reports this failure without stopping unrelated work.
     client.prefetch_corporate_actions(requests)
     client.prefetch_symbols({symbol for symbol, _, _ in requests})
+
+
+def _catch_up_published_dependencies(store, selected, index, graph, client, progress=None):
+    """Batch known group members to their group's covered end before lineage.
+
+    The dependency index is the authority for known group membership. Only the
+    selected groups' source receipts and endpoint validators are opened. A label
+    first discovered from fresh provider evidence still uses process_group's
+    narrow acquisition fallback.
+    """
+    if client is None or not callable(getattr(client, "execute_plan", None)):
+        return {"requested": 0, "succeeded": 0, "failed": 0, "results": [], "requests": {}}
+    known, visited, entries, targets, full_range = set(index["symbols"]), set(), {}, {}, set()
+    groups = 0
+    for label in selected:
+        try:
+            seed = symbol_label(label)
+            if seed in visited:
+                continue
+            group = closure(index, {seed}, graph=graph)
+        except (RuntimeError, ValueError):
+            continue  # The ordinary group path reports the invalid selection.
+        visited.update(group)
+        groups += 1
+        with storage.pricing_locks(store, group, known=known) as locked:
+            sources = _current_sources(store, locked, known=known)
+            if not sources:
+                continue
+            start = min(source.get("history_start", HISTORY_START)[:10] for source in sources.values())
+            target = max(timestamp(source["latest_request"]["end_exclusive"]) for source in sources.values())
+            for symbol, source in sources.items():
+                source_end = timestamp(source["latest_request"]["end_exclusive"])
+                # A later historical start needs a full-range acquisition. Leave
+                # that uncommon case to process_group's existing fallback.
+                if source.get("history_start", HISTORY_START)[:10] > start:
+                    full_range.add(symbol)
+                    continue
+                if source_end >= target:
+                    continue
+                pricing_root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+                entry = price_entry(pricing_root, source)
+                entries[symbol] = entry or {
+                    "symbol": symbol,
+                    "asof": source["latest_request"]["asof"],
+                    "last_all": None,
+                }
+                targets[symbol] = target
+        if progress is not None and groups % 1000 == 0:
+            progress(
+                "scan",
+                {
+                    "groups": groups,
+                    "members": len(visited),
+                    "lagging": len(entries),
+                    "full_range": len(full_range),
+                },
+            )
+    if progress is not None:
+        progress(
+            "scan",
+            {
+                "groups": groups,
+                "members": len(visited),
+                "lagging": len(entries),
+                "full_range": len(full_range),
+            },
+        )
+    if not entries:
+        return {
+            "requested": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "deferred_full_range": len(full_range),
+            "results": [],
+            "requests": {},
+        }
+
+    def append_progress(stage, values):
+        if progress is None:
+            return
+        if stage == "pricing":
+            done, total = values["done"], values["total"]
+            if done != total and done % 250:
+                return
+            values = {"done": done, "total": total}
+        progress(stage, values)
+
+    result = append_entries(
+        store,
+        [entries[symbol] for symbol in sorted(entries)],
+        max(targets.values()).date().isoformat(),
+        client=client,
+        workers=3,
+        end_by_symbol=targets,
+        progress=append_progress if progress is not None else None,
+    )
+    result["deferred_full_range"] = len(full_range)
+    return result
 
 
 def process_group(
@@ -409,6 +513,7 @@ def run_lineage(
     observer=None,
     on_processed=None,
     on_scanned=None,
+    on_pricing=None,
     known_pending=(),
 ):
     validate_version()
@@ -465,6 +570,33 @@ def run_lineage(
         evidence_client = EvidenceClient(identity_client)
         stop = False
 
+        catchups = []
+
+        def catch_up(labels):
+            nonlocal stop
+            value = _catch_up_published_dependencies(
+                store,
+                labels,
+                index,
+                graph,
+                pricing_client,
+                progress=on_pricing,
+            )
+            catchups.append(value)
+            if value["failed"]:
+                results.extend(
+                    {
+                        "symbol": item["symbol"],
+                        "status": "failed",
+                        "error": item.get("error", "dependency pricing catch-up failed"),
+                    }
+                    for item in value["results"]
+                    if item["status"] == "failed"
+                )
+                stop = True
+
+        catch_up(selected)
+
         def process_selected(labels, planned):
             nonlocal stop
             for cohort in _cohorts(labels, graph):
@@ -504,7 +636,8 @@ def run_lineage(
                 if stop:
                     break
 
-        process_selected(selected, prefetch)
+        if not stop:
+            process_selected(selected, prefetch)
         failed = any(item["status"] in {"failed", "waiting_for_pricing"} for item in results)
         if full_scan and not stop and not failed:
             changed = _source_generation_changes(
@@ -513,12 +646,24 @@ def run_lineage(
                 skip=processed,
                 on_scanned=on_scanned,
             )
-            process_selected(changed, set(changed))
+            catch_up(changed)
+            if not stop:
+                process_selected(changed, set(changed))
         if full_scan and not any(item["status"] in {"failed", "waiting_for_pricing"} for item in results):
             complete_checks(store, checks["epoch"])
+    request_metrics = {}
+    for value in catchups:
+        for name, count in value["requests"].items():
+            request_metrics[name] = request_metrics.get(name, 0) + count
+    dependency_pricing = {
+        name: sum(value.get(name, 0) for value in catchups)
+        for name in ("requested", "succeeded", "failed", "deferred_full_range")
+    }
+    dependency_pricing["requests"] = request_metrics
     return {
         "workers": 1,
         "recovered": recovered,
+        "dependency_pricing": dependency_pricing,
         "results": results,
         "failed": sum(item["status"] in {"failed", "waiting_for_pricing"} for item in results),
     }

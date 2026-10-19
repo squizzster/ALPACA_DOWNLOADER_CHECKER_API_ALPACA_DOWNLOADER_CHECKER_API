@@ -128,6 +128,23 @@ class AppendTests(unittest.TestCase):
         self.assertEqual(entry["asof"], "2026-10-17")
         self.assertEqual(entry["last_all"][0][:10], "2026-10-14")
 
+    def test_explicit_empty_baseline_can_share_the_internal_append_path(self):
+        download_pricing(self.store, "EMPTY", "2026-10-15", client=FakeClient([]))
+        self.live["EMPTY"] = []
+        self.calls.clear()
+        result = append.append_entries(
+            self.store,
+            [{"symbol": "EMPTY", "asof": "2026-10-15", "last_all": None}],
+            client=self.client,
+            end_by_symbol={"EMPTY": timestamp("2026-10-17T00:00:00Z")},
+        )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(len(self.calls), 8)
+        self.assertTrue(all(call["symbols"] == "EMPTY" for call in self.calls))
+        source = storage.load_source(self.store / "end_of_day/pricing/EMPTY", "EMPTY")
+        self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
+        self.assertTrue(all(not rows for rows in read_pricing_views(self.store, "EMPTY").values()))
+
     def test_request_failure_publishes_no_partial_adjustments(self):
         before = file_snapshot(self.store)
         original = self.page

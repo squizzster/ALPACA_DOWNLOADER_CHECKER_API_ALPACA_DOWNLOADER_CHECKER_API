@@ -59,6 +59,9 @@ def finish_pending(store, *, pricing_client, identity_client, progress=None):
         known_pending=selected,
         on_processed=observed,
         on_scanned=scanned,
+        on_pricing=(
+            (lambda stage, values: progress("recovery_dependency_" + stage, values)) if progress else None
+        ),
     )
     return {"pricing_recovered": recovered, "lineage": lineage, "failed": lineage["failed"]}
 
@@ -148,6 +151,11 @@ def update_everything(store, end_date=None, *, pricing_client, identity_client, 
                 pricing_client=pricing_client,
                 identity_client=identity_client,
                 on_processed=observed,
+                on_pricing=(
+                    (lambda pricing_stage, values: progress("lineage_dependency_" + pricing_stage, values))
+                    if progress
+                    else None
+                ),
             )
         current_stage = "summary"
         result["summary"] = describe(read_snapshot(store))
