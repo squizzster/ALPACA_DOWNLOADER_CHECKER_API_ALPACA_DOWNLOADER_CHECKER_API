@@ -810,8 +810,16 @@ class EndOfDayReaderTests(unittest.TestCase):
         )
 
     def test_rejects_an_alpaca_uuid_instead_of_treating_it_as_a_master_id(self) -> None:
-        with self.assertRaisesRegex(ValueError, "invalid master ID"):
-            read_alpaca_end_of_day_security_history(TEST_ASSET_UUID, "raw")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            _publish_reader_fixture(repository_root, with_integrity_failure=False)
+
+            with self.assertRaisesRegex(ValueError, "invalid master ID"):
+                read_alpaca_end_of_day_security_history(
+                    TEST_ASSET_UUID,
+                    "raw",
+                    repository_root=repository_root,
+                )
 
     def test_master_index_is_the_only_correlation_discovery_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
