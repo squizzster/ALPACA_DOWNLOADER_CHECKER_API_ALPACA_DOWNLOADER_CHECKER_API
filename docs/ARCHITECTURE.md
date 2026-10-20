@@ -12,20 +12,33 @@ not a fallback. Stores are runtime data, outside Git.
 
 ## Daily update
 
-`download_alpaca_pricing.py --update-everything` enters
-[update.py](../libs/alpaca_lineage_build/update.py):
+`alpaca-eod update` enters
+[universe_update.py](../libs/alpaca_lineage_build/universe_update.py):
 
-1. Freeze one completed-session target and recover pending pricing/lineage work.
-2. Load the minimal summary and live-check its last `all` rows in compatible batches.
-3. Replace any differing ticker across its original start/end/asof in all eight views; finish affected lineage.
-4. Pass the approved summary directly to append; request only missing sessions.
-5. Publish append results, process affected lineage and refresh the summary.
+1. Freeze a completed-session target; require initialized work state, projection and scheduling coverage.
+2. Recover known publication journals, then accept one complete catalogue observation shared across lineage phases.
+3. Compare compact boundaries, register accepted additions, and persist reasons/targets before acquisition.
+4. Acquire initial or invalidated histories and explicitly refresh changed metadata across complete groups.
+5. Live-check eligible retained histories, correct differing spans, then pass checked source generations to append.
+6. Finish affected lineage and summary publication before acknowledging durable work.
 
+The exchange allowlist controls new catalogue discovery. Catalogue absence never removes history or proves
+unavailability. The additive registry and orchestration queue have separate purposes: registration cannot
+make unfinished pricing disappear. The lineage index projects published lookup evidence so daily comparison
+does not open every receipt. An explicit migration establishes projection coverage once.
+
+The existing maintenance sequence remains owned by [update.py](../libs/alpaca_lineage_build/update.py).
 Failed history checking prevents append. Successful independent publications remain recoverable.
-Every invocation checks live; saved experiment results are not production inputs.
+Accepted coverage, refresh, replacement and dependency-group obligations persist until satisfying producer
+publications select them. Retry restrictions apply to complete affected groups through daily and standalone
+commands, including maintenance and newly discovered dependencies.
+Every invocation checks live; saved experiment results are not production inputs. Sources already beyond
+an older target remain unchanged. Initial/dependent acquisition cannot silently advance that target.
 
-Ordinary ticker downloads retain their own endpoint-check/update path. Explicit append relies on the
-approved history boundary. The [operator guide](operations.md) distinguishes these modes.
+Ordinary downloads and dependency advancement retain their endpoint checks. Compatible empty coverage can
+advance in batches; approved nonempty append relies on the completed history boundary. Newly eligible
+summary members receive their own check. Retained active histories outside the summary still advance
+through the pricing owner. See [operations](operations.md).
 
 ## API planning
 
@@ -53,7 +66,7 @@ Dependency links do not themselves merge identities. Ambiguous rows stay unassig
 
 ## Combined catalogue workflow
 
-[run_alpaca_end_of_day_ticker_pipeline.py](../run_alpaca_end_of_day_ticker_pipeline.py) runs:
+`alpaca-eod catalogue update` enters [pipeline.py](../libs/alpaca_end_of_day_v6/pipeline.py):
 
 ```text
 symbol resolution → monthly source → validation → lineage evidence
@@ -64,17 +77,20 @@ Only submitted canonical symbols reacquire pricing/evidence. Correlation and ava
 affected identity closure; catalogue publication preserves unrelated objects.
 Availability decides whether resolved histories can be served; it cannot change membership or bars.
 
-[build_alpaca_end_of_day_clean_room.py](../build_alpaca_end_of_day_clean_room.py) schedules this same
-pipeline per canonical symbol in an isolated store, with checkpoints and a mandatory final audit.
-Activation selects the audited store as `data_vtest/`.
+`alpaca-eod catalogue build` schedules this same pipeline through
+[generation.py](../libs/alpaca_end_of_day_clean_room/generation.py), with checkpoints, an immutable
+universe snapshot and a mandatory final audit. Resume consumes the original snapshot and contracts.
+Separate activation selects the audited store as `data_vtest/`, retaining its predecessor.
 
 ## Code ownership
 
 | Owner | Responsibility |
 |---|---|
 | [alpaca_end_of_day/](../alpaca_end_of_day/) | Supported consumer library and reader CLIs. |
+| [alpaca_cli/](../libs/alpaca_cli/) | One canonical parser and dispatch; no domain publication rules. |
+| [alpaca_recovery_registry/](../libs/alpaca_recovery_registry/) | Sorted additive membership, stable union lock and atomic snapshot publication. |
 | [alpaca_pricing_download/](../libs/alpaca_pricing_download/) | Acquisition, append, pricing publication, endpoint validators and summary storage. |
-| [alpaca_lineage_build/](../libs/alpaca_lineage_build/) | Update orchestration, dependencies, lineage publication and summary eligibility. |
+| [alpaca_lineage_build/](../libs/alpaca_lineage_build/) | Update orchestration, dependency registration, lineage publication, summary eligibility and offline producer status. |
 | [alpaca_data_api_solver/](../libs/alpaca_data_api_solver/) | Pure request planning; no network or store access. |
 | [alpaca_security_lineage/](../libs/alpaca_security_lineage/) | Provider identity/action acquisition and normalization. |
 | [alpaca_end_of_day_security_correlation/](../libs/alpaca_end_of_day_security_correlation/) | Dated ownership, row allocation, identity rules and catalogue engine. |

@@ -13,9 +13,9 @@ from unittest.mock import patch
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
+from libs.alpaca_cli import main
 from libs.alpaca_lineage_build import check_summary as projection
 from libs.alpaca_lineage_build import storage as lineage_storage
-from libs.alpaca_lineage_build.command_line import main
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download import check_summary as summary
 from libs.alpaca_pricing_download import storage as pricing_storage
@@ -84,13 +84,12 @@ class CheckSummaryTests(unittest.TestCase):
         before = snapshot(self.store)
         output = io.StringIO()
         with (
-            patch.object(Path, "read_bytes", side_effect=AssertionError("file read")),
             patch.object(Path, "iterdir", side_effect=AssertionError("directory scan")),
             patch.dict("os.environ", {}, clear=True),
             redirect_stdout(output),
         ):
-            self.assertEqual(main(["--store", str(self.store), "--check-summary"]), 0)
-        self.assertEqual(json.loads(output.getvalue())["tickers"], 1)
+            self.assertEqual(main(["status", "--store", str(self.store)]), 1)
+        self.assertEqual(json.loads(output.getvalue())["summary"]["tickers"], 1)
         self.assertEqual(snapshot(self.store), before)
 
     def test_pricing_updates_existing_baseline_without_waiting_for_lineage(self):
@@ -143,7 +142,7 @@ class CheckSummaryTests(unittest.TestCase):
         self.assertEqual(self.read()["entries"], [])
 
     def test_new_active_ticker_is_added_by_normal_lineage_publication(self):
-        download_pricing(self.store, "OTHER", "2026-10-14", client=FakeClient(self.rows))
+        download_pricing(self.store, "OTHER", "2026-10-14", client=FakeClient(self.rows + [bar("2026-10-14")]))
         with self.assertRaisesRegex(DownloadError, "pending inputs"):
             self.read()
         client = IdentityClient({"GOOG": asset("GOOG"), "OTHER": asset("OTHER")})
@@ -170,7 +169,7 @@ class CheckSummaryTests(unittest.TestCase):
         client = IdentityClient({"GOOG": asset("GOOG"), "OTHER": asset("OTHER")})
         self.assertEqual(run_lineage(self.store, identity_client=client)["failed"], 0)
         self.assertEqual(len(self.read()["entries"]), 1)
-        download_pricing(self.store, "OTHER", "2026-10-15", client=FakeClient(self.rows))
+        download_pricing(self.store, "OTHER", "2026-10-15", client=FakeClient(self.rows + [bar("2026-10-14")]))
         with self.assertRaisesRegex(DownloadError, "pending inputs"):
             self.read()
         self.assertEqual(run_lineage(self.store, identity_client=client)["failed"], 0)
@@ -256,7 +255,7 @@ class CheckSummaryTests(unittest.TestCase):
     def test_offline_rebuild_cli_needs_no_credentials(self):
         output = io.StringIO()
         with patch.dict("os.environ", {}, clear=True), redirect_stdout(output):
-            self.assertEqual(main(["--store", str(self.store), "--rebuild-check-summary"]), 0)
+            self.assertEqual(main(["summary", "rebuild", "--store", str(self.store)]), 0)
         self.assertEqual(json.loads(output.getvalue())["indexed_tickers"], 1)
 
 

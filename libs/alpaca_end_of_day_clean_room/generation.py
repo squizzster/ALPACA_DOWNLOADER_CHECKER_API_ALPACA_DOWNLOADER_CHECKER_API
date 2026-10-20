@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from libs.alpaca_end_of_day_v6.common import (
     publication_lock,
     read_json_object,
     replace_json,
+    sha256_bytes,
     sha256_file,
 )
 from libs.alpaca_end_of_day_v6.correlation import authenticate_correlation
@@ -50,17 +52,21 @@ from libs.alpaca_end_of_day_v6.versions import (
 )
 from libs.alpaca_end_of_day_v6.warnings import authenticate_warnings
 from libs.alpaca_end_of_day_warning_pipeline import WARNING_PIPELINE_VERSION
+from libs.alpaca_recovery_registry import atomic_bytes
 from libs.alpaca_security_lineage import AlpacaIdentityRequestRateLimiter
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.download_alpaca_end_of_day_bars import AlpacaRequestRateLimiter
 from libs.download_alpaca_end_of_day_bars.settings import EARLIEST_REQUEST_TIMESTAMP
 
-CLEAN_ROOM_RUN_VERSION = 1
+CLEAN_ROOM_RUN_VERSION = 3
+SUPPORTED_RUN_VERSIONS = (1, 2, CLEAN_ROOM_RUN_VERSION)
 CLEAN_ROOM_RUN_BOUNDARY = "alpaca_end_of_day_clean_room_run"
 RUN_STATE_DIRECTORY = "clean_room_run"
 RUN_MANIFEST = "manifest.json"
 AUDIT_REPORT = "audit.json"
 COMPLETION_RECEIPT = "completion.json"
+UNIVERSE_SNAPSHOT = "universe.snapshot.csv"
+INITIALIZATION_PENDING = "initialization.pending.json"
 SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]*")
 _RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "resources"
 _CHANGE_LOG = _RESOURCE_ROOT / "alpaca_clean_room_run_change_log.json"
@@ -137,12 +143,23 @@ def _contract_versions() -> dict[str, int]:
 
 def load_universe(path: Path | str) -> tuple[str, ...]:
     """Load the one-record tracked universe without interpreting another data store."""
-    universe_path = Path(path)
+    return _capture_universe(Path(path))[1]
+
+
+def _capture_universe(path: Path) -> tuple[bytes, tuple[str, ...]]:
     try:
-        with universe_path.open("r", encoding="utf-8", newline="") as stream:
+        content = path.read_bytes()
+    except OSError as error:
+        raise CleanRoomError(f"could not read universe {path}: {error}") from error
+    return content, _universe_labels(content)
+
+
+def _universe_labels(content: bytes) -> tuple[str, ...]:
+    try:
+        with io.StringIO(content.decode("utf-8"), newline="") as stream:
             rows = list(csv.reader(stream))
-    except (OSError, UnicodeError, csv.Error) as error:
-        raise CleanRoomError(f"could not read universe {universe_path}: {error}") from error
+    except (UnicodeError, csv.Error) as error:
+        raise CleanRoomError(f"could not decode universe: {error}") from error
     if len(rows) != 1 or not rows[0]:
         raise CleanRoomError("clean-room universe must contain exactly one nonempty CSV record")
     symbols = tuple(value.strip().upper() for value in rows[0])
@@ -157,6 +174,48 @@ def load_universe(path: Path | str) -> tuple[str, ...]:
     return symbols
 
 
+def _check_snapshot(manifest, content, labels):
+    expected = manifest["universe"]
+    if (
+        sha256_bytes(content) != expected["source_sha256"]
+        or canonical_sha256(list(labels)) != expected["ordered_labels_sha256"]
+        or len(labels) != expected["label_count"]
+    ):
+        raise CleanRoomError("original universe is required to pin this build; registry has changed")
+
+
+def pin_universe(store_root, universe_path):
+    """Preserve original bytes and run identity, including for incompatible old runs.
+
+    This explicit input migration does not make old producer contracts compatible.
+    It reads the run manifest and its universe only, never runtime payloads.
+    """
+    store = Path(store_root)
+    state = _state_root(store)
+    with publication_lock(store, exclusive=True):
+        _recover_initialization(state)
+        manifest = read_json_object(state / RUN_MANIFEST, "clean-room run manifest")
+        snapshot = state / UNIVERSE_SNAPSHOT
+        source = snapshot if snapshot.exists() else Path(universe_path)
+        content, labels = _capture_universe(source)
+        _check_snapshot(manifest, content, labels)
+        if not snapshot.exists():
+            _discard_initialization_staging(state)
+            _publish_run_input(state, manifest, content)
+        return {"run_id": manifest["run_id"], "snapshot": str(snapshot), "label_count": len(labels)}
+
+
+def resume_clean_room_generation(store_root, **kwargs):
+    store = Path(store_root)
+    with publication_lock(store, exclusive=True):
+        _recover_initialization(_state_root(store))
+        manifest = read_json_object(_state_root(store) / RUN_MANIFEST, "clean-room run manifest")
+        snapshot = _state_root(store) / UNIVERSE_SNAPSHOT
+        if not snapshot.exists():
+            raise CleanRoomError("pin the original universe before resuming this older build")
+    return run_clean_room_generation(snapshot, store, request_end_timestamp=manifest["request"]["to"], **kwargs)
+
+
 def _state_root(store_root: Path) -> Path:
     return store_root / RUN_STATE_DIRECTORY
 
@@ -169,6 +228,7 @@ def _manifest_identity(
     universe_path: Path,
     symbols: Sequence[str],
     request_end_timestamp: str,
+    universe_bytes: bytes,
 ) -> dict[str, Any]:
     return {
         "schema_version": CLEAN_ROOM_RUN_VERSION,
@@ -181,7 +241,7 @@ def _manifest_identity(
         },
         "universe": {
             "source_file": universe_path.name,
-            "source_sha256": sha256_file(universe_path),
+            "source_sha256": sha256_bytes(universe_bytes),
             "ordered_labels_sha256": canonical_sha256(list(symbols)),
             "label_count": len(symbols),
         },
@@ -195,55 +255,129 @@ def _manifest_identity(
     }
 
 
+def _finish_initialization(state: Path, manifest: dict, content: bytes) -> None:
+    """Caller holds the store lock; the manifest selects the captured input last."""
+    path, snapshot = state / RUN_MANIFEST, state / UNIVERSE_SNAPSHOT
+    if path.exists() and read_json_object(path, "clean-room run manifest") != manifest:
+        raise CleanRoomError("initialization conflicts with the published clean-room identity")
+    if snapshot.exists():
+        if snapshot.read_bytes() != content:
+            raise CleanRoomError("initialization conflicts with the immutable universe snapshot")
+    else:
+        atomic_bytes(snapshot, content)
+    if not path.exists():
+        replace_json(path, manifest)
+    (state / INITIALIZATION_PENDING).unlink()
+
+
+def _publish_run_input(state: Path, manifest: dict, content: bytes) -> None:
+    replace_json(
+        state / INITIALIZATION_PENDING,
+        {
+            "schema_version": CLEAN_ROOM_RUN_VERSION,
+            "boundary": "alpaca_end_of_day_clean_room_initialization",
+            "manifest": manifest,
+            "universe_csv_utf8": content.decode("utf-8"),
+        },
+    )
+    _finish_initialization(state, manifest, content)
+
+
+def _discard_initialization_staging(state: Path) -> None:
+    """Retire only this owner's abandoned atomic-write files under the store lock."""
+    prefixes = tuple(f".{name}.tmp." for name in (INITIALIZATION_PENDING, UNIVERSE_SNAPSHOT, RUN_MANIFEST))
+    for entry in state.iterdir():
+        if entry.name.startswith(prefixes):
+            if entry.is_symlink() or not entry.is_file():
+                raise CleanRoomError(f"invalid initialization staging file: {entry}")
+            entry.unlink()
+
+
+def _recover_initialization(state: Path) -> None:
+    pending = state / INITIALIZATION_PENDING
+    if not pending.exists():
+        return
+    _discard_initialization_staging(state)
+    intent = read_json_object(pending, "clean-room initialization")
+    if (
+        intent.get("schema_version") != 3
+        or intent.get("boundary") != "alpaca_end_of_day_clean_room_initialization"
+        or not isinstance(intent.get("manifest"), dict)
+        or not isinstance(intent.get("universe_csv_utf8"), str)
+    ):
+        raise CleanRoomError("invalid clean-room initialization journal")
+    manifest = intent["manifest"]
+    content = intent["universe_csv_utf8"].encode("utf-8")
+    labels = _universe_labels(content)
+    _check_snapshot(manifest, content, labels)
+    identity = {key: value for key, value in manifest.items() if key not in {"run_id", "created_at"}}
+    if canonical_sha256(identity) != manifest.get("run_id"):
+        raise CleanRoomError("invalid clean-room initialization identity")
+    # Finish the accepted inputs even if a later invocation has other contracts
+    # or a different target. Ordinary resume checks compatibility afterwards.
+    _finish_initialization(state, manifest, content)
+
+
 def _initialize_run(
     store_root: Path,
     universe_path: Path,
-    symbols: Sequence[str],
     request_end_timestamp: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], tuple[str, ...]]:
     _validate_change_log()
     initialize_v6_store(store_root)
-    state_root = _state_root(store_root)
-    if state_root.is_symlink():
-        raise CleanRoomError(f"clean-room state cannot be a symlink: {state_root}")
-    expected_identity = _manifest_identity(universe_path, symbols, request_end_timestamp)
-    expected_run_id = canonical_sha256(expected_identity)
-    path = state_root / RUN_MANIFEST
-    if not path.exists():
-        allowed_root_entries = {"store.manifest.json", ".publication.lock", "end_of_day"}
-        unexpected_root_entries = {
-            entry.name for entry in store_root.iterdir() if entry.name not in allowed_root_entries
-        }
-        source_entries = tuple((store_root / "end_of_day").iterdir())
-        if unexpected_root_entries or source_entries:
-            raise CleanRoomError(
-                "a new clean-room run requires a virgin monthly store; "
-                f"unexpected={sorted(unexpected_root_entries)!r}, source_count={len(source_entries)}"
-            )
-    state_root.mkdir(exist_ok=True)
-    if path.exists():
-        document = read_json_object(path, "clean-room run manifest")
-        observed_identity = {key: document.get(key) for key in expected_identity}
-        if observed_identity != expected_identity or document.get("run_id") != expected_run_id:
-            raise CleanRoomError("existing clean-room run has a different immutable identity")
-        if not isinstance(document.get("created_at"), str):
-            raise CleanRoomError("existing clean-room run has no creation time")
-    else:
-        unexpected = [path.name for path in state_root.iterdir()]
-        if unexpected:
-            raise CleanRoomError(f"unowned files precede the clean-room manifest: {sorted(unexpected)!r}")
-        document = {
-            **expected_identity,
-            "run_id": expected_run_id,
-            "created_at": _utc_now(),
-        }
-        replace_json(path, document)
-    for kind in ("resolutions", "outcomes", "attempts"):
-        directory = state_root / kind
-        directory.mkdir(exist_ok=True)
-        if directory.is_symlink() or not directory.is_dir():
-            raise CleanRoomError(f"clean-room {kind} path is not a directory")
-    return document
+    with publication_lock(store_root, exclusive=True):
+        state = _state_root(store_root)
+        if state.is_symlink():
+            raise CleanRoomError(f"clean-room state cannot be a symlink: {state}")
+        _recover_initialization(state)
+        path, snapshot = state / RUN_MANIFEST, state / UNIVERSE_SNAPSHOT
+        document = read_json_object(path, "clean-room run manifest") if path.exists() else None
+        source = snapshot if document is not None and snapshot.exists() else universe_path
+        content, symbols = _capture_universe(source)
+        expected_identity = _manifest_identity(universe_path, symbols, request_end_timestamp, content)
+        if document is not None:
+            # Pinning preserves the original run's schema and source name. This
+            # compatibility does not permit a change to its producer contracts.
+            if document.get("schema_version") in SUPPORTED_RUN_VERSIONS:
+                expected_identity["schema_version"] = document["schema_version"]
+                expected_identity["universe"]["source_file"] = document["universe"]["source_file"]
+            expected_run_id = canonical_sha256(expected_identity)
+            observed_identity = {key: document.get(key) for key in expected_identity}
+            if observed_identity != expected_identity or document.get("run_id") != expected_run_id:
+                raise CleanRoomError("existing clean-room run has a different immutable identity")
+            if not isinstance(document.get("created_at"), str):
+                raise CleanRoomError("existing clean-room run has no creation time")
+            if not snapshot.exists():
+                _discard_initialization_staging(state)
+                _publish_run_input(state, document, content)
+        else:
+            allowed = {"store.manifest.json", ".publication.lock", "end_of_day", RUN_STATE_DIRECTORY}
+            unexpected_root_entries = {entry.name for entry in store_root.iterdir() if entry.name not in allowed}
+            source_entries = tuple((store_root / "end_of_day").iterdir())
+            if unexpected_root_entries or source_entries:
+                raise CleanRoomError(
+                    "a new clean-room run requires a virgin monthly store; "
+                    f"unexpected={sorted(unexpected_root_entries)!r}, source_count={len(source_entries)}"
+                )
+            state.mkdir(exist_ok=True)
+            _discard_initialization_staging(state)
+            unexpected = [entry.name for entry in state.iterdir() if entry.name != UNIVERSE_SNAPSHOT]
+            if unexpected:
+                raise CleanRoomError(f"unowned files precede the clean-room manifest: {sorted(unexpected)!r}")
+            if snapshot.exists() and snapshot.read_bytes() != content:
+                raise CleanRoomError("original input is required for an interrupted unjournaled snapshot")
+            document = {
+                **expected_identity,
+                "run_id": canonical_sha256(expected_identity),
+                "created_at": _utc_now(),
+            }
+            _publish_run_input(state, document, content)
+        for kind in ("resolutions", "outcomes", "attempts"):
+            directory = state / kind
+            directory.mkdir(exist_ok=True)
+            if directory.is_symlink() or not directory.is_dir():
+                raise CleanRoomError(f"clean-room {kind} path is not a directory")
+        return document, symbols
 
 
 def _validate_resolution(
@@ -255,7 +389,7 @@ def _validate_resolution(
 ) -> dict[str, Any]:
     resolution = document.get("resolution")
     if (
-        document.get("schema_version") != CLEAN_ROOM_RUN_VERSION
+        document.get("schema_version") not in SUPPORTED_RUN_VERSIONS
         or document.get("boundary") != "alpaca_end_of_day_clean_room_resolution"
         or document.get("run_id") != run_id
         or document.get("position") != position
@@ -330,7 +464,7 @@ def _validate_outcome(
 ) -> dict[str, Any]:
     status = document.get("status")
     if (
-        document.get("schema_version") != CLEAN_ROOM_RUN_VERSION
+        document.get("schema_version") not in SUPPORTED_RUN_VERSIONS
         or document.get("boundary") != "alpaca_end_of_day_clean_room_outcome"
         or document.get("run_id") != run_id
         or document.get("position") != position
@@ -532,17 +666,15 @@ def _load_existing_outcomes(
 
 def _load_completed_run(store_root: Path, run_id: str) -> dict[str, Any] | None:
     completion_path = _state_root(store_root) / COMPLETION_RECEIPT
-    audit_path = _state_root(store_root) / AUDIT_REPORT
     if not completion_path.exists():
         return None
     completion = read_json_object(completion_path, "clean-room completion receipt")
     if (
-        completion.get("schema_version") != CLEAN_ROOM_RUN_VERSION
+        completion.get("schema_version") not in SUPPORTED_RUN_VERSIONS
         or completion.get("boundary") != "alpaca_end_of_day_clean_room_completion"
         or completion.get("run_id") != run_id
         or completion.get("status") != "passed"
-        or not audit_path.is_file()
-        or completion.get("audit_sha256") != sha256_file(audit_path)
+        or re.fullmatch(r"[a-f0-9]{64}", str(completion.get("audit_sha256"))) is None
     ):
         raise CleanRoomError("clean-room completion receipt is malformed")
     return completion
@@ -750,13 +882,12 @@ def run_clean_room_generation(
     _validate_request_end(request_end_timestamp)
     if store.name in {"data", "data_vtest"}:
         raise CleanRoomError("clean-room construction refuses an existing public or legacy store path")
-    symbols = load_universe(universe)
     environment = os.environ if environment is None else environment
     api_key_id = environment.get("ALPACA_API_KEY_ID")
     api_secret_key = environment.get("ALPACA_API_SECRET_KEY")
     if not api_key_id or not api_secret_key:
         raise CleanRoomError("set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY")
-    manifest = _initialize_run(store, universe, symbols, request_end_timestamp)
+    manifest, symbols = _initialize_run(store, universe, request_end_timestamp)
     run_id = manifest["run_id"]
     completed = _load_completed_run(store, run_id)
     if completed is not None:

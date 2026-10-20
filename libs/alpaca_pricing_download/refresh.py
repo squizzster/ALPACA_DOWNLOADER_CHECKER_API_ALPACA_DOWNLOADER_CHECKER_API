@@ -11,12 +11,52 @@ from .contract import (
     NEW_YORK,
     DownloadError,
     digest,
+    failure_outcome,
     json_bytes,
     symbol_label,
     timestamp,
 )
-from .download import download_pricing
-from .storage import load_source, regular_path, ticker_lock
+from .download import _endpoints_match, download_pricing
+from .storage import load_source, read_validator, regular_path, ticker_lock
+
+
+def check_retained_source(store, symbol, end_date, *, client):
+    """Check a selected source independently of active-summary eligibility."""
+    root = regular_path(Path(store), f"end_of_day/pricing/{symbol}", published=True)
+    with ticker_lock(root, exclusive=False):
+        if regular_path(root, ".pending.json").exists():
+            raise DownloadError(f"{symbol}: finish interrupted pricing publication before checking")
+        source = load_source(root, symbol)
+        if source is None:
+            raise DownloadError(f"{symbol}: no existing pricing to check")
+        request = _refresh_request(symbol, source)
+        if request["end_exclusive"][:10] > end_date:
+            raise DownloadError(f"{symbol}: required history check exceeds requested cutoff")
+        endpoints = read_validator(root, source, published=True)
+        if endpoints is None:
+            raise DownloadError(f"{symbol}: retained-history checking requires published endpoints")
+        matched = not any(endpoints.values()) or _endpoints_match(client, symbol, endpoints, request["asof"])
+        return {**request, "matched": matched}
+
+
+def _refresh_request(symbol, source):
+    start = timestamp(source.get("history_start", HISTORY_START))
+    end = timestamp(source["latest_request"]["end_exclusive"])
+    asof = source["latest_request"]["asof"]
+    if (
+        start != datetime.combine(start.date(), datetime.min.time(), tzinfo=timezone.utc)
+        or end != datetime.combine(end.date(), datetime.min.time(), tzinfo=timezone.utc)
+        or asof != end.date().isoformat()
+    ):
+        raise DownloadError(f"{symbol}: stored range/asof is incompatible with exact-span replacement")
+    return {
+        "symbol": symbol,
+        "source_sha256": digest(json_bytes(source)),
+        "history_correction_id": source.get("history_correction_id"),
+        "start": start.isoformat().replace("+00:00", "Z"),
+        "end_exclusive": end.isoformat().replace("+00:00", "Z"),
+        "asof": asof,
+    }
 
 
 def prepare_refresh(store, symbols):
@@ -31,24 +71,7 @@ def prepare_refresh(store, symbols):
             source = load_source(root, symbol)
         if source is None:
             raise DownloadError(f"{symbol}: no existing pricing to replace")
-        start = timestamp(source.get("history_start", HISTORY_START))
-        end = timestamp(source["latest_request"]["end_exclusive"])
-        asof = source["latest_request"]["asof"]
-        if (
-            start != datetime.combine(start.date(), datetime.min.time(), tzinfo=timezone.utc)
-            or end != datetime.combine(end.date(), datetime.min.time(), tzinfo=timezone.utc)
-            or asof != end.date().isoformat()
-        ):
-            raise DownloadError(f"{symbol}: stored range/asof is incompatible with exact-span replacement")
-        prepared.append(
-            {
-                "symbol": symbol,
-                "source_sha256": digest(json_bytes(source)),
-                "start": start.isoformat().replace("+00:00", "Z"),
-                "end_exclusive": end.isoformat().replace("+00:00", "Z"),
-                "asof": asof,
-            }
-        )
+        prepared.append(_refresh_request(symbol, source))
     return prepared
 
 
@@ -77,6 +100,13 @@ def acquire_full(needs, client, *, metrics=None):
             ] = rows
             if rows:
                 day = timestamp(rows[0]["t"]).astimezone(NEW_YORK).date()
+                probe_start = datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK).astimezone(
+                    timezone.utc
+                )
+                probe_end = min(
+                    (probe_start.astimezone(NEW_YORK) + timedelta(days=1)).astimezone(timezone.utc),
+                    timestamp(window["end_exclusive"]),
+                )
                 probes.append(
                     {
                         "kind": "bars",
@@ -84,17 +114,15 @@ def acquire_full(needs, client, *, metrics=None):
                         "symbols": [symbol],
                         "asof": need["asof"],
                         "adjustments": [adjustment],
-                        "ranges": [
-                            {"start": day.isoformat(), "end_exclusive": (day + timedelta(days=1)).isoformat()}
-                        ],
+                        "ranges": [{"start": probe_start.isoformat(), "end_exclusive": probe_end.isoformat()}],
                     }
                 )
     checks = build_plan({"steps": [{"needs": probes}]})
     checked = client.execute_plan(checks, metrics=metrics)
     for index, need in enumerate(probes):
         symbol, adjustment, window = need["symbols"][0], need["adjustments"][0], need["ranges"][0]
-        start = datetime.fromisoformat(window["start"]).replace(tzinfo=NEW_YORK).astimezone(timezone.utc)
-        end = datetime.fromisoformat(window["end_exclusive"]).replace(tzinfo=NEW_YORK).astimezone(timezone.utc)
+        start = timestamp(window["start"])
+        end = timestamp(window["end_exclusive"])
         cache[(True, symbol, adjustment, start, end, need["asof"])] = checked[(0, index, 0, symbol, adjustment)]
 
     class PlannedClient:
@@ -135,7 +163,13 @@ def replace_prepared(store, prepared, *, client, cohort_size=32, progress=None, 
             consumer, _ = acquire_full(needs, client, metrics=metrics)
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
-                {"symbol": item["symbol"], "status": "failed", "error": str(error)} for item in cohort
+                {
+                    "symbol": item["symbol"],
+                    "status": "failed",
+                    "error": str(error),
+                    "outcome": failure_outcome(error),
+                }
+                for item in cohort
             )
             if progress:
                 progress("pricing", {"done": len(results), "total": len(prepared), "failed": len(cohort)})
@@ -154,10 +188,16 @@ def replace_prepared(store, prepared, *, client, cohort_size=32, progress=None, 
                     refresh_all=True,
                     from_date=item["start"][:10],
                     expected_source_sha256=item["source_sha256"],
+                    history_correction_id=item.get("required_correction_id"),
                 )
                 result["status"] = "replaced"
             except (RuntimeError, OSError, ValueError) as error:
-                result = {"symbol": item["symbol"], "status": "failed", "error": str(error)}
+                result = {
+                    "symbol": item["symbol"],
+                    "status": "failed",
+                    "error": str(error),
+                    "outcome": failure_outcome(error),
+                }
             results.append(result)
             if progress:
                 progress(

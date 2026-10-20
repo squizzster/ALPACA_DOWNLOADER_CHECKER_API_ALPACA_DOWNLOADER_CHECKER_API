@@ -13,9 +13,9 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VERSION = 15
+VERSION = 20
 # Existing boundary payloads/receipts remain valid after an explicit directory move.
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, VERSION)
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, VERSION)
 VALIDATOR_FILE = "validator_first_last_sessions.json"
 ADJUSTMENTS = (
     "raw",
@@ -60,6 +60,36 @@ class InitialPricingUnavailable(DownloadError):
             "request": dict(request),
         }
         super().__init__(str(error))
+
+
+def failure_outcome(error):
+    """Keep access denials distinct from exhausted transport/provider failures."""
+    cause = error
+    status = None
+    seen = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, InitialPricingUnavailable):
+            return {**cause.evidence, **({"error": str(error)} if cause is not error else {})}
+        if isinstance(cause, BarsSymbolUnavailable):
+            return {
+                "outcome": "invalid_symbol",
+                "http_status": cause.http_status,
+                "symbol": cause.symbol,
+                "provider_message": cause.provider_message,
+                "error": str(error),
+            }
+        code = (
+            getattr(cause, "http_status", None) or getattr(cause, "status", None) or getattr(cause, "code", None)
+        )
+        if status is None and isinstance(code, int):
+            status = code
+        cause = cause.__cause__
+    return {
+        "outcome": "access_denied" if status in (401, 403) else "request_failed",
+        "http_status": status if isinstance(status, int) else None,
+        "error": str(error),
+    }
 
 
 def validate_version() -> None:

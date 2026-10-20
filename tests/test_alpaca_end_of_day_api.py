@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from cli_support import parser_for
+
 from alpaca_end_of_day import (
     API_CHANGE_LOG_PATH,
     API_VERSION,
@@ -22,13 +24,10 @@ from alpaca_end_of_day import (
     Security,
     _IdentityTimeline,
 )
+from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
 from libs.alpaca_end_of_day_pipeline import validate_and_publish_alpaca_download
 from libs.alpaca_end_of_day_reader import read_alpaca_end_of_day_security_history
 from libs.alpaca_end_of_day_security_correlation import authenticate_security_master
-from read_alpaca_end_of_day_ticker import (
-    parse_command_line_arguments,
-    run_end_of_day_reader_command,
-)
 from tests.test_alpaca_end_of_day_reader import (
     SECOND_ASSET_UUID,
     SECOND_MASTER_ID,
@@ -287,13 +286,13 @@ class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
                 name="Next Security",
             )
             output_path = repository_root / "exports" / "online.csv"
-            arguments = parse_command_line_arguments(
+            arguments = parser_for("catalogue", "export").parse_args(
                 [
-                    "--dump-flat-online-csv",
+                    "--output",
                     str(output_path),
-                    "--start",
+                    "--from",
                     "2024-01-04",
-                    "--end",
+                    "--through",
                     "2024-01-05",
                 ]
             )
@@ -380,15 +379,15 @@ class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository_root = Path(temporary_directory)
             _publish_reader_fixture(repository_root, with_integrity_failure=False)
-            arguments = parse_command_line_arguments(
+            arguments = parser_for("catalogue", "read").parse_args(
                 [
                     "--public-id",
                     TEST_MASTER_ID,
-                    "--type",
+                    "--adjustment",
                     "raw",
-                    "--start",
+                    "--from",
                     "2024-01-04",
-                    "--end",
+                    "--through",
                     "2024-01-05",
                 ]
             )

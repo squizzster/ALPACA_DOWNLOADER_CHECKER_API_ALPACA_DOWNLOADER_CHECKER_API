@@ -10,14 +10,6 @@ from .inspection import inspect_alpaca_security_lineage
 from .settings import SYMBOL_PATTERN
 
 
-def parse_command_line_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
-    argument_parser = argparse.ArgumentParser(
-        description="Inspect local downloads and direct Alpaca identity evidence for one ticker."
-    )
-    argument_parser.add_argument("ticker", help="US-equity ticker, for example FB")
-    return argument_parser.parse_args(arguments)
-
-
 def run_security_lineage_command(
     cli_arguments: argparse.Namespace,
     *,

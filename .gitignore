@@ -28,3 +28,4 @@ htmlcov/
 /alpaca_run_logs/
 /ticker_lists/
 /unique_ticker_codes.csv
+/resources/.ticker.csv.lock

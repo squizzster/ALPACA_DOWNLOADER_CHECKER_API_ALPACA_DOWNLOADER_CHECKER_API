@@ -16,7 +16,7 @@ Cases supply generic concepts, never ticker exceptions. The main agent owns impl
 
 1. Define the disputed ownership/continuity interval and the agreed batch scope.
 2. Inspect actual [pipeline evidence](operations.md#focused-standalone-work), trusting approved inputs.
-   Offline inspection is not a fresh calculation; normal evidence mode can acquire and publish.
+   `lineage inspect` reads published evidence; explicit `lineage refresh` can acquire and publish.
 3. Use a fresh research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`.
    Give a self-contained question, evidence and current rules without a preferred verdict.
    Request primary-source facts, uncertainty, counterexamples and a generic rule concept.

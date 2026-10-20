@@ -15,7 +15,17 @@ from .pipeline import run_lineage
 from .refresh import refresh_existing
 
 
-def finish_pending(store, *, pricing_client, identity_client, progress=None):
+def finish_pending(
+    store,
+    *,
+    pricing_client,
+    identity_client,
+    progress=None,
+    end_date=None,
+    evidence_client=None,
+    register_discoveries=None,
+    work_policy=None,
+):
     """Use known work; let lineage restore missing disposable hint coverage."""
     pending = pending_symbols(store)
     checks = read_checks(store)
@@ -57,6 +67,10 @@ def finish_pending(store, *, pricing_client, identity_client, progress=None):
         pricing_client=pricing_client,
         identity_client=identity_client,
         known_pending=selected,
+        end_date=end_date,
+        evidence_client=evidence_client,
+        register_discoveries=register_discoveries,
+        work_policy=work_policy,
         on_processed=observed,
         on_scanned=scanned,
         on_pricing=(
@@ -66,7 +80,19 @@ def finish_pending(store, *, pricing_client, identity_client, progress=None):
     return {"pricing_recovered": recovered, "lineage": lineage, "failed": lineage["failed"]}
 
 
-def update_everything(store, end_date=None, *, pricing_client, identity_client, workers=3, progress=None):
+def update_everything(
+    store,
+    end_date=None,
+    *,
+    pricing_client,
+    identity_client,
+    workers=3,
+    progress=None,
+    evidence_client=None,
+    register_discoveries=None,
+    work_policy=None,
+    recover_pending=True,
+):
     """Fresh check -> same-span replacement/lineage -> append -> lineage -> summary.
 
     Freeze the completed-session target before any recovery or requests. Stage
@@ -93,73 +119,114 @@ def update_everything(store, end_date=None, *, pricing_client, identity_client, 
         return value
 
     try:
-        recovered = stage(
-            "recovery",
-            finish_pending,
-            store,
-            pricing_client=pricing_client,
-            identity_client=identity_client,
-            progress=progress,
+        recovered = (
+            stage(
+                "recovery",
+                finish_pending,
+                store,
+                pricing_client=pricing_client,
+                identity_client=identity_client,
+                progress=progress,
+                end_date=end,
+                evidence_client=evidence_client,
+                register_discoveries=register_discoveries,
+                work_policy=work_policy,
+            )
+            if recover_pending
+            else {"failed": 0}
         )
         if recovered["failed"]:
             return result
-        ready = []
-        checked = stage(
-            "refresh",
-            refresh_existing,
-            store,
-            pricing_client=pricing_client,
-            identity_client=identity_client,
-            progress=progress,
-            on_ready=ready.append,
-        )
-        if not checked["complete"]:
-            return result
-        # Refresh has completed its own lineage/publication boundary. Consume it directly.
-        current_stage = "append"
-        if len(ready) != 1:
-            raise DownloadError("history refresh did not produce a ready append handoff")
-        snapshot = ready.pop()
-        appended = stage(
-            "append",
-            append_ready,
-            store,
-            snapshot,
-            end,
-            client=pricing_client,
-            workers=workers,
-            progress=progress,
-        )
-        selected = [
-            row["symbol"]
-            for row in appended["results"]
-            if row["status"] != "failed" and row.get("mode") == "append"
-        ]
-        if selected:
-            processed = set()
-
-            def observed(symbols):
-                processed.update(symbols)
-                if progress:
-                    progress("lineage", {"processed": len(processed), "selected": len(selected)})
-
-            stage(
-                "lineage",
-                run_lineage,
+        remaining, maintained_symbols = None, set()
+        for round_number in range(100):
+            ready = []
+            checked = stage(
+                "refresh" if round_number == 0 else f"refresh_new_members_{round_number}",
+                refresh_existing,
                 store,
-                selected,
                 pricing_client=pricing_client,
                 identity_client=identity_client,
-                on_processed=observed,
-                on_pricing=(
-                    (lambda pricing_stage, values: progress("lineage_dependency_" + pricing_stage, values))
-                    if progress
-                    else None
-                ),
+                progress=progress,
+                on_ready=ready.append,
+                end_date=end,
+                evidence_client=evidence_client,
+                register_discoveries=register_discoveries,
+                work_policy=work_policy,
+                symbols=remaining,
             )
+            if not checked["complete"]:
+                return result
+            # Refresh has completed its own lineage/publication boundary. Consume it directly.
+            current_stage = "append"
+            if len(ready) != 1:
+                raise DownloadError("history refresh did not produce a ready append handoff")
+            snapshot = ready.pop()
+            maintained_symbols.update(e["symbol"] for e in snapshot["entries"])
+            appended = stage(
+                "append" if round_number == 0 else f"append_new_members_{round_number}",
+                append_ready,
+                store,
+                snapshot,
+                end,
+                client=pricing_client,
+                workers=workers,
+                progress=progress,
+            )
+            if work_policy is not None:
+                work_policy.record_results(appended, stage="append")
+                work_policy.history_approved.update(
+                    {
+                        item["symbol"]: item["source_sha256"]
+                        for item in appended["results"]
+                        if "source_sha256" in item
+                    }
+                )
+            selected = [
+                row["symbol"]
+                for row in appended["results"]
+                if row["status"] != "failed" and row.get("mode") == "append"
+            ]
+            if selected:
+                processed = set()
+
+                def observed(symbols):
+                    processed.update(symbols)
+                    if progress:
+                        progress("lineage", {"processed": len(processed), "selected": len(selected)})
+
+                stage(
+                    "lineage" if round_number == 0 else f"lineage_new_members_{round_number}",
+                    run_lineage,
+                    store,
+                    selected,
+                    pricing_client=pricing_client,
+                    identity_client=identity_client,
+                    on_processed=observed,
+                    end_date=end,
+                    evidence_client=evidence_client,
+                    register_discoveries=register_discoveries,
+                    work_policy=work_policy,
+                    on_pricing=(
+                        (lambda pricing_stage, values: progress("lineage_dependency_" + pricing_stage, values))
+                        if progress
+                        else None
+                    ),
+                )
+            latest = read_snapshot(store)
+            remaining = {
+                e["symbol"]
+                for e in latest["entries"]
+                if e["symbol"] not in maintained_symbols
+                and e["asof"] <= end
+                and (work_policy is None or work_policy.allowed({e["symbol"]}))
+            }
+            if not remaining or result["failed"]:
+                break
+        else:
+            raise DownloadError("maintenance membership did not settle")
         current_stage = "summary"
         result["summary"] = describe(read_snapshot(store))
-        result["complete"] = result["failed"] == 0
+        result["complete"] = result["failed"] == 0 and not (work_policy and work_policy.blocked)
         return result
     except (RuntimeError, OSError, ValueError) as error:
         result["failed"] += 1

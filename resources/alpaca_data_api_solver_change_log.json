@@ -10,5 +10,10 @@
       "Plan explicitly typed symbol lookups through one US-equity asset catalogue for batches of at least 100 symbols, while keeping untyped, CUSIP and asset-ID lookups exact; catalogue misses and ambiguous labels require a subsequent exact-lookup plan.",
       "Cap corporate-action batches at 1,000 symbols, retain date and URL bounds, and support catalogue execution and oversized corporate-action request splitting through the existing ordered action boundary."
     ]
+  },
+  {
+    "modifications": [
+      "Plan explicit complete US-equity catalogue observations covering all statuses without an exchange filter."
+    ]
   }
 ]

@@ -1,0 +1,17 @@
+[
+  {
+    "modifications": [
+      "Replace root script aliases and independent parsers with one explicit command family, inclusive dates, offline inspection and no argument abbreviation."
+    ]
+  },
+  {
+    "modifications": [
+      "Route standalone lineage and pricing refresh through durable registration before dependency acquisition. Expose offline producer status and return nonzero when required local processing is incomplete."
+    ]
+  },
+  {
+    "modifications": [
+      "Apply shared durable work and complete-group restrictions to standalone lineage and pricing commands; require explicit retry authorization through daily update."
+    ]
+  }
+]

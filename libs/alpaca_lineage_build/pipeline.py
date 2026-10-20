@@ -2,13 +2,12 @@
 
 from pathlib import Path
 
-from libs.alpaca_pricing_download.append import append_entries
-from libs.alpaca_pricing_download.check_summary import price_entry
+from libs.alpaca_pricing_download.acquire import acquire_selected
 from libs.alpaca_pricing_download.contract import (
     HISTORY_START,
     InitialPricingUnavailable,
+    failure_outcome,
     symbol_label,
-    timestamp,
 )
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
@@ -75,7 +74,7 @@ def _reuse_metadata(seed, group, selected, previous, notices, refresh):
     )
 
 
-def _prefetch_metadata(store, root, selected, index, graph, client, refresh, receipt_cache):
+def _prefetch_metadata(store, root, selected, index, graph, client, refresh, receipt_cache, end_date=None):
     """Collect selected receipt ranges without opening prices or scanning directories.
 
     Publication still reselects pricing under its normal locks. Requests are
@@ -93,6 +92,10 @@ def _prefetch_metadata(store, root, selected, index, graph, client, refresh, rec
             visited.update(group)
             with storage.pricing_locks(store, group, known=index["symbols"]) as locked:
                 sources = _current_sources(store, locked, known=index["symbols"])
+                if end_date and any(
+                    source["latest_request"]["end_exclusive"][:10] > end_date for source in sources.values()
+                ):
+                    continue
                 previous = {s: receipt_cache.read(s) for s in sources}
                 notices = {
                     s: notice
@@ -118,101 +121,67 @@ def _prefetch_metadata(store, root, selected, index, graph, client, refresh, rec
     client.prefetch_symbols({symbol for symbol, _, _ in requests})
 
 
-def _catch_up_published_dependencies(store, selected, index, graph, client, progress=None):
-    """Batch known group members to their group's covered end before lineage.
-
-    The dependency index is the authority for known group membership. Only the
-    selected groups' source receipts and endpoint validators are opened. A label
-    first discovered from fresh provider evidence still uses process_group's
-    narrow acquisition fallback.
-    """
+def _catch_up_published_dependencies(
+    store,
+    selected,
+    index,
+    graph,
+    client,
+    progress=None,
+    end_date=None,
+    work_policy=None,
+    register_discoveries=None,
+):
+    """The pricing owner validates retained history before advancing dependencies."""
+    result = {
+        "requested": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "results": [],
+        "requests": {},
+        "deferred_full_range": 0,
+    }
     if client is None or not callable(getattr(client, "execute_plan", None)):
-        return {"requested": 0, "succeeded": 0, "failed": 0, "results": [], "requests": {}}
-    known, visited, entries, targets, full_range = set(index["symbols"]), set(), {}, {}, set()
-    groups = 0
+        return result
+    visited, targets = set(), {}
     for label in selected:
-        try:
-            seed = symbol_label(label)
-            if seed in visited:
-                continue
-            group = closure(index, {seed}, graph=graph)
-        except (RuntimeError, ValueError):
-            continue  # The ordinary group path reports the invalid selection.
+        group = graph.closure({label})
+        if group <= visited or (work_policy is not None and not work_policy.allowed(group)):
+            continue
         visited.update(group)
-        groups += 1
-        with storage.pricing_locks(store, group, known=known) as locked:
-            sources = _current_sources(store, locked, known=known)
+        with storage.pricing_locks(store, group, known=index["symbols"]) as locked:
+            sources = _current_sources(store, locked, known=index["symbols"])
             if not sources:
                 continue
             start = min(source.get("history_start", HISTORY_START)[:10] for source in sources.values())
-            target = max(timestamp(source["latest_request"]["end_exclusive"]) for source in sources.values())
+            end = max(source["latest_request"]["end_exclusive"][:10] for source in sources.values())
+            if end_date and end > end_date:
+                continue
             for symbol, source in sources.items():
-                source_end = timestamp(source["latest_request"]["end_exclusive"])
-                # A later historical start needs a full-range acquisition. Leave
-                # that uncommon case to process_group's existing fallback.
                 if source.get("history_start", HISTORY_START)[:10] > start:
-                    full_range.add(symbol)
-                    continue
-                if source_end >= target:
-                    continue
-                pricing_root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
-                entry = price_entry(pricing_root, source)
-                entries[symbol] = entry or {
-                    "symbol": symbol,
-                    "asof": source["latest_request"]["asof"],
-                    "last_all": None,
-                }
-                targets[symbol] = target
-        if progress is not None and groups % 1000 == 0:
-            progress(
-                "scan",
-                {
-                    "groups": groups,
-                    "members": len(visited),
-                    "lagging": len(entries),
-                    "full_range": len(full_range),
-                },
-            )
-    if progress is not None:
-        progress(
-            "scan",
-            {
-                "groups": groups,
-                "members": len(visited),
-                "lagging": len(entries),
-                "full_range": len(full_range),
-            },
-        )
-    if not entries:
-        return {
-            "requested": 0,
-            "succeeded": 0,
-            "failed": 0,
-            "deferred_full_range": len(full_range),
-            "results": [],
-            "requests": {},
-        }
-
-    def append_progress(stage, values):
-        if progress is None:
-            return
-        if stage == "pricing":
-            done, total = values["done"], values["total"]
-            if done != total and done % 250:
-                return
-            values = {"done": done, "total": total}
-        progress(stage, values)
-
-    result = append_entries(
-        store,
-        [entries[symbol] for symbol in sorted(entries)],
-        max(targets.values()).date().isoformat(),
-        client=client,
-        workers=3,
-        end_by_symbol=targets,
-        progress=append_progress if progress is not None else None,
-    )
-    result["deferred_full_range"] = len(full_range)
+                    result["deferred_full_range"] += 1
+                elif source["latest_request"]["end_exclusive"][:10] < end:
+                    targets.setdefault(end, []).append(symbol)
+    for end, symbols in targets.items():
+        allowed = [s for s in symbols if work_policy is None or work_policy.allowed({s})]
+        if work_policy is not None:
+            for symbol in allowed:
+                work_policy.require_dependencies(graph.closure({symbol}), end, {symbol})
+        if register_discoveries is not None:
+            register_discoveries({member for symbol in allowed for member in graph.closure({symbol})})
+        value = acquire_selected(store, allowed, end, client=client, progress=progress)
+        result["results"].extend(value["results"])
+        for key, count in value["requests"].items():
+            if isinstance(count, dict):
+                for metric, total in count.items():
+                    result["requests"][metric] = result["requests"].get(metric, 0) + total
+            else:
+                result["requests"][key] = result["requests"].get(key, 0) + count
+        result["requested"] += len(allowed)
+        result["failed"] += value["failed"]
+        if work_policy is not None:
+            work_policy.record_results(value, stage="dependency_acquisition")
+    result["succeeded"] = result["requested"] - result["failed"]
     return result
 
 
@@ -229,10 +198,13 @@ def process_group(
     graph=None,
     evidence_client=None,
     receipt_cache=None,
+    end_date=None,
+    register_discoveries=None,
+    work_policy=None,
 ):
     index = storage.read_index(root) if index is None else index
     receipt_cache = receipt_cache or storage.ReceiptCache(root, index)
-    graph = graph or DependencyGraph(index["symbols"])
+    graph = work_policy.graph if work_policy is not None else graph or DependencyGraph(index["symbols"])
     group = closure(index, {seed}, graph=graph)
     acquisition_waves = 0
     metadata_cache = {}
@@ -240,17 +212,26 @@ def process_group(
     evidence_client = evidence_client or EvidenceClient(identity_client)
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
         required = None
+        if work_policy is not None:
+            work_policy.current_group = set(group)
+            work_policy.check(group)
         with storage.pricing_locks(store, group, known=index["symbols"]) as locked:
             checks = read_checks(store, locked)
             sources = _current_sources(store, locked, known=index["symbols"])
             # A missing seed is missing pricing, just like a related label. With
             # no published range, None delegates defaults to the downloader.
             start = min(
-                (source.get("history_start", HISTORY_START)[:10] for source in sources.values()), default=None
+                (source.get("history_start", HISTORY_START)[:10] for source in sources.values()),
+                default=HISTORY_START[:10] if end_date else None,
             )
             end = max(
-                (source["latest_request"]["end_exclusive"][:10] for source in sources.values()), default=None
+                (source["latest_request"]["end_exclusive"][:10] for source in sources.values()), default=end_date
             )
+            if work_policy is not None and group - sources.keys():
+                work_policy.require_dependencies(group, end, group - sources.keys())
+                work_policy.check(group)
+            if register_discoveries is not None:
+                register_discoveries(group)
             # Reload after delegation: concurrent publication outranks a remembered
             # rejection. Never turn a held source into an unavailable auxiliary.
             unavailable = {
@@ -261,6 +242,8 @@ def process_group(
                 and value["request"]["end_exclusive"][:10] == end
             }
             previous = {symbol: receipt_cache.read(symbol) for symbol in sorted(sources)}
+            if work_policy is not None:
+                refresh = refresh or work_policy.needs_refresh(group, previous)
             notices = {
                 symbol: notice
                 for symbol in sorted(sources)
@@ -272,7 +255,11 @@ def process_group(
             if reuse_metadata:
                 check_unavailable_pricing(store, prior_unavailable, locked, sources=sources)
                 unavailable = prior_unavailable
-            if reuse_metadata and all(reusable_versions(prior["versions"]) for prior in previous.values()):
+            if (
+                reuse_metadata
+                and all(reusable_versions(prior["versions"]) for prior in previous.values())
+                and (work_policy is None or not work_policy.requires_publication(previous))
+            ):
                 if observer is not None:
                     observer(
                         store=store,
@@ -290,6 +277,11 @@ def process_group(
                 refresh_check_summary(store, previous, sources=sources)
                 acknowledge_checks(store, checks, sources)
                 return {"symbol": seed, "status": "unchanged", "processed": sorted(sources)}
+            if end_date and end and end > end_date:
+                raise LineageError(
+                    f"{seed}: required group reconciliation extends beyond requested cutoff {end_date}; "
+                    "retained pricing and lineage remain unchanged"
+                )
             required = {
                 symbol: {"from": start, "end_exclusive": end}
                 for symbol in sorted(group)
@@ -344,6 +336,8 @@ def process_group(
                     index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
                 )
                 if expanded != group:
+                    if work_policy is not None:
+                        work_policy.require_dependencies(expanded, end, expanded - sources.keys())
                     group = expanded
                     continue  # Release every pricing lock before taking an enlarged, sorted set.
                 # A related input may exist but not cover the selected acquisition range.
@@ -389,6 +383,8 @@ def process_group(
                         }
                         if unavailable:
                             receipts[symbol]["unavailable_pricing"] = unavailable
+                    if work_policy is not None:
+                        work_policy.stamp(receipts, sources)
                     storage.publish(
                         store,
                         root,
@@ -401,7 +397,10 @@ def process_group(
                         sources=sources,
                     )
                     receipt_cache.published(receipts)
-                    graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
+                    if work_policy is not None:
+                        work_policy.update_index({symbol: index["symbols"][symbol] for symbol in receipts})
+                    else:
+                        graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
                     # Inspection observes the actual publication while the same
                     # locks still protect its inputs. It never runs another resolver.
                     if observer is not None:
@@ -427,17 +426,25 @@ def process_group(
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
         if required:
+            if work_policy is not None:
+                work_policy.require_dependencies(group, end, required)
+                work_policy.check(group)
             if pricing_client is None:
                 return {"symbol": seed, "status": "waiting_for_pricing", "required": required, "processed": []}
             if acquisition_waves >= MAX_ACQUISITION_WAVES:
                 raise LineageError("pricing dependencies did not settle within three acquisition waves")
             acquisition_waves += 1
             for symbol, request in required.items():
+                if work_policy is not None:
+                    work_policy.check(group)
                 try:
                     download_pricing(
                         store, symbol, request["end_exclusive"], client=pricing_client, from_date=request["from"]
                     )
                 except InitialPricingUnavailable as error:
+                    if work_policy is not None:
+                        work_policy.fail({symbol}, error, stage="dependency_acquisition")
+                        raise
                     if symbol == seed or symbol in sources or symbol in index["symbols"]:
                         raise
                     # This is a provider requestability fact, not a successful empty
@@ -515,6 +522,10 @@ def run_lineage(
     on_scanned=None,
     on_pricing=None,
     known_pending=(),
+    evidence_client=None,
+    end_date=None,
+    register_discoveries=None,
+    work_policy=None,
 ):
     validate_version()
     store = Path(store).absolute()
@@ -565,9 +576,22 @@ def run_lineage(
             selected.extend(sorted(stale))
             prefetch.update(stale_metadata)
         selected = list(dict.fromkeys([*selected, *known_pending]))
+        if work_policy is not None and symbols is None:
+            selected = list(dict.fromkeys([*selected, *work_policy.work]))
+            prefetch.update(work_policy.work)
         prefetch.update(known_pending)
-        graph = DependencyGraph(index["symbols"])
-        evidence_client = EvidenceClient(identity_client)
+        if work_policy is not None:
+            work_policy.update_index(index["symbols"])
+        graph = work_policy.graph if work_policy is not None else DependencyGraph(index["symbols"])
+        evidence_client = evidence_client or EvidenceClient(identity_client)
+        if work_policy is not None:
+            evidence_client.work_policy = work_policy
+            for label in selected:
+                if refresh and work_policy.allowed({label}):
+                    for member in graph.closure({label}):
+                        projection = index["symbols"].get(member, {}).get("projection") or {}
+                        target = projection.get("processed_through", end_date)[:10]
+                        work_policy.require(member, target, reason="explicit_lineage_refresh", refresh=True)
         stop = False
 
         catchups = []
@@ -581,6 +605,9 @@ def run_lineage(
                 graph,
                 pricing_client,
                 progress=on_pricing,
+                end_date=end_date,
+                work_policy=work_policy,
+                register_discoveries=register_discoveries,
             )
             catchups.append(value)
             if value["failed"]:
@@ -589,11 +616,13 @@ def run_lineage(
                         "symbol": item["symbol"],
                         "status": "failed",
                         "error": item.get("error", "dependency pricing catch-up failed"),
+                        "outcome": item.get("outcome", {}),
                     }
                     for item in value["results"]
-                    if item["status"] == "failed"
+                    if item["status"] in {"failed", "blocked"}
                 )
-                stop = True
+                # Independent groups can still finish; the policy blocks failed closures.
+                stop = work_policy is None
 
         catch_up(selected)
 
@@ -601,10 +630,16 @@ def run_lineage(
             nonlocal stop
             for cohort in _cohorts(labels, graph):
                 receipt_cache = storage.ReceiptCache(root, index, capacity=PREFETCH_MEMBERS)
-                requests = [label for label in cohort if label in planned and label not in processed]
+                requests = [
+                    label
+                    for label in cohort
+                    if label in planned
+                    and label not in processed
+                    and (work_policy is None or work_policy.allowed(graph.closure({label})))
+                ]
                 if requests:
                     _prefetch_metadata(
-                        store, root, requests, index, graph, evidence_client, refresh, receipt_cache
+                        store, root, requests, index, graph, evidence_client, refresh, receipt_cache, end_date
                     )
                 for label in cohort:
                     try:
@@ -623,12 +658,26 @@ def run_lineage(
                             graph=graph,
                             evidence_client=evidence_client,
                             receipt_cache=receipt_cache,
+                            end_date=end_date,
+                            register_discoveries=register_discoveries,
+                            work_policy=work_policy,
                         )
                         processed.update(result["processed"])
                         if on_processed is not None and result["processed"]:
                             on_processed(result["processed"])
                     except (RuntimeError, OSError, ValueError) as error:
-                        result = {"symbol": label, "status": "failed", "error": str(error)}
+                        affected = sorted(
+                            work_policy.current_group if work_policy is not None else graph.closure({label})
+                        )
+                        if work_policy is not None:
+                            work_policy.fail(affected, error, stage="lineage")
+                        result = {
+                            "affected": affected,
+                            "symbol": label,
+                            "status": "failed",
+                            "error": str(error),
+                            "outcome": failure_outcome(error),
+                        }
                     results.append(result)
                     if result["status"] == "failed" and storage.path_at(root, ".pending.json").exists():
                         stop = True

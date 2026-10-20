@@ -185,6 +185,49 @@ class CleanRoomGenerationTests(unittest.TestCase):
                 final_auditor=Mock(side_effect=AssertionError("completed run must not audit again")),
             )
 
+    def test_snapshot_survives_registry_growth_and_interrupted_manifest_publication(self):
+        from libs.alpaca_end_of_day_clean_room import generation
+        from libs.alpaca_recovery_registry import publish_union
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry, store = root / "ticker.csv", root / "build"
+            registry.write_text("AAA\n")
+            with patch.object(generation, "replace_json", side_effect=OSError("interrupted")):
+                with self.assertRaisesRegex(OSError, "interrupted"):
+                    generation._initialize_run(store, registry, "2026-10-17T00:00:00Z")
+            manifest, _ = generation._initialize_run(store, registry, "2026-10-17T00:00:00Z")
+            before = (store / "clean_room_run/manifest.json").read_bytes()
+            publish_union(["NEW"], registry)
+            pinned = store / "clean_room_run/universe.snapshot.csv"
+            resumed, _ = generation._initialize_run(store, pinned, "2026-10-17T00:00:00Z")
+            self.assertEqual(manifest["run_id"], resumed["run_id"])
+            self.assertEqual(before, (store / "clean_room_run/manifest.json").read_bytes())
+            self.assertEqual(load_universe(pinned), ("AAA",))
+
+    def test_pin_older_universe_preserves_provenance_without_upgrading_contracts(self):
+        from libs.alpaca_end_of_day_clean_room import generation
+        from libs.alpaca_end_of_day_v6.common import canonical_sha256
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry, store = root / "ticker.csv", root / "build"
+            registry.write_text("AAA\n")
+            manifest, _ = generation._initialize_run(store, registry, "2026-10-17T00:00:00Z")
+            manifest["schema_version"] = 1
+            manifest["contracts"]["source"] -= 1
+            manifest["run_id"] = canonical_sha256(
+                {k: v for k, v in manifest.items() if k not in {"run_id", "created_at"}}
+            )
+            path = store / "clean_room_run/manifest.json"
+            path.write_text(json.dumps(manifest))
+            (store / "clean_room_run/universe.snapshot.csv").unlink()
+            before = path.read_bytes()
+            generation.pin_universe(store, registry)
+            self.assertEqual(before, path.read_bytes())
+            with self.assertRaisesRegex(CleanRoomError, "immutable identity"):
+                generation._initialize_run(store, registry, "2026-10-17T00:00:00Z")
+
     def test_run_identity_refuses_a_different_request_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

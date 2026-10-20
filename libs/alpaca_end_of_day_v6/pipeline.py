@@ -140,7 +140,9 @@ def _credentials(environment: Mapping[str, str]) -> tuple[str, str]:
 
 def _request_end(value: str | None) -> str:
     if value is None:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+        from libs.alpaca_pricing_download.download import request_end
+
+        return request_end(None).strftime("%Y-%m-%dT00:00:00Z")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
@@ -152,7 +154,10 @@ def _request_end(value: str | None) -> str:
 
 def _request_start(value: str | None, request_end_timestamp: str) -> str:
     if value is None:
-        return f"{request_end_timestamp[:7]}-01T00:00:00Z"
+        from datetime import timedelta
+
+        last_day = datetime.fromisoformat(request_end_timestamp.replace("Z", "+00:00")) - timedelta(days=1)
+        return last_day.strftime("%Y-%m-01T00:00:00Z")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         end = datetime.fromisoformat(request_end_timestamp.replace("Z", "+00:00"))
@@ -304,7 +309,11 @@ def run_v6_pipeline(
         "pid": os.getpid(),
     }
 
-    with publication_transaction(store, publication_marker):
+    from .update_contract import validate_update_request
+
+    with publication_transaction(
+        store, publication_marker, before_publish=lambda: validate_update_request(store, publication_marker)
+    ):
         result = _publish_v6_boundaries(
             store=store,
             submitted=submitted,

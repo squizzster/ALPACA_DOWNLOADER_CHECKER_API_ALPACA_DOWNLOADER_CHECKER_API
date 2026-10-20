@@ -6,14 +6,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from cli_support import parser_for
+
 from libs.alpaca_end_of_day_security_correlation import (
     AuthenticatedSecurityMaster,
     audit_security_master_catalogue,
-    parse_catalog_audit_arguments,
     run_catalog_audit_command,
     security_id_for_alpaca_asset_ids,
 )
 from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
+
+
+def parse_catalog_audit_arguments(args):
+    return parser_for("legacy", "audit").parse_args(args)
+
 
 FIRST_ASSET_ID = "11111111-1111-4111-8111-111111111111"
 SECOND_ASSET_ID = "22222222-2222-4222-8222-222222222222"
@@ -229,7 +235,7 @@ class CatalogAuditTests(unittest.TestCase):
     def test_command_has_no_mutating_options(self) -> None:
         arguments = parse_catalog_audit_arguments([])
 
-        self.assertEqual({"repository_root"}, set(vars(arguments)))
+        self.assertEqual({"repository_root", "command", "operation"}, set(vars(arguments)))
         self.assertIsInstance(arguments, argparse.Namespace)
 
 

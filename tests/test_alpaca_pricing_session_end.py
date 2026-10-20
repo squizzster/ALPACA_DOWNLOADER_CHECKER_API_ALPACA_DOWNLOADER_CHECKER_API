@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from cli_support import pricing_main as main
 from test_alpaca_pricing_download import FakeClient, bar
 
 from libs.alpaca_pricing_download import command_line
@@ -104,8 +105,24 @@ class SessionEndTests(unittest.TestCase):
             contextlib.redirect_stdout(output),
             contextlib.redirect_stderr(io.StringIO()),
         ):
-            code = command_line.main(
-                ["--store", str(Path(temporary) / "store"), "-s", "DELL", "-s", "HPE", "-s", "SPCX"]
+            from libs import alpaca_cli
+            from libs.alpaca_lineage_build.universe_update import rebuild_universe
+
+            rebuild_universe(Path(temporary) / "store")
+            registry = Path(temporary) / "registry.csv"
+            registry.write_text("HIST\n")
+            self.enterContext(patch.object(alpaca_cli, "DEFAULT_REGISTRY", registry))
+            code = main(
+                [
+                    "--store",
+                    str(Path(temporary) / "store"),
+                    "--symbol",
+                    "DELL",
+                    "--symbol",
+                    "HPE",
+                    "--symbol",
+                    "SPCX",
+                ]
             )
             result = json.loads(output.getvalue())
         self.assertEqual(code, 0)
@@ -116,7 +133,7 @@ class SessionEndTests(unittest.TestCase):
         self.assertEqual(set(client.asofs), {"2026-10-16"})
 
     def test_cli_rejects_incomplete_explicit_date_before_acquisition(self):
-        for option, value in (("--to", "2026-10-16"), ("--request-end", "2026-10-17")):
+        for option, value in (("--through", "2026-10-16"), ("--through", "2026-10-17")):
             with (
                 self.subTest(option=option),
                 tempfile.TemporaryDirectory() as temporary,
@@ -130,5 +147,5 @@ class SessionEndTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 store = Path(temporary) / "store"
-                self.assertEqual(command_line.main(["--store", str(store), "-s", "DELL", option, value]), 1)
+                self.assertEqual(main(["--store", str(store), "--symbol", "DELL", option, value]), 1)
                 self.assertFalse(store.exists())

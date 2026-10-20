@@ -1,0 +1,472 @@
+"""One explicit CLI; domain operations remain in their owning packages."""
+
+import argparse
+import csv
+import json
+import os
+import sys
+import time
+from datetime import timedelta
+from pathlib import Path
+
+from alpaca_end_of_day import ADJUSTMENTS, ReaderBusyError
+from libs.alpaca_pricing_download.download import parse_date, request_end
+from libs.alpaca_pricing_download.http import BarsClient
+from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
+from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
+
+VERSION = 3
+REPOSITORY = Path(__file__).resolve().parents[2]
+DEFAULT_STORE = REPOSITORY / "data_pricing"
+
+
+class Parser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, allow_abbrev=False)
+
+
+def _store(parser, default=DEFAULT_STORE, *, required=False):
+    parser.add_argument("--store", type=Path, default=default, required=required)
+
+
+def bounded_integer(lower, upper):
+    def parse(value):
+        try:
+            parsed = int(value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError("must be an integer") from error
+        if not lower <= parsed <= upper:
+            raise argparse.ArgumentTypeError(f"must be between {lower} and {upper}")
+        return parsed
+
+    return parse
+
+
+def _dates(parser, *, start=True):
+    if start:
+        parser.add_argument("--from", dest="start", help="inclusive first session, YYYY-MM-DD")
+    parser.add_argument("--through", dest="end", help="inclusive last session, YYYY-MM-DD")
+
+
+def _selection(parser, *, required=False, recovery=False):
+    group = parser.add_mutually_exclusive_group(required=required)
+    group.add_argument("--symbol", action="append", help="exact ticker label; repeatable")
+    group.add_argument("--symbols-file", type=Path, help="headerless CSV or one label per line")
+    if recovery:
+        group.add_argument("--recovery-universe", action="store_true", help="all additive recovery labels")
+
+
+def _workers(parser):
+    parser.add_argument("--workers", type=int, choices=(1, 2, 3), default=3)
+
+
+def build_parser():
+    parser = Parser(
+        prog="alpaca-eod", description="Maintain and read Alpaca EOD pricing and dated security identities."
+    )
+    commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
+    update = commands.add_parser(
+        "update", help="discover, register, reconcile and update the standalone universe"
+    )
+    _store(update)
+    _dates(update, start=False)
+    _workers(update)
+    update.add_argument("--plan", action="store_true", help="read-only preview; may fetch current metadata")
+    update.add_argument(
+        "--retry-blocked", action="store_true", help="retry explicit rejections and access denials"
+    )
+    status = commands.add_parser("status", help="inspect compact local coverage and pending work")
+    _store(status)
+    for name in ("resolve", "read"):
+        p = commands.add_parser(
+            name,
+            help="read published standalone identities"
+            if name == "resolve"
+            else "read resolved standalone pricing",
+        )
+        _store(p)
+        p.add_argument("--symbol", required=True)
+        p.add_argument("--wait", action="store_true")
+        p.set_defaults(
+            resolve=name == "resolve",
+            public_id=None,
+            adjustments=None,
+            all_types=False,
+            start=None,
+            end=None,
+            format="json",
+        )
+        if name == "read":
+            p.add_argument("--public-id")
+            g = p.add_mutually_exclusive_group()
+            g.add_argument("--adjustment", dest="adjustments", choices=ADJUSTMENTS, nargs="+", action="extend")
+            g.add_argument("--all-adjustments", dest="all_types", action="store_true")
+            _dates(p)
+            p.add_argument("--format", choices=("json", "csv"), default="json")
+    export = commands.add_parser("export").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    p = export.add_parser("bloodhound", help="offline eight-view Parquet conversion")
+    _store(p)
+    _dates(p)
+    p.add_argument("--output", required=True, type=Path)
+    p.add_argument("--symbol", action="append")
+    p.add_argument("--public-id", action="append")
+    p.add_argument("--wait", action="store_true")
+    p.add_argument("--memory-mib", type=bounded_integer(256, 8192), default=8192)
+    p.add_argument("--cache-mib", type=bounded_integer(0, 6144), default=2048)
+    p.add_argument("--include-all-passed", action="store_true")
+    p.add_argument("--replace", action="store_true")
+    pricing = commands.add_parser("pricing").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    for name in ("acquire", "check", "refresh"):
+        p = pricing.add_parser(name)
+        _store(p, required=name == "acquire")
+        _selection(p, required=name == "acquire", recovery=name == "acquire")
+        if name == "acquire":
+            _dates(p)
+            _workers(p)
+        if name == "check":
+            p.add_argument("--batch-size", type=int, default=4000)
+    lineage = commands.add_parser("lineage").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    for name in ("update", "refresh", "inspect", "migrate-index"):
+        p = lineage.add_parser(name)
+        _store(p)
+        if name in {"update", "refresh"}:
+            _selection(p)
+            _dates(p, start=False)
+            p.add_argument("--no-pricing-acquisition", action="store_true")
+        elif name == "inspect":
+            p.add_argument("--symbol", required=True)
+        else:
+            p.add_argument("--batch-size", type=int, default=128)
+    universe = commands.add_parser("universe").add_subparsers(
+        dest="operation", required=True, parser_class=Parser
+    )
+    for name in ("reconcile", "rebuild"):
+        p = universe.add_parser(name)
+        _store(p)
+        if name == "reconcile":
+            _dates(p, start=False)
+    summary = commands.add_parser("summary").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    _store(summary.add_parser("rebuild"))
+    catalogue = commands.add_parser(
+        "catalogue", help="separate combined monthly catalogue store"
+    ).add_subparsers(dest="operation", required=True, parser_class=Parser)
+    for name in ("update", "build", "resume", "audit", "activate", "pin-universe", "read", "export"):
+        p = catalogue.add_parser(name)
+        if name in {"read", "export"}:
+            p.add_argument("--repository-root", type=Path, default=REPOSITORY)
+        else:
+            _store(
+                p,
+                REPOSITORY
+                / (
+                    "data_clean_room"
+                    if name in {"build", "resume", "audit", "activate", "pin-universe"}
+                    else "data_vtest"
+                ),
+            )
+        if name in {"update", "build"}:
+            if name == "build":
+                group = p.add_mutually_exclusive_group(required=True)
+                group.add_argument("--symbols-file", type=Path)
+                group.add_argument("--recovery-universe", action="store_true")
+            else:
+                _selection(p, required=True)
+            _dates(p, start=name == "update")
+        if name == "pin-universe":
+            p.add_argument("--symbols-file", type=Path, default=DEFAULT_REGISTRY)
+        if name in {"read", "export"}:
+            _dates(p)
+            if name == "read":
+                p.add_argument("--public-id", required=True)
+                p.add_argument("--adjustment", choices=ADJUSTMENTS, default="raw")
+            else:
+                p.add_argument("--output", required=True, help="CSV destination or '-' for stdout")
+    legacy = commands.add_parser("legacy", help="retained data/end_of_day operations").add_subparsers(
+        dest="operation", required=True, parser_class=Parser
+    )
+    for name in ("probe", "correlate", "audit"):
+        p = legacy.add_parser(name)
+        p.add_argument("--repository-root", type=Path, default=REPOSITORY)
+        if name != "audit":
+            p.add_argument("--symbol", required=True)
+    return parser
+
+
+def symbols(args):
+    from libs.alpaca_pricing_download.contract import symbol_label
+
+    if getattr(args, "recovery_universe", False):
+        return list(load_labels())
+    if getattr(args, "symbols_file", None):
+        with args.symbols_file.open(encoding="utf-8-sig", newline="") as stream:
+            values = [v for row in csv.reader(stream, strict=True) for v in row if v.strip()]
+    else:
+        values = getattr(args, "symbol", None)
+    if values is None:
+        return None
+    if not values:
+        raise ValueError("symbol selection is empty")
+    return list(dict.fromkeys(symbol_label(value) for value in values))
+
+
+def end_exclusive(value):
+    return (
+        request_end(None if value is None else (parse_date(value) + timedelta(days=1)).isoformat())
+        .date()
+        .isoformat()
+    )
+
+
+def clients():
+    key, secret = os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", "")
+    if not key or not secret:
+        raise ValueError("ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY are required")
+    return BarsClient(key, secret), AlpacaIdentityClient(key, secret)
+
+
+def progress_reporter():
+    last_time, last_stage = 0.0, None
+
+    def progress(stage, values):
+        nonlocal last_time, last_stage
+        now = time.monotonic()
+        if stage != last_stage or now - last_time >= 10 or values.get("done", -1) == values.get("total"):
+            print(stage + ": " + json.dumps(values, separators=(",", ":")), file=sys.stderr, flush=True)
+            last_time, last_stage = now, stage
+
+    return progress
+
+
+def dispatch(args):
+    command, operation = args.command, getattr(args, "operation", None)
+    if command in {"read", "resolve"}:
+        from alpaca_end_of_day.standalone_cli import run_arguments
+
+        return run_arguments(args)
+    if command == "export":
+        from libs.alpaca_bloodhound_export.command_line import run_arguments
+
+        return run_arguments(args)
+    if command == "status":
+        from libs.alpaca_lineage_build.status import inspect_status
+
+        return inspect_status(args.store)
+    if command == "summary":
+        from libs.alpaca_lineage_build.check_summary import rebuild
+
+        return rebuild(
+            args.store,
+            progress=lambda done, total: print(f"summary: {done}/{total}", file=sys.stderr, flush=True),
+        )
+    if command == "universe":
+        from libs.alpaca_lineage_build.universe_update import rebuild_universe, reconcile_universe
+
+        if operation == "rebuild":
+            return rebuild_universe(args.store)
+        end = end_exclusive(args.end)
+        _, identity = clients()
+        return reconcile_universe(args.store, end, identity_client=identity)
+    if command == "lineage":
+        if operation == "migrate-index":
+            from libs.alpaca_lineage_build.projection import migrate_index
+
+            return migrate_index(
+                args.store,
+                batch_size=args.batch_size,
+                progress=lambda done, total: print(
+                    f"migration: {done}/{total} receipts", file=sys.stderr, flush=True
+                ),
+            )
+        if operation == "inspect":
+            from libs.alpaca_lineage_build.evidence import output_evidence
+
+            return output_evidence(args.store, args.symbol, offline=True)
+        end = end_exclusive(args.end)
+        pricing, identity = clients()
+        from libs.alpaca_lineage_build.pipeline import run_lineage
+        from libs.alpaca_lineage_build.registration import standalone_registration
+
+        with standalone_registration(args.store, end, registry=DEFAULT_REGISTRY) as (register, policy):
+            result = run_lineage(
+                args.store,
+                symbols(args),
+                identity_client=identity,
+                pricing_client=None if args.no_pricing_acquisition else pricing,
+                refresh=operation == "refresh",
+                end_date=end,
+                register_discoveries=register,
+                work_policy=policy,
+            )
+        selected = {
+            symbol
+            for item in result["results"]
+            for symbol in [item["symbol"], *item.get("processed", []), *item.get("affected", [])]
+        }
+        pending = sorted(s for s in policy.pending_work if policy.graph.closure({s}) & selected)
+        return {**result, "pending_work": pending, "complete": not result["failed"] and not pending}
+    if command == "update":
+        end = end_exclusive(args.end)
+        pricing, identity = clients()
+        from libs.alpaca_lineage_build.universe_update import plan_update, run_update
+
+        if args.plan:
+            return plan_update(args.store, end, identity_client=identity, retry_blocked=args.retry_blocked)
+        return run_update(
+            args.store,
+            end,
+            pricing_client=pricing,
+            identity_client=identity,
+            workers=args.workers,
+            retry_blocked=args.retry_blocked,
+            progress=progress_reporter(),
+        )
+    if command == "pricing":
+        if operation == "acquire":
+            from libs.alpaca_lineage_build.registration import standalone_registration
+            from libs.alpaca_pricing_download.command_line import run_arguments
+
+            args.request_end = end_exclusive(args.end)
+            args.from_date, args.refresh_all = args.start, False
+            args.all_symbols, args.file = args.recovery_universe, args.symbols_file
+            return run_arguments(
+                args,
+                registration_context=lambda: standalone_registration(
+                    args.store, args.request_end, registry=DEFAULT_REGISTRY
+                ),
+            )
+        pricing, identity = clients()
+        selected = symbols(args)
+        if operation == "check":
+            from libs.alpaca_pricing_download.check_summary import assert_current, read_snapshot
+            from libs.alpaca_pricing_download.live_check import verify
+
+            snapshot = read_snapshot(args.store)
+            if selected is not None:
+                entries = {e["symbol"]: e for e in snapshot["entries"]}
+                if set(selected) - entries.keys():
+                    raise ValueError("selected symbols are absent from the eligible summary")
+                snapshot = {**snapshot, "entries": [entries[s] for s in selected]}
+            from libs.alpaca_lineage_build.registration import command_policy
+
+            policy = command_policy(args.store, end_exclusive(None))
+            policy.check(e["symbol"] for e in snapshot["entries"])
+            result = verify(snapshot, pricing._get, batch_size=args.batch_size)
+            assert_current(args.store, snapshot["token"])
+            return result
+        from libs.alpaca_lineage_build.registration import standalone_registration
+
+        with standalone_registration(args.store, end_exclusive(None), registry=DEFAULT_REGISTRY) as (
+            register,
+            policy,
+        ):
+            if selected is None:
+                from libs.alpaca_lineage_build.refresh import refresh_existing
+
+                result = refresh_existing(
+                    args.store,
+                    pricing_client=pricing,
+                    identity_client=identity,
+                    progress=progress_reporter(),
+                    register_discoveries=register,
+                    work_policy=policy,
+                )
+                if result["deferred_symbols"]:
+                    result["complete"] = False
+                return result
+            from libs.alpaca_pricing_download.refresh import prepare_refresh, replace_prepared
+
+            policy.check(selected)
+            prepared = prepare_refresh(args.store, selected)
+            policy.require_correction(prepared, require_check=False)
+            register(selected)
+            result = replace_prepared(args.store, prepared, client=pricing, progress=progress_reporter())
+            policy.record_results(result, stage="history_correction")
+            return result
+    if command == "catalogue":
+        return catalogue_command(args)
+    if command == "legacy":
+        args.ticker = getattr(args, "symbol", None)
+        if operation == "audit":
+            from libs.alpaca_end_of_day_security_correlation.catalog_audit import run_catalog_audit_command
+
+            run_catalog_audit_command(args)
+        elif operation == "probe":
+            from libs.alpaca_security_lineage.command_line import run_security_lineage_command
+
+            run_security_lineage_command(args, repository_root=args.repository_root)
+        else:
+            from libs.alpaca_end_of_day_security_correlation.command_line import run_security_correlation_command
+
+            run_security_correlation_command(args, repository_root=args.repository_root)
+        return 0
+    raise AssertionError("unhandled command")
+
+
+def catalogue_command(args):
+    from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
+    from libs.alpaca_end_of_day_clean_room.generation import (
+        UNIVERSE_SNAPSHOT,
+        activate_clean_room_generation,
+        audit_clean_room_generation,
+        load_universe,
+        pin_universe,
+        resume_clean_room_generation,
+        run_clean_room_generation,
+    )
+
+    operation = args.operation
+    if operation in {"read", "export"}:
+        run_end_of_day_reader_command(args, repository_root=args.repository_root)
+        return 0
+    if operation == "pin-universe":
+        return pin_universe(args.store, args.symbols_file)
+    if operation == "resume":
+        return resume_clean_room_generation(args.store, output=sys.stderr)
+    if operation == "audit":
+        return audit_clean_room_generation(
+            args.store, load_universe(args.store / "clean_room_run" / UNIVERSE_SNAPSHOT), output=sys.stderr
+        )
+    if operation == "activate":
+        return activate_clean_room_generation(REPOSITORY, args.store, output=sys.stderr)
+    end = end_exclusive(args.end) + "T00:00:00Z"
+    if operation == "build":
+        return run_clean_room_generation(
+            DEFAULT_REGISTRY if args.recovery_universe else args.symbols_file,
+            args.store,
+            request_end_timestamp=end,
+            output=sys.stderr,
+        )
+    from libs.alpaca_end_of_day_v6.pipeline import run_v6_pipeline
+
+    return run_v6_pipeline(
+        symbols(args),
+        store_root=args.store,
+        request_start_timestamp=None
+        if args.start is None
+        else parse_date(args.start).isoformat() + "T00:00:00Z",
+        request_end_timestamp=end,
+        output=sys.stderr,
+    )
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        changelog = json.loads((REPOSITORY / "resources/alpaca_cli_change_log.json").read_bytes())
+        if len(changelog) != VERSION or any(
+            "version" in item or not item.get("modifications") for item in changelog
+        ):
+            raise ValueError("CLI changelog/version mismatch")
+        result = dispatch(args)
+        if isinstance(result, int):
+            return result
+        print(json.dumps(result, separators=(",", ":"), allow_nan=False))
+        if args.command == "status":
+            return int(not result["processing_complete"])
+        return int(bool(result.get("failed") or result.get("blockers") or result.get("complete") is False))
+    except ReaderBusyError as error:
+        print(f"busy: {error}", file=sys.stderr)
+        return 3
+    except (RuntimeError, OSError, ValueError, csv.Error) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1

@@ -13,10 +13,9 @@ from .authenticated_outputs import (
 )
 from .catalog_audit import (
     audit_security_master_catalogue,
-    parse_catalog_audit_arguments,
     run_catalog_audit_command,
 )
-from .command_line import parse_command_line_arguments, run_security_correlation_command
+from .command_line import run_security_correlation_command
 from .correlation import (
     build_security_correlation_report,
     correlate_and_publish_alpaca_end_of_day_security_segments,
@@ -77,7 +76,6 @@ __all__ = [
     "authenticate_security_correlation",
     "correlate_and_publish_alpaca_end_of_day_security_segments",
     "correlated_pipeline_path",
-    "parse_command_line_arguments",
     "publish_security_correlation",
     "publish_security_correlation_artifacts",
     "run_security_correlation_command",
@@ -94,7 +92,6 @@ __all__ = [
     "publish_security_master_online_status",
     "master_id_for_alpaca_asset_ids",
     "publish_security_master_update",
-    "parse_catalog_audit_arguments",
     "run_catalog_audit_command",
     "security_master_manifest_path",
     "security_master_directory",

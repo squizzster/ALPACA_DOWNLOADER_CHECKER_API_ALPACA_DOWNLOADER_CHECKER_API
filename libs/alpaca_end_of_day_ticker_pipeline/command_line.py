@@ -30,7 +30,6 @@ from libs.download_alpaca_end_of_day_bars import (
     AlpacaInvalidTickerCodeError,
     AlpacaRequestRateLimiter,
     EndOfDayDownloadPlan,
-    create_end_of_day_download_argument_parser,
     end_of_day_download_plan_from_command_line,
     end_of_day_download_plans_from_command_line,
 )
@@ -58,34 +57,6 @@ class _TickerPipelineFailure:
     diagnostic: str
     exit_status: int
     reason_code: str | None = None
-
-
-def parse_end_of_day_ticker_pipeline_arguments(
-    arguments: list[str] | None = None,
-) -> argparse.Namespace:
-    argument_parser = create_end_of_day_download_argument_parser(
-        description=(
-            "Run the Alpaca end-of-day ticker pipeline: download/cache validation, "
-            "identity evidence, security correlation, and warning overlays."
-        ),
-        repeatable_symbols=True,
-    )
-    argument_parser.add_argument(
-        "--workers",
-        type=int,
-        choices=(1, 2, 3),
-        default=1,
-        help="number of tickers to process concurrently (default: 1; maximum: 3)",
-    )
-    argument_parser.add_argument(
-        "--include-skipped-symbols",
-        action="store_true",
-        help=(
-            "when using --file, explicitly process symbols whose authenticated prior "
-            "disposition says to skip recurring runs"
-        ),
-    )
-    return argument_parser.parse_args(arguments)
 
 
 def _result_symbol_disposition(

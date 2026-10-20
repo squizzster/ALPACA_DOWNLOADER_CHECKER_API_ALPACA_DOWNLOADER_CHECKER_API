@@ -1,48 +1,14 @@
 """CLI adapter for the standalone resolved-pricing reader."""
 
-import argparse
 import csv
 import json
 import sys
-from pathlib import Path
 
 from . import ADJUSTMENTS, ReaderBusyError, StandaloneReader, StandaloneReaderError
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(
-        description="Read published standalone pricing through its resolved lineage; no downloads or writes.",
-        epilog="Dates are inclusive market-session dates. This is not the legacy online catalogue.",
-    )
-    parser.add_argument("--store", type=Path, required=True, help="standalone downloader/lineage store")
-    parser.add_argument("-s", "--symbol", required=True, help="ticker locating the published lineage group")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--resolve", action="store_true", help="list matching IDs without reading prices")
-    selection.add_argument("--public-id", help="explicit ID when the ticker has been reused")
-    types = parser.add_mutually_exclusive_group()
-    types.add_argument(
-        "--type",
-        dest="adjustments",
-        choices=ADJUSTMENTS,
-        nargs="+",
-        action="extend",
-        metavar="ADJUSTMENT",
-        help="one or more exact adjustment names; repeatable; default raw (all means fully adjusted)",
-    )
-    types.add_argument("--all-types", action="store_true", help="read all eight adjustment views together")
-    parser.add_argument("--from", "--start", dest="start", help="first session, inclusive (YYYY-MM-DD)")
-    parser.add_argument("--to", "--end", dest="end", help="last session, inclusive (YYYY-MM-DD)")
-    parser.add_argument("--format", choices=("json", "csv"), default="json", help="stdout format")
-    parser.add_argument("--wait", action="store_true", help="wait for producer locks instead of reporting busy")
-    return parser
-
-
-def main(argv=None):
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def run_arguments(args):
     adjustments = list(dict.fromkeys(ADJUSTMENTS if args.all_types else (args.adjustments or ["raw"])))
-    if args.resolve and (args.start or args.end or args.format != "json" or adjustments != ["raw"]):
-        parser.error("--resolve returns all dated identities as JSON; omit history options")
     try:
         reader = StandaloneReader(args.store, wait=args.wait)
         multiple = len(adjustments) > 1

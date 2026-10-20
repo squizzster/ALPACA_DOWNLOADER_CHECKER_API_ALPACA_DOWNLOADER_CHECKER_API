@@ -1,6 +1,5 @@
 import copy
 import io
-import json
 import shutil
 import tempfile
 import unittest
@@ -19,7 +18,7 @@ from libs.alpaca_lineage_build import contract as lineage_contract
 from libs.alpaca_lineage_build import pipeline, update
 from libs.alpaca_lineage_build import storage as lineage_storage
 from libs.alpaca_lineage_build.pipeline import run_lineage
-from libs.alpaca_pricing_download import check_summary, command_line, storage
+from libs.alpaca_pricing_download import check_summary, storage
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
@@ -339,33 +338,31 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(files_snapshot(self.store), before)
 
-    def test_bare_main_command_runs_the_integrated_path_in_its_default_store(self):
-        output = io.StringIO()
+    def test_canonical_update_dispatches_frozen_target_to_universe_owner(self):
+        from libs.alpaca_cli import main
+
         with (
-            patch.object(command_line, "DEFAULT_UPDATE_STORE", self.store),
-            patch.object(command_line, "BarsClient", return_value=self.client),
-            patch("libs.alpaca_security_lineage.alpaca_http.AlpacaIdentityClient", return_value=self.identity),
+            patch("libs.alpaca_cli.clients", return_value=(self.client, self.identity)),
             patch(
-                "libs.alpaca_pricing_download.download.utc_now",
-                return_value=datetime(2026, 10, 18, 23, 36, tzinfo=timezone.utc),
-            ),
-            redirect_stdout(output),
-            redirect_stderr(io.StringIO()),
+                "libs.alpaca_lineage_build.universe_update.run_update", return_value={"complete": True}
+            ) as run,
+            redirect_stdout(io.StringIO()),
         ):
-            code = command_line.main(["--update-everything"])
-        self.assertEqual(code, 0, output.getvalue())
-        self.assertTrue(json.loads(output.getvalue())["complete"])
-        self.assert_finished()
+            self.assertEqual(main(["update", "--store", str(self.store), "--through", "2026-10-16"]), 0)
+        self.assertEqual(run.call_args.args, (self.store, "2026-10-17"))
 
     def test_conflicting_cli_overrides_fail_before_network_or_publication(self):
+        from libs.alpaca_cli import main
+
         before = files_snapshot(self.store)
-        for flags in (["--append-ready"], ["--from", "2016-01-01"], ["--force-download"]):
-            with redirect_stderr(io.StringIO()):
-                self.assertEqual(
-                    command_line.main(["--update-everything", "--store", str(self.store), *flags]), 1
-                )
-        for flags in (["--all"], ["--symbol", "AAA"]):
+        for flags in (
+            ["--append-ready"],
+            ["--from", "2016-01-01"],
+            ["--force-download"],
+            ["--all"],
+            ["--symbol", "AAA"],
+        ):
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                command_line.main(["--update-everything", "--store", str(self.store), *flags])
+                main(["update", "--store", str(self.store), *flags])
         self.assertEqual(self.calls, [])
         self.assertEqual(files_snapshot(self.store), before)

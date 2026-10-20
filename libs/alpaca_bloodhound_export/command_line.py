@@ -1,6 +1,5 @@
 """Offline export; only the final Parquet is a persistent output."""
 
-import argparse
 import json
 import os
 import resource
@@ -78,7 +77,7 @@ def export(
     if end:
         end = date.fromisoformat(end).isoformat()
     if start and end and start > end:
-        raise ExportError("--from must not be after --to")
+        raise ExportError("--from must not be after --through")
     requested = set(public_ids or ())
     checked_ids(requested)
     roster = reader.list_published_sources()
@@ -272,48 +271,13 @@ def export(
             temporary.unlink(missing_ok=True)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Offline eight-view Alpaca to Bloodhound-shaped Parquet; no downloads."
-    )
-    parser.add_argument(
-        "--output", required=True, type=Path, help="single .parquet destination (identity mapping embedded)"
-    )
-    parser.add_argument("--store", type=Path, default=Path("data_pricing"))
-    parser.add_argument(
-        "-s", "--symbol", action="append", help="source-group locator; repeatable; default all published groups"
-    )
-    parser.add_argument("--public-id", action="append", help="select a full public ID; repeatable")
-    parser.add_argument("--from", dest="start", help="inclusive YYYY-MM-DD")
-    parser.add_argument("--to", dest="end", help="inclusive YYYY-MM-DD")
-    parser.add_argument("--wait", action="store_true", help="wait for conflicting producer locks")
-    parser.add_argument(
-        "--memory-mib",
-        type=int,
-        default=8192,
-        help="RAM allowance shared by accepted Arrow data and read cache (default/maximum 8192 MiB)",
-    )
-    parser.add_argument(
-        "--cache-mib",
-        type=int,
-        default=2048,
-        help="bounded RAM cache in MiB (default 2048; maximum 6144; 0 disables it)",
-    )
-    parser.add_argument(
-        "--include-all-passed",
-        action="store_true",
-        help="attempt every selected ID and publish only passing histories; rejections go to stderr only",
-    )
-    parser.add_argument(
-        "--replace",
-        action="store_true",
-        help="atomically replace an existing output, only after successful conversion",
-    )
-    args = parser.parse_args(argv)
+def run_arguments(args):
     if args.cache_mib < 0 or args.cache_mib > 6144:
-        parser.error("--cache-mib must be between 0 and 6144 (leave headroom for active histories and writer)")
+        raise ValueError(
+            "--cache-mib must be between 0 and 6144 (leave headroom for active histories and writer)"
+        )
     if not 256 <= args.memory_mib <= 8192:
-        parser.error("--memory-mib must be between 256 and 8192")
+        raise ValueError("--memory-mib must be between 256 and 8192")
     try:
         reader = StandaloneReader(args.store, wait=args.wait, cache_bytes=args.cache_mib * 1024**2)
         result = export(

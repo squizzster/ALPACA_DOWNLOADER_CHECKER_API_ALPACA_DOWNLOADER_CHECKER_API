@@ -78,5 +78,28 @@
       "Stop correlation after the first repeated complete group report, share authenticated exact-copy pricing rows across adjustment adapters, and build immutable ownership and UUID evidence once per group. Retain the three-pass non-convergence failure ceiling.",
       "Preserve compatible v2-v11 lineage decisions, publication formats and reader locking. Keep producer path validation and explicit audits at their owning boundaries."
     ]
+  },
+  {
+    "modifications": [
+      "Own additive universe discovery, durable pending work and read-only planning; share catalogue evidence and reconcile complete groups with explicit pricing cutoffs; maintain a versioned, explicitly migrated lookup projection in the lineage index."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind accepted refresh, identity replacement and retained-history correction obligations to satisfying pricing and lineage publications, preserving interrupted reuse and preventing coverage alone from acknowledging unfinished work.",
+      "Enforce retry and cutoff restrictions across selection, acquisition, maintenance and dependency groups; retain failures from every phase. Maintain known active empty and partial histories independently of catalogue and summary membership, and check newly eligible members before append."
+    ]
+  },
+  {
+    "modifications": [
+      "Register standalone dependency groups before catch-up and initial acquisition, including lineage reached through pricing refresh; require explicit work-state initialization independently of completed lineage.",
+      "Report compact producer scheduling, publication, projection and orchestration controls offline, distinguishing update readiness, unfinished processing, empty pricing and unresolved assignments without recovery or directory inventories. Preserve compatible v2-v14 decisions."
+    ]
+  },
+  {
+    "modifications": [
+      "Persist accepted maintenance coverage independently of execution flags and retain dependency acquisition and complete-group obligations before registration or requests.",
+      "Apply durable access, retry-delay and cutoff restrictions to canonical standalone processing and acknowledge work only from satisfying producer publications."
+    ]
   }
 ]

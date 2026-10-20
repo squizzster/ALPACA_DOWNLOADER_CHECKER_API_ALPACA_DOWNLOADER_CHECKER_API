@@ -75,11 +75,11 @@ Unsettled conflicts fail. Assembly precedes date filtering, so narrow queries ma
 CLI:
 
 ```bash
-./read_alpaca_pricing.py --store data_pricing -s DELL --resolve
-./read_alpaca_pricing.py --store data_pricing -s DELL --type raw all --format csv
+./alpaca-eod resolve --store data_pricing --symbol DELL
+./alpaca-eod read --store data_pricing --symbol DELL --adjustment raw all --format csv
 ```
 
-Use `--public-id` with the symbol when ambiguous. `--all-types` selects eight views.
+Use `--public-id` with the symbol when ambiguous. `--all-adjustments` selects eight views.
 Compound names remain one argument; `raw,all` is not a selection syntax.
 Default is `raw`; multiple-view CSV adds an adjustment column. Output is prepared before printing.
 
@@ -114,7 +114,7 @@ ambiguous dated metadata fail. Path output uses a disk spool and atomic replacem
 have that replacement guarantee.
 
 ```bash
-./read_alpaca_end_of_day_ticker.py --dump-flat-online-csv ./online.csv
+./alpaca-eod catalogue export --output ./online.csv
 ```
 
 See each CLI's `--help` and [operations](operations.md#read-and-export) for invocation and exit statuses.

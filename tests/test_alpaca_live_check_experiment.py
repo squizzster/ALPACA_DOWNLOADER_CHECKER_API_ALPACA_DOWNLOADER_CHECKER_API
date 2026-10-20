@@ -4,13 +4,14 @@ import json
 import tempfile
 import unittest
 import urllib.error
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 from libs.alpaca_pricing_download import live_check_experiment as experiment
 from libs.alpaca_pricing_download.contract import FIELDS
+from libs.alpaca_pricing_download.http import BarsClient
 
 
 def bar(day="2026-10-14", **changes):
@@ -48,7 +49,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
                 experiment.download_pricing(store, symbol, "2026-10-15", client=FakeClient([bar()]))
             before = files_snapshot(store)
             handoff = {"differences": [{"symbol": symbol} for symbol in symbols]}
-            client = experiment.BarsClient("test", "test")
+            client = BarsClient("test", "test")
             calls = []
 
             def get_page(parameters):
@@ -59,7 +60,10 @@ class LiveCheckExperimentTests(unittest.TestCase):
 
             with (
                 patch.object(client, "_get", side_effect=get_page),
-                patch.object(experiment, "read_snapshot", side_effect=AssertionError("summary rescan")),
+                patch(
+                    "libs.alpaca_pricing_download.check_summary.read_snapshot",
+                    side_effect=AssertionError("summary rescan"),
+                ),
             ):
                 result = experiment.full_download_samples(handoff, store, destination, symbols, client=client)
             self.assertEqual(files_snapshot(store), before)
@@ -90,7 +94,10 @@ class LiveCheckExperimentTests(unittest.TestCase):
             before = files_snapshot(store)
             handoff = {"differences": [{"symbol": "SAMPLE"}]}
             client = FakeClient([bar(v=9007199254740994)])
-            with patch.object(experiment, "read_snapshot", side_effect=AssertionError("summary rescan")):
+            with patch(
+                "libs.alpaca_pricing_download.check_summary.read_snapshot",
+                side_effect=AssertionError("summary rescan"),
+            ):
                 result = experiment.full_download_sample(handoff, store, destination, "SAMPLE", client=client)
             self.assertEqual(files_snapshot(store), before)
             self.assertEqual(result["from"], "2016-01-01")
@@ -180,7 +187,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
                 "feed": "sip",
                 "currency": "USD",
                 "start": "2026-10-14T04:00:00Z",
-                "end": "2026-10-15T03:59:59.999999Z",
+                "end": "2026-10-14T23:59:59.999999Z",
                 "asof": "2026-10-15",
                 "adjustment": "all",
                 "limit": 10000,
@@ -231,23 +238,42 @@ class LiveCheckExperimentTests(unittest.TestCase):
         self.assertEqual(result["stats"]["failed"], 2)
         self.assertEqual(result["stats"]["missing"], 0)
         self.assertEqual(result["requests"]["page_requests"], 1)
-        self.assertEqual(result["failures"], [{"symbols": ["A", "B"], "reason": "HTTP 400"}])
+        self.assertEqual(
+            result["failures"],
+            [
+                {
+                    "symbols": ["A", "B"],
+                    "reason": "HTTP 400",
+                    "outcome": {
+                        "outcome": "request_failed",
+                        "http_status": 400,
+                        "error": "HTTP Error 400: bad request",
+                    },
+                }
+            ],
+        )
 
-    def test_cli_loads_snapshot_once_and_publishes_only_output(self):
+    def test_canonical_check_loads_snapshot_once_without_publishing(self):
+        from libs.alpaca_cli import main
+        from libs.alpaca_pricing_download import check_summary
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "result.json"
+            accepted = snapshot(entry("A"))
+            accepted["token"] = ("epoch", 1)
+            output = io.StringIO()
             with (
-                patch.object(experiment, "read_snapshot", return_value=snapshot(entry("A"))) as read,
-                patch.object(experiment, "BarsClient") as client,
-                redirect_stdout(io.StringIO()),
-                redirect_stderr(io.StringIO()),
+                patch.object(check_summary, "read_snapshot", return_value=accepted) as read,
+                patch.object(check_summary, "assert_current"),
+                patch("libs.alpaca_cli.clients") as clients,
+                redirect_stdout(output),
             ):
-                client.return_value._get.return_value = {"bars": {"A": [bar()]}}
-                self.assertEqual(experiment.main(["--store", str(root / "store"), "--output", str(output)]), 0)
+                clients.return_value = (unittest.mock.Mock(), unittest.mock.Mock())
+                clients.return_value[0]._get.return_value = {"bars": {"A": [bar()]}}
+                self.assertEqual(main(["pricing", "check", "--store", str(root / "store")]), 0)
                 read.assert_called_once_with(root / "store")
-            self.assertEqual(json.loads(output.read_bytes())["stats"]["matched"], 1)
-            self.assertEqual(list(root.iterdir()), [output])
+            self.assertEqual(json.loads(output.getvalue())["stats"]["matched"], 1)
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_handoff_refuses_to_overwrite_existing_output_and_cleans_temporary(self):
         with tempfile.TemporaryDirectory() as temporary:

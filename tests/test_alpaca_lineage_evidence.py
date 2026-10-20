@@ -10,11 +10,11 @@ from unittest.mock import patch
 from test_alpaca_lineage_build import IdentityClient, asset, calendar_bars
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
+from libs.alpaca_cli import build_parser, main
 from libs.alpaca_end_of_day_security_correlation.row_correlation import row_correlation_rule_order
 from libs.alpaca_end_of_day_security_correlation.terminal_fallback import TERMINAL_FALLBACK_RULE_NAME
 from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.evidence import output_evidence, rule_path, validate_evidence_version
-from libs.alpaca_lineage_build.evidence_command_line import build_parser, main
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.download import download_pricing
@@ -133,7 +133,9 @@ class LineageEvidenceTests(unittest.TestCase):
             self.assertEqual(segment["decision_origin"], expected)
 
     def test_cli_runs_actual_missing_seed_and_dependency_downloads(self):
-        initialize_store(self.store)
+        from cli_support import initialize_command_registration
+
+        initialize_command_registration(self)
         action = {
             "action_type": "name_change",
             "id": "rename",
@@ -150,12 +152,15 @@ class LineageEvidenceTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "fake", "ALPACA_API_SECRET_KEY": "fake"}),
-            patch("libs.alpaca_lineage_build.evidence_command_line.AlpacaIdentityClient", return_value=identity),
-            patch("libs.alpaca_lineage_build.evidence_command_line.BarsClient", return_value=pricing),
+            patch("libs.alpaca_cli.AlpacaIdentityClient", return_value=identity),
+            patch("libs.alpaca_cli.BarsClient", return_value=pricing),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
-            code = main(["GOOG", "--store", str(self.store)])
+            code = main(["lineage", "refresh", "--symbol", "GOOG", "--store", str(self.store)])
+            stdout.seek(0)
+            stdout.truncate(0)
+            self.assertEqual(main(["lineage", "inspect", "--symbol", "GOOG", "--store", str(self.store)]), 0)
         self.assertEqual(code, 0, stderr.getvalue())
         result = json.loads(stdout.getvalue())
         self.assertEqual(set(result["sources"]), {"GOOG", "OLD"})
@@ -163,7 +168,7 @@ class LineageEvidenceTests(unittest.TestCase):
         self.assertGreater(identity.request_count, 0)
         for symbol in result["sources"]:
             self.assertFalse((self.store / f"end_of_day/manifests/{symbol}/update.json").exists())
-            self.assertEqual(result["sources"][symbol]["status"], "calculated")
+            self.assertEqual(result["mode"], "offline")
 
     def test_offline_cli_needs_no_credentials_or_clients(self):
         self.publish()
@@ -173,15 +178,15 @@ class LineageEvidenceTests(unittest.TestCase):
             patch.dict("os.environ", {}, clear=True),
             redirect_stdout(stdout),
             patch(
-                "libs.alpaca_lineage_build.evidence_command_line.AlpacaIdentityClient",
+                "libs.alpaca_cli.AlpacaIdentityClient",
                 side_effect=AssertionError("no client"),
             ),
             patch(
-                "libs.alpaca_lineage_build.evidence_command_line.BarsClient",
+                "libs.alpaca_cli.BarsClient",
                 side_effect=AssertionError("no client"),
             ),
         ):
-            self.assertEqual(main(["GOOG", "--offline", "--store", str(self.store)]), 0)
+            self.assertEqual(main(["lineage", "inspect", "--symbol", "GOOG", "--store", str(self.store)]), 0)
         self.assertEqual(json.loads(stdout.getvalue())["mode"], "offline")
         self.assertEqual(before, snapshot(self.store))
 

@@ -151,6 +151,8 @@ def _split_months(report, indexes):
 
 
 def make_publication(view, evidence, report, deps, previous=None, old_boundaries=None, *, resume_closed=False):
+    from .projection import last_observed_symbol_lookup
+
     anchor = view.source["anchor_month"]
     indexes = _row_indexes(view)
     report = _split_months(report, indexes)
@@ -190,6 +192,11 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         "pricing_boundaries": view.source["boundaries"],
         "anchor_month": anchor,
         "processed_through": view.source["latest_request"]["end_exclusive"],
+        "pricing_request": {**view.source["latest_request"], "history_start": view.source.get("history_start")},
+        "acquisition_evidence_sha256": view.source.get("acquisition_evidence_sha256"),
+        "history_correction_id": view.source.get("history_correction_id"),
+        "update_obligation_id": (previous or {}).get("update_obligation_id"),
+        "last_observed_symbol_lookup": last_observed_symbol_lookup(previous) if previous else None,
         "dependencies": deps,
         "asset_ids": sorted(assets),
         "evidence": evidence,

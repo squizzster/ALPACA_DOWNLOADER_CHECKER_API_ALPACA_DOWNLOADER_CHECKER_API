@@ -44,13 +44,13 @@ def _connect(store):
     return connect_sqlite(path)
 
 
-def read_checks(store, symbols=None):
+def read_checks(store, symbols=None, *, readonly=False):
     """A missing list is an incomplete cache, never evidence that no work remains."""
     path = regular_path(Path(store).absolute(), CHECK_FILE)
     if not path.exists():
         return {"epoch": None, "revision": 0, "complete": False, "checks": {}}
     try:
-        with closing(connect_sqlite(path)) as connection:
+        with closing(connect_sqlite(path, readonly=readonly)) as connection:
             with connection:
                 connection.execute("BEGIN")
                 epoch, complete, revision = connection.execute(

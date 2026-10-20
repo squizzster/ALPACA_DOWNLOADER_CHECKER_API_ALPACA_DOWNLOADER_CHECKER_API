@@ -6,11 +6,11 @@ A ticker is a label, not an identity. The system ends at the data handoff.
 ## Run the daily update
 
 ```bash
-./download_alpaca_pricing.py --update-everything
+./alpaca-eod update
 ```
 
-Updates the existing active universe in `data_pricing/`: check live history, replace changed spans,
-append missing completed sessions, finish lineage and refresh the summary.
+Discovers active OTC/NYSE/NASDAQ/AMEX/TXSE labels, remembers them in the additive recovery registry,
+and maintains pricing and lineage in `data_pricing/`. Use `update --plan` for a read-only scope preview.
 See [setup and recovery](docs/operations.md).
 
 Requires Python 3.11, Unix file locking, New York timezone data and Alpaca credentials with SIP access.

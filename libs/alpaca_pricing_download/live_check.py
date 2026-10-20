@@ -1,6 +1,6 @@
 """Production live check: trusted summary -> solver -> exact last-session comparison.
 
-The established v2 JSON shape is also reused by the optional experiment CLI.
+The versioned JSON result is also usable by explicit research helpers.
 No ticker-file discovery, publication or saved report occurs here.
 """
 
@@ -12,10 +12,10 @@ from decimal import Decimal
 
 from libs.alpaca_data_api_solver import build_plan
 
-from .contract import COLUMNS, FIELDS, NEW_YORK, DownloadError, timestamp
+from .contract import COLUMNS, FIELDS, NEW_YORK, DownloadError, failure_outcome, timestamp
 from .http import execute_bar_plan
 
-VERSION = 2
+VERSION = 4
 DEFAULT_BATCH_SIZE = 4000
 
 
@@ -31,7 +31,15 @@ def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):
             "symbols": sorted(symbols),
             "adjustments": ["all"],
             "asof": asof,
-            "ranges": [{"start": day.isoformat(), "end_exclusive": (day + timedelta(days=1)).isoformat()}],
+            "ranges": [
+                {
+                    "start": datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK).isoformat(),
+                    "end_exclusive": min(
+                        datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=NEW_YORK),
+                        timestamp(asof + "T00:00:00Z"),
+                    ).isoformat(),
+                }
+            ],
         }
         for (day, asof), symbols in sorted(groups.items())
     ]
@@ -86,7 +94,13 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
         failed.update(symbols)
         cause = error.__cause__ or error
         code = cause.code if isinstance(cause, urllib.error.HTTPError) else None
-        failures.append({"symbols": symbols, "reason": f"HTTP {code}" if code else str(error)[:300]})
+        failures.append(
+            {
+                "symbols": symbols,
+                "reason": f"HTTP {code}" if code else str(error)[:300],
+                "outcome": failure_outcome(error),
+            }
+        )
         stats["request_failures"] += 1
 
     acquired = execute_bar_plan(action_plan, get_page, metrics=metrics, on_failure=on_failure)

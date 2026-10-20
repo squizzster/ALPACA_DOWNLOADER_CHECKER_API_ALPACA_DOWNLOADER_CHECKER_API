@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import urllib.error
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -60,89 +60,6 @@ def _response_is_exact_invalid_ticker_code(
     return isinstance(response_document, dict) and response_document.get("message") == (
         f"invalid symbol: {symbol}"
     )
-
-
-def _request_end_timestamp_argument(value: str) -> str:
-    try:
-        request_end_date = date.fromisoformat(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("must be an ISO date in YYYY-MM-DD form") from error
-    return f"{request_end_date.isoformat()}T00:00:00Z"
-
-
-def create_end_of_day_download_argument_parser(
-    *,
-    description: str = "Download daily Alpaca bars as compressed CSV.",
-    repeatable_symbols: bool = False,
-) -> argparse.ArgumentParser:
-    argument_parser = argparse.ArgumentParser(description=description)
-    if repeatable_symbols:
-        symbol_source_arguments = argument_parser.add_mutually_exclusive_group(required=True)
-        symbol_source_arguments.add_argument(
-            "--symbol",
-            "-s",
-            dest="symbols",
-            action="append",
-            help="stock ticker; repeat for multiple tickers, for example --symbol DELL -s FB",
-        )
-        symbol_source_arguments.add_argument(
-            "--file",
-            "--symbols-file",
-            dest="symbol_file",
-            metavar="PATH",
-            help="read tickers from PATH, one per nonblank line; duplicates are processed once",
-        )
-    else:
-        argument_parser.add_argument(
-            "--symbol",
-            "-s",
-            dest="symbol",
-            required=True,
-            help="stock ticker, for example DELL",
-        )
-    argument_parser.add_argument(
-        "--adjustment",
-        action="append",
-        choices=ALPACA_ADJUSTMENT_MODES,
-        metavar="MODE",
-        help=(
-            "raw, split, dividend, spin-off, split,dividend, split,spin-off, "
-            "dividend,spin-off, or all; repeat for multiple modes "
-            "(default: every mode)"
-        ),
-    )
-    argument_parser.add_argument(
-        "--adaptive-adjustments",
-        action="store_true",
-        help=(
-            "infer all eight logical adjustment views from the empirically minimal "
-            "download sequence, falling back to all eight when observations are unfamiliar"
-        ),
-    )
-    argument_parser.add_argument(
-        "--request-end",
-        dest="request_end_timestamp",
-        type=_request_end_timestamp_argument,
-        metavar="YYYY-MM-DD",
-        help=("exclusive UTC request boundary; defaults to the UTC date frozen when the command starts"),
-    )
-    replacement_mode_arguments = argument_parser.add_mutually_exclusive_group()
-    replacement_mode_arguments.add_argument(
-        "--force",
-        action="store_true",
-        help="replace a coherent, authenticated Alpaca download pair",
-    )
-    replacement_mode_arguments.add_argument(
-        "--repair",
-        dest="repair_orphaned_download_pair",
-        action="store_true",
-        help="redownload both boundary files when exactly one frozen download-pair file is missing",
-    )
-    return argument_parser
-
-
-def parse_command_line_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
-    return create_end_of_day_download_argument_parser().parse_args(arguments)
 
 
 def end_of_day_download_plan_from_command_line(

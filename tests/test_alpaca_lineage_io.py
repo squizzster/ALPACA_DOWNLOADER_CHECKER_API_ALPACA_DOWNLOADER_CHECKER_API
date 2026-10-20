@@ -353,7 +353,7 @@ class LineageIOTests(unittest.TestCase):
         }
         caches, planned = [], []
 
-        def prefetch(_store, _root, labels, _index, _graph, _client, _refresh, receipt_cache):
+        def prefetch(_store, _root, labels, _index, _graph, _client, _refresh, receipt_cache, end_date=None):
             caches.append(receipt_cache)
             planned.append(list(labels))
             receipt_cache.receipts.update((label, ("generation", {})) for label in labels)

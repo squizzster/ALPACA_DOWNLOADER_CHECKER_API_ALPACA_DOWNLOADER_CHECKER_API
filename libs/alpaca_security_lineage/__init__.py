@@ -3,7 +3,7 @@ from .alpaca_http import (
     AlpacaIdentityRequestRateLimiter,
     rate_limit_delay_seconds,
 )
-from .command_line import parse_command_line_arguments, run_security_lineage_command
+from .command_line import run_security_lineage_command
 from .inspection import inspect_alpaca_security_lineage
 from .lineage import build_identity_report
 from .local_downloads import inspect_local_downloads
@@ -57,7 +57,6 @@ __all__ = [
     "inspect_alpaca_security_lineage",
     "inspect_local_downloads",
     "market_data_series_identity",
-    "parse_command_line_arguments",
     "rate_limit_delay_seconds",
     "recurring_pipeline_should_skip",
     "run_security_lineage_command",

@@ -190,6 +190,36 @@ def read_snapshot(store):
     return {"entries": entries, "sha256": digest(json_bytes(entries)), "token": token}
 
 
+def read_status(store):
+    """Inspect coverage and pending owners without requiring a ready handoff."""
+    if not summary_path(store).exists():
+        raise DownloadError("pricing check summary is missing; run alpaca-eod summary rebuild")
+    with _connection(store, readonly=True) as db:
+        complete = bool(db.execute("SELECT complete FROM state WHERE singleton=1").fetchone()[0])
+        token = _token(db)
+        entries = [
+            {"symbol": symbol, "asof": asof, "last_all": json.loads(row)}
+            for symbol, asof, row in db.execute("SELECT symbol, asof, last_all FROM entries ORDER BY symbol")
+        ]
+        for entry in entries:
+            validate_entry(entry)
+        pending = [
+            {"symbol": symbol, "owner": owner}
+            for symbol, owner in db.execute("SELECT symbol, owner FROM pending ORDER BY symbol, owner")
+        ]
+    return {
+        **describe({"entries": entries, "sha256": digest(json_bytes(entries))}),
+        "schema_version": FORMAT,
+        "token": token,
+        "coverage_complete": complete,
+        "pending_inputs": pending,
+        "coverage_end_exclusive": {
+            "earliest": min((entry["asof"] for entry in entries), default=None),
+            "latest": max((entry["asof"] for entry in entries), default=None),
+        },
+    }
+
+
 def pending_symbols(store):
     """Select interrupted producer inputs from the existing handoff, without scans."""
     if not summary_path(store).exists():

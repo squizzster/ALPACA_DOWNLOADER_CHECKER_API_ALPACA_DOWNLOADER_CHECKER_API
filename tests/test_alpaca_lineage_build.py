@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from cli_support import lineage_main as main
+from cli_support import lineage_parser as build_parser
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 from test_alpaca_security_lineage import FakeIdentityClient
 
 from libs.alpaca_end_of_day_security_correlation.security_identity import security_id_for_alpaca_asset_ids
 from libs.alpaca_lineage_build import storage
-from libs.alpaca_lineage_build.command_line import build_parser, main
 from libs.alpaca_lineage_build.contract import validate_version
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.reader import read_lineage
@@ -392,7 +393,7 @@ class LineageBuildTests(unittest.TestCase):
         self.assertFalse(self.notice("OLD").exists())
         self.assertFalse(self.notice().exists())
 
-    def test_known_lagging_dependency_uses_one_batched_append_plan(self):
+    def test_known_lagging_dependency_checks_retained_history_before_advancing(self):
         initial = self.bars
         self.download(end="2026-10-15", bars=initial)
         self.download("OLD", end="2026-10-15", bars=initial)
@@ -419,7 +420,7 @@ class LineageBuildTests(unittest.TestCase):
             start, end = timestamp(params["start"]), timestamp(params["end"])
             return {
                 "bars": {
-                    symbol: [row for row in added if start <= timestamp(row["t"]) <= end]
+                    symbol: [row for row in initial + added if start <= timestamp(row["t"]) <= end]
                     for symbol in params["symbols"].split(",")
                 }
             }
@@ -434,7 +435,8 @@ class LineageBuildTests(unittest.TestCase):
             result = self.run_build(["GOOG"], client=identities, pricing_client=pricing)
         self.assertEqual(result["dependency_pricing"]["requested"], 1)
         self.assertEqual(result["dependency_pricing"]["failed"], 0)
-        self.assertEqual(len(calls), 8)
+        self.assertGreater(len(calls), 8)
+        self.assertTrue(any(call["start"][:10] < "2026-10-15" for call in calls))
         self.assertTrue(all(call["symbols"] == "OLD" for call in calls))
         source = storage.load_source(self.store / "end_of_day/pricing/OLD", "OLD")
         self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
@@ -524,7 +526,9 @@ class LineageBuildTests(unittest.TestCase):
         self.assertEqual(len(pricing.calls), before)
 
     def test_cli_acquires_meta_then_related_prices_before_lineage_publication(self):
-        initialize_store(self.store)
+        from cli_support import initialize_command_registration
+
+        initialize_command_registration(self)
         prices = {
             "META": calendar_bars("2021-07-01", "2026-10-14"),
             "FB": calendar_bars("2021-07-01", "2022-06-09") + calendar_bars("2025-06-26", "2026-10-14"),
@@ -548,17 +552,19 @@ class LineageBuildTests(unittest.TestCase):
                 return_value=datetime(2026, 10, 14, 12, tzinfo=timezone.utc),
             ),
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"}),
-            patch("libs.alpaca_lineage_build.command_line.BarsClient", return_value=PricingClient()),
-            patch(
-                "libs.alpaca_lineage_build.command_line.AlpacaIdentityClient", return_value=FakeIdentityClient()
-            ),
+            patch("libs.alpaca_cli.BarsClient", return_value=PricingClient()),
+            patch("libs.alpaca_cli.AlpacaIdentityClient", return_value=FakeIdentityClient()),
             patch("libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=acquire),
             redirect_stdout(output),
         ):
-            self.assertEqual(main(["--store", str(self.store), "-s", "META"]), 0, output.getvalue())
+            self.assertEqual(main(["--store", str(self.store), "--symbol", "META"]), 0, output.getvalue())
         self.assertEqual(
             requested,
-            [("META", None, None), ("FB", "2026-10-14", "2016-01-01"), ("METV", "2026-10-14", "2016-01-01")],
+            [
+                ("META", "2026-10-14", "2016-01-01"),
+                ("FB", "2026-10-14", "2016-01-01"),
+                ("METV", "2026-10-14", "2016-01-01"),
+            ],
         )
         result = json.loads(output.getvalue())["results"][0]
         self.assertEqual(result["pricing_acquisition_waves"], 2)
@@ -704,21 +710,37 @@ class LineageBuildTests(unittest.TestCase):
                 process.close()
 
     def test_cli_selection_and_one_worker_constraint(self):
+        from cli_support import initialize_command_registration
+
+        from libs.alpaca_cli import main as canonical_main
+
+        initialize_command_registration(self)
         validate_version()
         parser = build_parser()
-        self.assertEqual(parser.parse_args(["--store", "example"]).workers, 1)
+        self.assertFalse(hasattr(parser.parse_args(["--store", "example"]), "workers"))
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--store", "example", "--workers", "2"])
         output = io.StringIO()
         with (
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"}),
-            patch("libs.alpaca_lineage_build.command_line.run_lineage", return_value={"failed": 0}) as run,
+            patch("libs.alpaca_lineage_build.pipeline.run_lineage", return_value={"failed": 0}) as run,
             redirect_stdout(output),
         ):
             self.assertEqual(
-                main(["--store", "example", "-s", "GOOG", "--no-download", "--refresh-metadata"]), 0
+                canonical_main(
+                    [
+                        "lineage",
+                        "refresh",
+                        "--store",
+                        str(self.store),
+                        "--symbol",
+                        "GOOG",
+                        "--no-pricing-acquisition",
+                    ]
+                ),
+                0,
             )
-        self.assertEqual(run.call_args.args, (Path("example"), ["GOOG"]))
+        self.assertEqual(run.call_args.args, (self.store, ["GOOG"]))
         self.assertIsNone(run.call_args.kwargs["pricing_client"])
         self.assertTrue(run.call_args.kwargs["refresh"])
 

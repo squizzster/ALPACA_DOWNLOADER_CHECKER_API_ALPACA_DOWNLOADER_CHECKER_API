@@ -9,11 +9,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from legacy_arguments import legacy_arguments
+
 import libs.alpaca_end_of_day_ticker_pipeline.command_line as ticker_command_line_module
 from libs.alpaca_end_of_day_ticker_pipeline import (
     EndOfDayTickerPipelineResult,
     SecurityOnlineEvaluation,
-    parse_end_of_day_ticker_pipeline_arguments,
     resolve_authoritative_alpaca_symbol,
     run_end_of_day_ticker_pipeline,
     run_end_of_day_tickers_pipeline_command,
@@ -381,13 +382,15 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         self.assertEqual("alpaca_asset_lookup_not_found", resolution["basis"])
 
     def test_batch_accepts_up_to_three_workers_at_199_requests_per_minute(self) -> None:
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(["--symbol", "DELL", "--workers", "3"])
+        cli_arguments = legacy_arguments(symbols=["DELL"], workers=3)
 
         self.assertEqual(3, cli_arguments.workers)
         self.assertEqual(199, REQUESTS_PER_MINUTE)
 
-        with self.assertRaises(SystemExit):
-            parse_end_of_day_ticker_pipeline_arguments(["--symbol", "DELL", "--workers", "4"])
+        from cli_support import pricing_parser
+
+        with self.assertRaises(SystemExit), patch("sys.stderr", io.StringIO()):
+            pricing_parser().parse_args(["--store", "example", "--symbol", "DELL", "--workers", "4"])
 
     def test_three_workers_process_tickers_concurrently_and_return_input_order(self) -> None:
         worker_barrier = threading.Barrier(3)
@@ -425,20 +428,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
                 warning_pipeline_receipt=warning_pipeline_receipt(),
             )
 
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-            [
-                "--symbol",
-                "DELL",
-                "-s",
-                "FB",
-                "-s",
-                "TWTR",
-                "--adjustment",
-                "raw",
-                "--workers",
-                "3",
-            ]
-        )
+        cli_arguments = legacy_arguments(symbols=["DELL", "FB", "TWTR"], adjustment=["raw"], workers=3)
         results = run_end_of_day_tickers_pipeline_command(
             cli_arguments,
             output_stream=io.StringIO(),
@@ -476,9 +466,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
                 warning_pipeline_receipt=warning_pipeline_receipt(),
             )
 
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-            ["--symbol", "DELL", "-s", "FB", "--adjustment", "raw"]
-        )
+        cli_arguments = legacy_arguments(symbols=["DELL", "FB"], adjustment=["raw"])
         with patch("libs.alpaca_end_of_day_ticker_pipeline.command_line.datetime") as mocked_datetime:
             mocked_datetime.now.return_value = datetime(
                 2026,
@@ -526,17 +514,8 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
                 warning_pipeline_receipt=warning_pipeline_receipt(),
             )
 
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-            [
-                "--symbol",
-                "DELL",
-                "-s",
-                "FB",
-                "--adjustment",
-                "raw",
-                "--request-end",
-                "2026-10-06",
-            ]
+        cli_arguments = legacy_arguments(
+            symbols=["DELL", "FB"], adjustment=["raw"], request_end_timestamp="2026-10-06T00:00:00Z"
         )
         with patch("libs.alpaca_end_of_day_ticker_pipeline.command_line.datetime") as mocked_datetime:
             run_end_of_day_tickers_pipeline_command(
@@ -557,9 +536,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
             symbol_file = Path(temporary_directory) / "symbols.txt"
             symbol_file.write_text(" dell \n\nFB\nDell\n", encoding="utf-8")
 
-            cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-                ["--file", str(symbol_file), "--adjustment", "raw"]
-            )
+            cli_arguments = legacy_arguments(symbol_file=str(symbol_file), adjustment=["raw"])
             processed_symbols = []
 
             def run_ticker_pipeline(
@@ -596,7 +573,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             symbol_file = Path(temporary_directory) / "symbols.txt"
             symbol_file.write_text("DELL\nnot a symbol\n", encoding="utf-8")
-            cli_arguments = parse_end_of_day_ticker_pipeline_arguments(["--file", str(symbol_file)])
+            cli_arguments = legacy_arguments(symbol_file=str(symbol_file))
 
             with self.assertRaisesRegex(
                 SystemExit,
@@ -612,7 +589,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             symbol_file = Path(temporary_directory) / "symbols.txt"
             symbol_file.write_text("\n  \n", encoding="utf-8")
-            cli_arguments = parse_end_of_day_ticker_pipeline_arguments(["--file", str(symbol_file)])
+            cli_arguments = legacy_arguments(symbol_file=str(symbol_file))
 
             with self.assertRaisesRegex(SystemExit, "symbol file contains no symbols"):
                 run_end_of_day_tickers_pipeline_command(
@@ -632,9 +609,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             symbol_file = Path(temporary_directory) / "symbols.txt"
             symbol_file.write_text("AACC\nAAPL\n", encoding="utf-8")
-            cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-                ["--file", str(symbol_file), "--adjustment", "raw"]
-            )
+            cli_arguments = legacy_arguments(symbol_file=str(symbol_file), adjustment=["raw"])
             output_stream = io.StringIO()
             with patch(
                 "libs.alpaca_end_of_day_ticker_pipeline.command_line._authenticated_recurring_skip_disposition",
@@ -715,14 +690,8 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             symbol_file = Path(temporary_directory) / "symbols.txt"
             symbol_file.write_text("AACC\n", encoding="utf-8")
-            cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-                [
-                    "--file",
-                    str(symbol_file),
-                    "--adjustment",
-                    "raw",
-                    "--include-skipped-symbols",
-                ]
+            cli_arguments = legacy_arguments(
+                symbol_file=str(symbol_file), adjustment=["raw"], include_skipped_symbols=True
             )
             with patch(
                 "libs.alpaca_end_of_day_ticker_pipeline.command_line._authenticated_recurring_skip_disposition"
@@ -751,9 +720,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             symbol_file = Path(temporary_directory) / "symbols.txt"
             symbol_file.write_text("AACC\n", encoding="utf-8")
-            cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-                ["--file", str(symbol_file), "--adjustment", "raw"]
-            )
+            cli_arguments = legacy_arguments(symbol_file=str(symbol_file), adjustment=["raw"])
             output_stream = io.StringIO()
             with patch(
                 "libs.alpaca_end_of_day_ticker_pipeline.command_line._authenticated_recurring_skip_disposition",
@@ -781,7 +748,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
                 disposition=disposition,
             )
 
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(["--symbol", "AACC", "--adjustment", "raw"])
+        cli_arguments = legacy_arguments(symbols=["AACC"], adjustment=["raw"])
         with self.assertRaisesRegex(SystemExit, "1"):
             run_end_of_day_tickers_pipeline_command(
                 cli_arguments,
@@ -1297,20 +1264,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
 
         output_stream = io.StringIO()
         error_stream = io.StringIO()
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-            [
-                "--symbol",
-                "DELL",
-                "-s",
-                "fb",
-                "-s",
-                "TWTR",
-                "-s",
-                "dell",
-                "--adjustment",
-                "raw",
-            ]
-        )
+        cli_arguments = legacy_arguments(symbols=["DELL", "fb", "TWTR", "dell"], adjustment=["raw"])
 
         with self.assertRaisesRegex(SystemExit, "1"):
             run_end_of_day_tickers_pipeline_command(
@@ -1364,20 +1318,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
 
         output_stream = io.StringIO()
         error_stream = io.StringIO()
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-            [
-                "--symbol",
-                "DELL",
-                "-s",
-                "FB",
-                "-s",
-                "TWTR",
-                "--adjustment",
-                "raw",
-                "--workers",
-                "3",
-            ]
-        )
+        cli_arguments = legacy_arguments(symbols=["DELL", "FB", "TWTR"], adjustment=["raw"], workers=3)
 
         with self.assertRaisesRegex(SystemExit, "1"):
             run_end_of_day_tickers_pipeline_command(
@@ -1411,9 +1352,7 @@ class EndOfDayTickerPipelineTests(unittest.TestCase):
 
         output_stream = io.StringIO()
         error_stream = io.StringIO()
-        cli_arguments = parse_end_of_day_ticker_pipeline_arguments(
-            ["--symbol", "AMR1", "-s", "DELL", "--adjustment", "raw"]
-        )
+        cli_arguments = legacy_arguments(symbols=["AMR1", "DELL"], adjustment=["raw"])
 
         with self.assertRaisesRegex(SystemExit, "1"):
             run_end_of_day_tickers_pipeline_command(

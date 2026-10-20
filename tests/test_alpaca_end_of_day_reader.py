@@ -3,6 +3,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -20,7 +21,6 @@ from libs.alpaca_end_of_day_reader import (
     is_alpaca_end_of_day_security_online,
     list_alpaca_end_of_day_master_ids_by_availability_status,
     list_online_alpaca_end_of_day_master_ids,
-    parse_command_line_arguments,
     read_alpaca_end_of_day_security_history,
     run_end_of_day_reader_command,
     validate_reader_change_log,
@@ -793,7 +793,7 @@ class EndOfDayReaderTests(unittest.TestCase):
             calls.append((master_id, adjustment_type, repository_root))
             return expected_result
 
-        arguments = parse_command_line_arguments(["--type", "split,dividend", "--master-id", TEST_MASTER_ID])
+        arguments = Namespace(adjustment_type="split,dividend", master_id=TEST_MASTER_ID)
         output_stream = io.StringIO()
         result = run_end_of_day_reader_command(
             arguments,

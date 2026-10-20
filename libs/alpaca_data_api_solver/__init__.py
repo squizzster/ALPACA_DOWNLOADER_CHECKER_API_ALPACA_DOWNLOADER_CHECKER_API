@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
-VERSION = 2
+VERSION = 3
 BAR_URL = "https://data.alpaca.markets/v2/stocks/bars"
 ASSET_URL = "https://paper-api.alpaca.markets/v2/assets"
 ACTION_URL = "https://data.alpaca.markets/v1/corporate-actions"
@@ -162,6 +162,11 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
         if not isinstance(need, dict) or not isinstance(need.get("why"), str) or not need["why"].strip():
             raise ValueError("each need requires a nonempty why")
         why, kind = need["why"], need.get("kind")
+        if kind == "asset_catalogue":
+            if set(need) != {"kind", "why"}:
+                raise ValueError("asset catalogue need requires only kind and why")
+            order.append(("asset_catalogue", (need_index, why)))
+            continue
         if kind == "corporate_actions":
             if set(need) != {"kind", "why", "symbols", "start", "end"}:
                 raise ValueError("corporate actions require symbols and inclusive start/end dates")
@@ -238,6 +243,17 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
 
     actions = []
     for kind, key in order:
+        if kind == "asset_catalogue":
+            need_index, why = key
+            actions.append(
+                {
+                    "strategy": "asset_catalogue",
+                    "why": why,
+                    "request": {"url": ASSET_URL, "params": {"asset_class": "us_equity"}},
+                    "deliver": [{"need": need_index, "all_statuses": True}],
+                }
+            )
+            continue
         if kind == "symbol_lookup":
             targets = symbol_lookups[key]
             identifiers = sorted(set().union(*targets.values()))

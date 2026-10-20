@@ -4,7 +4,7 @@ from .availability import (
     list_alpaca_end_of_day_master_ids_by_availability_status,
     list_online_alpaca_end_of_day_master_ids,
 )
-from .command_line import parse_command_line_arguments, run_end_of_day_reader_command
+from .command_line import run_end_of_day_reader_command
 from .errors import EndOfDayReaderError
 from .history import (
     read_alpaca_end_of_day_security_history,
@@ -24,7 +24,6 @@ __all__ = [
     "is_alpaca_end_of_day_security_online",
     "list_alpaca_end_of_day_master_ids_by_availability_status",
     "list_online_alpaca_end_of_day_master_ids",
-    "parse_command_line_arguments",
     "read_alpaca_end_of_day_security_history",
     "read_alpaca_end_of_day_ticker",
     "run_end_of_day_reader_command",

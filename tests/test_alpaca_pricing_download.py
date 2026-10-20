@@ -11,10 +11,11 @@ from unittest.mock import patch
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 
+from cli_support import pricing_main as main
+from cli_support import pricing_parser as build_parser
 from test_alpaca_pricing_rate_limit import FakeClock
 
 from libs.alpaca_pricing_download import storage
-from libs.alpaca_pricing_download.command_line import build_parser, main
 from libs.alpaca_pricing_download.contract import (
     ADJUSTMENTS,
     VALIDATOR_FILE,
@@ -234,11 +235,13 @@ class PricingDownloadTests(unittest.TestCase):
         self.run_download(bars=[])
         client, result = self.run_download("2026-10-15", bars=[bar("2026-10-01")])
         self.assertEqual(result["consistency_check"], "no_stored_sessions")
+        self.assertEqual(len(client.calls), 8)
+        self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls))
+        self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"], ())
+        client, result = self.run_download("2026-10-16", bars=[bar("2026-10-15")])
+        self.assertEqual(result["consistency_check"], "no_stored_sessions")
         self.assertEqual(len(client.calls), 16)
-        client, result = self.run_download("2026-10-16", bars=[bar("2026-10-01"), bar("2026-10-13")])
-        self.assertEqual(result["consistency_check"], "matched")
-        self.assertEqual(len(client.calls), 24)
-        self.assertTrue(all(call[2] == timestamp("2026-10-01T04:00:00Z") for call in client.calls[:8]))
+        self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), 1)
 
     def test_only_endpoints_are_probed_not_the_last_five_sessions(self):
         rows = [bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13)]
@@ -551,8 +554,8 @@ class PricingDownloadTests(unittest.TestCase):
     def test_cli_requires_explicit_destination(self):
         with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
             main(["--symbol", "GOOG"])
-        parsed = build_parser().parse_args(["--symbol", "GOOG", "--store", "/example", "--refresh-all"])
-        self.assertTrue(parsed.refresh_all)
+        parsed = build_parser().parse_args(["--symbol", "GOOG", "--store", "/example"])
+        self.assertEqual(parsed.symbol, ["GOOG"])
 
 
 class PricingHttpTests(unittest.TestCase):

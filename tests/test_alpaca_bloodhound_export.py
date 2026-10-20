@@ -12,8 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from cli_support import export_main as main
+
 from alpaca_end_of_day import StandaloneReaderError
-from libs.alpaca_bloodhound_export.command_line import SnapshotChangedError, export, main, schema
+from libs.alpaca_bloodhound_export.command_line import SnapshotChangedError, export, schema
 from libs.alpaca_bloodhound_export.factors import ADJUSTMENTS
 from libs.alpaca_bloodhound_export.memory import ExportMemoryError, OutputMemory
 from libs.alpaca_bloodhound_export.projection import ExportError, checked_ids, project_history, series_id
@@ -507,7 +509,7 @@ class BloodhoundParquetTests(unittest.TestCase):
             patch("sys.stdout", stdout),
             patch("sys.stderr", stderr),
         ):
-            status = main(["--store", str(self.store), "--output", str(self.output), "-s", " source "])
+            status = main(["--store", str(self.store), "--output", str(self.output), "--symbol", " source "])
         reader.assert_called_once_with(self.store, wait=False, cache_bytes=2048 * 1024**2)
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(stdout.getvalue())["rows"], 2)
@@ -654,9 +656,12 @@ class BloodhoundParquetTests(unittest.TestCase):
 
 class BloodhoundCliHelpTests(unittest.TestCase):
     def test_standalone_help_has_output_selection_and_include_all_passed(self):
-        command = ROOT / "convert_latest_alpaca_pricing_to_blood_hound_parquet"
+        command = ROOT / "alpaca-eod"
         result = subprocess.run(
-            [sys.executable, "-B", str(command), "--help"], capture_output=True, text=True, check=False
+            [sys.executable, "-B", str(command), "export", "bloodhound", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         for option in (

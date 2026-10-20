@@ -56,7 +56,7 @@ def action_requests(symbol, start, end, previous=None, *, refresh=False):
 class EvidenceClient:
     """One run's coherent lookup cache. Conflicting action IDs fail before publication."""
 
-    def __init__(self, client):
+    def __init__(self, client, *, observation=None):
         self.client = client
         self.assets = {}
         self.actions = {}
@@ -64,6 +64,12 @@ class EvidenceClient:
         self.catalogue = None
         self.catalogue_attempted = False
         self.action_error = None
+        self.observation = observation
+        self.work_policy = None
+        self.restricted_identifiers = set()
+        if observation is not None:
+            self._load_catalogue(observation["records"])
+            self.catalogue_attempted = True
 
     @property
     def supports_plans(self):
@@ -74,11 +80,25 @@ class EvidenceClient:
         return self.client.request_count
 
     def get_asset_lookup(self, identifier):
+        if self.work_policy is not None:
+            self.restricted_identifiers.update(self.work_policy.restricted_identifiers)
+        if identifier in self.restricted_identifiers:
+            from .work_contract import WorkDeferred
+
+            raise WorkDeferred(f"{identifier}: metadata request is deferred")
+        if self.work_policy is not None:
+            self.work_policy.check({identifier})
         if identifier not in self.assets:
-            self.assets[identifier] = self.client.get_asset_lookup(identifier)
+            try:
+                self.assets[identifier] = self.client.get_asset_lookup(identifier)
+            except (RuntimeError, OSError, ValueError) as error:
+                error.request_identifiers = [identifier]
+                self.assets[identifier] = error
         return self._value(self.assets[identifier])
 
     def get_symbol_lookup(self, symbol):
+        if self.work_policy is not None:
+            self.work_policy.check({symbol})
         if symbol not in self.assets and self.catalogue is not None and self.catalogue.get(symbol):
             return {
                 "outcome": "found",
@@ -102,6 +122,9 @@ class EvidenceClient:
         if not self.supports_plans:
             return
         pending = sorted({s for s in symbols if s not in self.assets and not (self.catalogue or {}).get(s)})
+        if self.work_policy is not None:
+            pending = [s for s in pending if self.work_policy.allowed({s})]
+        pending = [s for s in pending if s not in self.restricted_identifiers]
         if not pending:
             return
         need = {"kind": "asset_lookup", "why": "identity_lookup", "identifiers": pending}
@@ -121,6 +144,7 @@ class EvidenceClient:
                 try:
                     self.assets[identifier] = self._execute(action)
                 except (RuntimeError, OSError, ValueError) as error:
+                    error.request_identifiers = [identifier]
                     self.assets[identifier] = error
         if any(action["strategy"] == "asset_catalogue" for action in plan["steps"][0]["actions"]):
             self.prefetch_symbols(pending)  # Remaining needs are now exact lookups.
@@ -150,6 +174,10 @@ class EvidenceClient:
         if not self.supports_plans:
             return
         pending = sorted(set(requests) - self.actions.keys())
+        if self.work_policy is not None:
+            self.restricted_identifiers.update(self.work_policy.restricted_identifiers)
+            pending = [key for key in pending if self.work_policy.allowed({key[0]})]
+        pending = [key for key in pending if key[0] not in self.restricted_identifiers]
         if not pending:
             return
         plan = build_plan(
@@ -177,6 +205,7 @@ class EvidenceClient:
                 self._acquire_action(action)
             except (RuntimeError, OSError, ValueError) as error:
                 # Other independent date/symbol batches still get their own result.
+                error.request_identifiers = [key[0] for key in keys]
                 self.actions.update((key, error) for key in keys)
 
     def _acquire_action(self, action):
@@ -224,6 +253,13 @@ class EvidenceClient:
         return list(unique.values())
 
     def get_corporate_actions(self, symbol, start, end):
+        if self.work_policy is not None:
+            self.restricted_identifiers.update(self.work_policy.restricted_identifiers)
+            self.work_policy.check({symbol})
+        if symbol in self.restricted_identifiers:
+            from .work_contract import WorkDeferred
+
+            raise WorkDeferred(f"{symbol}: metadata request is deferred")
         if self.action_error is not None:
             raise self.action_error
         key = (symbol, start, end)
@@ -231,7 +267,11 @@ class EvidenceClient:
             if self.supports_plans:
                 self.prefetch_corporate_actions([key])
             else:
-                self._remember(key, self.client.get_corporate_actions(symbol, start, end))
+                try:
+                    self._remember(key, self.client.get_corporate_actions(symbol, start, end))
+                except (RuntimeError, OSError, ValueError) as error:
+                    error.request_identifiers = [symbol]
+                    self.actions[key] = error
         return self._value(self.actions[key])
 
 
@@ -283,6 +323,9 @@ def acquire(view, client, previous=None, *, refresh=False):
 
 def _finish_evidence(evidence, window):
     evidence.pop("api_request_count", None)
+    observation = getattr(window.client, "observation", None)
+    if observation is not None:
+        evidence["catalogue_observed_at_utc"] = observation["catalogue_observed_at_utc"]
     for lookup in evidence["asset_lookups"]:
         if lookup["lookup_kind"] == "symbol" and lookup["lookup"] in window.lookup_sources:
             lookup["source"] = window.lookup_sources[lookup["lookup"]]

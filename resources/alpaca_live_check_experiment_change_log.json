@@ -10,5 +10,15 @@
       "Route live checks and selected full-refresh experiments through the ordered Alpaca API solver; preserve trusted snapshot-only selection and use saved JSON only as an explicit development input.",
       "Acquire selected changed tickers across shared requests, derive and batch post-acquisition first-session checks, then feed those responses into normal isolated full pricing publication; every differing field remains eligible for full replacement."
     ]
+  },
+  {
+    "modifications": [
+      "Expose production checking through the canonical pricing check command, retire the experiment executable and cap endpoint probes at accepted pricing coverage."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve per-request failure classification in live history-check results so orchestration can retain access denials and delayed retries."
+    ]
   }
 ]

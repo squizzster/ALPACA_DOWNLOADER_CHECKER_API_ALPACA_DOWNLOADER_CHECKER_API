@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 from datetime import datetime, timezone
 from itertools import islice, product
 from pathlib import Path
@@ -19,7 +19,7 @@ from test_alpaca_pricing_download import snapshot as file_snapshot
 from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_lineage_build.check_summary import rebuild
 from libs.alpaca_lineage_build.pipeline import run_lineage
-from libs.alpaca_pricing_download import append, command_line, storage
+from libs.alpaca_pricing_download import append, storage
 from libs.alpaca_pricing_download.check_summary import read_snapshot
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, DownloadError, timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
@@ -53,6 +53,9 @@ class AppendTests(unittest.TestCase):
         self.store = Path(temporary.name) / "store"
         shutil.copytree(self.base, self.store)
         self.ready = read_snapshot(self.store)
+        self.ready["approved_generations"] = append.select_append_sources(
+            self.store, self.ready["entries"], "2026-10-17"
+        )
         self.live = {symbol: [bar("2026-10-15"), bar("2026-10-16")] for symbol in self.assets}
         self.calls = []
         self.client = BarsClient("test", "test")
@@ -226,6 +229,7 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, timestamp
 
 store = Path(sys.argv[1])
 ready = read_snapshot(store)
+generations = append.select_append_sources(store, ready['entries'], '2026-10-17')
 need = append.append_needs(ready['entries'], timestamp('2026-10-17T00:00:00Z'))[0][0]
 original = storage.write_file
 def interrupted(path, data):
@@ -234,7 +238,7 @@ def interrupted(path, data):
 with patch.object(storage, 'write_file', side_effect=interrupted):
     bars = [{key: value if key == 't' else Decimal(str(value)) for key, value in row.items()}
             for row in json.loads(sys.argv[2])]
-    append._publish_append(store, ready['entries'][0], need, dict.fromkeys(ADJUSTMENTS, bars))
+    append._publish_append(store, ready['entries'][0], need, dict.fromkeys(ADJUSTMENTS, bars), approved_source_sha256=generations['AAA'])
 """,
                 str(self.store),
                 json.dumps(self.live["AAA"], default=str),
@@ -277,11 +281,42 @@ with patch.object(storage, 'write_file', side_effect=interrupted):
         need = append.append_needs(self.ready["entries"], timestamp("2026-10-17T00:00:00Z"))[0][0]
         download_pricing(self.store, "AAA", "2026-10-16", client=FakeClient(self.old + [bar("2026-10-15")]))
         before = file_snapshot(self.store)
-        with self.assertRaisesRegex(DownloadError, "coverage changed"):
+        with self.assertRaisesRegex(DownloadError, "generation changed"):
             append._publish_append(
-                self.store, self.ready["entries"][0], need, dict.fromkeys(ADJUSTMENTS, self.live["AAA"])
+                self.store,
+                self.ready["entries"][0],
+                need,
+                dict.fromkeys(ADJUSTMENTS, self.live["AAA"]),
+                approved_source_sha256=self.ready["approved_generations"]["AAA"],
             )
         self.assertEqual(file_snapshot(self.store), before)
+
+    def test_nonempty_append_refuses_an_unchecked_summary_before_requests(self):
+        self.ready.pop("approved_generations")
+        with self.assertRaisesRegex(DownloadError, "history-check approval"):
+            self.run_append()
+        self.assertEqual(self.calls, [])
+
+    def test_approval_rejects_concurrent_historical_change_with_same_last_row(self):
+        need = append.append_needs(self.ready["entries"], timestamp("2026-10-17T00:00:00Z"))[0][0]
+        download_pricing(
+            self.store,
+            "AAA",
+            "2026-10-15",
+            client=FakeClient([bar("2016-01-04", "75"), self.old[-1]]),
+            refresh_all=True,
+        )
+        before = file_snapshot(self.store)
+        with self.assertRaisesRegex(DownloadError, "generation changed"):
+            append._publish_append(
+                self.store,
+                self.ready["entries"][0],
+                need,
+                dict.fromkeys(ADJUSTMENTS, self.live["AAA"]),
+                approved_source_sha256=self.ready["approved_generations"]["AAA"],
+            )
+        self.assertEqual(file_snapshot(self.store), before)
+        self.assertEqual(read_pricing_views(self.store, "AAA")["all"][0][4], "75")
 
     def test_baseline_change_is_isolated_and_no_old_prices_are_replaced(self):
         self.ready["entries"][0]["last_all"][1] = "999"
@@ -298,6 +333,9 @@ with patch.object(storage, 'write_file', side_effect=interrupted):
         ):
             with self.subTest(end=end):
                 self.ready = read_snapshot(self.store)
+                self.ready["approved_generations"] = append.select_append_sources(
+                    self.store, self.ready["entries"], end
+                )
                 self.live = {symbol: [bar(day) for day in dates] for symbol in self.assets}
                 result = self.run_append(end)
                 self.assertEqual(result["failed"], 0, result)
@@ -307,28 +345,13 @@ with patch.object(storage, 'write_file', side_effect=interrupted):
                     self.assertEqual(days[-2:], list(dates))
                     self.assertEqual(len(days), len(set(days)))
 
-    def test_cli_ready_selection_and_all_use_the_summary(self):
-        with (
-            patch.object(command_line, "BarsClient", return_value=self.client),
-            redirect_stdout(io.StringIO()),
-            redirect_stderr(io.StringIO()),
-        ):
-            code = command_line.main(
-                ["--store", str(self.store), "--append-ready", "--all", "--to", "2026-10-16"]
-            )
-        self.assertEqual(code, 0)
-        self.assertEqual(len(self.calls), 8)
-        self.assertTrue(all(call["symbols"] == "AAA,BBB" for call in self.calls))
-        for extra in (
-            ("-s", "MISSING"),
-            ("-s", "AAA", "--from", "2020-01-01"),
-            ("-s", "AAA", "--force-download"),
-        ):
-            with (
-                redirect_stderr(io.StringIO()),
-                patch.object(self.client, "execute_plan", side_effect=AssertionError("API")),
-            ):
-                self.assertEqual(command_line.main(["--store", str(self.store), "--append-ready", *extra]), 1)
+    def test_internal_approved_append_is_not_a_public_cli_mode(self):
+        from libs.alpaca_cli import main
+
+        for command in (["pricing", "acquire"], ["update"]):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                main([*command, "--store", str(self.store), "--append-ready", "--all"])
+        self.assertFalse(self.calls)
 
 
 class AppendPlanTests(unittest.TestCase):

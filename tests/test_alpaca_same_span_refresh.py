@@ -13,9 +13,9 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar
 from test_alpaca_pricing_download import snapshot as files_snapshot
 
+from libs.alpaca_cli import main
 from libs.alpaca_lineage_build import check_summary as projection
 from libs.alpaca_lineage_build import refresh
-from libs.alpaca_lineage_build.command_line import main
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download import check_summary as summary
 from libs.alpaca_pricing_download import storage
@@ -181,11 +181,14 @@ class SameSpanRefreshTests(unittest.TestCase):
         ) as build:
             result = self.run_refresh()
         self.assertFalse(result["complete"])
-        self.assertIsNone(build.call_args.kwargs["pricing_client"])
+        self.assertIs(build.call_args.kwargs["pricing_client"], self.client)
         self.assertEqual(set(build.call_args.args[1]), {"AAA", "BBB"})
         self.assertTrue((self.store / "end_of_day/manifests/AAA/update.json").exists())
 
     def test_cli_dispatches_explicit_mode_without_saved_handoff(self):
+        from cli_support import initialize_command_registration
+
+        initialize_command_registration(self)
         output = io.StringIO()
         with (
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "test", "ALPACA_API_SECRET_KEY": "test"}),
@@ -193,7 +196,7 @@ class SameSpanRefreshTests(unittest.TestCase):
             redirect_stdout(output),
             redirect_stderr(io.StringIO()),
         ):
-            self.assertEqual(main(["--store", str(self.store), "--refresh-existing"]), 0)
+            self.assertEqual(main(["pricing", "refresh", "--store", str(self.store)]), 0)
         self.assertEqual(run.call_args.args, (self.store,))
         self.assertEqual(json.loads(output.getvalue()), {"failed": 0, "complete": True})
 

@@ -154,7 +154,7 @@ def reader_snapshot(
     def selection():
         # New lock order must not overlap an executable using the old order.
         # The worker upgrades this header under the old shared/exclusive gate.
-        if _index_version(root) not in {None, 6, 7, 8, 9, 10, 11, VERSION}:
+        if _index_version(root) not in {None, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, VERSION}:
             raise LineageError("lineage lock protocol needs upgrade; run lineage first")
         if path_at(root, ".pending.json").exists():
             raise LineageError("lineage publication incomplete; resume lineage first")
@@ -244,6 +244,15 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
             index["symbols"] = {
                 label: json.loads(value) for label, value in connection.execute(statement, parameters)
             }
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='projection_state'").fetchone():
+                version, revision, complete = connection.execute(
+                    "SELECT schema_version, revision, complete FROM projection_state WHERE id=1"
+                ).fetchone()
+                index["projection_state"] = {
+                    "schema_version": version,
+                    "revision": revision,
+                    "complete": bool(complete),
+                }
     except (sqlite3.Error, ValueError) as error:
         raise LineageError("cannot load lineage dependency index") from error
     for symbol, entry in index["symbols"].items():
@@ -254,7 +263,7 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
     return index
 
 
-def _update_index(root: Path, entries: dict) -> None:
+def _update_index(root: Path, entries: dict, *, projection_complete=False) -> None:
     # One tiny indexed row per ticker, not a full-universe JSON rewrite on each
     # update. The chronological JSON boundaries remain the authoritative outputs.
     path = path_at(root, "index.sqlite3")
@@ -266,11 +275,40 @@ def _update_index(root: Path, entries: dict) -> None:
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS symbols (symbol TEXT PRIMARY KEY, receipt TEXT NOT NULL)"
                 )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS projection_state "
+                    "(id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER, revision INTEGER, complete INTEGER)"
+                )
+                from .projection import PROJECTION_VERSION
+
+                count = connection.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+                connection.execute(
+                    "INSERT OR IGNORE INTO projection_state VALUES (1, ?, 0, ?)",
+                    (PROJECTION_VERSION, int(count == 0)),
+                )
                 connection.execute(f"PRAGMA user_version={VERSION}")
                 connection.executemany(
                     "INSERT OR REPLACE INTO symbols(symbol, receipt) VALUES (?, ?)",
                     [(symbol, json_bytes(entry).decode()) for symbol, entry in sorted(entries.items())],
                 )
+                if any(
+                    entry.get("projection", {}).get("schema_version") != PROJECTION_VERSION
+                    for entry in entries.values()
+                ):
+                    connection.execute("UPDATE projection_state SET complete=0 WHERE id=1")
+                if projection_complete:
+                    missing = connection.execute(
+                        "SELECT COUNT(*) FROM symbols WHERE "
+                        "COALESCE(json_extract(receipt, '$.projection.schema_version'), 0) != ?",
+                        (PROJECTION_VERSION,),
+                    ).fetchone()[0]
+                    if missing:
+                        raise LineageError("lineage projection migration is incomplete")
+                    connection.execute(
+                        "UPDATE projection_state SET complete=1, schema_version=? WHERE id=1",
+                        (PROJECTION_VERSION,),
+                    )
+                connection.execute("UPDATE projection_state SET revision=revision+1 WHERE id=1")
     except sqlite3.Error as error:
         raise LineageError("cannot publish lineage dependency index") from error
 
@@ -436,6 +474,8 @@ def publish(
 ) -> None:
     documents, retire = {}, []
     updated = {}
+    from .projection import project_receipt
+
     for symbol, receipt in receipts.items():
         old = read_receipt(root, symbol, index) if previous is None else previous[symbol]
         old_paths = {entry["manifest"] for entry in old["boundaries"].values()} if old else set()
@@ -450,6 +490,7 @@ def publish(
             "dependencies": receipt["dependencies"],
             "asset_ids": receipt["asset_ids"],
             "versions": receipt["versions"],
+            "projection": project_receipt(receipt),
         }
         if index["symbols"].get(symbol, {}).get("sha256") != updated[symbol]["sha256"]:
             documents[f"{symbol}/lineage.manifest.json"] = receipt

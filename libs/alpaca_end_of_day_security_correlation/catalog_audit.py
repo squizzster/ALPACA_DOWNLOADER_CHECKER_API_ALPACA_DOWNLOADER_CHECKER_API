@@ -557,22 +557,6 @@ def audit_security_master_catalogue(
     }
 
 
-def parse_catalog_audit_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
-    argument_parser = argparse.ArgumentParser(
-        description=(
-            "Read-only exhaustive authentication and cross-identity audit of the local "
-            "Alpaca end-of-day catalogue."
-        )
-    )
-    argument_parser.add_argument(
-        "--repository-root",
-        type=Path,
-        default=Path.cwd(),
-        help="repository containing data/end_of_day (default: current directory)",
-    )
-    return argument_parser.parse_args(arguments)
-
-
 def run_catalog_audit_command(
     cli_arguments: argparse.Namespace,
     *,

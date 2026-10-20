@@ -1,0 +1,11 @@
+#!/usr/bin/env python3.11
+"""Canonical executable adapter; command and domain behavior live in their packages."""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+from libs.alpaca_cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -16,9 +16,14 @@ WARNING_ENVELOPE_VERSION = 2
 IDENTITY_CANDIDATE_VERSION = 2
 AVAILABILITY_VERSION = 1
 CATALOGUE_PUBLICATION_VERSION = 2
+UPDATE_EXECUTION_VERSION = 1
 
 _RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "resources"
 _CHANGE_LOGS = {
+    "update_execution": (
+        UPDATE_EXECUTION_VERSION,
+        _RESOURCE_ROOT / "alpaca_v6_update_execution_change_log.json",
+    ),
     "source": (SOURCE_VERSION, _RESOURCE_ROOT / "alpaca_v6_source_change_log.json"),
     "lineage_source": (
         LINEAGE_SOURCE_VERSION,

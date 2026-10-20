@@ -14,12 +14,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from cli_support import reader_main as main
 from test_alpaca_lineage_build import IdentityClient, asset, calendar_bars
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 from test_alpaca_security_lineage import FakeIdentityClient
 
 from alpaca_end_of_day import AmbiguousTickerError, ReaderBusyError, StandaloneReader, StandaloneReaderError
-from alpaca_end_of_day.standalone_cli import main
 from libs.alpaca_end_of_day_security_correlation.security_identity import security_id_for_alpaca_asset_ids
 from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.contract import LineageBusyError, LineageError, reusable_versions, versions
@@ -742,8 +742,8 @@ class StandaloneReaderTests(unittest.TestCase):
             result.join_thread()
 
     def test_cli_json_csv_resolution_and_errors(self):
-        common = ["--store", str(self.store), "-s", "TEST"]
-        for options in ([], ["--resolve"], ["--format", "csv", "--from", "2026-10-13"]):
+        common = ["--store", str(self.store), "--symbol", "TEST"]
+        for options in ([], ["--format", "csv", "--from", "2026-10-13"]):
             out = io.StringIO()
             with redirect_stdout(out):
                 self.assertEqual(main(common + options), 0)
@@ -753,8 +753,12 @@ class StandaloneReaderTests(unittest.TestCase):
                 self.assertEqual(rows[0]["volume"], "9007199254740993")
             else:
                 self.assertIn("generation", json.loads(out.getvalue()))
+        from libs.alpaca_cli import main as canonical_main
+
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(canonical_main(["resolve", *common]), 0)
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-            main(common + ["--resolve", "--format", "csv"])
+            canonical_main(["resolve", *common, "--format", "csv"])
         self.assertEqual(error.exception.code, 2)
         out = io.StringIO()
         with redirect_stdout(out), redirect_stderr(io.StringIO()):
@@ -763,9 +767,9 @@ class StandaloneReaderTests(unittest.TestCase):
 
     def test_real_cli_needs_no_credentials_and_writes_no_files(self):
         before = snapshot(self.store)
-        script = Path(__file__).resolve().parents[1] / "read_alpaca_pricing.py"
+        script = Path(__file__).resolve().parents[1] / "alpaca-eod"
         result = subprocess.run(
-            [sys.executable, "-B", str(script), "--store", str(self.store), "--symbol", "TEST"],
+            [sys.executable, "-B", str(script), "read", "--store", str(self.store), "--symbol", "TEST"],
             env={key: value for key, value in os.environ.items() if not key.startswith("ALPACA_")},
             capture_output=True,
             text=True,
@@ -777,11 +781,14 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual(before, snapshot(self.store))
 
     def test_cli_multiple_repeated_types_json_csv_and_all_types(self):
-        common = ["--store", str(self.store), "-s", "TEST", "--from", "2026-10-13"]
+        common = ["--store", str(self.store), "--symbol", "TEST", "--from", "2026-10-13"]
         for options, names in (
-            (["--type", "raw", "all"], ["raw", "all"]),
-            (["--type", "all", "--type", "split,dividend", "raw", "all"], ["all", "split,dividend", "raw"]),
-            (["--all-types"], list(ADJUSTMENTS)),
+            (["--adjustment", "raw", "all"], ["raw", "all"]),
+            (
+                ["--adjustment", "all", "--adjustment", "split,dividend", "raw", "all"],
+                ["all", "split,dividend", "raw"],
+            ),
+            (["--all-adjustments"], list(ADJUSTMENTS)),
         ):
             for format in ("json", "csv"):
                 with self.subTest(options=options, format=format):
@@ -802,26 +809,26 @@ class StandaloneReaderTests(unittest.TestCase):
     def test_cli_duplicate_single_type_keeps_existing_output_shape(self):
         for format in ("json", "csv"):
             outputs = []
-            for selection in ([], ["--type", "raw"], ["--type", "raw", "--type", "raw"]):
+            for selection in ([], ["--adjustment", "raw"], ["--adjustment", "raw", "--adjustment", "raw"]):
                 output = io.StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(
-                        main(["--store", str(self.store), "-s", "TEST", "--format", format] + selection), 0
+                        main(["--store", str(self.store), "--symbol", "TEST", "--format", format] + selection), 0
                     )
                 outputs.append(output.getvalue())
             self.assertEqual(outputs, [outputs[0]] * 3)
 
     def test_cli_rejects_conflicting_or_invalid_type_requests_without_output(self):
         for options in (
-            ["--type", "raw", "--all-types"],
-            ["--resolve", "--all-types"],
-            ["--resolve", "--type", "raw", "all"],
-            ["--type", "raw,all"],
-            ["--type"],
+            ["--adjustment", "raw", "--all-adjustments"],
+            ["--resolve", "--all-adjustments"],
+            ["--resolve", "--adjustment", "raw", "all"],
+            ["--adjustment", "raw,all"],
+            ["--adjustment"],
         ):
             output = io.StringIO()
             with redirect_stdout(output), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-                main(["--store", str(self.store), "-s", "TEST"] + options)
+                main(["--store", str(self.store), "--symbol", "TEST"] + options)
             self.assertEqual(error.exception.code, 2)
             self.assertEqual(output.getvalue(), "")
 
@@ -843,7 +850,17 @@ class StandaloneReaderTests(unittest.TestCase):
                 redirect_stderr(error),
             ):
                 status = main(
-                    ["--store", str(self.store), "-s", "TEST", "--type", "raw", "all", "--format", format]
+                    [
+                        "--store",
+                        str(self.store),
+                        "--symbol",
+                        "TEST",
+                        "--adjustment",
+                        "raw",
+                        "all",
+                        "--format",
+                        format,
+                    ]
                 )
             self.assertEqual(status, 1)
             self.assertEqual(output.getvalue(), "")
@@ -853,7 +870,7 @@ class StandaloneReaderTests(unittest.TestCase):
         self.start_lock_holder(self.root, True)
         output, error = io.StringIO(), io.StringIO()
         with redirect_stdout(output), redirect_stderr(error):
-            status = main(["--store", str(self.store), "-s", "TEST", "--type", "raw", "all"])
+            status = main(["--store", str(self.store), "--symbol", "TEST", "--adjustment", "raw", "all"])
         self.assertEqual(status, 3)
         self.assertEqual(output.getvalue(), "")
         self.assertIn("busy", error.getvalue())

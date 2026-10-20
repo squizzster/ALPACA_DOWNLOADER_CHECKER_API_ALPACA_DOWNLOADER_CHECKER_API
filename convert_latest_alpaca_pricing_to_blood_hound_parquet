@@ -1,7 +1,0 @@
-#!/usr/bin/env -S python3.11 -B
-"""Convert the standalone resolved Alpaca store without network or source writes."""
-
-from libs.alpaca_bloodhound_export.command_line import main
-
-if __name__ == "__main__":
-    raise SystemExit(main())

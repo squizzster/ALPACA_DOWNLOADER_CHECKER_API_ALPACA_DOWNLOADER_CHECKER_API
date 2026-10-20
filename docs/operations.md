@@ -1,101 +1,180 @@
 # Operations
 
-Run from the repository root using Python 3.11. Each command's `--help` is the option reference.
-Producers need `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` and SIP access.
-Readers need compatible published data, without credentials or network.
+Run from the repository root using Python 3.11. `./alpaca-eod --help` and each command's `--help`
+are the option reference. Producers need `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` and SIP access.
+Local readers and inspection need compatible published data, without credentials or network.
 
 ## Daily update
 
 ```bash
-./download_alpaca_pricing.py --update-everything
+./alpaca-eod update --plan
+./alpaca-eod update --through 2026-10-16
+./alpaca-eod status
 ```
 
-Defaults to the application's `data_pricing/`; `--store PATH` overrides it.
-Updates the **existing stored-active universe**, including required lineage dependencies.
-It does not discover a new universe. A ready check summary is required.
+The standalone store defaults to `data_pricing/`; `--store PATH` overrides it.
+Every update fetches one complete US-equity catalogue, preserving all statuses and duplicate labels.
+New discovery selects **active OTC, NYSE, NASDAQ, AMEX and TXSE** records, without a tradability filter.
+Existing histories on other exchanges and required lineage dependencies remain retained.
+Known active histories continue maintenance when absent from the catalogue, including empty or partial
+adjustment histories that do not qualify for the live-check summary. Explicit inactive evidence is handled
+separately. An empty requested range remains distinct from unavailable or failed acquisition.
+Pricing always uses SIP; registering an OTC-labelled asset does not promise separate OTC-feed access.
 
-The [ordered flow](ARCHITECTURE.md#daily-update) recovers work, checks history, replaces changes,
-appends missing sessions and finishes lineage. Stage progress goes to stderr; the final result is JSON
-on stdout. There is no per-request log or automatically saved run report.
-A failed result returns nonzero. Rerun after interruption.
+The [ordered flow](ARCHITECTURE.md#daily-update) registers accepted labels, acquires missing histories,
+reconciles changed identity/status evidence, then checks, corrects and appends eligible stored histories.
+Stage progress goes to stderr; the final report is JSON on stdout. Failures or unfinished required work
+return nonzero. Published unresolved identities are valid outcomes, distinct from failed processing.
 
-The target is the last exchange session **strictly before today's New York date**, frozen once per run.
+`--through` is inclusive: `2026-10-16` becomes the exclusive UTC boundary `2026-10-17T00:00:00Z`.
+The default is the last exchange session **strictly before today's New York date**, frozen once per run.
 Friday becomes eligible after Saturday midnight in New York. Crossing UTC midnight changes nothing.
-`--to` is inclusive; `--request-end` is exclusive UTC midnight. Both enforce that cutoff.
-`--from`, force and `--append-ready` cannot accompany `--update-everything`.
+The target reaches initial and dependent acquisitions. Sources already covered beyond it stay unchanged
+and are reported separately; they are not freshly checked or rewound. Reconciliation requiring a larger
+range remains incomplete. This is an update through a target, not a historical knowledge snapshot.
+Catalogue observation time, acquired coverage, last observed session and provider symbol-mapping
+`asof` remain distinct. A checked range need not contain a bar on its final session.
 
-## Summary bootstrap
+Preview may fetch metadata but does not register labels, initialize databases, recover publications or
+publish data. It reports selected work/reasons, additions, metadata reads, API actions, estimated HTTP
+pages and conditional dependency work. Sparse histories, underfilled pages and producer checks affect
+actual requests. Migration gaps and pending publications are explicit blockers. Execution obtains its
+own observation and reselects current boundaries; a previous preview is not an execution token.
 
-For an existing standalone store with published lineage, seed once:
+## Inspect local progress
+
+`./alpaca-eod status --store data_pricing` is offline and read-only. It reports orchestration work,
+registration intentions, lineage scheduling, selected pricing journals, lineage publication and summary
+pending inputs. Missing or incomplete boundaries appear as blockers with their owning reconstruction
+command; inspection never performs that reconstruction.
+
+`ready_for_update` means the required local boundaries are available. `processing_complete` additionally
+requires no outstanding local work or publications. Status returns nonzero while either condition fails.
+Neither field claims that a fresh provider check ran or that pricing reached a requested future cutoff.
+Published-history counts distinguish nonempty and successfully empty histories, unresolved rows and
+complete row assignment. Unresolved identity can be a completed processing outcome; it is not a claim of
+public availability. Coverage timestamps are exclusive boundaries, separate from the last observed bar.
+
+## Adopt or reconstruct an existing store
+
+Before the first recovery-registry expansion, pin any interrupted clean-room build's original input:
 
 ```bash
-./build_alpaca_lineage.py --store data_pricing --rebuild-check-summary
-./build_alpaca_lineage.py --store data_pricing --check-summary
+./alpaca-eod catalogue pin-universe --store data_clean_room --symbols-file resources/ticker.csv
 ```
 
-Both are offline. Rebuild reads indexed stored status and endpoint validators, without price-history reads
-or provider requests. Finish pending publications first. Normal pricing/lineage finishes then maintain the
-summary automatically. Missing or incomplete coverage requires explicit rebuild; it is never treated as
-an empty universe. Rebuild after external store changes or older producers that do not maintain it.
+Use this only for an existing build. Its original labels and contracts must match; pinning does not make
+incompatible producer versions resumable. Then adopt an existing standalone store explicitly:
+
+```bash
+./alpaca-eod lineage migrate-index --store data_pricing
+./alpaca-eod universe rebuild --store data_pricing
+./alpaca-eod status --store data_pricing
+./alpaca-eod update --store data_pricing --through 2026-10-16 --plan
+```
+
+`lineage migrate-index` reads indexed receipts in bounded, resumable batches, without pricing payloads
+or recalculation. It projects the lookup evidence actually used by published decisions; unknown historical
+observation times remain unknown. A schema upgrade alone does not mark projection coverage complete.
+`universe rebuild` explicitly initializes durable registration and orchestration state; an existing compatible
+queue is retained. It also accepts a new empty store, without requiring lineage or summary construction
+first. It does not finish producer work or declare those boundaries complete. Incompatible durable state
+is rejected for explicit examination, never silently erased.
+
+If the pricing summary is missing or incomplete, rebuild it explicitly after pending publications finish:
+
+```bash
+./alpaca-eod summary rebuild --store data_pricing
+```
+
+This offline operation reads indexed stored status and endpoint validators, without price-history reads
+or provider requests. Normal publication subsequently maintains eligibility and baselines automatically.
+Missing lineage scheduling coverage requires an explicit `lineage update`, which may perform its bounded
+source-generation census. Daily updating refuses to silently expand into that reconstruction.
+
+## Recovery registry and retries
+
+`resources/ticker.csv` contains one sorted, unique CSV record. Normal automation publishes an atomic union
+under a stable lock. Membership only grows: existing labels, accepted lineage labels/dependencies and
+qualifying catalogue discoveries. A ticker is a dated label, not a unique security. Catalogue absence,
+inactivity, exchange changes, empty history and acquisition failure never remove it.
+
+The provider catalogue cannot reconstruct every historical priceable label. Retaining the registry keeps
+those recovery opportunities; it cannot guarantee that the provider will retain their history.
+`universe reconcile` accepts a fresh observation and registers selected work without acquiring prices.
+Daily `update` also performs this registration before acquisition.
+Standalone `pricing acquire`, `lineage update`, `lineage refresh` and `pricing refresh` use the same durable registration path
+for their selected labels and discovered dependencies, including dependencies outside the discovery
+exchanges. They require initialized work state and finish pending registration intentions before acquiring
+prices. Dependency acquisition targets and required group members are recorded separately from registry
+membership, before acquisition. Disabling pricing acquisition retains that unfinished work. Status and later
+updates expose it even if the provider no longer returns the relationship.
+
+Durable work survives registration and publication interruptions. Accepted maintenance targets cannot shrink
+after inactivity, catalogue omission or an older retry request. A successful identical empty request is
+reused; a later target acquires the additional interval. Changed relevant identity evidence or an explicit
+history refresh can invalidate earlier coverage. Transport failures remain pending with a five-minute
+retry delay. Access denial and exact symbol rejection remain blocked until `update --retry-blocked`
+explicitly retries them. This option also bypasses the transport retry delay, but cannot override an older
+requested cutoff. Restrictions cover affected groups and every update phase, including maintenance and
+standalone lineage/pricing commands. Changing commands does not authorize a retry. Unrelated selected
+groups can still proceed. Standalone lineage reports pending work when its publications cannot satisfy an
+accepted coverage or history-check requirement; use the daily updater to finish those requirements.
+
+Rerun the owning producer after interruption. Stable locks, staging and journals finish publications with
+their original inputs; an older target cannot restart a larger unfinished acquisition. Do not delete lock
+files, journals or selected artifacts by hand. A lock file's existence does not mean its lock is held.
+Readers reject incomplete publications and never repair them.
+
+`lineage_update_check.sqlite3` and `download_completion.json` are disposable scheduling hints.
+After an authorized out-of-band restore/import with producers stopped, those caches may be discarded
+and explicitly reconstructed. Retain receipts, locks, journals and `universe_updates.sqlite3` intentions;
+rebuild the summary separately. Never test restoration over a live store.
 
 ## Focused standalone work
 
 ```bash
-./download_alpaca_pricing.py --store data_pricing -s DELL -s HPE
-./build_alpaca_lineage.py --store data_pricing --pending
-./output_current_lineage_evidence.py DELL --store data_pricing --offline
+./alpaca-eod universe rebuild --store data_pricing
+./alpaca-eod pricing acquire --store data_pricing --symbol DELL --symbol HPE --through 2026-10-16
+./alpaca-eod lineage update --store data_pricing --through 2026-10-16
+./alpaca-eod lineage inspect --store data_pricing --symbol DELL
 ```
 
-Ordinary pricing downloads require an explicit compatible or empty store. They publish pricing only;
-run lineage afterward. Initial history starts in 2016 unless `--from` specifies a later start.
-A start that excludes held observations is rejected, including with force.
+Initialize work state once before standalone pricing or lineage commands. For a new store, finish lineage
+and run `summary rebuild` before daily updating; `status` identifies any remaining missing coverage.
+Ordinary acquisition requires an explicit compatible or empty store. It publishes pricing only; run
+lineage afterward. Initial history starts in 2016 unless `--from` specifies a later start. A start that
+excludes held observations is rejected. `--symbols-file` accepts headerless CSV or one label per line;
+`--recovery-universe` explicitly selects the additive recovery list and can mean a full acquisition.
 
-| Option | Scope |
+| Command | Scope |
 |---|---|
-| Pricing `--file PATH` | CSV or one ticker per line. |
-| Pricing `--all` | Tracked `resources/ticker.csv` universe; potentially a full acquisition. |
-| Pricing `--force-download` | Reacquire the full retained history. |
-| Pricing `--append-ready` | Only after approved live history checking/replacement; fetch missing sessions. With `--all`, selects the ready summary. |
-| Lineage `--symbol TICKER` | Selected dependency group; can acquire missing related pricing. |
-| Lineage `--pending` / `--all` | Local changed inputs and stale rules, using hints or a fallback receipt scan. |
-| Lineage `--no-download` | Disable pricing acquisition; metadata requests still occur. |
-| Lineage `--refresh-metadata` | Reacquire full evidence, including older corrections. |
-| Lineage `--refresh-existing` | Fresh live check, same-span replacements and affected lineage; no append. |
+| `pricing check` | Live last-session comparison from the trusted summary; no publication. |
+| `pricing refresh` | Check existing eligible histories, replace differences over their retained spans and finish affected lineage. |
+| `pricing refresh --symbol TICKER` | Explicit retained-span replacement, followed separately by `lineage update`. |
+| `lineage update --symbol TICKER` | Selected complete dependency group; may acquire related pricing. |
+| `lineage update` | Pending inputs and incompatible rules, with explicit hint reconstruction if needed. |
+| `lineage refresh` | Reacquire selected groups' full evidence, including older corrections. |
+| `lineage inspect --symbol TICKER` | Offline published evidence; does not replay rules. |
+| `lineage update/refresh --no-pricing-acquisition` | Disable pricing acquisition; metadata requests still occur. |
 
-Pricing uses up to three workers sharing one 199-request/minute budget. This limit is per invocation,
-not account-wide. Lineage allows one worker per store; a second waits.
-Standalone batches report individual failures and retain completed work. Standalone lineage prints its
-result at completion; quiet stdout is not a progress indicator.
-
-Evidence inspection without `--offline` runs the normal workflow and may acquire/publish data.
-Offline evidence reads existing decisions; it does not replay rules.
-
-## Recovery
-
-Rerun the owning producer. Locks, staged files and journals let it finish interrupted publication.
-Do not delete lock files, pending markers or staging by hand, or edit selected artifacts.
-A lock file's existence does not mean the lock is held.
-
-For interrupted explicit append, first run the ordinary downloader for the affected ticker with the
-same `--request-end`, then reload the ready summary before retrying.
-Readers reject incomplete publications; they never repair them.
-
-`lineage_update_check.sqlite3` and `download_completion.json` are disposable scheduling hints.
-After an out-of-band restore/import, discard those two caches so receipts are rediscovered; retain actual
-receipts, locks and journals. Rebuild the summary separately. Copy/restore a complete store only when
-authorized, with producers stopped; never test restoration over the live store.
+Pricing uses up to three workers sharing one 199-request/minute budget per invocation, not account-wide.
+Lineage has one writer per store; a second waits. Daily updates and standalone producers
+also serialize on the same stable store update lock.
+Independent successful publications remain usable after a failed batch. Public append shortcuts and
+redundant aliases are removed; approved append is internal to orchestration.
 
 ## Read and export
 
 ```bash
-./read_alpaca_pricing.py --store data_pricing -s DELL --resolve
-./read_alpaca_pricing.py --store data_pricing -s DELL --type raw all
-./convert_latest_alpaca_pricing_to_blood_hound_parquet --output ./alpaca.parquet -s DELL
+./alpaca-eod resolve --store data_pricing --symbol DELL
+./alpaca-eod read --store data_pricing --symbol DELL --adjustment raw all
+./alpaca-eod export bloodhound --output ./alpaca.parquet --symbol DELL
 ```
 
 See [Public API](public-api.md) for identity selection, date ranges and output types.
-The standalone reader returns status 3 when busy; `--wait` waits.
-Otherwise 0 means success, 1 runtime failure and 2 invalid CLI arguments.
+The standalone reader returns status 3 when busy; `--wait` waits. Otherwise 0 means success,
+1 runtime failure/incomplete work and 2 invalid CLI arguments. Argument abbreviation is disabled.
 
 Parquet export additionally needs [requirements-bloodhound.txt](../requirements-bloodhound.txt).
 The output parent must exist outside the source store. Default selection is all indexed lineage groups.
@@ -106,34 +185,36 @@ Conversion does not register data with Bloodhound.
 
 ## Separate catalogue workflow
 
-These commands write `data_vtest/`, not the standalone store. Replace `YYYY-MM-DD` below with the
-intended exclusive UTC boundary:
+These commands operate on the combined monthly store, separate from standalone pricing:
 
 ```bash
-./run_alpaca_end_of_day_ticker_pipeline.py -s DELL --request-end YYYY-MM-DD
-./read_alpaca_end_of_day_ticker.py --dump-flat-online-csv ./online.csv
+./alpaca-eod catalogue update --store data_vtest --symbol DELL --through 2026-10-16
+./alpaca-eod catalogue export --repository-root . --output ./online.csv
 ```
 
-The combined producer resolves canonical symbols and runs the complete catalogue cascade.
-`download_alpaca_end_of_day_bars.py` is an alias for this producer.
-Its `--file` accepts one label per line, not the recovery CSV. New symbols acquire from 2016;
-existing symbols replace selected months. `--request-start` must be a month start.
-Moving the end backward can truncate the terminal month; an empty response does not delete an old month.
-Its default end is current UTC midnight, unlike the standalone New York cutoff; pin it explicitly.
+The combined producer resolves canonical symbols and runs the complete catalogue cascade. New symbols
+acquire from 2016; existing symbols replace selected months. `--from` must be a month start.
+The inclusive `--through` and default completion rule match standalone updating. A cutoff preceding
+retained coverage/observations is rejected before publication. After interruption, the publication marker
+enforces the original canonical and submitted symbols and exact request boundaries.
 
-Use one producer per store. Its lock blocks catalogue readers for the full transaction.
-After interruption, rerun the **same canonical symbols and exact boundaries**. The recovery marker does
-not enforce that match, so a different request is not a recovery shortcut.
+Public catalogue read/export use `--repository-root`, selecting its `data_vtest/` through `DataLibrary`.
+They cannot silently select a standalone or unactivated store. One producer holds the combined store's
+publication lock for its whole transaction.
 
-For an explicitly authorized fresh universe:
+For an explicitly requested fresh universe:
 
 ```bash
-./build_alpaca_end_of_day_clean_room.py --universe resources/ticker.csv --store data_clean_room --request-end YYYY-MM-DD
+./alpaca-eod catalogue build --recovery-universe --store data_clean_room --through 2026-10-16
+./alpaca-eod catalogue resume --store data_clean_room
+./alpaca-eod catalogue audit --store data_clean_room
+./alpaca-eod catalogue activate --store data_clean_room
 ```
 
-The universe is one sorted, unique CSV record. The isolated store starts empty and consumes only this
-run's provider responses. Resume with identical inputs and versions. A mandatory full audit follows
-construction; `--activate` then selects it as `data_vtest/`, retaining the previous store.
+Construction starts empty, pins an immutable universe snapshot, consumes its own provider responses and
+performs a mandatory final audit. Resume uses the pinned labels, original target and compatible contracts,
+regardless of later registry growth. Activation is separate and retains the previous `data_vtest/` store.
+`--symbols-file` can select a different sorted, unique, single-record universe for construction.
 
-The legacy `inspect_alpaca_security_lineage.py`, `correlate_alpaca_end_of_day_security_segments.py` and
-`audit_alpaca_end_of_day_catalog.py` target `data/end_of_day/`. They do not operate on the current catalogue.
+`legacy probe`, `legacy correlate` and `legacy audit` retain the operations on `data/end_of_day/`.
+They use `--repository-root`; probe/correlate also require `--symbol`. These stores are never fallbacks.

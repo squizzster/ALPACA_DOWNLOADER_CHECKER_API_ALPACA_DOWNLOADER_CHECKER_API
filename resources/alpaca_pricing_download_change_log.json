@@ -83,5 +83,32 @@
       "Trust completed source receipts, endpoint validators, boundary inventories and payloads from first consumption. Normal reads open required data directly; authenticate_* owns explicit audits. Compare new output digests with the recorded inventory and retire owned files without reading old bytes; explicit repair replaces supplied payloads.",
       "Preserve v1-v14 pricing and publication formats, validating new destinations and outputs and recovering interrupted journals at their owning boundaries. Avoid opening the disposable work-hint database when there are no selected hints to acknowledge."
     ]
+  },
+  {
+    "modifications": [
+      "Batch initial and invalidated universe acquisitions with existing publication checks; advance completed empty histories from their covered end, preserving identical-request reuse and retained data.",
+      "Carry acquisition-evidence fingerprints in source selectors so interrupted identity-driven replacement is reusable before lineage acknowledgement; cap producer probes at the requested pricing cutoff. Preserve compatible prior publications."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind buffered initial and invalidated acquisition to the selected source generation or explicit absence, rejecting concurrent source changes under the ticker lock before consuming replacement data. Cover same-span and advancing replacements while retaining strict retained-span refresh checks and compatible v1-v16 publications and journal recovery."
+    ]
+  },
+  {
+    "modifications": [
+      "Require source-generation approval for nonempty append, reject concurrent changes under the publication lock and validate dependency histories through the pricing owner. Preserve failure classifications and pricing request accounting for durable update retries.",
+      "Record accepted retained-span correction identifiers in source publications for lineage acknowledgement and interruption recovery without repeated full acquisition. Preserve compatible v1-v17 publications."
+    ]
+  },
+  {
+    "modifications": [
+      "Expose read-only summary coverage, selected pricing ranges and pending producer owners in one coherent status read, including incomplete handoffs. Preserve compatible v1-v18 publications."
+    ]
+  },
+  {
+    "modifications": [
+      "Require initialized durable work for canonical pricing acquisition, register selected labels before requests, and enforce complete-group retry/cutoff restrictions while preserving provider failure classifications."
+    ]
   }
 ]

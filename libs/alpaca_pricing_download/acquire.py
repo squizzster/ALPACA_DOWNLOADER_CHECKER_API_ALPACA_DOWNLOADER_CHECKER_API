@@ -1,0 +1,171 @@
+"""Bounded initial acquisition using the ordinary downloader's producer checks."""
+
+from pathlib import Path
+
+from .append import _cohorts, append_entries
+from .contract import (
+    ADJUSTMENTS,
+    HISTORY_START,
+    InitialPricingUnavailable,
+    digest,
+    failure_outcome,
+    json_bytes,
+    timestamp,
+)
+from .download import download_pricing, request_end
+from .http import BarsClient
+from .refresh import acquire_full
+from .storage import initialize_store, load_source, read_validator, recover, regular_path, ticker_lock
+
+
+class MeasuredRequests:
+    """Use the ordinary fetch planner while retaining its page accounting."""
+
+    fetch = BarsClient.fetch
+
+    def __init__(self, client, metrics):
+        self.client, self.metrics = client, metrics
+
+    def execute_plan(self, plan):
+        return self.client.execute_plan(plan, metrics=self.metrics)
+
+
+def acquire_selected(
+    store, symbols, end_date, *, client, invalidate=(), progress=None, workers=3, evidence_fingerprints=None
+):
+    """Only selected labels open manifests; completed requests win over acknowledgements."""
+    store = Path(store).absolute()
+    evidence_fingerprints = evidence_fingerprints or {}
+    initialize_store(store)
+    end = request_end(end_date)
+    end_text = end.isoformat().replace("+00:00", "Z")
+    needs, selected_generations, results, append, empty = [], {}, [], [], []
+    for symbol in sorted(set(symbols)):
+        root = regular_path(store, f"end_of_day/pricing/{symbol}")
+        # A selected acquisition may create its own paths. No universe inventory.
+        root.mkdir(parents=True, exist_ok=True)
+        with ticker_lock(root, exclusive=True, create=True):
+            recover(root)
+            source = load_source(root, symbol)
+            endpoints = read_validator(root, source, published=True) if source else None
+            selected_generations[symbol] = digest(json_bytes(source)) if source is not None else None
+        covered = timestamp(source["latest_request"]["end_exclusive"]) if source else None
+        accepted_evidence = (
+            symbol in evidence_fingerprints
+            and source is not None
+            and source.get("acquisition_evidence_sha256") == evidence_fingerprints[symbol]
+        )
+        if source and (covered > end or covered == end and (symbol not in invalidate or accepted_evidence)):
+            results.append({"symbol": symbol, "status": "covered", "already_beyond_target": covered > end})
+            continue
+        if source and (symbol not in invalidate or accepted_evidence):
+            # The normal downloader remains responsible for nonempty endpoint checks;
+            # empty ranges use its incremental covered-range path.
+            if endpoints is not None and not any(endpoints.values()):
+                empty.append({"symbol": symbol, "asof": source["latest_request"]["asof"], "last_all": None})
+            else:
+                append.append(symbol)
+            continue
+        needs.append(
+            {
+                "kind": "bars",
+                "why": "initial_or_invalidated_history",
+                "symbols": [symbol],
+                "adjustments": list(ADJUSTMENTS),
+                "asof": end.date().isoformat(),
+                "ranges": [
+                    {
+                        "start": source.get("history_start", HISTORY_START) if source else HISTORY_START,
+                        "end_exclusive": end_text,
+                    }
+                ],
+            }
+        )
+    metrics = {}
+    ordinary_client = (
+        MeasuredRequests(client, metrics) if callable(getattr(client, "execute_plan", None)) else client
+    )
+    for cohort in _cohorts(needs):
+        if progress:
+            progress(
+                "acquiring",
+                {"symbols": len(cohort), "completed": len(results), "selected": len(selected_generations)},
+            )
+        try:
+            consumer, _ = acquire_full(cohort, client, metrics=metrics)
+        except (RuntimeError, OSError, ValueError) as error:
+            # A label-specific rejection must not fail every other member of a batch.
+            # Exact fallback runs only for the selected failed cohort and remains bounded.
+            from .contract import BarsSymbolUnavailable
+
+            outcome = failure_outcome(error)
+            if not isinstance(error, BarsSymbolUnavailable) and outcome["http_status"] != 400:
+                results.extend(
+                    {
+                        "symbol": need["symbols"][0],
+                        "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                        "outcome": outcome,
+                    }
+                    for need in cohort
+                )
+                continue
+            consumer = ordinary_client
+        for need in cohort:
+            symbol = need["symbols"][0]
+            try:
+                value = download_pricing(
+                    store,
+                    symbol,
+                    end_date,
+                    client=consumer,
+                    refresh_all=symbol in invalidate,
+                    from_date=need["ranges"][0]["start"][:10],
+                    selected_source_sha256=selected_generations[symbol],
+                    acquisition_evidence_sha256=evidence_fingerprints.get(symbol),
+                )
+                results.append({**value, "status": "published"})
+            except InitialPricingUnavailable as error:
+                results.append({"symbol": symbol, "status": "blocked", "outcome": error.evidence})
+            except (RuntimeError, OSError, ValueError) as error:
+                outcome = failure_outcome(error)
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                        "outcome": outcome,
+                    }
+                )
+        del consumer
+    if empty:
+        extended = append_entries(
+            store,
+            empty,
+            end_date,
+            client=client,
+            workers=workers,
+            progress=progress,
+            approved_generations=selected_generations,
+        )
+        for item in extended["results"]:
+            if item.get("outcome", {}).get("outcome") == "access_denied":
+                item["status"] = "blocked"
+            results.append(item)
+        metrics["empty_coverage_append"] = extended["requests"]
+    for symbol in append:
+        try:
+            value = download_pricing(store, symbol, end_date, client=ordinary_client)
+            results.append({**value, "status": "published"})
+        except (RuntimeError, OSError, ValueError) as error:
+            outcome = failure_outcome(error)
+            results.append(
+                {
+                    "symbol": symbol,
+                    "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                    "outcome": outcome,
+                }
+            )
+    return {
+        "results": results,
+        "requests": metrics,
+        "failed": sum(item["status"] in {"failed", "blocked"} for item in results),
+    }

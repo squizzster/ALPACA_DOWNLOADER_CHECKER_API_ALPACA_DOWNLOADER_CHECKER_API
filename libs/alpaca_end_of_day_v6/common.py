@@ -137,9 +137,11 @@ def finish_publication(store_root: Path | str) -> None:
 
 
 @contextmanager
-def publication_transaction(store_root: Path | str, marker: object) -> Iterator[None]:
+def publication_transaction(store_root: Path | str, marker: object, *, before_publish=None) -> Iterator[None]:
     """Guard a multi-file v6 publication and retain its marker on failure."""
     with publication_lock(store_root, exclusive=True):
+        if before_publish is not None:
+            before_publish()
         begin_publication(store_root, marker)
         yield
         finish_publication(store_root)

@@ -8,6 +8,8 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
+from legacy_arguments import legacy_arguments
+
 from libs.alpaca_end_of_day_pipeline import (
     ALPACA_DOWNLOAD_BOUNDARY,
     EMPIRICAL_ADJUSTMENT_ALIAS_BOUNDARY,
@@ -22,7 +24,6 @@ from libs.download_alpaca_end_of_day_bars import (
     EndOfDayDownloadPlan,
     decide_adaptive_adjustment_downloads,
     end_of_day_download_plan_from_command_line,
-    parse_command_line_arguments,
     run_end_of_day_download_stage,
 )
 
@@ -186,20 +187,14 @@ class AdaptiveDecisionTests(unittest.TestCase):
             )
 
     def test_cli_enables_adaptive_mode_and_rejects_conflicting_modes(self) -> None:
-        cli_arguments = parse_command_line_arguments(["--symbol", "TEST", "--adaptive-adjustments"])
+        cli_arguments = legacy_arguments(symbols=["TEST"], adaptive_adjustments=True)
         plan = end_of_day_download_plan_from_command_line(cli_arguments)
         self.assertTrue(plan.adaptive_adjustment_downloads)
         self.assertEqual(ALPACA_ADJUSTMENT_MODES, plan.adjustment_modes)
 
-        for conflicting_arguments in (
-            ("--adjustment", "raw"),
-            ("--force",),
-            ("--repair",),
-        ):
-            with self.subTest(conflicting_arguments=conflicting_arguments):
-                cli_arguments = parse_command_line_arguments(
-                    ["--symbol", "TEST", "--adaptive-adjustments", *conflicting_arguments]
-                )
+        for conflicting in ({"adjustment": ["raw"]}, {"force": True}, {"repair_orphaned_download_pair": True}):
+            with self.subTest(conflicting=conflicting):
+                cli_arguments = legacy_arguments(symbols=["TEST"], adaptive_adjustments=True, **conflicting)
                 with self.assertRaises(SystemExit):
                     end_of_day_download_plan_from_command_line(cli_arguments)
 

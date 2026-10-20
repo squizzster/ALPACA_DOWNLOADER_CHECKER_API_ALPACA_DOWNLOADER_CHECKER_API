@@ -17,6 +17,9 @@ from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
     DownloadError,
+    digest,
+    failure_outcome,
+    json_bytes,
     symbol_label,
     timestamp,
     transform,
@@ -86,7 +89,22 @@ def _cohorts(needs):
         yield cohort
 
 
-def _publish_append(store, entry, need, bars):
+def select_append_sources(store, entries, end_date, *, required_symbols=()):
+    """Select generations for the append subset before its history check begins."""
+    needs, _ = append_needs(entries, request_end(end_date))
+    result = {}
+    selected = {need["symbols"][0] for need in needs} | set(required_symbols)
+    for symbol in sorted(selected):
+        root = regular_path(Path(store), f"end_of_day/pricing/{symbol}", published=True)
+        with ticker_lock(root, exclusive=False):
+            source = load_source(root, symbol)
+            if source is None:
+                raise DownloadError(f"{symbol}: selected append source missing")
+            result[symbol] = digest(json_bytes(source))
+    return result
+
+
+def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
     symbol = entry["symbol"]
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     window = need["ranges"][0]
@@ -97,6 +115,10 @@ def _publish_append(store, entry, need, bars):
             raise DownloadError("finish interrupted pricing publication before appending")
         recover(root)  # Discard only unjournaled staging, under the existing ticker lock.
         previous = load_source(root, symbol)
+        if entry["last_all"] is not None and approved_source_sha256 is None:
+            raise DownloadError(f"{symbol}: nonempty append requires a completed history-check approval")
+        if approved_source_sha256 is not None and digest(json_bytes(previous)) != approved_source_sha256:
+            raise DownloadError(f"{symbol}: source generation changed after the approved handoff")
         if (
             previous is None
             or timestamp(previous["latest_request"]["end_exclusive"]) != start
@@ -109,6 +131,8 @@ def _publish_append(store, entry, need, bars):
             raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
         if expected is not None and not same_row(actual[-1], expected):
             raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
+        if expected is None and any(endpoints.values()):
+            raise DownloadError(f"{symbol}: partial adjustment history requires retained-history checking")
         for name, rows in views.items():
             if rows and endpoints[name] and timestamp(rows[0][0]) <= timestamp(endpoints[name][-1][0]):
                 raise DownloadError(f"{symbol}: append would overlap approved {name} history")
@@ -148,6 +172,7 @@ def _publish_append(store, entry, need, bars):
             "changed": update is not None,
             "added_rows": {name: len(rows) for name, rows in views.items()},
             "files_written": written,
+            "source_sha256": digest(json_bytes(load_source(root, symbol))),
         }
 
 
@@ -161,6 +186,7 @@ def append_entries(
     progress=None,
     end_by_symbol=None,
     before_publish=None,
+    approved_generations=None,
 ):
     """Batch explicit trusted baselines through the ordinary append publisher."""
     validate_version()
@@ -180,6 +206,11 @@ def append_entries(
         end = max(end_by_symbol.values()) if end_by_symbol else request_end(end_date)
     needs, results = append_needs(entries, end, end_by_symbol=end_by_symbol)
     by_symbol = {entry["symbol"]: entry for entry in entries}
+    approved_generations = approved_generations or {}
+    for need in needs:
+        symbol = need["symbols"][0]
+        if by_symbol[symbol]["last_all"] is not None and symbol not in approved_generations:
+            raise DownloadError(f"{symbol}: nonempty append requires a completed history-check approval")
     metrics, publishing = {}, False
     for cohort in _cohorts(needs):
         # Different starts remain separate: never overfetch another ticker's approved dates.
@@ -190,7 +221,13 @@ def append_entries(
             acquired = client.execute_plan(plan, metrics=metrics)
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
-                {"symbol": need["symbols"][0], "status": "failed", "error": str(error)[:300]} for need in cohort
+                {
+                    "symbol": need["symbols"][0],
+                    "status": "failed",
+                    "error": str(error)[:300],
+                    "outcome": failure_outcome(error),
+                }
+                for need in cohort
             )
             continue
         if not publishing:
@@ -203,9 +240,16 @@ def append_entries(
             symbol = need["symbols"][0]
             try:
                 bars = {name: responses[(0, index, 0, symbol, name)] for name in ADJUSTMENTS}
-                return _publish_append(store, by_symbol[symbol], need, bars)
+                return _publish_append(
+                    store, by_symbol[symbol], need, bars, approved_source_sha256=approved_generations.get(symbol)
+                )
             except (RuntimeError, OSError, ValueError, KeyError) as error:
-                return {"symbol": symbol, "status": "failed", "error": str(error)[:300]}
+                return {
+                    "symbol": symbol,
+                    "status": "failed",
+                    "error": str(error)[:300],
+                    "outcome": failure_outcome(error),
+                }
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pricing-append") as pool:
             for result in pool.map(publish_one, enumerate(cohort)):
@@ -242,4 +286,5 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
         workers=workers,
         progress=progress,
         before_publish=lambda: assert_current(store, snapshot["token"]),
+        approved_generations=snapshot.get("approved_generations"),
     )

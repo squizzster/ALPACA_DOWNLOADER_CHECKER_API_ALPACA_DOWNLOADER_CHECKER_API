@@ -45,6 +45,8 @@ from .storage import (
     ticker_lock,
 )
 
+_SOURCE_NOT_SELECTED = object()
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -83,7 +85,7 @@ def request_end(value: str | None, *, now: datetime | None = None) -> datetime:
     if day > today:
         raise DownloadError(
             "request end cannot include the current or a future New York date; "
-            "--to must be before today in America/New_York"
+            "--through must be before today in America/New_York"
         )
     end = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     if end <= timestamp(HISTORY_START):
@@ -137,6 +139,7 @@ def _endpoints_match(client, symbol: str, endpoints: dict, asof: str) -> bool:
             day = timestamp(expected[0]).astimezone(NEW_YORK).date()
             start = datetime(day.year, day.month, day.day, tzinfo=NEW_YORK)
             end = (start + timedelta(days=1)).astimezone(timezone.utc)
+            end = min(end, timestamp(asof + "T00:00:00Z"))
             start = start.astimezone(timezone.utc)
             actual = transform(client.fetch(symbol, adjustment, start, end, asof=asof), start, end)
             # Compare exact values, not incidental JSON number or timezone spelling.
@@ -232,6 +235,8 @@ def publish_acquired(
     *,
     repair_payloads=False,
     on_check=None,
+    acquisition_evidence_sha256=None,
+    history_correction_id=None,
 ):
     """Publish through the original recovery, notice and summary transaction."""
     paths = boundary_paths(anchor)
@@ -257,6 +262,14 @@ def publish_acquired(
         "validator": {"file": VALIDATOR_FILE, "sha256": digest(json_bytes(validator))},
         "boundaries": references,
     }
+    evidence = acquisition_evidence_sha256 or (previous or {}).get("acquisition_evidence_sha256")
+    if evidence is not None:
+        if len(evidence) != 64 or any(c not in "0123456789abcdef" for c in evidence):
+            raise DownloadError("invalid acquisition evidence fingerprint")
+        source["acquisition_evidence_sha256"] = evidence
+    correction = history_correction_id or (previous or {}).get("history_correction_id")
+    if correction is not None:
+        source["history_correction_id"] = correction
     return publish(
         root,
         previous,
@@ -279,7 +292,16 @@ def download_pricing(
     from_date: str | None = None,
     on_check=None,
     expected_source_sha256: str | None = None,
+    selected_source_sha256=_SOURCE_NOT_SELECTED,
+    acquisition_evidence_sha256: str | None = None,
+    history_correction_id: str | None = None,
 ) -> dict:
+    """Acquire under the ticker lock, optionally bound to a prefetch selection.
+
+    A selected digest binds buffered acquisition to that source; explicit None
+    binds it to absence. The separate refresh expectation also preserves the
+    complete original request span.
+    """
     validate_version()
     symbol = symbol_label(symbol)
     end = request_end(end_date)
@@ -304,6 +326,12 @@ def download_pricing(
             locks.enter_context(ticker_lock(root, exclusive=True, create=True))
         recovered = recover(root, on_check=on_check)
         previous = load_source(root, symbol)
+        if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
+            current_sha256 = digest(json_bytes(previous)) if previous is not None else None
+            if current_sha256 != selected_source_sha256:
+                raise DownloadError(
+                    "pricing source changed after acquisition selection; reselect before retrying"
+                )
         if previous is None and any(path.name != ".download.lock" for path in root.iterdir()):
             raise DownloadError("ticker directory contains unowned files; refusing acquisition")
         if previous is not None:
@@ -333,6 +361,7 @@ def download_pricing(
                 "consistency_check": "not_required",
                 "updated_boundaries": [],
                 "files_written": 0,
+                "source_sha256": digest(json_bytes(previous)),
                 "recovered": recovered,
                 "requests": 0,
                 "changed": False,
@@ -364,14 +393,14 @@ def download_pricing(
                     if _endpoints_match(client, symbol, endpoints, end.date().isoformat())
                     else "mismatch"
                 )
-        full_history = (
-            previous is None or refresh_all or extending or check in ("mismatch", "no_stored_sessions")
-        )
+        full_history = previous is None or refresh_all or extending or check == "mismatch"
         restarted = False
         for attempt in range(2):
             start = (
                 history_start
                 if full_history
+                else previous_end
+                if check == "no_stored_sessions"
                 else max(history_start, timestamp(previous["anchor_month"] + "-01T00:00:00Z"))
             )
             request = {
@@ -430,6 +459,8 @@ def download_pricing(
             update,
             repair_payloads=refresh_all,
             on_check=on_check,
+            acquisition_evidence_sha256=acquisition_evidence_sha256,
+            history_correction_id=history_correction_id,
         )
         return {
             "symbol": symbol,
@@ -439,6 +470,7 @@ def download_pricing(
             "consistency_check": check,
             "updated_boundaries": list(changed_views),
             "files_written": written,
+            "source_sha256": digest(json_bytes(load_source(root, symbol))),
             "recovered": recovered,
             "restarted": restarted,
             "has_data": any(selected_endpoints.values()),
