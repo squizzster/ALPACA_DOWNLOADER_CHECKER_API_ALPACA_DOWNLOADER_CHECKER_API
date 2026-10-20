@@ -224,8 +224,11 @@ class PricingRateLimitTests(unittest.TestCase):
 
         client = clock.client(opener=opener)
         self.assertEqual(
-            client.fetch("GOOG", "raw", timestamp("2026-10-01T00:00:00Z"), timestamp("2026-10-14T00:00:00Z")),
-            [],
+            client.fetch(
+                "GOOG", "raw", timestamp("2026-10-01T00:00:00Z"), timestamp("2026-10-14T00:00:00Z")
+            ).rows,
+            (),
         )
         self.assertEqual(len(starts), 3)
+        self.assertEqual(client.request_count, len(starts))
         self.assert_budget(starts)

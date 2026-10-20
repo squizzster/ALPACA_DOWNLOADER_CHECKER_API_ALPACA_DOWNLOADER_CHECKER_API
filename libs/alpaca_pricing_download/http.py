@@ -19,6 +19,7 @@ from libs.alpaca_data_api_solver import BAR_URL, build_plan, split_action, valid
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 
 from .contract import BarsSymbolUnavailable, DownloadError, timestamp, transform
+from .responses import CompletedBars
 
 REQUESTS_PER_MINUTE = 199
 
@@ -116,6 +117,8 @@ class BarsClient:
         self.sleep = sleep
         self.wall_time = wall_time
         self.limiter = limiter if limiter is not None else RequestLimiter(sleep=sleep, monotonic=monotonic)
+        self.request_count = 0
+        self._request_lock = threading.Lock()
 
     def _get(self, parameters: dict) -> dict:
         request = urllib.request.Request(
@@ -126,6 +129,8 @@ class BarsClient:
             # Every page, endpoint probe, and retry uses this same shared budget.
             self.limiter.acquire()
             try:
+                with self._request_lock:
+                    self.request_count += 1
                 with self.opener(request, timeout=60) as response:
                     return parse_response(response.read())
             except urllib.error.HTTPError as error:
@@ -162,7 +167,7 @@ class BarsClient:
 
     def fetch(
         self, symbol: str, adjustment: str, start: datetime, end: datetime, *, asof: str | None = None
-    ) -> list[dict]:
+    ) -> CompletedBars:
         need = {
             "kind": "bars",
             "why": "boundary_check" if asof is not None else "history_download",
@@ -223,8 +228,17 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                 parameters[pagination["parameter"]] = token
             start = timestamp(parameters["start"])
             end = timestamp(parameters["end"]) + timedelta(microseconds=1)
-            for rows in bars.values():
-                transform(rows, start, end)
+            normalized = {
+                symbol: CompletedBars(
+                    symbol,
+                    parameters["adjustment"],
+                    start,
+                    end,
+                    parameters["asof"],
+                    transform(rows, start, end),
+                )
+                for symbol, rows in bars.items()
+            }
         except (DownloadError, OSError) as error:
             cause = error.__cause__ or error
             if isinstance(cause, urllib.error.HTTPError) and cause.code == 414 and len(symbols) > 1:
@@ -241,9 +255,9 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
         for target in action["deliver"]:
             lower, upper = timestamp(target["start"]), timestamp(target["end_exclusive"])
             for symbol in target["symbols"]:
-                output[(step_index, target["need"], target["range"], symbol, adjustment)] = [
-                    row for row in bars[symbol] if lower <= timestamp(row["t"]) < upper
-                ]
+                output[(step_index, target["need"], target["range"], symbol, adjustment)] = normalized[
+                    symbol
+                ].select(symbol, adjustment, lower, upper, parameters["asof"])
 
     for step_index, step in enumerate(plan["steps"]):
         for action in step["actions"]:

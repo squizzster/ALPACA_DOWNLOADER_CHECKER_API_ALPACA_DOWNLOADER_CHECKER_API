@@ -193,7 +193,8 @@ class RetainedBatchTests(unittest.TestCase):
                 concurrent = {}
 
                 def publish_after_fetch(*args, **kwargs):
-                    buffered = original(*args, **kwargs)
+                    batches = original(*args, **kwargs)
+                    buffered = next(batches)
 
                     def publish():
                         download_pricing(
@@ -211,7 +212,8 @@ class RetainedBatchTests(unittest.TestCase):
                     else:
                         publish()
                     concurrent["pages"] = len(self.pages)
-                    return buffered
+                    yield buffered
+                    yield from batches
 
                 with patch.object(acquire, "acquire_retained", side_effect=publish_after_fetch):
                     result = self.run_acquire(["AAA"])
@@ -341,8 +343,7 @@ class RetainedBatchTests(unittest.TestCase):
         for symbol in self.symbols:
             self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 3)
 
-    def test_cohorts_use_existing_worst_case_row_bound(self):
-        # One full 2016-2026 history fits; two exceed this bound across eight views.
+    def test_endpoint_cohorts_use_endpoint_cost_and_acquisitions_use_actual_ranges(self):
         with patch.object(append, "MAX_ROWS", 30000):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
@@ -351,7 +352,33 @@ class RetainedBatchTests(unittest.TestCase):
             for phase, values in self.progress
             if phase == "boundary_check" and values.get("state") == "started"
         ]
-        self.assertEqual([values["symbols"] for values in started], [1, 1, 1, 1])
+        self.assertEqual([values["symbols"] for values in started], [4])
+        acquisitions = [
+            values
+            for phase, values in self.progress
+            if phase == "retained_history_acquisition" and values.get("state") == "started"
+        ]
+        self.assertEqual([values["symbols"] for values in acquisitions], [4])
+
+    def test_mixed_replacements_are_bounded_after_shared_endpoint_checks(self):
+        for symbol in ("AAA", "CCC"):
+            self.live[symbol]["raw"][0]["v"] += 1
+        with patch.object(append, "MAX_ROWS", 30000):
+            result = self.run_acquire()
+        self.assertEqual(result["failed"], 0, result)
+        endpoints = [
+            v for phase, v in self.progress if phase == "boundary_check" and v.get("state") == "started"
+        ]
+        self.assertEqual([v["symbols"] for v in endpoints], [4])
+        acquisitions = [
+            v
+            for phase, v in self.progress
+            if phase == "retained_history_acquisition" and v.get("state") == "started"
+        ]
+        self.assertEqual([v["symbols"] for v in acquisitions], [2, 2])
+        self.assertEqual(
+            [item["symbol"] for item in result["results"] if item["mode"] == "full_refresh"], ["AAA", "CCC"]
+        )
 
 
 if __name__ == "__main__":

@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 
 from libs.alpaca_data_api_solver import build_plan
 
+from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
@@ -15,7 +17,6 @@ from .contract import (
     json_bytes,
     symbol_label,
     timestamp,
-    transform,
 )
 from .download import (
     _endpoint_window,
@@ -25,6 +26,7 @@ from .download import (
     established_pricing_rejection,
 )
 from .endpoints import endpoints_of
+from .responses import completed_bars
 from .storage import load_source, read_validator, regular_path, ticker_lock
 
 
@@ -113,6 +115,8 @@ def _endpoint_needs(symbol, endpoints, asof, why):
 
 
 def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None):
+    started = monotonic()
+    pages_before = (metrics or {}).get("page_requests", 0)
     plan = build_plan({"steps": [{"needs": needs}]})
     stage = needs[0]["why"] if needs else "acquisition_check"
     actions = plan["steps"][0]["actions"]
@@ -124,13 +128,31 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None):
                 "symbols": len({need["symbols"][0] for need in needs}),
                 "actions": len(actions),
                 "minimum_pages": len(actions),
-                "page_requests": (metrics or {}).get("page_requests", 0),
             },
         )
     options = {"on_failure": on_failure} if on_failure is not None else {}
-    acquired = client.execute_plan(plan, metrics=metrics, **options)
+    try:
+        acquired = client.execute_plan(plan, metrics=metrics, **options)
+    except (RuntimeError, OSError, ValueError):
+        if progress:
+            progress(
+                stage,
+                {
+                    "state": "failed",
+                    "seconds": monotonic() - started,
+                    "page_requests": (metrics or {}).get("page_requests", 0) - pages_before,
+                },
+            )
+        raise
     if progress:
-        progress(stage, {"state": "completed", "page_requests": (metrics or {}).get("page_requests", 0)})
+        progress(
+            stage,
+            {
+                "state": "completed",
+                "seconds": monotonic() - started,
+                "page_requests": (metrics or {}).get("page_requests", 0) - pages_before,
+            },
+        )
     cache = {}
     for index, need in enumerate(needs):
         symbol = need["symbols"][0]
@@ -148,7 +170,14 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None):
                         timestamp(window["end_exclusive"]),
                         need["asof"],
                     )
-                ] = acquired[key]
+                ] = completed_bars(
+                    acquired[key],
+                    symbol,
+                    adjustment,
+                    timestamp(window["start"]),
+                    timestamp(window["end_exclusive"]),
+                    need["asof"],
+                )
     return cache, plan
 
 
@@ -168,7 +197,7 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
         keys = {name: (False, symbol, name, start, end, need["asof"]) for name in ADJUSTMENTS}
         if any(key not in cache for key in keys.values()):
             continue
-        views = {name: transform(cache[key], start, end) for name, key in keys.items()}
+        views = {name: cache[key].rows for name, key in keys.items()}
         prior = (retained_endpoints or {}).get(symbol)
         endpoints = _incremental_endpoints(prior, views, start) if prior is not None else endpoints_of(views)
         probes.extend(
@@ -230,16 +259,41 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
                 "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
             }
         )
-    consumer, _ = acquire_full(
-        needs, client, metrics=metrics, retained_endpoints=retained, progress=progress, on_failure=failed
-    )
-    return PlannedClient(consumer, cache), failures
+
+    def batches():
+        from .append import _cohorts
+
+        if failures:
+            yield list(failures), client, failures
+        # Endpoint results select the actual ranges. Bound those acquisitions,
+        # releasing their buffered histories before acquiring the next cohort.
+        for cohort in _cohorts(needs):
+            symbols = {need["symbols"][0] for need in cohort}
+            consumer, _ = acquire_full(
+                cohort,
+                client,
+                metrics=metrics,
+                retained_endpoints=retained,
+                progress=progress,
+                on_failure=failed,
+            )
+            yield (
+                sorted(symbols),
+                PlannedClient(consumer, {key: value for key, value in cache.items() if key[1] in symbols}),
+                failures,
+            )
+            del consumer
+
+    return batches()
 
 
-def replace_prepared(store, prepared, *, client, cohort_size=32, progress=None, before_publish=None):
+def replace_prepared(
+    store, prepared, *, client, cohort_size=32, progress=None, before_publish=None, context=None
+):
     """Bound memory by cohort; the solver alone chooses concrete API requests."""
     if type(cohort_size) is not int or cohort_size < 1:
         raise DownloadError("refresh cohort size must be a positive integer")
+    context = accept_context(store, context)
     results, metrics = [], {}
     checked_baseline = False
     for offset in range(0, len(prepared), cohort_size):
@@ -258,7 +312,7 @@ def replace_prepared(store, prepared, *, client, cohort_size=32, progress=None, 
             for item in cohort
         ]
         try:
-            consumer, _ = acquire_full(needs, client, metrics=metrics)
+            consumer, _ = acquire_full(needs, client, metrics=metrics, progress=progress)
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
                 {
@@ -287,6 +341,7 @@ def replace_prepared(store, prepared, *, client, cohort_size=32, progress=None, 
                     from_date=item["start"][:10],
                     expected_source_sha256=item["source_sha256"],
                     history_correction_id=item.get("required_correction_id"),
+                    context=context,
                 )
                 result["status"] = "replaced"
             except (RuntimeError, OSError, ValueError) as error:

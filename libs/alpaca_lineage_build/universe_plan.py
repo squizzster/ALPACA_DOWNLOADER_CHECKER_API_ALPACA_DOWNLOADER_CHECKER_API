@@ -6,7 +6,7 @@ from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download import check_summary
-from libs.alpaca_pricing_download.append import _cohorts, append_needs
+from libs.alpaca_pricing_download.append import MAX_SYMBOLS, _cohorts, append_needs
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, HISTORY_START, timestamp
 from libs.alpaca_pricing_download.live_check import plan as check_plan
 from libs.alpaca_pricing_download.update_checks import read_checks
@@ -30,17 +30,21 @@ from .work_contract import (
 )
 
 
-def boundaries(store, registry, *, allow_pending=False):
+def boundaries(store, registry, *, allow_pending=False, context=None):
     store = Path(store)
     storage.check_store(store)
     root = store / "end_of_day/lineage"
     with storage.publication_lock(root):
         if (root / ".pending.json").exists():
             raise LineageError("pending lineage publication; recover it before planning")
-        index = storage.read_index(root)
+        index = storage.read_index(root) if context is None else context.select_index(root)
         require_complete(index)
         summary_pending = check_summary.pending_symbols(store) if allow_pending else []
-        summary = None if summary_pending else check_summary.read_snapshot(store)
+        summary = (
+            None
+            if summary_pending
+            else (check_summary.read_snapshot(store) if context is None else context.select_summary())
+        )
     checks = read_checks(store, readonly=True)
     if not checks["complete"]:
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
@@ -216,6 +220,14 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
                     "request_identifiers": getattr(error, "request_identifiers", []),
                 }
         fingerprint = document_digest({"lookups": lookups}) if lookups else prior.get("evidence_fingerprint")
+        if (
+            unfinished
+            and prior.get("evidence_fingerprint")
+            and {label: lookup_fact(value) for label, value in lookups.items()}
+            == {label: lookup_fact(value) for label, value in prior.get("required_lookups", {}).items()}
+        ):
+            # Catalogue/exact provenance does not create a new evidence requirement.
+            fingerprint = prior["evidence_fingerprint"]
         # Metadata requirements describe the current lookups. The separate pricing
         # requirement survives status/exchange changes, but never a mapping change.
         acquisition_evidence = (
@@ -321,9 +333,13 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             }
         )
     plans = [build_plan({"steps": [{"needs": cohort}]}) for cohort in _cohorts(initial)]
-    empty_plans = [build_plan({"steps": [{"needs": cohort}]}, merge_ranges=False) for cohort in _cohorts(empty)]
+    empty_plans = [
+        build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
+        for cohort in _cohorts(empty)
+    ]
     append_plans = [
-        build_plan({"steps": [{"needs": cohort}]}, merge_ranges=False) for cohort in _cohorts(append)
+        build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
+        for cohort in _cohorts(append)
     ]
 
     def count(plans):
@@ -393,8 +409,8 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             + pages(plans)
             + pages(empty_plans)
             + pages(append_plans),
-            "http_page_assumptions": "one daily row per selected exchange session, full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
-            "conditional_work": "same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions and dependency expansion",
+            "http_page_assumptions": "known work only, not an ETA: one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
+            "conditional_work": "retained dependency endpoint checks and their selected incremental/replacement acquisitions, same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions, dependency expansion and publications for every resulting complete group; these may dominate the known minimum",
             "pricing_publications_estimate": len(initial) + len(empty) + len(append),
             "lineage_publications": "complete affected groups; dependency expansion may add work",
         },

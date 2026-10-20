@@ -210,8 +210,8 @@ class ApiSolverTests(unittest.TestCase):
 
         rows = execute_bar_plan(result, get_page)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(rows[(0, 0, 0, "A", "all")], [bar("2026-10-12")])
-        self.assertEqual(rows[(0, 1, 0, "B", "all")], [bar("2026-10-14")])
+        self.assertEqual([row[0][:10] for row in rows[(0, 0, 0, "A", "all")].rows], ["2026-10-12"])
+        self.assertEqual([row[0][:10] for row in rows[(0, 1, 0, "B", "all")].rows], ["2026-10-14"])
 
     def test_asof_reason_and_ordered_steps_never_merge(self):
         original = need(["A"])

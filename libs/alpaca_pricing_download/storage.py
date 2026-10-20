@@ -323,11 +323,11 @@ def authenticate_boundary_document(root: Path, reference: dict, symbol: str, kin
     return document
 
 
-def read_boundary(root: Path, source: dict, kind: str) -> dict:
+def read_boundary(root: Path, source: dict, kind: str, *, documents=None) -> dict:
     """Normal consumption under a lock after selecting a completed source."""
     from .handoff import load_published_boundary
 
-    return load_published_boundary(root, source, kind, selected=True)
+    return load_published_boundary(root, source, kind, selected=True, documents=documents)
 
 
 def authenticate_boundary(root: Path, source: dict, kind: str) -> dict:
@@ -387,7 +387,9 @@ def _discard_staging(root: Path) -> None:
     staging.rmdir()
 
 
-def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event=None) -> None:
+def _finish_publication(
+    root: Path, journal: dict, *, on_check=None, check_event=None, source=None, endpoints=None
+) -> None:
     if journal.get("schema_version") not in SUPPORTED_VERSIONS or not isinstance(journal.get("writes"), list):
         raise DownloadError("invalid pricing publication journal")
     writes = journal["writes"]
@@ -476,7 +478,7 @@ def _finish_publication(root: Path, journal: dict, *, on_check=None, check_event
             raise DownloadError("installed update manifest failed verification")
     from .check_summary import refresh_prices
 
-    refresh_prices(root)
+    refresh_prices(root, source=source, endpoints=endpoints)
     _discard_staging(root)
     regular_path(root, ".pending.json").unlink()
     if read_checks(store, ())["epoch"] != event[0]:
@@ -528,16 +530,25 @@ def publish(
     update: dict | None = None,
     repair_payloads: bool = False,
     on_check=None,
+    endpoints=None,
+    old_documents=None,
 ) -> int:
-    old_documents = (
-        {
-            reference["manifest"]: boundary_document(root, reference, previous["symbol"], kind)
-            for kind, reference in previous["boundaries"].items()
-        }
+    # Unchanged references already select their inventory. Only replaced boundaries
+    # can retire files; they occupy disjoint directories (or the completed-years prefix).
+    old_documents = {} if old_documents is None else dict(old_documents)
+    replaced = {
+        kind: reference
+        for kind, reference in (previous or {}).get("boundaries", {}).items()
+        if source["boundaries"].get(kind) != reference or reference["manifest"] in documents
+    }
+    for kind, reference in replaced.items():
+        if reference["manifest"] not in old_documents:
+            old_documents[reference["manifest"]] = boundary_document(root, reference, previous["symbol"], kind)
+    old_files = (
+        owned_files(root, {**previous, "boundaries": replaced}, documents=old_documents)
         if previous is not None
         else {}
     )
-    old_files = owned_files(root, previous, documents=old_documents) if previous is not None else {}
     if previous is not None:
         old_files["source.manifest.json"] = digest(json_bytes(previous))
     retained = {VALIDATOR_FILE: source["validator"]["sha256"]} if "validator" in source else {}
@@ -548,7 +559,7 @@ def publish(
         if document is None:
             if previous is None or reference != previous["boundaries"][kind]:
                 raise DownloadError("new pricing boundary requires publication contents")
-            document = old_documents[relative]
+            continue
         retained[relative] = reference["sha256"]
         directory = PurePosixPath(relative).parent
         for entry in document["adjustments"]:
@@ -603,7 +614,9 @@ def publish(
         if on_check is not None:
             on_check(event)
         os.replace(journal_stage, pending)
-        _finish_publication(root, journal, on_check=on_check, check_event=event)
+        _finish_publication(
+            root, journal, on_check=on_check, check_event=event, source=source, endpoints=endpoints
+        )
     except BaseException:
         if not pending.exists():
             _discard_staging(root)

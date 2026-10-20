@@ -13,6 +13,7 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .check_summary import assert_current, validate_entry
+from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
@@ -22,12 +23,11 @@ from .contract import (
     json_bytes,
     symbol_label,
     timestamp,
-    transform,
-    validate_version,
 )
 from .download import _incremental_endpoints, _join, publish_acquired, request_end, updated_boundaries
 from .endpoints import endpoints_of, same_row, session_extent
 from .handoff import load_published_boundary
+from .responses import completed_bars
 from .storage import load_source, read_validator, recover, regular_path, ticker_lock
 
 MAX_SYMBOLS = 8000  # Verified live with all eight views and full pagination.
@@ -109,7 +109,9 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     window = need["ranges"][0]
     start, end = timestamp(window["start"]), timestamp(window["end_exclusive"])
-    views = {name: transform(bars[name], start, end) for name in ADJUSTMENTS}
+    views = {
+        name: completed_bars(bars[name], symbol, name, start, end, need["asof"]).rows for name in ADJUSTMENTS
+    }
     with ticker_lock(root, exclusive=True):
         if regular_path(root, ".pending.json").exists():
             raise DownloadError("finish interrupted pricing publication before appending")
@@ -137,7 +139,8 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
             if rows and endpoints[name] and timestamp(rows[0][0]) <= timestamp(endpoints[name][-1][0]):
                 raise DownloadError(f"{symbol}: append would overlap approved {name} history")
         # Read only the hot month. Approved history is retained, never requested again.
-        read_selected = partial(load_published_boundary, selected=True)
+        old_documents = {}
+        read_selected = partial(load_published_boundary, selected=True, documents=old_documents)
         month = read_selected(root, previous, "current_month")
         combined = _join(month, views)
         anchor = (end - timedelta(days=1)).strftime("%Y-%m")
@@ -163,6 +166,7 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
             selected,
             changed_views,
             update,
+            old_documents=old_documents,
         )
         return {
             "symbol": symbol,
@@ -171,8 +175,8 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
             "request": request,
             "changed": update is not None,
             "added_rows": {name: len(rows) for name, rows in views.items()},
-            "files_written": written,
-            "source_sha256": digest(json_bytes(load_source(root, symbol))),
+            "files_written": written["files_written"],
+            "source_sha256": written["source_sha256"],
         }
 
 
@@ -187,12 +191,13 @@ def append_entries(
     end_by_symbol=None,
     before_publish=None,
     approved_generations=None,
+    context=None,
 ):
     """Batch explicit trusted baselines through the ordinary append publisher."""
-    validate_version()
     if workers not in (1, 2, 3):
         raise DownloadError("append workers must be 1, 2 or 3")
     store = Path(store).absolute()
+    context = accept_context(store, context)
     entries = list(entries)
     if end_by_symbol is not None and set(end_by_symbol) != {entry.get("symbol") for entry in entries}:
         raise DownloadError("append target map does not match its entries")
@@ -213,10 +218,12 @@ def append_entries(
             raise DownloadError(f"{symbol}: nonempty append requires a completed history-check approval")
     metrics, publishing = {}, False
     for cohort in _cohorts(needs):
+        pages_before = metrics.get("page_requests", 0)
         # Different starts remain separate: never overfetch another ticker's approved dates.
         plan = build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
         if progress:
-            progress("acquiring", {"tickers": len(cohort), "actions": len(plan["steps"][0]["actions"])})
+            actions = len(plan["steps"][0]["actions"])
+            progress("acquiring", {"tickers": len(cohort), "actions": actions, "minimum_pages": actions})
         try:
             acquired = client.execute_plan(plan, metrics=metrics)
         except (RuntimeError, OSError, ValueError) as error:
@@ -229,7 +236,17 @@ def append_entries(
                 }
                 for need in cohort
             )
+            if progress:
+                progress(
+                    "append_acquisition",
+                    {"state": "failed", "page_requests": metrics.get("page_requests", 0) - pages_before},
+                )
             continue
+        if progress:
+            progress(
+                "append_acquisition",
+                {"state": "completed", "page_requests": metrics.get("page_requests", 0) - pages_before},
+            )
         if not publishing:
             if before_publish is not None:
                 before_publish()
@@ -269,7 +286,7 @@ def append_entries(
     }
 
 
-def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=None):
+def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=None, context=None):
     """Consume the approved handoff directly; no disk discovery or history recheck.
 
     Input is the existing minimal summary snapshot, optionally selection-filtered.
@@ -287,4 +304,5 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
         progress=progress,
         before_publish=lambda: assert_current(store, snapshot["token"]),
         approved_generations=snapshot.get("approved_generations"),
+        context=context,
     )

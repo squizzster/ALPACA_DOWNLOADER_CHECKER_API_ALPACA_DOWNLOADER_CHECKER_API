@@ -15,7 +15,7 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 4
+VERSION = 5
 REPOSITORY = Path(__file__).resolve().parents[2]
 DEFAULT_STORE = REPOSITORY / "data_pricing"
 
@@ -243,7 +243,12 @@ def progress_reporter():
     def progress(stage, values):
         nonlocal last_time, last_stage
         now = time.monotonic()
-        if stage != last_stage or now - last_time >= 10 or values.get("done", -1) == values.get("total"):
+        if (
+            stage != last_stage
+            or now - last_time >= 10
+            or values.get("done", -1) == values.get("total")
+            or values.get("state") in {"completed", "failed"}
+        ):
             print(stage + ": " + json.dumps(values, separators=(",", ":")), file=sys.stderr, flush=True)
             last_time, last_stage = now, stage
 

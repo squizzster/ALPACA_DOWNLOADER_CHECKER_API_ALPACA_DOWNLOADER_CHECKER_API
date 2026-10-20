@@ -262,6 +262,7 @@ class LineageIOTests(unittest.TestCase):
         universe_state.initialize(self.store)
         policy = WorkPolicy(self.store, storage.read_index(self.root), {}, [], "2026-10-15")
         for symbol in symbols[:2]:
+            policy.require(symbol, "2026-10-15", reason="explicit_lineage_refresh", refresh=True)
             policy.require_dependencies({symbol}, "2026-10-15", {symbol})
         provider.actions.append(event("A", "newly-reported-history", process_date="2016-02-01"))
         provider.calls.clear()

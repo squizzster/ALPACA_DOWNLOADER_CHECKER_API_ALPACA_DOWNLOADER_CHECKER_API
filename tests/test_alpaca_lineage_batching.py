@@ -138,7 +138,7 @@ class LineageBatchingTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(len(client.get_corporate_actions("A", START, END)), 2)
         self.assertEqual([a["id"] for a in client.get_corporate_actions("A", "2026-10-01", END)], ["new"])
-        self.assertEqual(len(provider.calls), 4)
+        self.assertEqual(len(provider.calls), 3)
 
     def test_empty_first_page_does_not_finish_acquisition(self):
         client = AlpacaIdentityClient("test", "test")
@@ -224,6 +224,10 @@ class LineageBatchingTests(unittest.TestCase):
                     with self.assertRaisesRegex(LineageError, "changed during batch routing"):
                         evidence.get_corporate_actions("A", START, END)
                 self.assertEqual(request.call_count, 3)
+                if not succeeds:
+                    with patch.object(client, "request_json", return_value={"corporate_actions": {}}) as retry:
+                        self.assertEqual(evidence.get_corporate_actions("A", "2026-10-01", END), [])
+                    self.assertEqual(retry.call_count, 1)
 
     def test_conflicting_identity_and_failed_pagination_never_publish_partial_evidence(self):
         provider = Provider(actions=[event(rate=1), event(rate=2)])

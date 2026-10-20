@@ -11,7 +11,8 @@ from libs.alpaca_recovery_registry import DEFAULT_REGISTRY
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
-from .contract import LineageError, validate_version
+from .context import accept_context
+from .contract import LineageError
 from .metadata import EvidenceClient
 from .pipeline import run_lineage
 from .refresh import refresh_required_history
@@ -76,16 +77,21 @@ def run_update(
     progress=None,
     retry_blocked=False,
 ):
-    validate_version()
+    context = accept_context(store)
     store = Path(store).absolute()
     end = request_end(end_date).date().isoformat()
     result = {"complete": False, "end_exclusive": end, "failed": 0, "stages": {}}
+    metadata_started = identity_client.request_count
+    pricing_started = getattr(pricing_client, "request_count", None)
     with universe_state.update_lock(store):
         # Fail before network or any recovery if durable state was never initialized.
         universe_state.read_state(store)
         from .projection import require_complete
 
-        require_complete(storage.read_index(store / "end_of_day/lineage"))
+        root = store / "end_of_day/lineage"
+        with storage.publication_lock(root):
+            context.index = storage.read_index(root)
+            require_complete(context.index)
         if not read_checks(store)["complete"]:
             raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
         registered = set()
@@ -98,14 +104,29 @@ def run_update(
 
         # Finish already-journaled publication with its original inputs. New
         # dependency acquisitions are explicitly capped by this invocation.
+        if progress:
+            progress("recovery", {"state": "started"})
         recovered = recover_publications(store)
+        if progress:
+            progress("recovery", {"state": "completed", **recovered})
         result["stages"]["recovery"] = recovered
         if recovered["failed"]:
             result["failed"] = recovered["failed"]
             return result
-        accepted = universe_plan.boundaries(store, registry, allow_pending=True)
+        accepted = universe_plan.boundaries(store, registry, allow_pending=True, context=context)
         metadata_before = identity_client.request_count
+        if progress:
+            progress("catalogue", {"state": "started"})
         observation = observe_catalogue(identity_client)
+        if progress:
+            progress(
+                "catalogue",
+                {
+                    "state": "completed",
+                    "records": len(observation["records"]),
+                    "http_requests": identity_client.request_count - metadata_before,
+                },
+            )
         evidence = EvidenceClient(identity_client, observation=observation)
         registered.update(accepted["registry"])
         selection = universe_plan.select_work(accepted, observation, evidence, end, retry_blocked=retry_blocked)
@@ -127,11 +148,12 @@ def run_update(
             )
         if accepted["summary"] is not None:
             assert_current(store, accepted["summary"]["token"])
-        current = storage.read_index(store / "end_of_day/lineage")
-        if current.get("projection_state") != accepted["index"].get("projection_state"):
-            raise LineageError("lineage changed during discovery; repeat update selection")
+        with storage.publication_lock(root):
+            storage.assert_index_current(root, accepted["index"])
         universe_state.accept(store, observation, selection["registration_additions"], selection["work"])
         result["stages"]["registration"] = universe_state.register(store, registry=registry)
+        if progress:
+            progress("registration", {"state": "completed", **result["stages"]["registration"]})
         registered.update(selection["registration_additions"])
         for symbol in selection["already_published"]:
             universe_state.record_outcome(
@@ -151,6 +173,7 @@ def run_update(
             },
             selection["deferred"],
             end,
+            context=context,
         )
         evidence.work_policy = policy
         for symbol, failure in selection["selection_failures"].items():
@@ -179,6 +202,7 @@ def run_update(
                 invalidate={s for s in symbols if work[s]["invalidate_pricing"]},
                 evidence_fingerprints={s: acquisition_fingerprint(work[s]) for s in symbols},
                 from_dates={s: work[s].get("pricing_start") for s in symbols},
+                context=context.pricing(),
             )
             pricing["results"].extend(value["results"])
             pricing["requests"][target] = value["requests"]
@@ -201,41 +225,50 @@ def run_update(
                 or symbol in accepted["checks"]["checks"]
             )
         }
-        refreshed = {s for s in selected if work[s]["refresh_metadata"]}
         lineage_results = []
-        for symbols, refresh in ((refreshed, True), (selected - refreshed, False)):
-            if symbols:
-                lineage_results.append(
-                    run_lineage(
-                        store,
-                        sorted(symbols),
-                        identity_client=identity_client,
-                        pricing_client=pricing_client,
-                        evidence_client=evidence,
-                        end_date=end,
-                        refresh=refresh,
-                        register_discoveries=register,
-                        work_policy=policy,
-                    )
-                )
-        result["stages"]["discovery_lineage"] = lineage_results
+
+        def lineage_phase(name, labels):
+            callback = (lambda stage, values: progress(name + "_" + stage, values)) if progress else None
+            if progress:
+                progress(name, {"state": "started", "selected": len(labels)})
+            value = run_lineage(
+                store,
+                sorted(labels),
+                identity_client=identity_client,
+                pricing_client=pricing_client,
+                evidence_client=evidence,
+                end_date=end,
+                register_discoveries=register,
+                work_policy=policy,
+                context=context,
+                progress=callback,
+                on_pricing=callback,
+            )
+            if progress:
+                progress(name, {"state": "completed", "failed": value["failed"]})
+            lineage_results.append(value)
+            result["stages"].setdefault(name, []).append(value)
+            return value
+
+        if selected:
+            # The policy distinguishes unfinished evidence from an outstanding
+            # approval. An unconditional refresh would discard a completed decision.
+            lineage_phase("discovery_lineage", selected)
+        result["stages"].setdefault("discovery_lineage", [])
         if not pending_symbols(store):
             checked = refresh_required_history(
-                store, pricing_client=pricing_client, work_policy=policy, end_date=end
+                store,
+                pricing_client=pricing_client,
+                work_policy=policy,
+                end_date=end,
+                context=context,
+                progress=progress,
             )
             result["stages"]["required_history"] = checked
             if checked["checked"]:
-                lineage_results.append(
-                    run_lineage(
-                        store,
-                        [s for s in checked["checked"] if policy.allowed({s})],
-                        identity_client=identity_client,
-                        pricing_client=pricing_client,
-                        evidence_client=evidence,
-                        end_date=end,
-                        register_discoveries=register,
-                        work_policy=policy,
-                    )
+                lineage_phase(
+                    "required_history_lineage",
+                    [s for s in checked["checked"] if policy.allowed({s})],
                 )
         # Preserve the established check -> correction -> append sequence.
         maintained = (
@@ -252,37 +285,42 @@ def run_update(
                 register_discoveries=register,
                 recover_pending=False,
                 work_policy=policy,
+                context=context,
             )
         )
         result["stages"]["maintenance"] = maintained
+
+        def completion_boundary():
+            with storage.publication_lock(root):
+                if (root / ".pending.json").exists():
+                    result["failed"] += 1
+                    result["error"] = "lineage publication remains pending; completed work is not acknowledged"
+                    return None
+                index = context.select_index(root)
+                require_complete(index)
+                return index, read_checks(store)["checks"]
+
+        boundary = completion_boundary()
+        if boundary is None:
+            return result
+        index, pending = boundary
         # A recovered maintenance failure cannot be acknowledged by a receipt
-        # published before its new history check. Stamp only after that handoff.
+        # published before its new history check. Already stamped append results
+        # satisfy this from the projection without reopening their complete groups.
         finish = [
             s
             for s, item in policy.work.items()
-            if item.get("required_history_check") and s in policy.history_approved and policy.allowed({s})
+            if item.get("required_history_check")
+            and s in policy.history_approved
+            and policy.allowed({s})
+            and not satisfying_entry(s, item, index["symbols"], pending)
         ]
         if finish:
-            lineage_results.append(
-                run_lineage(
-                    store,
-                    finish,
-                    identity_client=identity_client,
-                    pricing_client=pricing_client,
-                    evidence_client=evidence,
-                    end_date=end,
-                    register_discoveries=register,
-                    work_policy=policy,
-                )
-            )
-        root = store / "end_of_day/lineage"
-        with storage.publication_lock(root):
-            if (root / ".pending.json").exists():
-                result["failed"] += 1
-                result["error"] = "lineage publication remains pending; completed work is not acknowledged"
+            lineage_phase("approval", finish)
+            boundary = completion_boundary()
+            if boundary is None:
                 return result
-            index = storage.read_index(root)
-            pending = read_checks(store)["checks"]
+            index, pending = boundary
         for symbol, item in policy.work.items():
             if symbol in policy.blocked:
                 continue
@@ -316,6 +354,18 @@ def run_update(
             and not result["pending_work"]
             and not selection["deferred"]
         )
+        result["requests"] = {"metadata_http_requests": identity_client.request_count - metadata_started}
+        if pricing_started is not None:
+            result["requests"]["pricing_http_requests"] = pricing_client.request_count - pricing_started
+        if progress:
+            progress(
+                "completion",
+                {
+                    "complete": result["complete"],
+                    "pending_work": result["pending_work"],
+                    "requests": result["requests"],
+                },
+            )
         return result
 
 

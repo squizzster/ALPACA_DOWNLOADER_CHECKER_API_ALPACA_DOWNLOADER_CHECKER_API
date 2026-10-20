@@ -159,7 +159,7 @@ class AuxiliaryWorkTests(unittest.TestCase):
         with fixture() as case:
             attempts = prepare(case)
             with patch.object(
-                case.pricing, "fetch", side_effect=HTTPError("https://invalid", 403, "denied", {}, None)
+                case.pricing, "execute_plan", side_effect=HTTPError("https://invalid", 403, "denied", {}, None)
             ):
                 code, _, _ = invoke(case, "lineage", "refresh", "--symbol", "AAA", "--through", "2026-10-16")
             self.assertEqual(code, 1)

@@ -255,6 +255,7 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
     index = empty_index()
     try:
         with closing(connect_sqlite(path, readonly=True)) as connection:
+            connection.execute("BEGIN")
             if connection.execute("PRAGMA user_version").fetchone()[0] not in SUPPORTED_VERSIONS:
                 raise LineageError("unsupported lineage index")
             statement = "SELECT symbol, receipt FROM symbols"
@@ -263,15 +264,9 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
             index["symbols"] = {
                 label: json.loads(value) for label, value in connection.execute(statement, parameters)
             }
-            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='projection_state'").fetchone():
-                version, revision, complete = connection.execute(
-                    "SELECT schema_version, revision, complete FROM projection_state WHERE id=1"
-                ).fetchone()
-                index["projection_state"] = {
-                    "schema_version": version,
-                    "revision": revision,
-                    "complete": bool(complete),
-                }
+            state = _projection_state(connection)
+            if state is not None:
+                index["projection_state"] = state
     except (sqlite3.Error, ValueError) as error:
         raise LineageError("cannot load lineage dependency index") from error
     for symbol, entry in index["symbols"].items():
@@ -282,7 +277,52 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
     return index
 
 
-def _update_index(root: Path, entries: dict, *, projection_complete=False) -> None:
+def _projection_state(connection):
+    if connection.execute("SELECT 1 FROM sqlite_master WHERE name='projection_state'").fetchone():
+        row = connection.execute(
+            "SELECT schema_version, revision, complete FROM projection_state WHERE id=1"
+        ).fetchone()
+        if row is not None:
+            version, revision, complete = row
+            return {"schema_version": version, "revision": revision, "complete": bool(complete)}
+    return None
+
+
+def index_state(root):
+    """Read only the selector token; caller holds the publication gate."""
+    path = path_at(root, "index.sqlite3")
+    if not path.exists():
+        return None
+    try:
+        with closing(connect_sqlite(path, readonly=True)) as connection:
+            connection.execute("BEGIN")
+            if connection.execute("PRAGMA user_version").fetchone()[0] not in SUPPORTED_VERSIONS:
+                raise LineageError("unsupported lineage index")
+            return _projection_state(connection)
+    except sqlite3.Error as error:
+        raise LineageError("cannot read lineage projection state") from error
+
+
+def assert_index_current(root, index):
+    if (root / ".pending.json").exists():
+        raise LineageError("pending lineage publication; recover it before selection")
+    state = index_state(root)
+    if state is None or state != index.get("projection_state"):
+        raise LineageError("lineage changed during discovery; repeat update selection")
+
+
+def refresh_index(root, index=None):
+    """Retain accepted membership until its compact selector changes."""
+    if (root / ".pending.json").exists():
+        raise LineageError("pending lineage publication; recover it before selection")
+    if index is not None:
+        state = index_state(root)
+        if state is not None and state == index.get("projection_state"):
+            return index
+    return read_index(root)
+
+
+def _update_index(root: Path, entries: dict, *, projection_complete=False) -> dict:
     # One tiny indexed row per ticker, not a full-universe JSON rewrite on each
     # update. The chronological JSON boundaries remain the authoritative outputs.
     path = path_at(root, "index.sqlite3")
@@ -328,8 +368,10 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False) -> No
                         (PROJECTION_VERSION,),
                     )
                 connection.execute("UPDATE projection_state SET revision=revision+1 WHERE id=1")
+                state = _projection_state(connection)
     except sqlite3.Error as error:
         raise LineageError("cannot publish lineage dependency index") from error
+    return state
 
 
 def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) -> dict | None:
@@ -387,7 +429,7 @@ def read_boundaries(root: Path, receipt: dict, *, selected_loader=None) -> dict:
     }
 
 
-def _install(root: Path, journal: dict, *, compare=True) -> None:
+def _install(root: Path, journal: dict, *, compare=True) -> dict:
     # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
     for relative, value in sorted(journal["documents"].items()):
@@ -399,7 +441,7 @@ def _install(root: Path, journal: dict, *, compare=True) -> None:
         while parent != root and parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
             parent = parent.parent
-    _update_index(root, journal["index_updates"])
+    return _update_index(root, journal["index_updates"])
 
 
 def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
@@ -442,7 +484,7 @@ def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
         acknowledge_checks(store, expected_checks, acknowledged)
 
 
-def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None, sources=None) -> None:
+def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None, sources=None) -> dict:
     """Normal publication retains locked inputs; recovery must select them afresh."""
     from libs.alpaca_pricing_download.check_summary import invalidate, summary_path
 
@@ -452,7 +494,7 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
         invalidate(store, journal["sources"], owner="lineage")
     # A fresh journal contains only known changes. Recovery may already have
     # installed some of them, so compare existing files only on that path.
-    _install(root, journal, compare=receipts is None)
+    state = _install(root, journal, compare=receipts is None)
     if receipts is None and summary_path(store).exists():
         index = {"symbols": journal["index_updates"]}
         receipts = {symbol: read_receipt(root, symbol, index) for symbol in journal["sources"]}
@@ -460,6 +502,7 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
         refresh(store, receipts, sources=sources)
     _acknowledge(store, journal, sources=sources)
     path_at(root, ".pending.json").unlink()
+    return state
 
 
 def recover(store: Path, root: Path) -> bool:
@@ -538,5 +581,6 @@ def publish(
 
         invalidate(store, receipts, owner="lineage")
         atomic_json(path_at(root, ".pending.json"), journal)
-        finish_publication(store, root, journal, receipts=receipts, sources=sources)
-    index["symbols"].update(updated)
+        state = finish_publication(store, root, journal, receipts=receipts, sources=sources)
+        index["symbols"].update(updated)
+        index["projection_state"] = state

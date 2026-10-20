@@ -113,13 +113,14 @@ def replace_entries(store, entries, *, pricing_only=False):
             db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
 
 
-def price_entry(root, source, *, published=True):
+def price_entry(root, source, *, published=True, endpoints=None):
     from .storage import read_validator
 
     request = source["latest_request"]
     if (request["timeframe"], request["feed"], request["currency"]) != ("1Day", "sip", "USD"):
         raise DownloadError("pricing check requires 1Day SIP USD inputs")
-    endpoints = read_validator(root, source, published=published)
+    if endpoints is None:
+        endpoints = read_validator(root, source, published=published)
     if endpoints is None:
         raise DownloadError("pricing check requires a published endpoint validator")
     rows = endpoints["all"]
@@ -128,7 +129,7 @@ def price_entry(root, source, *, published=True):
     return {"symbol": source["symbol"], "asof": request["asof"], "last_all": list(rows[-1])}
 
 
-def refresh_prices(root):
+def refresh_prices(root, *, source=None, endpoints=None):
     """Update an already eligible label without importing or recalculating lineage."""
     from .storage import load_source
 
@@ -138,7 +139,9 @@ def refresh_prices(root):
     with _connection(store, readonly=True) as db:
         present = db.execute("SELECT 1 FROM entries WHERE symbol=?", (symbol,)).fetchone()
     if present:
-        replace_entries(store, {symbol: price_entry(root, load_source(root, symbol))}, pricing_only=True)
+        if source is None:
+            source = load_source(root, symbol)
+        replace_entries(store, {symbol: price_entry(root, source, endpoints=endpoints)}, pricing_only=True)
     # New eligibility, including a formerly empty active source, belongs to lineage.
 
 
@@ -188,6 +191,16 @@ def read_snapshot(store):
         for entry in entries:
             validate_entry(entry)
     return {"entries": entries, "sha256": digest(json_bytes(entries)), "token": token}
+
+
+def refresh_snapshot(store, snapshot=None):
+    """Reconstruct membership only after a real summary publication."""
+    if snapshot is not None:
+        with _connection(store, readonly=True) as db:
+            _require_ready(db)
+            if _token(db) == tuple(snapshot["token"]):
+                return snapshot
+    return read_snapshot(store)
 
 
 def read_status(store):

@@ -128,5 +128,11 @@
     "modifications": [
       "Batch retained dependency endpoint checks, acquisition ranges and resulting first-session checks through the existing API solver in bounded cohorts. Replay those responses through the ordinary downloader, preserving exact comparisons, full-replacement retries, per-ticker failure outcomes and publication recovery; reject a changed selected source under its publication lock. Report stage actions and pages, retain compatible v1-v22 publications and reuse completed work."
     ]
+  },
+  {
+    "modifications": [
+      "Batch retained endpoint probes by endpoint work, then bound the actual incremental or replacement acquisitions separately. Reuse typed completed normalized responses while preserving all eight views, full pagination, exact comparisons, independent first-session checks and source-generation publication guards.",
+      "Carry newly published source and endpoint results into summary projection and return values without rereading them. Retain unchanged historical boundary references, reuse selected changed-boundary inventories, and establish store/package compatibility once per operation. Keep durable reconstruction for interrupted publication and compatible v1-v23 artifacts."
+    ]
   }
 ]

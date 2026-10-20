@@ -626,8 +626,8 @@ class PricingHttpTests(unittest.TestCase):
         result = client.fetch(
             "GOOG", "raw", timestamp("2026-10-01T00:00:00Z"), timestamp("2026-10-15T00:00:00Z")
         )
-        self.assertEqual(len(result), 2)
-        self.assertEqual([row["t"] for row in result], ["2026-10-01T04:00:00Z", "2026-10-02T04:00:00Z"])
+        self.assertEqual(len(result.rows), 2)
+        self.assertEqual([row[0] for row in result.rows], ["2026-10-01T04:00:00Z", "2026-10-02T04:00:00Z"])
         parameters = [parse_qs(urlparse(request.full_url).query) for request in requests]
         self.assertEqual(parameters[0]["symbols"], ["GOOG"])
         self.assertEqual(parameters[1]["page_token"], ["page2"])

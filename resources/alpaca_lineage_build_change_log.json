@@ -135,5 +135,11 @@
       "Compare normalized identity facts for both stored full API lookups and compact lineage projections, preserving accepted obligations when only transport fields differ.",
       "Keep reselected missing members in their published dependency groups and anchor auxiliary-only reconciliation to a published source member. Preserve initial-seed rejection, durable retry restrictions and publication-before-acknowledgement; reuse compatible v2-v21 publications and reader locks."
     ]
+  },
+  {
+    "modifications": [
+      "Retain accepted evidence requirements independently of history approval and publish remaining approval through the existing journal without repeating compatible complete-group decisions. Preserve metadata continuation for known dependencies and reuse completed containing action intervals within each operation.",
+      "Carry accepted index and summary snapshots, package compatibility and decoded generation/scope inputs across operation stages; refresh only changed selectors and retain lock-based generation guards. Select remaining approval from the completion projection without reopening already approved groups. Expose lineage, acquisition and conditional work progress by phase, and use execution's append batching limits in previews. Preserve compatible v2-v22 decisions and existing recovery boundaries."
+    ]
   }
 ]

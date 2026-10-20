@@ -35,6 +35,11 @@ def acquisition_fingerprint(item):
     return item.get("acquisition_evidence_fingerprint", item.get("evidence_fingerprint"))
 
 
+def evidence_requirement(item):
+    """Approval/coverage changes do not renew an accepted evidence requirement."""
+    return item.get("evidence_fingerprint") or item["obligation_id"]
+
+
 def pricing_target(item):
     return item.get("pricing_end_exclusive", item["end_exclusive"])
 
@@ -146,9 +151,10 @@ class RegistrationIncomplete(LineageError):
 class WorkPolicy:
     """One invocation's restrictions; the database owns intentions, never prices."""
 
-    def __init__(self, store, index, work, deferred, end):
+    def __init__(self, store, index, work, deferred, end, *, context=None):
         self.store, self.end = store, end
-        self.index = {**index, "symbols": dict(index["symbols"])}
+        self.index = index
+        self.context = context
         self.work = {s: item for s, item in work.items() if item.get("status") != "complete"}
         self.graph = work_graph(index["symbols"], self.work)
         self.required_groups = {}
@@ -229,7 +235,7 @@ class WorkPolicy:
                 target,
                 reason="dependency_reconciliation",
                 acquire=symbol in required,
-                refresh=True,
+                refresh=symbol not in self.index["symbols"],
                 group=group,
                 start=start,
             )
@@ -252,7 +258,11 @@ class WorkPolicy:
         with storage.publication_lock(root):
             if (root / ".pending.json").exists():
                 return
-            index = storage.read_index(root)
+            index = (
+                self.context.select_index(root)
+                if self.context is not None
+                else storage.refresh_index(root, self.index)
+            )
             pending = read_checks(self.store)["checks"]
         for symbol, item in self.work.items():
             entry = satisfying_entry(symbol, item, index["symbols"], pending)
@@ -289,13 +299,38 @@ class WorkPolicy:
             if receipt
             for symbol, obligation_id in receipt.get("unavailable_obligations", {}).items()
         }
+        evidence_requirements = {
+            symbol: requirement
+            for receipt in previous.values()
+            if receipt
+            for symbol, requirement in receipt.get("evidence_requirements", {}).items()
+        }
         return any(
             symbol in self.work
             and self.work[symbol].get("refresh_metadata")
             and (previous.get(symbol) or {}).get("update_obligation_id") != self.work[symbol]["obligation_id"]
             and unavailable.get(symbol) != self.work[symbol]["obligation_id"]
+            and evidence_requirements.get(symbol) != evidence_requirement(self.work[symbol])
             for symbol in group
         )
+
+    def decision_inputs_satisfied(self, sources):
+        """Outstanding approval does not invalidate an otherwise completed decision."""
+        for symbol, source in sources.items():
+            item = self.work.get(symbol)
+            if item is not None and not (
+                covers_pricing_start(item, source)
+                and source["latest_request"]["end_exclusive"][:10] >= pricing_target(item)
+                and (
+                    not item.get("invalidate_pricing")
+                    or source.get("acquisition_evidence_sha256") == acquisition_fingerprint(item)
+                )
+                and (
+                    not item.get("correction_id") or source.get("history_correction_id") == item["correction_id"]
+                )
+            ):
+                return False
+        return True
 
     def reconcile_evidence(self, evidence, sources, previous, *, group=None, target=None, partial=False):
         """Bind newly acquired evidence before pricing delegation or lineage publication."""
@@ -362,7 +397,7 @@ class WorkPolicy:
                     else acquisition_fingerprint(prior) or (fingerprint if source is None else None),
                     "acquire": mapping or prior.get("acquire", False),
                     "invalidate_pricing": mapping or prior.get("invalidate_pricing", False),
-                    "refresh_metadata": True,
+                    "refresh_metadata": mapping or symbol in changed or prior.get("refresh_metadata", False),
                     "required_group": sorted(set(prior.get("required_group", [])) | group),
                 },
                 prior,
@@ -421,6 +456,20 @@ class WorkPolicy:
             if item.get("correction_id") and source.get("history_correction_id") != item["correction_id"]:
                 continue
             receipt["update_obligation_id"] = item["obligation_id"]
+        # Record only accepted refresh requirements, independently of pricing and
+        # approval obligations. Their existing fingerprints suffice; no new IDs or
+        # work-state fields are needed. Generation/group guards remain mandatory.
+        evidence_requirements = {
+            member: evidence_requirement(self.work[member])
+            for member in sorted(group)
+            if self.work.get(member, {}).get("refresh_metadata")
+        }
+        for symbol, receipt in receipts.items():
+            owned = {s: value for s, value in evidence_requirements.items() if s == symbol or s in unavailable}
+            if owned:
+                receipt["evidence_requirements"] = owned
+            else:
+                receipt.pop("evidence_requirements", None)
         # An unavailable auxiliary has no own pricing/lineage receipt. Its owning
         # group publishes the accepted outcome before orchestration acknowledges it.
         if any(
@@ -473,21 +522,6 @@ class WorkPolicy:
             )
             self.work[symbol] = universe_state.put_work(self.store, symbol, item)
             request["required_correction_id"] = correction
-
-    def requires_publication(self, previous):
-        if any(
-            symbol in self.work
-            and (receipt or {}).get("update_obligation_id") != self.work[symbol]["obligation_id"]
-            for symbol, receipt in previous.items()
-        ):
-            return True
-        return any(
-            symbol in self.work
-            and receipt.get("unavailable_obligations", {}).get(symbol) != self.work[symbol]["obligation_id"]
-            for receipt in previous.values()
-            if receipt
-            for symbol in receipt.get("unavailable_pricing", {})
-        )
 
     def fail(self, symbols, outcome, *, stage):
         """Include maintenance and newly discovered dependencies in durable retries."""

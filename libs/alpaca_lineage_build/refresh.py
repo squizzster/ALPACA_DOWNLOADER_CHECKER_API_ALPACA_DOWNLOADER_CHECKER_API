@@ -1,27 +1,33 @@
 """Live check and correction produce an explicit, generation-bound append approval."""
 
+from libs.alpaca_pricing_download.acquire import MeasuredRequests
 from libs.alpaca_pricing_download.append import select_append_sources
-from libs.alpaca_pricing_download.check_summary import assert_current, describe, read_snapshot
+from libs.alpaca_pricing_download.check_summary import assert_current, describe
 from libs.alpaca_pricing_download.contract import DownloadError
-from libs.alpaca_pricing_download.contract import validate_version as validate_pricing_version
 from libs.alpaca_pricing_download.live_check import verify
 from libs.alpaca_pricing_download.refresh import check_retained_source, prepare_refresh, replace_prepared
 
-from .contract import validate_version
+from .context import accept_context
 from .pipeline import run_lineage
 
 
-def refresh_required_history(store, *, pricing_client, work_policy, end_date):
+def refresh_required_history(store, *, pricing_client, work_policy, end_date, context=None, progress=None):
     """Accepted checks/corrections stay executable after summary removal."""
     empty = {"results": [], "requests": {}, "failed": 0, "checked": []}
     if not any(item.get("required_history_check") for item in work_policy.work.values()):
         return empty
-    summarized = {entry["symbol"] for entry in read_snapshot(store)["entries"]}
+    context = accept_context(store, context, work_policy)
+    metrics = {}
+    if callable(getattr(pricing_client, "execute_plan", None)):
+        pricing_client = MeasuredRequests(pricing_client, metrics)
+    summarized = {entry["symbol"] for entry in context.select_summary()["entries"]}
     prepared, checked = [], {}
     for symbol, item in list(work_policy.work.items()):
         if symbol in summarized or not item.get("required_history_check") or not work_policy.allowed({symbol}):
             continue
         try:
+            if progress:
+                progress("required_history", {"symbol": symbol, "state": "checking"})
             selected = check_retained_source(store, symbol, end_date, client=pricing_client)
         except (RuntimeError, OSError, ValueError) as error:
             work_policy.fail({symbol}, error, stage="history_check")
@@ -34,13 +40,25 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date):
             checked[symbol] = selected["source_sha256"]
     prepared = [item for item in prepared if work_policy.allowed({item["symbol"]})]
     work_policy.require_correction(prepared)
-    replaced = replace_prepared(store, prepared, client=pricing_client) if prepared else empty
+    replaced = (
+        replace_prepared(
+            store,
+            prepared,
+            client=pricing_client,
+            context=context.pricing(),
+            progress=progress,
+        )
+        if prepared
+        else empty
+    )
     work_policy.record_results(replaced, stage="history_correction")
     checked.update(
         (item["symbol"], item["source_sha256"]) for item in replaced["results"] if item["status"] == "replaced"
     )
     work_policy.history_approved.update(checked)
-    return {**replaced, "checked": sorted(checked)}
+    if progress:
+        progress("required_history", {"state": "completed", "checked": len(checked), "requests": metrics})
+    return {**replaced, "checked": sorted(checked), "requests": metrics or replaced["requests"]}
 
 
 def refresh_existing(
@@ -56,16 +74,17 @@ def refresh_existing(
     register_discoveries=None,
     work_policy=None,
     symbols=None,
+    context=None,
 ):
     """Check newly eligible members too; approval never expands with the summary."""
-    validate_version()
-    validate_pricing_version()
+    context = accept_context(store, context, work_policy)
+    pricing_context = context.pricing()
     verified, generations, checks = {}, {}, []
     pricing = {"results": [], "failed": 0, "requests": {}}
     lineage = {"results": [], "failed": 0}
     beyond, restricted = set(), set()
+    snapshot = context.select_summary()
     for _ in range(100):
-        snapshot = read_snapshot(store)
         candidates = []
         for entry in snapshot["entries"]:
             symbol = entry["symbol"]
@@ -101,7 +120,10 @@ def refresh_existing(
         assert_current(store, snapshot["token"])
         checks.append(handoff)
         if progress:
-            progress("checked", handoff["stats"])
+            progress(
+                "checked",
+                {**handoff["stats"], "requests": handoff["requests"], "seconds": handoff["live_seconds"]},
+            )
         if not handoff["complete"]:
             if work_policy is not None:
                 for failure in handoff["failures"]:
@@ -136,6 +158,7 @@ def refresh_existing(
             cohort_size=cohort_size,
             progress=progress,
             before_publish=lambda: assert_current(store, snapshot["token"]),
+            context=pricing_context,
         )
         pricing["results"].extend(replaced["results"])
         pricing["failed"] += replaced["failed"]
@@ -155,6 +178,9 @@ def refresh_existing(
                 evidence_client=evidence_client,
                 register_discoveries=register_discoveries,
                 work_policy=work_policy,
+                context=context,
+                progress=progress,
+                on_pricing=progress,
             )
             lineage["results"].extend(value["results"])
             lineage["failed"] += value["failed"]
@@ -164,7 +190,7 @@ def refresh_existing(
             assert_current(store, snapshot["token"])
         if pricing["failed"] or lineage["failed"]:
             break
-        ready = read_snapshot(store)
+        ready = context.select_summary()
         current = {item["symbol"]: item for item in ready["entries"]}
         for entry in candidates:
             symbol = entry["symbol"]
@@ -179,12 +205,17 @@ def refresh_existing(
         # Reconciliation may replace pricing again after observing a changed
         # identity. Only its completed producer handoff approves that generation.
         generations.update(lineage_replacements)
-        # Re-read only the compact summary. New members get a fresh comparison;
+        snapshot = ready
+        # Refresh membership only after publication. New members get a fresh comparison;
         # changing membership cannot promote an unchecked source into approval.
     else:
         raise DownloadError("history-check membership did not settle")
     try:
-        ready = read_snapshot(store)
+        if pricing["failed"] or lineage["failed"]:
+            ready = context.select_summary()
+        else:
+            assert_current(store, snapshot["token"])
+            ready = snapshot
         summary = describe(ready)
     except DownloadError as error:
         summary = {"error": str(error)}
@@ -220,6 +251,9 @@ def refresh_existing(
                 evidence_client=evidence_client,
                 register_discoveries=register_discoveries,
                 work_policy=work_policy,
+                context=context,
+                progress=progress,
+                on_pricing=progress,
             )
             lineage["results"].extend(value["results"])
             lineage["failed"] += value["failed"]

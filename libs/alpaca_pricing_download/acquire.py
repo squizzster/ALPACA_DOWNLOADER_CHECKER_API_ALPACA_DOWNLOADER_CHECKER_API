@@ -1,8 +1,11 @@
 """Bounded initial acquisition using the ordinary downloader's producer checks."""
 
+from itertools import chain
 from pathlib import Path
 
+from . import append
 from .append import _cohorts, append_entries
+from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
@@ -17,7 +20,7 @@ from .contract import (
 from .download import download_pricing, request_end, request_start
 from .http import BarsClient
 from .refresh import acquire_full, acquire_retained
-from .storage import initialize_store, load_source, read_validator, recover, regular_path, ticker_lock
+from .storage import load_source, read_validator, recover, regular_path, ticker_lock
 
 
 class MeasuredRequests:
@@ -30,7 +33,29 @@ class MeasuredRequests:
 
     def execute_plan(self, plan, *, metrics=None, on_failure=None):
         options = {"on_failure": on_failure} if on_failure is not None else {}
-        return self.client.execute_plan(plan, metrics=self.metrics, **options)
+        measured = self.metrics if metrics is None else metrics
+        before = dict(measured)
+        try:
+            return self.client.execute_plan(plan, metrics=measured, **options)
+        finally:
+            if measured is not self.metrics:
+                for key, value in measured.items():
+                    if isinstance(value, (int, float)):
+                        self.metrics[key] = self.metrics.get(key, 0) + value - before.get(key, 0)
+
+
+def _endpoint_cohorts(retained):
+    """Bound endpoint rows, independently of hypothetical replacement histories."""
+    cohort, rows = {}, 0
+    for symbol, value in retained.items():
+        cost = sum(len(points) for points in (value[1] or {}).values())
+        if cohort and (len(cohort) >= append.MAX_SYMBOLS or rows + cost > append.MAX_ROWS):
+            yield cohort
+            cohort, rows = {}, 0
+        cohort[symbol] = value
+        rows += cost
+    if cohort:
+        yield cohort
 
 
 def acquire_selected(
@@ -44,6 +69,7 @@ def acquire_selected(
     workers=3,
     evidence_fingerprints=None,
     from_dates=None,
+    context=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
     store = Path(store).absolute()
@@ -53,7 +79,7 @@ def acquire_selected(
     symbols = sorted(set(symbols))
     for symbol in symbols:
         request_start(from_dates.get(symbol), end)
-    initialize_store(store)
+    context = accept_context(store, context)
     end_text = end.isoformat().replace("+00:00", "Z")
     needs, selected_generations, results, retained, empty = [], {}, [], {}, []
     for symbol in symbols:
@@ -123,6 +149,17 @@ def acquire_selected(
             }
         )
     metrics = {}
+    if progress:
+        progress(
+            "acquisition_selection",
+            {
+                "selected": len(symbols),
+                "reused": sum(r["status"] == "covered" for r in results),
+                "initial_or_invalidated": len(needs),
+                "retained": len(retained),
+                "empty": len(empty),
+            },
+        )
     ordinary_client = (
         MeasuredRequests(client, metrics) if callable(getattr(client, "execute_plan", None)) else client
     )
@@ -133,7 +170,7 @@ def acquire_selected(
                 {"symbols": len(cohort), "completed": len(results), "selected": len(selected_generations)},
             )
         try:
-            consumer, _ = acquire_full(cohort, client, metrics=metrics)
+            consumer, _ = acquire_full(cohort, client, metrics=metrics, progress=progress)
         except (RuntimeError, OSError, ValueError) as error:
             # A label-specific rejection must not fail every other member of a batch.
             # Exact fallback runs only for the selected failed cohort and remains bounded.
@@ -161,67 +198,11 @@ def acquire_selected(
                     from_date=need["ranges"][0]["start"][:10],
                     selected_source_sha256=selected_generations[symbol],
                     acquisition_evidence_sha256=evidence_fingerprints.get(symbol),
+                    context=context,
                 )
                 results.append({**value, "status": "published"})
             except InitialPricingUnavailable as error:
                 results.append({"symbol": symbol, "status": "blocked", "outcome": error.evidence})
-            except (RuntimeError, OSError, ValueError) as error:
-                outcome = failure_outcome(error)
-                results.append(
-                    {
-                        "symbol": symbol,
-                        "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
-                        "outcome": outcome,
-                    }
-                )
-        del consumer
-    if empty:
-        extended = append_entries(
-            store,
-            empty,
-            end_date,
-            client=client,
-            workers=workers,
-            progress=progress,
-            approved_generations=selected_generations,
-        )
-        for item in extended["results"]:
-            if item.get("outcome", {}).get("outcome") == "access_denied":
-                item["status"] = "blocked"
-            results.append(item)
-        metrics["empty_coverage_append"] = extended["requests"]
-    # Bound even the worst case in which every selected history needs replacement.
-    retained_needs = [
-        {
-            "symbols": [symbol],
-            "ranges": [{"start": source.get("history_start", HISTORY_START), "end_exclusive": end_text}],
-        }
-        for symbol, (source, _endpoints) in retained.items()
-    ]
-    for cohort in _cohorts(retained_needs):
-        selected = {need["symbols"][0]: retained[need["symbols"][0]] for need in cohort}
-        buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
-        consumer, failures = ordinary_client, {}
-        if buffered and callable(getattr(client, "execute_plan", None)):
-            try:
-                consumer, failures = acquire_retained(
-                    buffered, end, client=ordinary_client, metrics=metrics, progress=progress
-                )
-            except (RuntimeError, OSError, ValueError) as error:
-                failures = dict.fromkeys(buffered, (error, False))
-        for symbol in selected:
-            try:
-                failure, exact_fallback = failures.get(symbol, (None, False))
-                if failure is not None and not exact_fallback:
-                    raise failure
-                value = download_pricing(
-                    store,
-                    symbol,
-                    end_date,
-                    client=ordinary_client if failure is not None else consumer,
-                    selected_source_sha256=selected_generations[symbol],
-                )
-                results.append({**value, "status": "published"})
             except (RuntimeError, OSError, ValueError) as error:
                 outcome = failure_outcome(error)
                 results.append(
@@ -237,6 +218,74 @@ def acquire_selected(
                     {"completed": len(results), "selected": len(selected_generations), **results[-1]},
                 )
         del consumer
+    if empty:
+        extended = append_entries(
+            store,
+            empty,
+            end_date,
+            client=client,
+            workers=workers,
+            progress=progress,
+            approved_generations=selected_generations,
+            context=context,
+        )
+        for item in extended["results"]:
+            if item.get("outcome", {}).get("outcome") == "access_denied":
+                item["status"] = "blocked"
+            results.append(item)
+        metrics["empty_coverage_append"] = extended["requests"]
+    for selected in _endpoint_cohorts(retained):
+        buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
+        completed = set()
+        try:
+            batches = (
+                acquire_retained(buffered, end, client=ordinary_client, metrics=metrics, progress=progress)
+                if buffered and callable(getattr(client, "execute_plan", None))
+                else [(list(buffered), ordinary_client, {})]
+            )
+            for members, consumer, failures in chain(
+                batches, [(selected.keys() - buffered.keys(), ordinary_client, {})]
+            ):
+                for symbol in members:
+                    try:
+                        failure, exact_fallback = failures.get(symbol, (None, False))
+                        if failure is not None and not exact_fallback:
+                            raise failure
+                        value = download_pricing(
+                            store,
+                            symbol,
+                            end_date,
+                            client=ordinary_client if failure is not None else consumer,
+                            selected_source_sha256=selected_generations[symbol],
+                            context=context,
+                        )
+                        results.append({**value, "status": "published"})
+                    except (RuntimeError, OSError, ValueError) as error:
+                        outcome = failure_outcome(error)
+                        results.append(
+                            {
+                                "symbol": symbol,
+                                "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                                "outcome": outcome,
+                            }
+                        )
+                    completed.add(symbol)
+                    if progress:
+                        progress(
+                            "pricing",
+                            {"completed": len(results), "selected": len(selected_generations), **results[-1]},
+                        )
+                del consumer
+        except (RuntimeError, OSError, ValueError) as error:
+            outcome = failure_outcome(error)
+            results.extend(
+                {
+                    "symbol": symbol,
+                    "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                    "outcome": outcome,
+                }
+                for symbol in selected.keys() - completed
+            )
     return {
         "results": results,
         "requests": metrics,

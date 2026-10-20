@@ -5,12 +5,12 @@ from pathlib import Path
 
 from libs.alpaca_pricing_download import storage as pricing_storage
 from libs.alpaca_pricing_download.append import append_ready
-from libs.alpaca_pricing_download.check_summary import describe, pending_symbols, read_snapshot
+from libs.alpaca_pricing_download.check_summary import describe, pending_symbols
 from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.download import request_end
 from libs.alpaca_pricing_download.update_checks import read_checks
 
-from .contract import validate_version
+from .context import accept_context
 from .pipeline import run_lineage
 from .refresh import refresh_existing
 
@@ -25,6 +25,7 @@ def finish_pending(
     evidence_client=None,
     register_discoveries=None,
     work_policy=None,
+    context=None,
 ):
     """Use known work; let lineage restore missing disposable hint coverage."""
     pending = pending_symbols(store)
@@ -71,6 +72,8 @@ def finish_pending(
         evidence_client=evidence_client,
         register_discoveries=register_discoveries,
         work_policy=work_policy,
+        context=context,
+        progress=progress,
         on_processed=observed,
         on_scanned=scanned,
         on_pricing=(
@@ -92,13 +95,14 @@ def update_everything(
     register_discoveries=None,
     work_policy=None,
     recover_pending=True,
+    context=None,
 ):
     """Fresh check -> same-span replacement/lineage -> append -> lineage -> summary.
 
     Freeze the completed-session target before any recovery or requests. Stage
     handoffs stay in memory; producer journals and pending notices own retries.
     """
-    validate_version()
+    context = accept_context(store, context, work_policy)
     if workers not in (1, 2, 3):
         raise DownloadError("update workers must be 1, 2 or 3")
     store = Path(store).absolute()
@@ -116,6 +120,11 @@ def update_everything(
         value = function(*args, **kwargs)
         result["stages"][name] = {**value, "seconds": round(time.monotonic() - before, 3)}
         result["failed"] += value["failed"]
+        if progress:
+            progress(
+                name,
+                {"state": "completed", "failed": value["failed"], "seconds": result["stages"][name]["seconds"]},
+            )
         return value
 
     try:
@@ -131,6 +140,7 @@ def update_everything(
                 evidence_client=evidence_client,
                 register_discoveries=register_discoveries,
                 work_policy=work_policy,
+                context=context,
             )
             if recover_pending
             else {"failed": 0}
@@ -153,6 +163,7 @@ def update_everything(
                 register_discoveries=register_discoveries,
                 work_policy=work_policy,
                 symbols=remaining,
+                context=context,
             )
             if not checked["complete"]:
                 return result
@@ -171,6 +182,7 @@ def update_everything(
                 client=pricing_client,
                 workers=workers,
                 progress=progress,
+                context=context.pricing(),
             )
             if work_policy is not None:
                 work_policy.record_results(appended, stage="append")
@@ -206,13 +218,15 @@ def update_everything(
                     evidence_client=evidence_client,
                     register_discoveries=register_discoveries,
                     work_policy=work_policy,
+                    context=context,
+                    progress=progress,
                     on_pricing=(
                         (lambda pricing_stage, values: progress("lineage_dependency_" + pricing_stage, values))
                         if progress
                         else None
                     ),
                 )
-            latest = read_snapshot(store)
+            latest = context.select_summary()
             remaining = {
                 e["symbol"]
                 for e in latest["entries"]
@@ -225,7 +239,7 @@ def update_everything(
         else:
             raise DownloadError("maintenance membership did not settle")
         current_stage = "summary"
-        result["summary"] = describe(read_snapshot(store))
+        result["summary"] = describe(latest)
         result["complete"] = result["failed"] == 0 and not (work_policy and work_policy.blocked)
         return result
     except (RuntimeError, OSError, ValueError) as error:

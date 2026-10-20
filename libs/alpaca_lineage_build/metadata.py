@@ -60,6 +60,7 @@ class EvidenceClient:
         self.client = client
         self.assets = {}
         self.actions = {}
+        self.action_intervals = defaultdict(dict)
         self.by_id = {}
         self.catalogue = None
         self.catalogue_attempted = False
@@ -173,7 +174,7 @@ class EvidenceClient:
     def prefetch_corporate_actions(self, requests):
         if not self.supports_plans:
             return
-        pending = sorted(set(requests) - self.actions.keys())
+        pending = sorted(key for key in set(requests) if not self._covered(key))
         if self.work_policy is not None:
             self.restricted_identifiers.update(self.work_policy.restricted_identifiers)
             pending = [key for key in pending if self.work_policy.allowed({key[0]})]
@@ -202,13 +203,16 @@ class EvidenceClient:
             params = action["request"]["params"]
             keys = [(s, params["start"], params["end"]) for s in params["symbols"].split(",")]
             try:
-                self._acquire_action(action)
+                completed = {}
+                self._acquire_action(action, completed)
+                for key, rows in completed.items():
+                    self._remember(key, rows)
             except (RuntimeError, OSError, ValueError) as error:
                 # Other independent date/symbol batches still get their own result.
                 error.request_identifiers = [key[0] for key in keys]
                 self.actions.update((key, error) for key in keys)
 
-    def _acquire_action(self, action):
+    def _acquire_action(self, action, completed):
         params = action["request"]["params"]
         symbols = params["symbols"].split(",")
         rows = self._checked_actions(self._execute(action))
@@ -225,20 +229,35 @@ class EvidenceClient:
         if ambiguous and len(symbols) > 1:
             children = []
             for part in split_action(action):
-                children.extend(self._acquire_action(part))
+                children.extend(self._acquire_action(part, completed))
             if {action_identity_key(row): row for row in rows} != {
                 action_identity_key(row): row for row in children
             }:
                 raise LineageError("corporate actions changed during batch routing")
             return children
         for symbol in symbols:
-            self._remember(
-                (symbol, params["start"], params["end"]), rows if len(symbols) == 1 else routed[symbol]
-            )
+            # Coverage is accepted only after the complete batch and any routing
+            # comparisons succeed, including every recursively split response.
+            completed[(symbol, params["start"], params["end"])] = rows if len(symbols) == 1 else routed[symbol]
         return rows
 
     def _remember(self, key, actions):
-        self.actions[key] = self._checked_actions(actions)
+        symbol, start, end = key
+        checked = self._checked_actions(actions)
+        if any(not start <= action_date(action) <= end for action in checked):
+            raise LineageError("corporate action outside requested dates")
+        self.actions[key] = checked
+        self.action_intervals[symbol][(start, end)] = checked
+
+    def _covered(self, key):
+        if key in self.actions:
+            return True
+        symbol, start, end = key
+        for (lower, upper), actions in self.action_intervals.get(symbol, {}).items():
+            if lower <= start and end <= upper:
+                self.actions[key] = [action for action in actions if start <= action_date(action) <= end]
+                return True
+        return False
 
     def _checked_actions(self, actions):
         unique = {}
@@ -263,7 +282,7 @@ class EvidenceClient:
         if self.action_error is not None:
             raise self.action_error
         key = (symbol, start, end)
-        if key not in self.actions:
+        if not self._covered(key):
             if self.supports_plans:
                 self.prefetch_corporate_actions([key])
             else:

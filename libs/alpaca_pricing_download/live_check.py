@@ -12,7 +12,7 @@ from decimal import Decimal
 
 from libs.alpaca_data_api_solver import build_plan
 
-from .contract import COLUMNS, FIELDS, NEW_YORK, DownloadError, failure_outcome, timestamp
+from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timestamp
 from .http import execute_bar_plan
 
 VERSION = 4
@@ -104,7 +104,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
         stats["request_failures"] += 1
 
     acquired = execute_bar_plan(action_plan, get_page, metrics=metrics, on_failure=on_failure)
-    actual = {key[3]: values for key, values in acquired.items()}
+    actual = {key[3]: values.rows for key, values in acquired.items()}
     for entry in snapshot["entries"]:
         symbol = entry["symbol"]
         if symbol in failed:
@@ -124,7 +124,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
             missing.append(symbol)
             stats["missing"] += 1
             continue
-        fields = changed_fields(entry["last_all"], [str(rows[0][key]) for key in FIELDS])
+        fields = changed_fields(entry["last_all"], rows[0])
         if not fields:
             stats["matched"] += 1
             continue

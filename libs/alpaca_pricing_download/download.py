@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from datetime import date, datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 
 from libs.common.us_equity_market_session_calendar import (
@@ -11,6 +12,7 @@ from libs.common.us_equity_market_session_calendar import (
     expected_market_session_coverage,
 )
 
+from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
@@ -26,15 +28,13 @@ from .contract import (
     month_of,
     symbol_label,
     timestamp,
-    transform,
-    validate_version,
 )
 from .endpoints import endpoints_of, merge_ranges, same_row, session_extent, validator_document
+from .responses import fetch_rows
 from .storage import (
     STORE_DOCUMENT,
     boundary_document,
     boundary_paths,
-    initialize_store,
     load_source,
     publish,
     read_boundary,
@@ -178,7 +178,7 @@ def _endpoints_match(client, symbol: str, endpoints: dict, asof: str) -> bool:
     for adjustment, stored in endpoints.items():
         for expected in stored:
             start, end = _endpoint_window(expected, asof)
-            actual = transform(client.fetch(symbol, adjustment, start, end, asof=asof), start, end)
+            actual = fetch_rows(client, symbol, adjustment, start, end, asof=asof)
             # Compare exact values, not incidental JSON number or timezone spelling.
             same = len(actual) == 1 and same_row(actual[0], expected)
             matched = matched and same
@@ -274,6 +274,7 @@ def publish_acquired(
     on_check=None,
     acquisition_evidence_sha256=None,
     history_correction_id=None,
+    old_documents=None,
 ):
     """Publish through the original recovery, notice and summary transaction."""
     paths = boundary_paths(anchor)
@@ -307,7 +308,7 @@ def publish_acquired(
     correction = history_correction_id or (previous or {}).get("history_correction_id")
     if correction is not None:
         source["history_correction_id"] = correction
-    return publish(
+    written = publish(
         root,
         previous,
         source,
@@ -316,7 +317,15 @@ def publish_acquired(
         update=update,
         repair_payloads=repair_payloads,
         on_check=on_check,
+        endpoints=selected_endpoints,
+        old_documents=old_documents,
     )
+    return {
+        "files_written": written,
+        "source": source,
+        "source_sha256": digest(json_bytes(source)),
+        "endpoints": selected_endpoints,
+    }
 
 
 def download_pricing(
@@ -332,6 +341,7 @@ def download_pricing(
     selected_source_sha256=_SOURCE_NOT_SELECTED,
     acquisition_evidence_sha256: str | None = None,
     history_correction_id: str | None = None,
+    context=None,
 ) -> dict:
     """Acquire under the ticker lock, optionally bound to a prefetch selection.
 
@@ -339,7 +349,6 @@ def download_pricing(
     binds it to absence. The separate refresh expectation also preserves the
     complete original request span.
     """
-    validate_version()
     symbol = symbol_label(symbol)
     end = request_end(end_date)
     requested_start = request_start(from_date, end)
@@ -347,7 +356,7 @@ def download_pricing(
     # With an exclusive midnight, the first of a month still completes the prior month.
     anchor = (end - timedelta(days=1)).strftime("%Y-%m")
     store = Path(store).absolute()
-    initialize_store(store)
+    context = accept_context(store, context)
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     with ExitStack() as locks:
         try:
@@ -448,7 +457,7 @@ def download_pricing(
             views = {}
             for adjustment in ADJUSTMENTS:
                 try:
-                    views[adjustment] = transform(client.fetch(symbol, adjustment, start, end), start, end)
+                    views[adjustment] = fetch_rows(client, symbol, adjustment, start, end)
                 except BarsSymbolUnavailable as error:
                     if previous is None and attempt == 0 and not views and error.symbol == symbol:
                         raise InitialPricingUnavailable(request, error) from error
@@ -472,11 +481,15 @@ def download_pricing(
             if attempt:
                 raise DownloadError("provider pricing changed during acquisition twice; publication unchanged")
             full_history, restarted, check = True, True, "changed_during_acquisition"
-        changed_views = updated_boundaries(root, previous, anchor, views, full_history=full_history)
+        old_documents = {}
+        read_selected = partial(read_boundary, documents=old_documents)
+        changed_views = updated_boundaries(
+            root, previous, anchor, views, full_history=full_history, read=read_selected
+        )
         update = (
             merge_ranges(old_extent, session_extent(selected_endpoints))
             if full_history
-            else _changed_range(views, read_boundary(root, previous, "current_month"))
+            else _changed_range(views, read_selected(root, previous, "current_month"))
         )
         written = publish_acquired(
             root,
@@ -492,6 +505,7 @@ def download_pricing(
             on_check=on_check,
             acquisition_evidence_sha256=acquisition_evidence_sha256,
             history_correction_id=history_correction_id,
+            old_documents=old_documents,
         )
         return {
             "symbol": symbol,
@@ -500,8 +514,8 @@ def download_pricing(
             "mode": "initial" if previous is None else "full_refresh" if full_history else "update",
             "consistency_check": check,
             "updated_boundaries": list(changed_views),
-            "files_written": written,
-            "source_sha256": digest(json_bytes(load_source(root, symbol))),
+            "files_written": written["files_written"],
+            "source_sha256": written["source_sha256"],
             "recovered": recovered,
             "restarted": restarted,
             "has_data": any(selected_endpoints.values()),

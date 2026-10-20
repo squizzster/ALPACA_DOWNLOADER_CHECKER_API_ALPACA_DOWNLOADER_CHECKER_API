@@ -18,5 +18,10 @@
     "modifications": [
       "Resolve every new producer --through cutoff through the shared completed-session resolver before selection, registration or acquisition; report the requested date and effective trading session. Apply the same rule to preview, universe reconciliation, standalone pricing/lineage and combined catalogue construction while preserving reader filters and pinned resume inputs."
     ]
+  },
+  {
+    "modifications": [
+      "Always show phase completion and failure callbacks even when they arrive inside the progress throttle window, preserving final request counts and short-phase visibility."
+    ]
   }
 ]

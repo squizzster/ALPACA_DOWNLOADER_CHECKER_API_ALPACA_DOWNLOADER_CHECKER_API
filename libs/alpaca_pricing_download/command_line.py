@@ -8,10 +8,10 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from .completion import completed_batch, remember_batch, request_key
-from .contract import DownloadError, failure_outcome, symbol_label, validate_version
+from .context import accept_context
+from .contract import DownloadError, failure_outcome, symbol_label
 from .download import download_pricing, request_end, request_start
 from .http import BarsClient
-from .storage import initialize_store
 from .update_checks import begin_checks, read_checks
 
 MAX_WORKERS = 3
@@ -40,9 +40,9 @@ def run_arguments(arguments, *, registration_context=None):
     if registration_context is None:
         return _run_arguments(arguments)
     try:
-        validate_version()
         selected = tuple(selected_symbols(arguments))
         request_start(arguments.from_date, request_end(arguments.request_end))
+        context = accept_context(arguments.store)
         with registration_context() as (register, policy):
             allowed = []
             for label in selected:
@@ -60,20 +60,20 @@ def run_arguments(arguments, *, registration_context=None):
                     )
                     allowed.append(symbol)
             register(allowed)
-            return _run_arguments(arguments, work_policy=policy, selected=selected)
+            return _run_arguments(arguments, work_policy=policy, selected=selected, context=context)
     except (RuntimeError, OSError, ValueError, csv.Error) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
 
-def _run_arguments(arguments, *, work_policy=None, selected=None):
+def _run_arguments(arguments, *, work_policy=None, selected=None, context=None):
     try:
-        validate_version()
         end = arguments.request_end
         # The registration handoff owns this selection, including file inputs.
         symbols = selected_symbols(arguments) if selected is None else list(selected)
         request_start(arguments.from_date, request_end(end))
         client = BarsClient(os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", ""))
+        context = accept_context(arguments.store, context)
         request = request_key(symbols, end, arguments.from_date)
         starts = {
             symbol: (work_policy.work.get(symbol, {}).get("pricing_start") if work_policy else None)
@@ -85,11 +85,8 @@ def _run_arguments(arguments, *, work_policy=None, selected=None):
             and all(start == arguments.from_date for start in starts.values())
             and completed_batch(arguments.store, request)
         )
-        if reused:
-            initialize_store(arguments.store.absolute())
         before = read_checks(arguments.store.absolute(), ())
         if before["epoch"] is None and arguments.store.is_dir():
-            initialize_store(arguments.store.absolute())
             before = begin_checks(arguments.store.absolute())
     except (RuntimeError, OSError, ValueError, OverflowError, csv.Error) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -123,6 +120,7 @@ def _run_arguments(arguments, *, work_policy=None, selected=None):
                 refresh_all=arguments.refresh_all,
                 from_date=starts[symbol],
                 on_check=events.append,
+                context=context,
             )
             result["status"] = (
                 "recovered"

@@ -122,7 +122,10 @@ class UpdateEverythingTests(unittest.TestCase):
                 progress=lambda stage, counts: events.append((stage, counts)),
             )
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(events[-1], ("recovery", {"processed": len(self.assets)}))
+        self.assertIn(("recovery", {"processed": len(self.assets)}), events)
+        self.assertTrue(
+            any(stage == "lineage_group" and values.get("reused_decision") for stage, values in events)
+        )
         self.assertEqual({row["status"] for row in result["lineage"]["results"]}, {"unchanged"})
 
     def test_changed_history_is_replaced_in_its_old_span_before_append(self):

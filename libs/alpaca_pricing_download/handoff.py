@@ -16,7 +16,7 @@ from .storage import (
 )
 
 
-def load_published_boundary(root: Path, source: dict, kind: str, *, selected=False) -> dict:
+def load_published_boundary(root: Path, source: dict, kind: str, *, selected=False, documents=None) -> dict:
     """Trust a published pricing receipt under the caller's ticker lock.
 
     The producer has already authenticated values and exact-copy aliases. This
@@ -35,6 +35,8 @@ def load_published_boundary(root: Path, source: dict, kind: str, *, selected=Fal
         or tuple(entry["adjustment"] for entry in document["adjustments"]) != ADJUSTMENTS
     ):
         raise DownloadError("published pricing receipt has a different identity")
+    if documents is not None:
+        documents[reference["manifest"]] = document
     parent = PurePosixPath(reference["manifest"]).parent
     decoded, views = {}, {}
     for entry in document["adjustments"]:
