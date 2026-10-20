@@ -32,6 +32,10 @@ def invoke(case, *arguments, pricing=None, identity=None):
     output, errors = io.StringIO(), io.StringIO()
     with (
         patch.object(alpaca_cli, "DEFAULT_REGISTRY", case.registry),
+        patch(
+            "libs.alpaca_lineage_build.universe_update.run_update",
+            side_effect=lambda *args, **kwargs: run_update(*args, registry=case.registry, **kwargs),
+        ),
         patch.object(alpaca_cli, "clients", return_value=(pricing or case.pricing, identity or case.identity)),
         redirect_stdout(output),
         redirect_stderr(errors),

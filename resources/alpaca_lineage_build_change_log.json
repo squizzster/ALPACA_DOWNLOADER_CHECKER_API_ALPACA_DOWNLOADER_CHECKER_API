@@ -129,5 +129,11 @@
       "Plan batched corporate-action evidence with the same accepted group refresh requirements used by publication, including unchanged pricing generations, so full-history reconciliation consumes its prefetched ranges instead of repeating incremental queries as individual full-history requests.",
       "Keep ordinary stored-summary advancement in its established live-check, correction, append and lineage handoff instead of publishing the old span in discovery first. Preserve earlier processing for acquisition, changed evidence, pending producer inputs and non-summary histories, and reuse compatible v2-v20 publications and reader locks."
     ]
+  },
+  {
+    "modifications": [
+      "Compare normalized identity facts for both stored full API lookups and compact lineage projections, preserving accepted obligations when only transport fields differ.",
+      "Keep reselected missing members in their published dependency groups and anchor auxiliary-only reconciliation to a published source member. Preserve initial-seed rejection, durable retry restrictions and publication-before-acknowledgement; reuse compatible v2-v21 publications and reader locks."
+    ]
   }
 ]

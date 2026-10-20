@@ -141,6 +141,8 @@ lineage decision removes that symbol from the active summary.
 A missing corporate-action auxiliary may have valid identity metadata while the bars endpoint rejects its
 label. The lineage owner can publish that exact rejection with the supported source histories and complete
 the dependency work. It retains the label and metadata without inventing an empty pricing publication.
+Reselection keeps such a label in its published dependency group, including when only that auxiliary needs
+reconciliation. Full API records and compact projections are compared using the same identity facts.
 
 Rerun the owning producer after interruption. Stable locks, staging and journals finish publications with
 their original inputs; an older target cannot restart a larger unfinished acquisition. Do not delete lock

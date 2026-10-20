@@ -212,6 +212,12 @@ def process_group(
     receipt_cache = receipt_cache or storage.ReceiptCache(root, index)
     graph = work_policy.graph if work_policy is not None else graph or DependencyGraph(index["symbols"])
     group = closure(index, {seed}, graph=graph)
+    if (
+        seed not in index["symbols"]
+        and work_policy is not None
+        and auxiliary_work(work_policy.work.get(seed, {}))
+    ):
+        seed = min(group.intersection(index["symbols"]), default=seed)
     acquisition_waves = 0
     pricing_replacements = {}
     metadata_cache = {}

@@ -154,6 +154,29 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
 
+    def test_resume_compares_identity_facts_from_full_and_compact_exact_lookups(self):
+        class Interrupted(BaseException):
+            pass
+
+        current = {**asset("AAA"), "marginable": True, "attributes": []}
+        self.identity = CatalogueClient(
+            [current, {**asset("AAA", "older-id"), "status": "inactive"}],
+            exact={"AAA": current},
+        )
+        self.live["AAA"] = [*self.old, bar("2026-10-19")]
+        with (
+            patch("libs.alpaca_lineage_build.universe_update.update_everything", side_effect=Interrupted()),
+            self.assertRaises(Interrupted),
+        ):
+            self.update("2026-10-20")
+        before = universe_state.read_state(self.store)["work"]["AAA"]
+        plan = plan_update(self.store, "2026-10-20", identity_client=self.identity, registry=self.registry)
+        selected = plan["work"]["AAA"]
+        self.assertNotIn("changed_metadata", selected["reasons"])
+        self.assertFalse(selected["refresh_metadata"])
+        self.assertEqual(selected["obligation_id"], before["obligation_id"])
+        self.assertTrue(self.update("2026-10-20")["complete"])
+
     def test_preview_performs_no_writes_or_receipt_reads(self):
         before = snapshot(self.directory)
 

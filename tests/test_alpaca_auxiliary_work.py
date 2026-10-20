@@ -11,6 +11,7 @@ from test_alpaca_universe_update import CatalogueClient
 
 from libs.alpaca_lineage_build import storage, universe_state
 from libs.alpaca_lineage_build.pipeline import run_lineage
+from libs.alpaca_lineage_build.work_contract import obligation
 from libs.alpaca_pricing_download.contract import BarsSymbolUnavailable
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_recovery_registry import load_labels
@@ -97,6 +98,60 @@ class AuxiliaryWorkTests(unittest.TestCase):
                 self.assert_published(case)
                 if boundary in {"journal", "acknowledgement"}:
                     self.assertEqual(len(attempts), count)
+
+    def test_changed_metadata_keeps_a_published_auxiliary_in_its_owning_group(self):
+        with fixture() as case:
+            prepare(case)
+            self.assertTrue(case.update()["complete"])
+            self.assert_published(case)
+            parent = {**asset("AAA"), "exchange": "TXSE"}
+            auxiliary = {**asset("DEP"), "status": "inactive", "tradable": False, "exchange": "OTC"}
+            case.identity = ActionCatalogueClient(
+                [parent, auxiliary],
+                [rename("AAA", "DEP")],
+                exact={"AAA": parent, "DEP": auxiliary, "111111111": auxiliary},
+            )
+            result = case.update()
+            self.assertTrue(result["complete"], result)
+            self.assert_published(case)
+            item = universe_state.read_state(case.store)["work"]["DEP"]
+            self.assertIn("dependency_reconciliation", item["reasons"])
+            self.assertEqual(set(item["required_group"]), {"AAA", "DEP"})
+
+    def test_explicit_update_retry_recovers_a_legacy_ungrouped_auxiliary_obligation(self):
+        with fixture() as case:
+            attempts = prepare(case)
+            self.assertTrue(case.update()["complete"])
+            prior = universe_state.read_state(case.store)["work"]["DEP"]
+            item = obligation(
+                {
+                    **prior,
+                    "status": "pending",
+                    "reasons": ["changed_metadata"],
+                    "required_group": [],
+                },
+                prior,
+            )
+            universe_state.put_work(case.store, "DEP", item)
+            universe_state.record_outcome(
+                case.store,
+                "DEP",
+                status="blocked",
+                outcome={"outcome": "invalid_symbol", "http_status": 400},
+            )
+            count = len(attempts)
+            code, _, _ = invoke(case, "update", "--through", "2026-10-16")
+            self.assertEqual(code, 1)
+            self.assertEqual(len(attempts), count)
+            code, result, errors = invoke(
+                case,
+                "update",
+                "--through",
+                "2026-10-16",
+                "--retry-blocked",
+            )
+            self.assertEqual(code, 0, (result, errors))
+            self.assert_published(case)
 
     def test_blocked_dependency_requires_explicit_retry_then_finishes_in_group_context(self):
         from urllib.error import HTTPError

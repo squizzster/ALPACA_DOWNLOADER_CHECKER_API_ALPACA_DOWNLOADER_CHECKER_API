@@ -21,6 +21,7 @@ from .projection import require_complete
 from .work_contract import (
     acquisition_fingerprint,
     covers_pricing_start,
+    lookup_fact,
     obligation,
     pricing_target,
     restriction,
@@ -88,7 +89,7 @@ def changed_evidence(index, observation, evidence_client, *, excluded=(), work=N
                 }
                 continue
             asset = compact_asset(current["asset"]) if current.get("asset") else None
-            if previous.get("asset") != asset or previous.get("outcome") != current["outcome"]:
+            if lookup_fact(previous) != lookup_fact(current):
                 changed.add(symbol)
                 old = previous.get("asset") or {}
                 if (old.get("id"), old.get("symbol")) != ((asset or {}).get("id"), (asset or {}).get("symbol")):
@@ -186,6 +187,16 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         prior = state["work"].get(symbol, {})
         unfinished = prior.get("status") not in (None, "complete") and symbol not in satisfied_labels
         entry = entries.get(symbol)
+        required_group = set(prior.get("required_group", [])) if unfinished else set()
+        if entry is None and not (why | set(prior.get("reasons", []))).intersection(
+            {"initial_acquisition", "explicit_pricing_acquisition"}
+        ):
+            group = graph.closure({symbol})
+            if group.intersection(entries):
+                # A missing member of a published group belongs to lineage;
+                # metadata reconciliation must not turn it into a new seed.
+                why.add("dependency_reconciliation")
+                required_group.update(group)
         labels = {symbol}
         if entry:
             labels.update(item["lookup"] for item in entry["projection"]["symbol_lookups"])
@@ -235,7 +246,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             "attempts": prior.get("attempts", 0),
             "required_history_check": unfinished and prior.get("required_history_check", False),
             "correction_id": prior.get("correction_id") if unfinished else None,
-            "required_group": prior.get("required_group", []) if unfinished else [],
+            "required_group": sorted(required_group),
             "acquire": entry is None
             or invalidate
             or extend_history
