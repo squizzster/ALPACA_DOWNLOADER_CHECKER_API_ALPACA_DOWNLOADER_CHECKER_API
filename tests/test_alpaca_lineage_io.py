@@ -2,18 +2,21 @@
 
 import unittest
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
 import test_alpaca_lineage_build as fixtures
-from test_alpaca_lineage_batching import Provider
+from test_alpaca_lineage_batching import Provider, event
 from test_alpaca_pricing_download import bar, snapshot
 
-from libs.alpaca_lineage_build import check_summary, pipeline, storage
+from libs.alpaca_lineage_build import check_summary, pipeline, storage, universe_state
 from libs.alpaca_lineage_build.contract import versions
+from libs.alpaca_lineage_build.work_contract import WorkPolicy
 from libs.alpaca_pricing_download import check_summary as summary
 from libs.alpaca_pricing_download import storage as pricing_storage
 from libs.alpaca_pricing_download.contract import json_bytes
+from libs.common.sqlite_connections import connect_sqlite
 
 
 class LineageIOTests(unittest.TestCase):
@@ -247,6 +250,94 @@ class LineageIOTests(unittest.TestCase):
         self.assertFalse(self.notice().exists())
         self.assertEqual([query["end"] for kind, query in provider.calls if kind == "actions"], ["2026-10-15"])
 
+    def test_pending_group_refresh_is_batched_at_its_required_full_range(self):
+        symbols = ["A", "B", "C"]
+        provider = Provider(symbols)
+        for symbol in symbols:
+            self.download(symbol)
+        self.run_build(symbols, client=provider.client)
+        for symbol in symbols:
+            result = self.download(symbol, end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
+            self.assertEqual(result["mode"], "update")
+        universe_state.initialize(self.store)
+        policy = WorkPolicy(self.store, storage.read_index(self.root), {}, [], "2026-10-15")
+        for symbol in symbols[:2]:
+            policy.require_dependencies({symbol}, "2026-10-15", {symbol})
+        provider.actions.append(event("A", "newly-reported-history", process_date="2016-02-01"))
+        provider.calls.clear()
+        result = self.run_build(symbols, client=provider.client, work_policy=policy)
+        queries = [query for kind, query in provider.calls if kind == "actions"]
+        self.assertEqual(len(queries), 2, queries)
+        self.assertEqual(
+            {(query["symbols"], query["start"], query["end"]) for query in queries},
+            {("A,B", "2016-01-01", "2026-10-15"), ("C", "2026-10-01", "2026-10-15")},
+        )
+        self.assertEqual(result["failed"], 0)
+        for symbol in symbols[:2]:
+            receipt = self.receipt(symbol)
+            self.assertEqual(receipt["processed_through"], "2026-10-15T00:00:00Z")
+            self.assertEqual(receipt["update_obligation_id"], policy.work[symbol]["obligation_id"])
+        self.assertEqual(self.receipt("A")["evidence"]["corporate_actions"][0]["id"], "newly-reported-history")
+        provider.calls.clear()
+        pricing = snapshot(self.store / "end_of_day/pricing")
+        self.run_build(symbols, client=provider.client, work_policy=policy)
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(snapshot(self.store / "end_of_day/pricing"), pricing)
+
+    def test_pending_refresh_prefetches_even_when_pricing_generation_is_unchanged(self):
+        provider = Provider(["A", "B"])
+        for symbol in ("A", "B"):
+            self.download(symbol)
+        self.run_build(["A", "B"], client=provider.client)
+        universe_state.initialize(self.store)
+        policy = WorkPolicy(self.store, storage.read_index(self.root), {}, [], "2026-10-14")
+        for symbol in ("A", "B"):
+            policy.require(symbol, "2026-10-14", reason="explicit_lineage_refresh", refresh=True)
+        provider.calls.clear()
+        pricing = snapshot(self.store / "end_of_day/pricing")
+        self.run_build(["A", "B"], client=provider.client, work_policy=policy)
+        queries = [query for kind, query in provider.calls if kind == "actions"]
+        self.assertEqual(len(queries), 1, queries)
+        self.assertEqual(queries[0]["symbols"], "A,B")
+        self.assertEqual(queries[0]["start"], "2016-01-01")
+        self.assertEqual(snapshot(self.store / "end_of_day/pricing"), pricing)
+
+    def test_execution_version_twenty_keeps_its_publication_and_reader_handoff(self):
+        self.download()
+        provider = Provider(["GOOG"])
+        self.run_build(["GOOG"], client=provider.client)
+        receipt = self.receipt()
+        receipt["schema_version"] = 20
+        receipt["versions"]["lineage"] = 20
+        (self.root / "GOOG/lineage.manifest.json").write_bytes(json_bytes(receipt))
+        entry = storage.read_index(self.root)["symbols"]["GOOG"]
+        storage._update_index(
+            self.root,
+            {
+                "GOOG": {
+                    **entry,
+                    "sha256": storage.document_digest(receipt),
+                    "versions": receipt["versions"],
+                }
+            },
+        )
+        with closing(connect_sqlite(self.root / "index.sqlite3")) as connection:
+            connection.execute("PRAGMA user_version=20")
+        with storage.reader_snapshot(
+            self.store,
+            lambda root: storage.read_index(root)["symbols"],
+            include_boundaries=False,
+            include_receipts=False,
+        ):
+            pass
+        before = snapshot(self.store / "end_of_day/pricing")
+        provider.calls.clear()
+        result = self.run_build(["GOOG"], client=provider.client)
+        self.assertEqual(result["results"][0]["status"], "unchanged")
+        self.assertEqual(self.receipt(), receipt)
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(snapshot(self.store / "end_of_day/pricing"), before)
+
     def test_failed_publication_neither_updates_cache_nor_reports_completed_progress(self):
         self.download()
         self.run_build(["GOOG"])
@@ -353,7 +444,18 @@ class LineageIOTests(unittest.TestCase):
         }
         caches, planned = [], []
 
-        def prefetch(_store, _root, labels, _index, _graph, _client, _refresh, receipt_cache, end_date=None):
+        def prefetch(
+            _store,
+            _root,
+            labels,
+            _index,
+            _graph,
+            _client,
+            _refresh,
+            receipt_cache,
+            end_date=None,
+            work_policy=None,
+        ):
             caches.append(receipt_cache)
             planned.append(list(labels))
             receipt_cache.receipts.update((label, ("generation", {})) for label in labels)

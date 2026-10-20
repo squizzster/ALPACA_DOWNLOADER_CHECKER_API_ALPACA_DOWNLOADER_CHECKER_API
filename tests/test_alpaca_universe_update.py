@@ -28,6 +28,7 @@ from libs.alpaca_lineage_build.universe_update import (
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
+from libs.alpaca_pricing_download.storage import load_source
 from libs.alpaca_recovery_registry import load_labels, publish_union
 from libs.common.sqlite_connections import connect_sqlite
 
@@ -125,6 +126,33 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertTrue(repeated["complete"], repeated)
         self.assertEqual(self.identity.catalogue_calls, 2)
         self.assertTrue(all(p["adjustment"] == "all" and p["start"][:10] >= "2026-10-15" for p in self.pages))
+
+    def test_summary_advancement_publishes_lineage_after_checked_append(self):
+        self.records[:] = [asset("AAA")]
+        self.live["AAA"] = [*self.old, bar("2026-10-19")]
+        lineage_targets = []
+
+        def observed(*args, **kwargs):
+            source = load_source(self.store / "end_of_day/pricing/AAA", "AAA")
+            lineage_targets.append(source["latest_request"]["end_exclusive"])
+            return run_lineage(*args, **kwargs)
+
+        with (
+            patch("libs.alpaca_lineage_build.universe_update.run_lineage", side_effect=observed),
+            patch("libs.alpaca_lineage_build.update.run_lineage", side_effect=observed),
+        ):
+            result = self.update("2026-10-20")
+        self.assertTrue(result["complete"], result)
+        self.assertTrue(lineage_targets)
+        self.assertEqual(set(lineage_targets), {"2026-10-20T00:00:00Z"})
+        self.assertEqual(result["pending_work"], 0)
+        views = read_pricing_views(self.store, "AAA")
+        self.assertEqual(len(views), 8)
+        for rows in views.values():
+            self.assertEqual([row[0][:10] for row in rows], ["2016-01-04", "2026-10-16", "2026-10-19"])
+        entry = storage.read_index(self.store / "end_of_day/lineage")["symbols"]["AAA"]
+        self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
+        self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
 
     def test_preview_performs_no_writes_or_receipt_reads(self):
         before = snapshot(self.directory)

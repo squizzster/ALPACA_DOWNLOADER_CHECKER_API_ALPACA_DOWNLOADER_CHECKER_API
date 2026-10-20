@@ -123,5 +123,11 @@
     "modifications": [
       "Retain generation-bound correction approvals when lineage removes newly inactive symbols from the active summary. Complete their daily and standalone lineage obligations through the existing publication handoff; preserve compatible v2-v19 publications and reader locks."
     ]
+  },
+  {
+    "modifications": [
+      "Plan batched corporate-action evidence with the same accepted group refresh requirements used by publication, including unchanged pricing generations, so full-history reconciliation consumes its prefetched ranges instead of repeating incremental queries as individual full-history requests.",
+      "Keep ordinary stored-summary advancement in its established live-check, correction, append and lineage handoff instead of publishing the old span in discovery first. Preserve earlier processing for acquisition, changed evidence, pending producer inputs and non-summary histories, and reuse compatible v2-v20 publications and reader locks."
+    ]
   }
 ]

@@ -186,7 +186,21 @@ def run_update(
         result["stages"]["acquisition"] = pricing
         policy.record_results(pricing, stage="acquisition")
         failed_symbols = {s for s in work if not policy.allowed({s})}
-        selected = set(work) - failed_symbols
+        summarized = {entry["symbol"] for entry in (accepted["summary"] or {"entries": []})["entries"]}
+        # Ordinary summary advancement owns its check -> append -> lineage
+        # handoff below. Do not republish its old span before appending it.
+        selected = {
+            symbol
+            for symbol, item in work.items()
+            if symbol not in failed_symbols
+            and (
+                symbol not in summarized
+                or item["acquire"]
+                or item["invalidate_pricing"]
+                or item["refresh_metadata"]
+                or symbol in accepted["checks"]["checks"]
+            )
+        }
         refreshed = {s for s in selected if work[s]["refresh_metadata"]}
         lineage_results = []
         for symbols, refresh in ((refreshed, True), (selected - refreshed, False)):

@@ -23,6 +23,9 @@ Pricing always uses SIP; registering an OTC-labelled asset does not promise sepa
 
 The [ordered flow](ARCHITECTURE.md#daily-update) registers accepted labels, acquires missing histories,
 reconciles changed identity/status evidence, then checks, corrects and appends eligible stored histories.
+Ordinary stored-summary advancement without pending producer inputs proceeds through that checked append
+before lineage publication; it does not first republish lineage for the older span. Metadata prefetch applies each group's accepted
+refresh requirement when batching ranges, including full-history evidence where required.
 Stage progress goes to stderr; the final report is JSON on stdout. Failures or unfinished required work
 return nonzero. Published unresolved identities are valid outcomes, distinct from failed processing.
 

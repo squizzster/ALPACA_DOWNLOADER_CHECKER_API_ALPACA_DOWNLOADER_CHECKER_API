@@ -75,7 +75,9 @@ def _reuse_metadata(seed, group, selected, previous, notices, refresh):
     )
 
 
-def _prefetch_metadata(store, root, selected, index, graph, client, refresh, receipt_cache, end_date=None):
+def _prefetch_metadata(
+    store, root, selected, index, graph, client, refresh, receipt_cache, end_date=None, work_policy=None
+):
     """Collect selected receipt ranges without opening prices or scanning directories.
 
     Publication still reselects pricing under its normal locks. Requests are
@@ -98,13 +100,16 @@ def _prefetch_metadata(store, root, selected, index, graph, client, refresh, rec
                 ):
                     continue
                 previous = {s: receipt_cache.read(s) for s in sources}
+                group_refresh = refresh or (
+                    work_policy is not None and work_policy.needs_refresh(group, previous)
+                )
                 notices = {
                     s: notice
                     for s in sources
                     if (notice := read_update(store / "end_of_day/pricing" / s, published=True)) is not None
                 }
                 generations = {s: storage.document_digest(source) for s, source in sources.items()}
-                if _reuse_metadata(seed, group, generations, previous, notices, refresh):
+                if _reuse_metadata(seed, group, generations, previous, notices, group_refresh):
                     continue
                 for symbol, source in sources.items():
                     requests.update(
@@ -113,7 +118,7 @@ def _prefetch_metadata(store, root, selected, index, graph, client, refresh, rec
                             source.get("history_start", HISTORY_START)[:10],
                             source["latest_request"]["asof"],
                             previous[symbol],
-                            refresh=full_metadata(previous[symbol], notices.get(symbol), refresh),
+                            refresh=full_metadata(previous[symbol], notices.get(symbol), group_refresh),
                         )
                     )
         except (RuntimeError, OSError, ValueError):
@@ -709,7 +714,16 @@ def run_lineage(
                 ]
                 if requests:
                     _prefetch_metadata(
-                        store, root, requests, index, graph, evidence_client, refresh, receipt_cache, end_date
+                        store,
+                        root,
+                        requests,
+                        index,
+                        graph,
+                        evidence_client,
+                        refresh,
+                        receipt_cache,
+                        end_date,
+                        work_policy=work_policy,
                     )
                 for label in cohort:
                     try:

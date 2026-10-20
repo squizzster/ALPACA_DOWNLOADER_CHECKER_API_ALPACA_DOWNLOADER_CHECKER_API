@@ -154,7 +154,7 @@ def reader_snapshot(
     def selection():
         # New lock order must not overlap an executable using the old order.
         # The worker upgrades this header under the old shared/exclusive gate.
-        if _index_version(root) not in {None, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, VERSION}:
+        if _index_version(root) not in {None, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, VERSION}:
             raise LineageError("lineage lock protocol needs upgrade; run lineage first")
         if path_at(root, ".pending.json").exists():
             raise LineageError("lineage publication incomplete; resume lineage first")
