@@ -110,8 +110,12 @@ prices. Dependency acquisition targets and required group members are recorded s
 membership, before acquisition. Disabling pricing acquisition retains that unfinished work. Status and later
 updates expose it even if the provider no longer returns the relationship.
 
-Durable work survives registration and publication interruptions. Accepted maintenance targets cannot shrink
-after inactivity, catalogue omission or an older retry request. A successful identical empty request is
+Durable work survives registration and publication interruptions. Accepted maintenance targets and explicit
+`pricing acquire --from` starts cannot shrink after inactivity, catalogue omission or a narrower retry
+request. Daily update and standalone pricing/lineage commands retain the earliest unfinished start and the
+required end. Completion requires published coverage of that whole range, including successful empty
+coverage. A history extension remains deferred when completing it would exceed the invocation's cutoff.
+A successful identical empty request is
 reused; a later target acquires the additional interval. Changed relevant identity evidence or an explicit
 history refresh can invalidate earlier coverage. Transport failures remain pending with a five-minute
 retry delay. Access denial and exact symbol rejection remain blocked until `update --retry-blocked`
@@ -144,8 +148,12 @@ Initialize work state once before standalone pricing or lineage commands. For a 
 and run `summary rebuild` before daily updating; `status` identifies any remaining missing coverage.
 Ordinary acquisition requires an explicit compatible or empty store. It publishes pricing only; run
 lineage afterward. Initial history starts in 2016 unless `--from` specifies a later start. A start that
-excludes held observations is rejected. `--symbols-file` accepts headerless CSV or one label per line;
+excludes held observations is rejected. Explicit starts before 2016 or after the inclusive `--through`
+date are rejected before registration or durable work is accepted.
+`--symbols-file` accepts headerless CSV or one label per line;
 `--recovery-universe` explicitly selects the additive recovery list and can mean a full acquisition.
+Acquisition reads either selection file once. Registration, durable work, downloads and the completed-batch
+record use that same selection; subsequent file edits or registry additions apply to a later command.
 
 | Command | Scope |
 |---|---|

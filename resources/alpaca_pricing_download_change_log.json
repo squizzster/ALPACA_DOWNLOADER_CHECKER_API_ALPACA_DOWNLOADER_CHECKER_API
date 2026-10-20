@@ -110,5 +110,12 @@
     "modifications": [
       "Require initialized durable work for canonical pricing acquisition, register selected labels before requests, and enforce complete-group retry/cutoff restrictions while preserving provider failure classifications."
     ]
+  },
+  {
+    "modifications": [
+      "Freeze one symbol selection for registration, durable work and pricing execution so mutable input files cannot introduce unregistered acquisitions.",
+      "Preserve accepted explicit history starts across command retries, respect them during batched acquisition and reuse only sources covering the complete required range. Retain compatible prior publications.",
+      "Share acquisition-range validation with acceptance and work producers; reject impossible starts before registration, durable intentions, store initialization or buffered requests."
+    ]
   }
 ]

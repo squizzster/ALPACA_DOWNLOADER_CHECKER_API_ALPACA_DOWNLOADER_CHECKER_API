@@ -2,7 +2,7 @@
 
 from uuid import uuid4
 
-from libs.alpaca_pricing_download.contract import failure_outcome
+from libs.alpaca_pricing_download.contract import HISTORY_START, failure_outcome
 from libs.alpaca_security_lineage.lineage import compact_asset
 
 from .contract import LineageError, document_digest
@@ -16,6 +16,7 @@ def obligation(item, previous=None):
         "end_exclusive",
         "evidence_fingerprint",
         "acquisition_evidence_fingerprint",
+        "pricing_start",
         "pricing_end_exclusive",
         "acquire",
         "invalidate_pricing",
@@ -36,6 +37,14 @@ def acquisition_fingerprint(item):
 
 def pricing_target(item):
     return item.get("pricing_end_exclusive", item["end_exclusive"])
+
+
+def covers_pricing_start(item, request):
+    """Coverage includes the accepted inclusive start, even for an empty source."""
+    start = item.get("pricing_start")
+    return start is None or (
+        request is not None and (request.get("history_start") or HISTORY_START)[:10] <= start
+    )
 
 
 def lookup_fact(lookup):
@@ -74,6 +83,7 @@ def satisfied(item, entry, pending):
     projection = entry.get("projection") or {}
     return (
         not pending
+        and covers_pricing_start(item, projection.get("pricing_request"))
         and projection.get("processed_through", "")[:10] >= pricing_target(item)
         and projection.get("update_obligation_id") == item["obligation_id"]
         and (
@@ -144,10 +154,16 @@ class WorkPolicy:
             for s in symbols
         }
 
-    def require(self, symbol, target, *, reason, acquire=False, refresh=False, group=(), history_check=False):
+    def require(
+        self, symbol, target, *, reason, acquire=False, refresh=False, group=(), history_check=False, start=None
+    ):
         """Persist an obligation before its first request, independently of registration."""
+        from libs.alpaca_pricing_download.contract import timestamp
+        from libs.alpaca_pricing_download.download import request_start
+
         from . import universe_state
 
+        request_start(start, timestamp(target + "T00:00:00Z"))
         prior = self.work.get(symbol, {})
         required = max(target, pricing_target(prior)) if prior else target
         item = obligation(
@@ -155,6 +171,7 @@ class WorkPolicy:
                 **prior,
                 "reasons": sorted(set(prior.get("reasons", [])) | {reason}),
                 "end_exclusive": max(prior.get("end_exclusive", target), target),
+                "pricing_start": min(filter(None, (prior.get("pricing_start"), start)), default=None),
                 "pricing_end_exclusive": required,
                 "status": prior.get("status", "pending"),
                 "attempts": prior.get("attempts", 0),
@@ -177,7 +194,7 @@ class WorkPolicy:
                 self.blocked.update(linked)
         return item
 
-    def require_dependencies(self, group, target, required=()):
+    def require_dependencies(self, group, target, required=(), *, start=None):
         """Keep acquisition and the complete group even if later evidence omits the link."""
         group = self.graph.closure(set(group))
         for symbol in sorted(group):
@@ -188,6 +205,7 @@ class WorkPolicy:
                 acquire=symbol in required,
                 refresh=True,
                 group=group,
+                start=start,
             )
 
     def require_maintenance(self, entries, target):
@@ -346,7 +364,9 @@ class WorkPolicy:
                 "acquisition_evidence_sha256"
             ) != acquisition_fingerprint(item):
                 raise WorkDeferred(f"{symbol}: required identity-related pricing replacement is incomplete")
-            if source["latest_request"]["end_exclusive"][:10] < pricing_target(item):
+            if not covers_pricing_start(item, source) or source["latest_request"]["end_exclusive"][
+                :10
+            ] < pricing_target(item):
                 continue  # Maintenance still owes the remaining interval.
             if item.get("required_history_check") and self.history_approved.get(symbol) != document_digest(
                 source

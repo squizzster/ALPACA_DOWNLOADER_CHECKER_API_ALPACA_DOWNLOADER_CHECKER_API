@@ -107,5 +107,10 @@
       "Reconcile actual group identity evidence with accepted obligations before publication, atomically persist changed mapping requirements, and acquire compatible pricing through the selected source generation before acknowledgement.",
       "Keep in-memory work synchronized with durable failure outcomes so dependency expansion preserves blocked requests, retry delays and attempt counts."
     ]
+  },
+  {
+    "modifications": [
+      "Persist validated inclusive pricing starts with accepted work and preserve the earliest unfinished start through selection, dependency reconciliation and command changes. Reject impossible ranges before creating intentions. Require published coverage of both range endpoints before acknowledgement, including empty histories and interrupted publication reuse."
+    ]
   }
 ]

@@ -93,6 +93,16 @@ def request_end(value: str | None, *, now: datetime | None = None) -> datetime:
     return end
 
 
+def request_start(value: str | None, end: datetime) -> datetime | None:
+    """Validate an explicit acquisition start before accepting or executing work."""
+    if value is None:
+        return None
+    start = timestamp(parse_date(value).isoformat() + "T00:00:00Z")
+    if not timestamp(HISTORY_START) <= start < end:
+        raise DownloadError("from date must be on/after 2016-01-01 and before the exclusive end")
+    return start
+
+
 def _select(views: dict, predicate) -> dict:
     return {
         adjustment: tuple(row for row in views[adjustment] if predicate(month_of(row)))
@@ -305,11 +315,7 @@ def download_pricing(
     validate_version()
     symbol = symbol_label(symbol)
     end = request_end(end_date)
-    requested_start = (
-        timestamp(parse_date(from_date).isoformat() + "T00:00:00Z") if from_date is not None else None
-    )
-    if requested_start is not None and not timestamp(HISTORY_START) <= requested_start < end:
-        raise DownloadError("from date must be on/after 2016-01-01 and before the exclusive end")
+    requested_start = request_start(from_date, end)
     end_text = end.isoformat().replace("+00:00", "Z")
     # With an exclusive midnight, the first of a month still completes the prior month.
     anchor = (end - timedelta(days=1)).strftime("%Y-%m")

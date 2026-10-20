@@ -170,6 +170,7 @@ def run_update(
                 progress=progress,
                 invalidate={s for s in symbols if work[s]["invalidate_pricing"]},
                 evidence_fingerprints={s: acquisition_fingerprint(work[s]) for s in symbols},
+                from_dates={s: work[s].get("pricing_start") for s in symbols},
             )
             pricing["results"].extend(value["results"])
             pricing["requests"][target] = value["requests"]

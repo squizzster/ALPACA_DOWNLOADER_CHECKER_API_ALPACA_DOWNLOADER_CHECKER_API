@@ -107,14 +107,26 @@ that identifier only after its locked pricing inputs satisfy the obligation. Cov
 an unperformed refresh. Maintenance persists any additional coverage before requests begin. An unfinished
 pricing target survives independently of acquisition/check flags, including later inactivity, catalogue
 omission or an older invocation. A newly observed inactive label can require metadata reconciliation alone;
-that does not cancel a previously accepted pricing target. Failed checks also create obligations, and a
+that does not cancel a previously accepted pricing target. Explicit acquisition starts are persisted as
+inclusive `pricing_start` dates before requests. The pricing owner supplies the common range validation:
+starts must be on/after 2016-01-01 and before the exclusive end. CLI acceptance, the work producer and
+batched acquisition reject impossible ranges before their mutations or requests.
+Merging unfinished work retains the earliest accepted start.
+Selection, dependency acquisition, publication stamping and acknowledgement require both range endpoints;
+an unchanged final session cannot satisfy a missing history extension. Compatible completed extensions are
+reused even if their lineage publication or acknowledgement was interrupted. Work without an explicit start
+continues to use its retained source range or the initial 2016 default.
+Failed checks also create obligations, and a
 subsequent history check must cover the selected generation before completion. Pricing source selectors record the
 acquisition-evidence fingerprint for identity-driven replacement, including when the returned bars do not
 change. Stable store update locks serialize orchestration; existing publisher locks and generation checks
 still apply.
 Standalone producers hold that same update lock. Their registration context loads the registry once,
 persists new intentions and acknowledges the atomic union before either existing-group catch-up or newly
-discovered dependency acquisition. Dependency work records acquisition coverage and the complete required
+discovered dependency acquisition. Pricing acquisition freezes its selected labels from the first input
+read and passes that selection through registration, execution and the completed-batch memo. Execution
+does not reread a mutable symbols file or recovery registry. A memo for a narrower request cannot bypass an
+earlier unfinished acquisition start. Dependency work records acquisition coverage and the complete required
 group before registration or acquisition. Those links remain in work selection until satisfying publication,
 even when later provider evidence omits the relationship; registry membership cannot satisfy them.
 Pending registration intentions recover first; known membership

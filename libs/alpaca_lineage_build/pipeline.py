@@ -222,15 +222,22 @@ def process_group(
             sources = _current_sources(store, locked, known=index["symbols"])
             # A missing seed is missing pricing, just like a related label. With
             # no published range, None delegates defaults to the downloader.
+            starts = [source.get("history_start", HISTORY_START)[:10] for source in sources.values()]
+            if work_policy is not None:
+                starts.extend(
+                    work_policy.work[symbol]["pricing_start"]
+                    for symbol in group
+                    if work_policy.work.get(symbol, {}).get("pricing_start")
+                )
             start = min(
-                (source.get("history_start", HISTORY_START)[:10] for source in sources.values()),
+                starts,
                 default=HISTORY_START[:10] if end_date else None,
             )
             end = max(
                 (source["latest_request"]["end_exclusive"][:10] for source in sources.values()), default=end_date
             )
             if work_policy is not None and group - sources.keys():
-                work_policy.require_dependencies(group, end, group - sources.keys())
+                work_policy.require_dependencies(group, end, group - sources.keys(), start=start)
                 work_policy.check(group)
             if register_discoveries is not None:
                 register_discoveries(group)
@@ -344,7 +351,7 @@ def process_group(
                 )
                 if expanded != group:
                     if work_policy is not None:
-                        work_policy.require_dependencies(expanded, end, expanded - sources.keys())
+                        work_policy.require_dependencies(expanded, end, expanded - sources.keys(), start=start)
                         work_policy.reconcile_evidence(evidence, sources, previous, group=expanded, target=end)
                     group = expanded
                     continue  # Release every pricing lock before taking an enlarged, sorted set.
@@ -449,7 +456,7 @@ def process_group(
         # endpoint checks, replacement, and the resulting pending notice.
         if required:
             if work_policy is not None:
-                work_policy.require_dependencies(group, end, required)
+                work_policy.require_dependencies(group, end, required, start=start)
                 work_policy.check(group)
             if pricing_client is None:
                 return {"symbol": seed, "status": "waiting_for_pricing", "required": required, "processed": []}

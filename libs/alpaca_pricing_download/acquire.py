@@ -6,13 +6,14 @@ from .append import _cohorts, append_entries
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
+    DownloadError,
     InitialPricingUnavailable,
     digest,
     failure_outcome,
     json_bytes,
     timestamp,
 )
-from .download import download_pricing, request_end
+from .download import download_pricing, request_end, request_start
 from .http import BarsClient
 from .refresh import acquire_full
 from .storage import initialize_store, load_source, read_validator, recover, regular_path, ticker_lock
@@ -31,16 +32,29 @@ class MeasuredRequests:
 
 
 def acquire_selected(
-    store, symbols, end_date, *, client, invalidate=(), progress=None, workers=3, evidence_fingerprints=None
+    store,
+    symbols,
+    end_date,
+    *,
+    client,
+    invalidate=(),
+    progress=None,
+    workers=3,
+    evidence_fingerprints=None,
+    from_dates=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
     store = Path(store).absolute()
     evidence_fingerprints = evidence_fingerprints or {}
-    initialize_store(store)
+    from_dates = from_dates or {}
     end = request_end(end_date)
+    symbols = sorted(set(symbols))
+    for symbol in symbols:
+        request_start(from_dates.get(symbol), end)
+    initialize_store(store)
     end_text = end.isoformat().replace("+00:00", "Z")
     needs, selected_generations, results, append, empty = [], {}, [], [], []
-    for symbol in sorted(set(symbols)):
+    for symbol in symbols:
         root = regular_path(store, f"end_of_day/pricing/{symbol}")
         # A selected acquisition may create its own paths. No universe inventory.
         root.mkdir(parents=True, exist_ok=True)
@@ -50,15 +64,40 @@ def acquire_selected(
             endpoints = read_validator(root, source, published=True) if source else None
             selected_generations[symbol] = digest(json_bytes(source)) if source is not None else None
         covered = timestamp(source["latest_request"]["end_exclusive"]) if source else None
+        stored_start = source.get("history_start", HISTORY_START)[:10] if source else None
+        requested_start = from_dates.get(symbol)
+        start = (
+            min(stored_start, requested_start)
+            if stored_start and requested_start
+            else requested_start or stored_start or HISTORY_START[:10]
+        )
+        extending = source is not None and start < stored_start
+        if extending and covered > end:
+            results.append(
+                {
+                    "symbol": symbol,
+                    "status": "failed",
+                    "outcome": failure_outcome(
+                        DownloadError(
+                            "required history extension exceeds requested cutoff; retained data unchanged"
+                        )
+                    ),
+                }
+            )
+            continue
         accepted_evidence = (
             symbol in evidence_fingerprints
             and source is not None
             and source.get("acquisition_evidence_sha256") == evidence_fingerprints[symbol]
         )
-        if source and (covered > end or covered == end and (symbol not in invalidate or accepted_evidence)):
+        if (
+            source
+            and not extending
+            and (covered > end or covered == end and (symbol not in invalidate or accepted_evidence))
+        ):
             results.append({"symbol": symbol, "status": "covered", "already_beyond_target": covered > end})
             continue
-        if source and (symbol not in invalidate or accepted_evidence):
+        if source and not extending and (symbol not in invalidate or accepted_evidence):
             # The normal downloader remains responsible for nonempty endpoint checks;
             # empty ranges use its incremental covered-range path.
             if endpoints is not None and not any(endpoints.values()):
@@ -75,7 +114,7 @@ def acquire_selected(
                 "asof": end.date().isoformat(),
                 "ranges": [
                     {
-                        "start": source.get("history_start", HISTORY_START) if source else HISTORY_START,
+                        "start": start + "T00:00:00Z",
                         "end_exclusive": end_text,
                     }
                 ],

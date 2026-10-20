@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .completion import completed_batch, remember_batch, request_key
 from .contract import DownloadError, failure_outcome, symbol_label, validate_version
-from .download import download_pricing, parse_date
+from .download import download_pricing, request_end, request_start
 from .http import BarsClient
 from .storage import initialize_store
 from .update_checks import begin_checks, read_checks
@@ -41,9 +41,8 @@ def run_arguments(arguments, *, registration_context=None):
         return _run_arguments(arguments)
     try:
         validate_version()
-        selected = selected_symbols(arguments)
-        if arguments.from_date is not None:
-            parse_date(arguments.from_date)
+        selected = tuple(selected_symbols(arguments))
+        request_start(arguments.from_date, request_end(arguments.request_end))
         with registration_context() as (register, policy):
             allowed = []
             for label in selected:
@@ -53,26 +52,39 @@ def run_arguments(arguments, *, registration_context=None):
                     continue  # The ticker result reports malformed input independently.
                 if policy.allowed({symbol}):
                     policy.require(
-                        symbol, arguments.request_end, reason="explicit_pricing_acquisition", acquire=True
+                        symbol,
+                        arguments.request_end,
+                        reason="explicit_pricing_acquisition",
+                        acquire=True,
+                        start=arguments.from_date,
                     )
                     allowed.append(symbol)
             register(allowed)
-            return _run_arguments(arguments, work_policy=policy)
+            return _run_arguments(arguments, work_policy=policy, selected=selected)
     except (RuntimeError, OSError, ValueError, csv.Error) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
 
-def _run_arguments(arguments, *, work_policy=None):
+def _run_arguments(arguments, *, work_policy=None, selected=None):
     try:
         validate_version()
         end = arguments.request_end
-        symbols = selected_symbols(arguments)
-        if arguments.from_date is not None:
-            parse_date(arguments.from_date)
+        # The registration handoff owns this selection, including file inputs.
+        symbols = selected_symbols(arguments) if selected is None else list(selected)
+        request_start(arguments.from_date, request_end(end))
         client = BarsClient(os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", ""))
         request = request_key(symbols, end, arguments.from_date)
-        reused = not arguments.refresh_all and completed_batch(arguments.store, request)
+        starts = {
+            symbol: (work_policy.work.get(symbol, {}).get("pricing_start") if work_policy else None)
+            or arguments.from_date
+            for symbol in symbols
+        }
+        reused = (
+            not arguments.refresh_all
+            and all(start == arguments.from_date for start in starts.values())
+            and completed_batch(arguments.store, request)
+        )
         if reused:
             initialize_store(arguments.store.absolute())
         before = read_checks(arguments.store.absolute(), ())
@@ -109,7 +121,7 @@ def _run_arguments(arguments, *, work_policy=None):
                 end,
                 client=client,
                 refresh_all=arguments.refresh_all,
-                from_date=arguments.from_date,
+                from_date=starts[symbol],
                 on_check=events.append,
             )
             result["status"] = (

@@ -20,6 +20,7 @@ from .contract import LineageError, document_digest, reusable_versions
 from .projection import require_complete
 from .work_contract import (
     acquisition_fingerprint,
+    covers_pricing_start,
     obligation,
     pricing_target,
     restriction,
@@ -210,15 +211,22 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             acquisition_fingerprint(prior) if unfinished and symbol not in mapping_groups else fingerprint
         )
         covered = entry["projection"]["processed_through"][:10] if entry else None
+        required_start = prior.get("pricing_start") if unfinished else None
+        extend_history = bool(entry) and not covers_pricing_start(
+            {"pricing_start": required_start}, entry["projection"].get("pricing_request")
+        )
         invalidate = symbol in mapping_groups or (unfinished and prior.get("invalidate_pricing", False))
         required_end = end_date if symbol in maintained or covered is None else covered
         if unfinished:
             required_end = max(required_end, pricing_target(prior))
         if invalidate and covered and covered > end_date:
             deferred.append({"symbol": symbol, "reason": "required_replacement_exceeds_requested_cutoff"})
+        if extend_history and covered > end_date:
+            deferred.append({"symbol": symbol, "reason": "required_history_extension_exceeds_requested_cutoff"})
         item = {
             "reasons": sorted(why | (set(prior.get("reasons", [])) if unfinished else set())),
             "end_exclusive": end_date,
+            "pricing_start": required_start,
             "pricing_end_exclusive": required_end,
             "evidence_fingerprint": fingerprint,
             "acquisition_evidence_fingerprint": acquisition_evidence,
@@ -230,6 +238,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             "required_group": prior.get("required_group", []) if unfinished else [],
             "acquire": entry is None
             or invalidate
+            or extend_history
             or bool(why & {"advance_empty_coverage", "advance_retained_coverage"})
             or (
                 covered is not None
@@ -281,7 +290,13 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         request = projection.get("pricing_request") or {}
         target = pricing_target(item)
         start = request.get("history_start") or HISTORY_START
-        extending_empty = "advance_empty_coverage" in item["reasons"] and not item["invalidate_pricing"]
+        if item.get("pricing_start"):
+            start = (min(start[:10], item["pricing_start"]) if request else item["pricing_start"]) + "T00:00:00Z"
+        extending_empty = (
+            "advance_empty_coverage" in item["reasons"]
+            and not item["invalidate_pricing"]
+            and covers_pricing_start(item, request)
+        )
         if extending_empty:
             start = projection["processed_through"]
         (empty if extending_empty else initial).append(
