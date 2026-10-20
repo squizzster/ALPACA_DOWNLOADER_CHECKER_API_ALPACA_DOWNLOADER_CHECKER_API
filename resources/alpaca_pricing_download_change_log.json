@@ -123,5 +123,10 @@
       "Resolve new inclusive pricing cutoffs to the last completed exchange session using the shared calendar, including weekends, holidays and exceptional closures. Retain the New York completion limit and reject unknown calendar coverage.",
       "Keep already accepted exclusive boundaries separate from new cutoff resolution so durable obligations, retained publications and journal recovery preserve their original ranges. Retain compatible v1-v21 publications."
     ]
+  },
+  {
+    "modifications": [
+      "Batch retained dependency endpoint checks, acquisition ranges and resulting first-session checks through the existing API solver in bounded cohorts. Replay those responses through the ordinary downloader, preserving exact comparisons, full-replacement retries, per-ticker failure outcomes and publication recovery; reject a changed selected source under its publication lock. Report stage actions and pages, retain compatible v1-v22 publications and reuse completed work."
+    ]
   }
 ]

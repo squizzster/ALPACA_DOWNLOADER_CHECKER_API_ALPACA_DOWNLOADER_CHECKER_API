@@ -1,6 +1,6 @@
 """Batched acquisition and guarded replacement of existing pricing spans."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
@@ -8,15 +8,23 @@ from libs.alpaca_data_api_solver import build_plan
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
-    NEW_YORK,
+    BarsSymbolUnavailable,
     DownloadError,
     digest,
     failure_outcome,
     json_bytes,
     symbol_label,
     timestamp,
+    transform,
 )
-from .download import _endpoints_match, download_pricing
+from .download import (
+    _endpoint_window,
+    _endpoints_match,
+    _incremental_endpoints,
+    download_pricing,
+    established_pricing_rejection,
+)
+from .endpoints import endpoints_of
 from .storage import load_source, read_validator, regular_path, ticker_lock
 
 
@@ -75,67 +83,157 @@ def prepare_refresh(store, symbols):
     return prepared
 
 
-def acquire_full(needs, client, *, metrics=None):
-    """Acquire shared full histories, then batch their dependent first-session checks.
+class PlannedClient:
+    """Replay each buffered request once; retries use fresh provider responses."""
+
+    def __init__(self, client, cache):
+        self.client, self.cache = client, cache
+
+    def fetch(self, symbol, adjustment, start, end, *, asof=None):
+        key = (asof is not None, symbol, adjustment, start, end, asof or end.date().isoformat())
+        if key in self.cache:
+            return self.cache.pop(key)
+        return self.client.fetch(symbol, adjustment, start, end, asof=asof)
+
+
+def _endpoint_needs(symbol, endpoints, asof, why):
+    return [
+        {
+            "kind": "bars",
+            "why": why,
+            "symbols": [symbol],
+            "asof": asof,
+            "adjustments": [adjustment],
+            "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
+        }
+        for adjustment, rows in endpoints.items()
+        for row in rows
+        for start, end in [_endpoint_window(row, asof)]
+    ]
+
+
+def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None):
+    plan = build_plan({"steps": [{"needs": needs}]})
+    stage = needs[0]["why"] if needs else "acquisition_check"
+    actions = plan["steps"][0]["actions"]
+    if progress:
+        progress(
+            stage,
+            {
+                "state": "started",
+                "symbols": len({need["symbols"][0] for need in needs}),
+                "actions": len(actions),
+                "minimum_pages": len(actions),
+                "page_requests": (metrics or {}).get("page_requests", 0),
+            },
+        )
+    options = {"on_failure": on_failure} if on_failure is not None else {}
+    acquired = client.execute_plan(plan, metrics=metrics, **options)
+    if progress:
+        progress(stage, {"state": "completed", "page_requests": (metrics or {}).get("page_requests", 0)})
+    cache = {}
+    for index, need in enumerate(needs):
+        symbol = need["symbols"][0]
+        for adjustment in need["adjustments"]:
+            for offset, window in enumerate(need["ranges"]):
+                key = (0, index, offset, symbol, adjustment)
+                if on_failure is not None and key not in acquired:
+                    continue  # The caller retains the failure and excludes this ticker.
+                cache[
+                    (
+                        check,
+                        symbol,
+                        adjustment,
+                        timestamp(window["start"]),
+                        timestamp(window["end_exclusive"]),
+                        need["asof"],
+                    )
+                ] = acquired[key]
+    return cache, plan
+
+
+def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progress=None, on_failure=None):
+    """Acquire shared ranges, then batch the resulting history's first-session checks.
 
     The returned client feeds the normal downloader; its existing bounded retry
     requests a fresh plan if the provider changed during acquisition.
     """
-    acquisition = build_plan({"steps": [{"needs": needs}]})
-    acquired = client.execute_plan(acquisition, metrics=metrics)
-    cache, probes = {}, []
-    for index, need in enumerate(needs):
+    cache, acquisition = _prefetch(
+        needs, client, check=False, metrics=metrics, progress=progress, on_failure=on_failure
+    )
+    probes = []
+    for need in needs:
         symbol, window = need["symbols"][0], need["ranges"][0]
-        for adjustment in ADJUSTMENTS:
-            rows = acquired[(0, index, 0, symbol, adjustment)]
-            cache[
-                (
-                    False,
-                    symbol,
-                    adjustment,
-                    timestamp(window["start"]),
-                    timestamp(window["end_exclusive"]),
-                    need["asof"],
-                )
-            ] = rows
-            if rows:
-                day = timestamp(rows[0]["t"]).astimezone(NEW_YORK).date()
-                probe_start = datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK).astimezone(
-                    timezone.utc
-                )
-                probe_end = min(
-                    (probe_start.astimezone(NEW_YORK) + timedelta(days=1)).astimezone(timezone.utc),
-                    timestamp(window["end_exclusive"]),
-                )
-                probes.append(
-                    {
-                        "kind": "bars",
-                        "why": "acquisition_check",
-                        "symbols": [symbol],
-                        "asof": need["asof"],
-                        "adjustments": [adjustment],
-                        "ranges": [{"start": probe_start.isoformat(), "end_exclusive": probe_end.isoformat()}],
-                    }
-                )
-    checks = build_plan({"steps": [{"needs": probes}]})
-    checked = client.execute_plan(checks, metrics=metrics)
-    for index, need in enumerate(probes):
-        symbol, adjustment, window = need["symbols"][0], need["adjustments"][0], need["ranges"][0]
-        start = timestamp(window["start"])
-        end = timestamp(window["end_exclusive"])
-        cache[(True, symbol, adjustment, start, end, need["asof"])] = checked[(0, index, 0, symbol, adjustment)]
-
-    class PlannedClient:
-        def fetch(self, symbol, adjustment, start, end, *, asof=None):
-            key = (asof is not None, symbol, adjustment, start, end, asof or end.date().isoformat())
-            if key in cache:
-                return cache.pop(key)
-            return client.fetch(symbol, adjustment, start, end, asof=asof)
-
-    return PlannedClient(), {
+        start, end = timestamp(window["start"]), timestamp(window["end_exclusive"])
+        keys = {name: (False, symbol, name, start, end, need["asof"]) for name in ADJUSTMENTS}
+        if any(key not in cache for key in keys.values()):
+            continue
+        views = {name: transform(cache[key], start, end) for name, key in keys.items()}
+        prior = (retained_endpoints or {}).get(symbol)
+        endpoints = _incremental_endpoints(prior, views, start) if prior is not None else endpoints_of(views)
+        probes.extend(
+            _endpoint_needs(
+                symbol, {name: rows[:1] for name, rows in endpoints.items()}, need["asof"], "acquisition_check"
+            )
+        )
+    checked, checks = _prefetch(
+        probes, client, check=True, metrics=metrics, progress=progress, on_failure=on_failure
+    )
+    cache.update(checked)
+    return PlannedClient(client, cache), {
         "schema_version": acquisition["schema_version"],
         "steps": acquisition["steps"] + checks["steps"],
     }
+
+
+def acquire_retained(selected, end, *, client, metrics, progress=None):
+    """Batch the ordinary downloader's three request stages for selected sources."""
+    failures, probes = {}, []
+    asof = end.date().isoformat()
+
+    def failed(_step, action, error):
+        outcome = failure_outcome(error)
+        exact_fallback = (
+            len(action["request"]["params"]["symbols"].split(",")) > 1 and outcome["http_status"] == 400
+        )
+        for target in action["deliver"]:
+            for symbol in target["symbols"]:
+                prior = failures.get(symbol)
+                if prior is None or prior[1] and not exact_fallback or outcome["outcome"] == "access_denied":
+                    failure = (
+                        established_pricing_rejection(symbol, error)
+                        if action["why"] == "retained_history_acquisition"
+                        and isinstance(error, BarsSymbolUnavailable)
+                        else error
+                    )
+                    failures[symbol] = (failure, exact_fallback)
+
+    for symbol, (source, endpoints) in selected.items():
+        probes.extend(_endpoint_needs(symbol, endpoints, asof, "boundary_check"))
+    cache, _ = _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed)
+    comparison = PlannedClient(client, dict(cache))
+    needs, retained = [], {}
+    for symbol, (source, endpoints) in selected.items():
+        if symbol in failures:
+            continue
+        start = timestamp(source.get("history_start", HISTORY_START))
+        if _endpoints_match(comparison, symbol, endpoints, asof):
+            start = max(start, timestamp(source["anchor_month"] + "-01T00:00:00Z"))
+            retained[symbol] = endpoints
+        needs.append(
+            {
+                "kind": "bars",
+                "why": "retained_history_acquisition",
+                "symbols": [symbol],
+                "adjustments": list(ADJUSTMENTS),
+                "asof": asof,
+                "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
+            }
+        )
+    consumer, _ = acquire_full(
+        needs, client, metrics=metrics, retained_endpoints=retained, progress=progress, on_failure=failed
+    )
+    return PlannedClient(consumer, cache), failures
 
 
 def replace_prepared(store, prepared, *, client, cohort_size=32, progress=None, before_publish=None):

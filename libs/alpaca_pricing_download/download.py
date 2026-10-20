@@ -48,6 +48,12 @@ from .storage import (
 _SOURCE_NOT_SELECTED = object()
 
 
+def established_pricing_rejection(symbol, error):
+    failure = DownloadError(f"symbol rejected during an established pricing acquisition: {symbol}")
+    failure.__cause__ = error
+    return failure
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -160,15 +166,18 @@ def _stored_endpoints(root: Path, source: dict) -> dict:
     return endpoints
 
 
+def _endpoint_window(row, asof):
+    day = timestamp(row[0]).astimezone(NEW_YORK).date()
+    start = datetime(day.year, day.month, day.day, tzinfo=NEW_YORK)
+    end = min((start + timedelta(days=1)).astimezone(timezone.utc), timestamp(asof + "T00:00:00Z"))
+    return start.astimezone(timezone.utc), end
+
+
 def _endpoints_match(client, symbol: str, endpoints: dict, asof: str) -> bool:
     matched = True
     for adjustment, stored in endpoints.items():
         for expected in stored:
-            day = timestamp(expected[0]).astimezone(NEW_YORK).date()
-            start = datetime(day.year, day.month, day.day, tzinfo=NEW_YORK)
-            end = (start + timedelta(days=1)).astimezone(timezone.utc)
-            end = min(end, timestamp(asof + "T00:00:00Z"))
-            start = start.astimezone(timezone.utc)
+            start, end = _endpoint_window(expected, asof)
             actual = transform(client.fetch(symbol, adjustment, start, end, asof=asof), start, end)
             # Compare exact values, not incidental JSON number or timezone spelling.
             same = len(actual) == 1 and same_row(actual[0], expected)
@@ -445,9 +454,7 @@ def download_pricing(
                         raise InitialPricingUnavailable(request, error) from error
                     # Held prices or an earlier successful view are contradictory
                     # evidence, even when that earlier view happened to be empty.
-                    raise DownloadError(
-                        f"symbol rejected during an established pricing acquisition: {symbol}"
-                    ) from error
+                    raise established_pricing_rejection(symbol, error) from error
             if any(
                 month_of(row) < start.strftime("%Y-%m") or month_of(row) > anchor
                 for rows in views.values()

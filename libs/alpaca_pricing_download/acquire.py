@@ -6,6 +6,7 @@ from .append import _cohorts, append_entries
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
+    BarsSymbolUnavailable,
     DownloadError,
     InitialPricingUnavailable,
     digest,
@@ -15,7 +16,7 @@ from .contract import (
 )
 from .download import download_pricing, request_end, request_start
 from .http import BarsClient
-from .refresh import acquire_full
+from .refresh import acquire_full, acquire_retained
 from .storage import initialize_store, load_source, read_validator, recover, regular_path, ticker_lock
 
 
@@ -27,8 +28,9 @@ class MeasuredRequests:
     def __init__(self, client, metrics):
         self.client, self.metrics = client, metrics
 
-    def execute_plan(self, plan):
-        return self.client.execute_plan(plan, metrics=self.metrics)
+    def execute_plan(self, plan, *, metrics=None, on_failure=None):
+        options = {"on_failure": on_failure} if on_failure is not None else {}
+        return self.client.execute_plan(plan, metrics=self.metrics, **options)
 
 
 def acquire_selected(
@@ -53,7 +55,7 @@ def acquire_selected(
         request_start(from_dates.get(symbol), end)
     initialize_store(store)
     end_text = end.isoformat().replace("+00:00", "Z")
-    needs, selected_generations, results, append, empty = [], {}, [], [], []
+    needs, selected_generations, results, retained, empty = [], {}, [], {}, []
     for symbol in symbols:
         root = regular_path(store, f"end_of_day/pricing/{symbol}")
         # A selected acquisition may create its own paths. No universe inventory.
@@ -98,12 +100,12 @@ def acquire_selected(
             results.append({"symbol": symbol, "status": "covered", "already_beyond_target": covered > end})
             continue
         if source and not extending and (symbol not in invalidate or accepted_evidence):
-            # The normal downloader remains responsible for nonempty endpoint checks;
-            # empty ranges use its incremental covered-range path.
+            # Retain this coherent selection for batched ordinary endpoint checks.
+            # Empty ranges use the existing incremental covered-range path.
             if endpoints is not None and not any(endpoints.values()):
                 empty.append({"symbol": symbol, "asof": source["latest_request"]["asof"], "last_all": None})
             else:
-                append.append(symbol)
+                retained[symbol] = (source, endpoints)
             continue
         needs.append(
             {
@@ -135,8 +137,6 @@ def acquire_selected(
         except (RuntimeError, OSError, ValueError) as error:
             # A label-specific rejection must not fail every other member of a batch.
             # Exact fallback runs only for the selected failed cohort and remains bounded.
-            from .contract import BarsSymbolUnavailable
-
             outcome = failure_outcome(error)
             if not isinstance(error, BarsSymbolUnavailable) and outcome["http_status"] != 400:
                 results.extend(
@@ -190,19 +190,53 @@ def acquire_selected(
                 item["status"] = "blocked"
             results.append(item)
         metrics["empty_coverage_append"] = extended["requests"]
-    for symbol in append:
-        try:
-            value = download_pricing(store, symbol, end_date, client=ordinary_client)
-            results.append({**value, "status": "published"})
-        except (RuntimeError, OSError, ValueError) as error:
-            outcome = failure_outcome(error)
-            results.append(
-                {
-                    "symbol": symbol,
-                    "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
-                    "outcome": outcome,
-                }
-            )
+    # Bound even the worst case in which every selected history needs replacement.
+    retained_needs = [
+        {
+            "symbols": [symbol],
+            "ranges": [{"start": source.get("history_start", HISTORY_START), "end_exclusive": end_text}],
+        }
+        for symbol, (source, _endpoints) in retained.items()
+    ]
+    for cohort in _cohorts(retained_needs):
+        selected = {need["symbols"][0]: retained[need["symbols"][0]] for need in cohort}
+        buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
+        consumer, failures = ordinary_client, {}
+        if buffered and callable(getattr(client, "execute_plan", None)):
+            try:
+                consumer, failures = acquire_retained(
+                    buffered, end, client=ordinary_client, metrics=metrics, progress=progress
+                )
+            except (RuntimeError, OSError, ValueError) as error:
+                failures = dict.fromkeys(buffered, (error, False))
+        for symbol in selected:
+            try:
+                failure, exact_fallback = failures.get(symbol, (None, False))
+                if failure is not None and not exact_fallback:
+                    raise failure
+                value = download_pricing(
+                    store,
+                    symbol,
+                    end_date,
+                    client=ordinary_client if failure is not None else consumer,
+                    selected_source_sha256=selected_generations[symbol],
+                )
+                results.append({**value, "status": "published"})
+            except (RuntimeError, OSError, ValueError) as error:
+                outcome = failure_outcome(error)
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                        "outcome": outcome,
+                    }
+                )
+            if progress:
+                progress(
+                    "pricing",
+                    {"completed": len(results), "selected": len(selected_generations), **results[-1]},
+                )
+        del consumer
     return {
         "results": results,
         "requests": metrics,

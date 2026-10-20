@@ -38,6 +38,12 @@ Wrong symbols, malformed values, duplicate/out-of-range timestamps and incomplet
 The downloader checks source structure, not market validity or identity.
 
 Ordinary updates compare first/last endpoints in all views; a mismatch selects full replacement.
+Retained dependency acquisitions batch compatible endpoint probes, selected acquisition ranges and
+resulting first-session probes through the existing solver, in that order. Cohorts use the existing
+row budget sized for full replacement. Buffered responses feed the ordinary downloader's comparisons,
+overlap checks and bounded fresh retry; publication rechecks the selected source generation under its
+ticker lock. Failed requests exclude affected tickers from later stages; a multi-symbol HTTP 400 may use
+the existing exact fallback. Stage progress reports planned actions, minimum pages and observed pages.
 The integrated live check compares only the summary's last `all` row.
 Any differing field requires replacement of all views over the retained span before append.
 Full replacement notices include removed sessions; append notices cover changed dates.
