@@ -2,264 +2,244 @@
 
 ## Trust and ownership
 
-Each boundary calculates and validates its own output, then publishes its selecting receipt last.
-Completed receipts are authoritative from first consumption. Readers open only the data needed for the
-work, without existence/symlink inventories, file-stat cache keys, payload hashing or repeated upstream rules.
-After reacquiring locks, read the current selector to detect a newer generation; do not audit its files.
-Publication compares new outputs with recorded digests and validates new destinations and outputs.
-Recovery handles its journal; `authenticate_*` explicitly audits existing data. Forced repair replaces supplied payloads.
-Matching complete input generations permit reuse; changed inputs invalidate their dependent closure.
-Readers refuse incomplete publications and never repair them.
+Owners calculate/validate outputs, publish selectors last. Completed receipts are authoritative on first
+read: consume selected data only; no existence/symlink inventories, stat-based cache keys, payload rehashing
+or repeated upstream rules. Reacquired locks require current-selector generation checks, not file audits.
+Publication compares new outputs against recorded digests; validates new destinations/outputs. Recovery
+owns its journal; `authenticate_*` explicitly audits existing data; forced repair replaces supplied payloads.
+Matching complete input generations permit reuse; changes invalidate dependent closure. Readers reject
+incomplete publications, never repair.
+
+Operations retain accepted package/store compatibility, lineage membership and summary snapshots in RAM.
+Compact revisions guard reuse; publisher-returned index changes advance the view; changed summary revision
+requires a new snapshot. Standalone entry points establish their own context. No persistent context cache
+or alternative publication authority.
 
 ## Standalone artifacts
 
-Paths below are relative to the standalone store.
+Paths relative to standalone store:
 
-| Artifact | Meaning |
+| Artifact | Authority |
 |---|---|
 | `store.manifest.json` | Store format. |
-| `end_of_day/pricing/<TICKER>/source.manifest.json` | Selects compact pricing boundaries and validator. |
-| `validator_first_last_sessions.json` beside the source | Exact first/last rows for each view, bound to the source receipt. |
-| Pricing `completed_years`, current-year and current-month boundaries | CSV/gzip payloads and selecting manifests. |
+| `end_of_day/pricing/<TICKER>/source.manifest.json` | Pricing boundaries/validator selection. |
+| `validator_first_last_sessions.json` beside source | Exact first/last rows per view, bound to source receipt. |
+| Pricing `completed_years`, current-year/current-month boundaries | CSV/gzip payloads + selecting manifests. |
 | `end_of_day/manifests/<TICKER>/update.json` | Unconsumed inclusive changed range: `from`, `to`. |
-| `end_of_day/lineage/<TICKER>/lineage.manifest.json` | Evidence, input generations and chronological assignment selection. |
-| `end_of_day/lineage/index.sqlite3` | Published groups/generations and lookup-evidence projection. |
-| `universe_updates.sqlite3` | Accepted observations, registration intentions, work targets, attempts and outcomes. |
+| `end_of_day/lineage/<TICKER>/lineage.manifest.json` | Evidence, input generations, chronological assignments. |
+| `end_of_day/lineage/index.sqlite3` | Published groups/generations, lookup-evidence projection. |
+| `universe_updates.sqlite3` | Accepted observations, registration intentions, targets, attempts, outcomes. |
 | `pricing_check_summary.sqlite3` | Minimal live-check baseline. |
-| `lineage_update_check.sqlite3`, `download_completion.json` | Disposable scheduling hints, not data authority. |
+| `lineage_update_check.sqlite3`, `download_completion.json` | Disposable scheduling hints, never data authority. |
 
-Effective pricing and assignments use **completed years + year excluding active month + authoritative
-month**. Rollover consolidates; ordinary month updates leave cold payloads unchanged.
-Manifests map eight logical views to distinct physical payloads; exact-copy aliases share files.
+Effective pricing/assignments = completed years + year excluding active month + authoritative month.
+Rollover consolidates; ordinary month updates preserve cold payloads. Manifests map eight logical views
+onto distinct payloads; exact-copy aliases share files.
 
-Pricing columns are `timestamp,open,high,low,close,volume,trade_count,vwap`.
-JSON decimals/integers become exact strings without binary-float arithmetic.
-Wrong symbols, malformed values, duplicate/out-of-range timestamps and incomplete pagination fail.
-The downloader checks source structure, not market validity or identity.
+Columns: `timestamp,open,high,low,close,volume,trade_count,vwap`. JSON numbers → exact strings, no
+binary-float arithmetic. Wrong symbols, malformed values, duplicate/out-of-range timestamps or incomplete
+pagination fail. Downloader validates source structure, not market validity/identity.
 
-Ordinary updates compare first/last endpoints in all views; a mismatch selects full replacement.
-Retained dependency acquisitions batch compatible endpoint probes, selected acquisition ranges and
-resulting first-session probes through the existing solver, in that order. Cohorts use the existing
-row budget sized for full replacement. Buffered responses feed the ordinary downloader's comparisons,
-overlap checks and bounded fresh retry; publication rechecks the selected source generation under its
-ticker lock. Failed requests exclude affected tickers from later stages; a multi-symbol HTTP 400 may use
-the existing exact fallback. Stage progress reports planned actions, minimum pages and observed pages.
-The integrated live check compares only the summary's last `all` row.
-Any differing field requires replacement of all views over the retained span before append.
-Full replacement notices include removed sessions; append notices cover changed dates.
-Append approval carries the checked source generations for the selected missing intervals. Publication
-rechecks those generations under ticker locks, including when a concurrent edit preserves the last row.
-The summary remains minimal; approval is an in-memory handoff. New summary membership never expands an
-existing approval. Empty append baselines require all eight retained views to be empty; partial views use
-the ordinary downloader's history checks.
-Buffered initial and invalidated acquisitions carry the selected source generation, including explicit
-absence, into publication. Under the ticker lock, the pricing owner first finishes any journal and then
-compares the current source with that selection. A conflict rejects the buffered replacement and requires
-reselection; it cannot overwrite a concurrent publication. Retained-span refresh also preserves its
-original start, end and symbol-mapping date.
-See [pricing contracts](../libs/alpaca_pricing_download/contract.py) and
-[publication](../libs/alpaca_pricing_download/storage.py) for exact schemas.
+Ordinary updates compare every view's first/last endpoints; mismatch → full replacement. Retained dependency
+stages: compatible endpoint probes → selected acquisition ranges → resulting first-session probes, batched
+by the existing solver. Apply row budgets to endpoints first, actual incremental/replacement ranges later.
+Buffered responses retain downloader comparisons, overlap checks, bounded fresh retry and locked source
+reselection. Failed requests exclude affected tickers from later stages; multi-symbol HTTP 400 may use
+exact fallback. Wider request failure may defer more members. Progress reports actions, minimum/observed
+pages, acquisition reuse and publication. Minima exclude conditional corrections/dependency expansion;
+never an ETA.
+
+Completed responses bind normalized rows to symbol, adjustment, dates, asof. HTTP owner exhausts pagination
+and normalizes once; consumers slice without renormalizing. Fresh first-session probes remain independent.
+Integrated live check compares only summary last `all` rows; any differing field requires all-view retained-
+span replacement before append. Replacement notices include removed sessions; append notices cover changes.
+
+Append approval is an in-memory handoff of checked source generations for selected missing intervals;
+the summary stays minimal. Publication rechecks generations under ticker locks, even if concurrent edits
+preserve the last row. New summary membership cannot expand prior approval. Empty append requires all eight
+retained views empty; partial views use ordinary history checks.
+
+Buffered initial/invalidated acquisitions bind selected generation, including explicit absence. Under ticker
+lock: recover journal → compare current source with selection → publish. Conflict rejects buffered replacement
+and requires reselection, never overwrites concurrent publication. Retained-span refresh preserves original
+start/end/mapping date. Exact schemas: [contract](../libs/alpaca_pricing_download/contract.py),
+[publication](../libs/alpaca_pricing_download/storage.py).
 
 ## Check summary
 
-Each entry contains only `symbol`, saved `asof` and `last_all`: the exact eight-field last row.
-Eligibility means a unique stored same-symbol, active US-equity lookup and a nonempty `all` endpoint.
-This trusts stored status; active does not mean publicly online.
+Entry: only `symbol`, saved `asof`, exact eight-field `last_all`. Eligible: unique stored same-symbol active
+US-equity lookup + nonempty `all` endpoint. Stored active status ≠ publicly online.
+Timestamp supplies session date; date/asof pairs group compatible checks. Additional state only controls
+publication: format, epoch/revision/coverage, pending owner markers. No first rows, other views, identities,
+histories or prior comparison results.
 
-Session date derives from the timestamp. Date/asof pairs define compatible live-check groups.
-The only additional state is publication control: format, epoch/revision/coverage and pending owner markers.
-No first rows, other views, identities, histories or previous comparison results belong here.
-
-Pricing maintains eligible baselines; lineage maintains membership. Separate owner markers prevent
-one publisher from clearing another's incomplete work.
-Missing/incomplete/pending summaries fail closed. A comparison must verify its snapshot token before
-accepting results. Normal summary reads do not enumerate ticker files.
-Owners: [storage](../libs/alpaca_pricing_download/check_summary.py) and
+Pricing maintains eligible baselines; lineage owns membership. Separate markers prevent cross-owner
+completion. Missing/incomplete/pending summary fails closed. Verify snapshot token before accepting a
+comparison; normal reads never enumerate ticker files. Owners: [storage](../libs/alpaca_pricing_download/check_summary.py),
 [eligibility/rebuild](../libs/alpaca_lineage_build/check_summary.py).
 
 ## Universe observation and work state
 
-The recovery registry remembers accepted labels, not security identity or successful acquisition.
-A stable shared lock protects sorted union publication; different stores cannot lose each other's additions.
-Each clean-room build owns its input snapshot. Pinning an older input preserves its original run identity
-and producer contracts rather than upgrading past work.
-Labels, hashes and snapshot bytes come from one captured byte sequence. The combined store publication
-lock serializes run initialization and pinning. Before publishing a new snapshot, initialization records
-its original manifest and input bytes in `clean_room_run/initialization.pending.json`. New run manifests
-publish last; pinning leaves existing manifests unchanged. The journal then clears. Recovery finishes
-those original inputs before checking the invocation's target and contract compatibility. Registry growth
-cannot change an interrupted run's input.
+Registry = accepted labels, not identity/acquisition success. Stable shared lock + sorted atomic union
+preserves additions across stores. Clean-room builds own immutable input snapshots; pinning preserves
+original run identity/contracts, never upgrades old work. Labels, hashes, snapshot bytes derive from one
+captured byte sequence. Combined publication lock serializes initialization/pinning. Before snapshot
+publication, `clean_room_run/initialization.pending.json` records original manifest/input bytes. New run
+manifest publishes last; pinning leaves existing manifests unchanged; journal clears afterward. Recovery
+finishes original inputs before invocation target/contract checks. Registry growth cannot alter interrupted input.
 
-One catalogue observation retains all records, including multiple records for a label. Active records on
-the discovery exchanges introduce work. Unique symbol records may supply current metadata; duplicate or
-missing catalogue evidence uses exact lookups. CUSIP needs remain exact. Catalogue absence supplies no
-negative identity or pricing conclusion.
+Catalogue observation retains every record, including duplicate labels. Active discovery-exchange records
+introduce work. Unique symbol records may supply metadata; duplicate/missing evidence uses exact lookup;
+CUSIPs remain exact. Absence proves neither negative identity nor unavailable pricing.
 
-The lineage publisher writes the exact symbol-lookup facts used by its receipts into its existing index,
-including relevant dependency evidence, coverage, row outcomes and selected receipt/source generations.
-New receipts also retain the last positive own-label asset lookup for maintenance selection. A later
-missing lookup does not establish inactivity. Current identity decisions and summary eligibility continue
-to use the current evidence, independently of that retained observation.
-Projection completeness has its own schema/revision/coverage state. Explicit migration reads indexed
-receipts only in resumable batches; absent historical facts stay unknown. Normal comparison uses the
-projection and refreshes affected complete groups, invalidating both evidence and decision reuse.
+Lineage index projects receipt-used symbol lookups, dependency evidence, coverage, row outcomes and selected
+receipt/source generations. Receipts retain last positive own-label lookup for maintenance; later missing
+lookup does not prove inactivity. Current identity/summary decisions still use current evidence.
+Projection has its own schema/revision/coverage. Explicit migration reads indexed receipts in resumable
+batches; absent historical facts remain unknown. Normal comparison uses projection; changed evidence
+refreshes complete affected groups, invalidating evidence/decision reuse.
 
-Orchestration transactions persist observation, registration intention and work before publishing the
-registry union, then acknowledge registration. Pricing and lineage selectors remain the authorities for
-publication; the work database cannot independently declare them published. A completed publication can
-satisfy interrupted acknowledgement without repeating acquisition. Accepted work carries a stable
-obligation identifier, refresh/replacement requirements, evidence and target. A lineage publication projects
-that identifier only after its locked pricing inputs satisfy the obligation. Coverage alone cannot satisfy
-an unperformed refresh. Maintenance persists any additional coverage before requests begin. An unfinished
-pricing target survives independently of acquisition/check flags, including later inactivity, catalogue
-omission or an older invocation. A newly observed inactive label can require metadata reconciliation alone;
-that does not cancel a previously accepted pricing target. Explicit acquisition starts are persisted as
-inclusive `pricing_start` dates before requests. The pricing owner supplies the common range validation:
-starts must be on/after 2016-01-01 and before the exclusive end. CLI acceptance, the work producer and
-batched acquisition reject impossible ranges before their mutations or requests.
-Merging unfinished work retains the earliest accepted start.
-Selection, dependency acquisition, publication stamping and acknowledgement require both range endpoints;
-an unchanged final session cannot satisfy a missing history extension. Compatible completed extensions are
-reused even if their lineage publication or acknowledgement was interrupted. Work without an explicit start
-continues to use its retained source range or the initial 2016 default.
-Failed checks also create obligations, and a
-subsequent history check must cover the selected generation before completion. Pricing source selectors record the
-acquisition-evidence fingerprint for identity-driven replacement, including when the returned bars do not
-change. Stable store update locks serialize orchestration; existing publisher locks and generation checks
-still apply.
-Standalone producers hold that same update lock. Their registration context loads the registry once,
-persists new intentions and acknowledges the atomic union before either existing-group catch-up or newly
-discovered dependency acquisition. Pricing acquisition freezes its selected labels from the first input
-read and passes that selection through registration, execution and the completed-batch memo. Execution
-does not reread a mutable symbols file or recovery registry. A memo for a narrower request cannot bypass an
-earlier unfinished acquisition start. Dependency work records acquisition coverage and the complete required
-group before registration or acquisition. Those links remain in work selection until satisfying publication,
-even when later provider evidence omits the relationship; registry membership cannot satisfy them.
-Pending registration intentions recover first; known membership
-does not need republication. Explicit work-state initialization is independent of lineage/projection and
-summary construction, so those producers can establish their boundaries without a circular prerequisite.
-Accepted retained-span corrections also receive a durable obligation before acquisition. Their pricing
-publication records the correction identifier; lineage projects it for completion and interrupted reuse.
-A later matching endpoint cannot erase an unperformed correction. A completed correction does not need
-another full download merely because lineage or acknowledgement was interrupted.
-Access failures, retry delays and accepted cutoffs constrain selection metadata, acquisition, correction,
-append and group expansion through daily and canonical standalone commands. Failure of a required member
-prevents its sibling from publishing the affected identity group. Local interrupted registry publication
-remains pending for immediate owner recovery; it does not invent a provider retry delay.
-Exact-request restrictions discovered during metadata acquisition also survive through the durable outcome.
-The failure transaction returns its committed work state to the in-memory policy. Extending a dependency
-group or correction requirement preserves that status, its attempt count and retry deadline.
+Transactions persist observation, registration intention and work → publish registry union → acknowledge
+registration. Only pricing/lineage selectors establish publication; the work database cannot. Completed
+publication satisfies interrupted acknowledgement without reacquisition. Accepted work retains stable
+obligation ID, refresh/replacement requirements, evidence and target. Lineage projects the ID only after
+locked pricing inputs satisfy it; coverage alone cannot satisfy unperformed refresh. Maintenance persists
+additional coverage before requests.
 
-Every lineage entry point reconciles the symbol evidence it actually uses against accepted unfinished work
-and the selected prior receipts. Changed identity mapping records replacement requirements for the complete
-affected group in one transaction before pricing requests. Discovery records available dependency identity
-evidence before initial acquisition too. Pricing binds the resulting evidence fingerprint and selected source
-generation; lineage cannot stamp completion against different lookup facts. Catalogue versus exact-lookup
-provenance alone does not invalidate otherwise identical evidence. Compatible completed replacements remain
-reusable after interruption. Disabled acquisition leaves the changed requirement pending. When reconciliation
-replaces pricing during a history refresh, its completed pricing generation supplies the subsequent approval.
+Unfinished pricing targets survive acquisition/check flags, inactivity, omission and older invocations.
+New inactivity may require metadata only; cannot cancel accepted pricing. Persist explicit inclusive
+`pricing_start` before requests. Shared pricing validation requires start ≥ 2016-01-01 and < exclusive end;
+CLI, work producer and batch acquisition reject impossible ranges before mutation/requests. Merge unfinished
+work using earliest start. Selection, dependency acquisition, stamping and acknowledgement require both
+endpoints; unchanged last session cannot satisfy missing extension. Reuse compatible completed extensions
+after interrupted lineage/acknowledgement. Without explicit start, retain source range or initial 2016 default.
 
-An identical completed pricing request is reusable even when empty. Advancing compatible empty coverage
-requests only the additional interval. Relevant identity changes or explicit retained-span refresh may
-invalidate coverage. Durable outcomes distinguish empty, published, unresolved, access denial, exact
-rejection and retryable failure. Missing/incompatible durable state or incomplete projection fails closed
-into explicit maintenance, never an empty queue or automatic receipt crawl.
+Failed checks create obligations requiring a subsequent check of the selected generation. Sources record
+identity-replacement acquisition-evidence fingerprints even when bars are unchanged. Stable store update
+locks serialize daily/standalone orchestration; publisher locks/generation checks still apply.
+Standalone registration loads registry once, persists intentions and acknowledges union before existing-group
+catch-up or new dependency acquisition. Acquisition freezes first-read label selection through registration,
+execution and batch memo; never rereads mutable selection files/registry. Narrower memos cannot bypass
+unfinished starts. Persist dependency coverage/complete groups before registration/acquisition; links survive
+later evidence omission until satisfying publication. Registry membership cannot satisfy work.
 
-Preview uses accepted compact boundaries without writes or recovery. Exact pages and dependency expansion
-are response-dependent; estimates disclose those conditions. Execution reselects boundaries and observes
-current catalogue evidence independently. Inclusive pricing targets become exclusive UTC timestamps;
-newer retained spans are preserved and excluded from older-target validation/correction.
+Recover pending registration first; known membership needs no republication. Explicit work-state initialization
+is independent of lineage/projection/summary, avoiding circular prerequisites. Retained-span correction:
+durable obligation before acquisition → correction ID in pricing publication → lineage projection for
+completion/reuse. Later matching endpoints cannot erase unperformed correction; completed correction needs
+no full redownload after interrupted lineage/acknowledgement.
 
-Offline status reads the lineage index/projection, pricing summary, scheduling controls and durable work
-state through read-only connections. Pending symbols from the scheduling and summary boundaries select
-the only per-ticker pricing-journal existence checks. The lineage publication marker is checked under its
-existing shared publication lock. Status never opens pricing payloads or lineage receipts, scans ticker
-directories or invokes recovery. Each boundary supplies its own coherent observation; the combined report
-is not a transaction spanning all producers. See [status semantics](operations.md#inspect-local-progress).
+Access failures, retry delays and accepted cutoffs constrain metadata, acquisition, correction, append and
+expansion across daily/standalone commands. Required-member failure blocks sibling group publication.
+Interrupted local registry publication stays pending for immediate owner recovery, without provider retry
+delay. Durable outcomes preserve exact-request metadata restrictions. Failure transactions return committed
+state to in-memory policy; dependency/correction extensions retain status, attempts and retry deadline.
+
+Every lineage entry point reconciles used symbol evidence against unfinished work and selected prior receipts.
+Changed identity mapping records complete-group replacement requirements atomically before pricing requests;
+discovery also records available dependency identity evidence before initial acquisition. Pricing binds
+evidence fingerprint/source generation; lineage cannot stamp different lookup facts. Catalogue/exact provenance
+alone cannot invalidate identical evidence. Compatible completed replacements survive interruption; disabled
+acquisition leaves changed requirements pending. Pricing replaced during history-refresh reconciliation
+supplies the subsequent approval generation.
+
+Identical completed requests, including empty, reuse coverage. Compatible empty advancement requests only
+the increment; relevant identity changes/explicit retained-span refresh may invalidate it. Outcomes distinguish
+empty, published, unresolved, access denial, exact rejection and retryable failure. Missing/incompatible work
+state or incomplete projection requires explicit maintenance, never an empty queue or automatic receipt crawl.
+
+Preview consumes compact boundaries without writes/recovery; pages/expansion depend on responses and estimates
+say so. Execution independently reselects boundaries/current catalogue. Inclusive targets → exclusive UTC;
+newer spans remain preserved, excluded from older-target checking/correction.
+
+Offline status reads index/projection, summary, scheduling and work state read-only. Scheduling/summary pending
+symbols select the only per-ticker pricing-journal existence checks. Check lineage pending marker under shared
+publication lock. No payload/receipt reads, ticker scans or recovery. Each boundary is coherent separately;
+report is not a cross-producer transaction. [Status semantics](operations.md#inspect-local-progress).
 
 ## API plan
 
-[build_plan](../libs/alpaca_data_api_solver/__init__.py) is pure:
-`{"steps":[{"needs":[...]}]}` becomes versioned ordered steps containing actions.
-Each need has `kind`, nonempty `why` and:
+Pure [build_plan](../libs/alpaca_data_api_solver/__init__.py):
+`{"steps":[{"needs":[...]}]}` → versioned ordered action steps. Each need: `kind`, nonempty `why`, plus:
 
 | Kind | Fields |
 |---|---|
 | `bars` | `symbols`, `adjustments`, `asof`, `ranges` with `start`/`end_exclusive`. |
-| `asset_catalogue` | No extra fields; one complete all-status US-equity observation, filtered locally. |
-| `asset_lookup` | `identifiers`; optional `lookup_kind`: symbol, cusip, asset_id or exact. |
-| `corporate_actions` | `symbols`, inclusive `start`/`end` dates. |
+| `asset_catalogue` | None; one complete all-status US-equity observation, filtered locally. |
+| `asset_lookup` | `identifiers`; optional `lookup_kind`: symbol, cusip, asset_id, exact. |
+| `corporate_actions` | `symbols`, inclusive `start`/`end`. |
 
-Actions carry `strategy`, `why`, `request`, `deliver` and pagination instructions where needed.
-Delivery routes results to the requested slices. Strategies are `bars_single_range`, `bars_multi_range`,
-`bars_boundary_batch`, `asset_lookup`, `asset_catalogue` and `corporate_actions_batch`.
+Actions: `strategy`, `why`, `request`, `deliver`, pagination where needed. Delivery selects requested slices.
+Strategies: `bars_single_range`, `bars_multi_range`, `bars_boundary_batch`, `asset_lookup`, `asset_catalogue`,
+`corporate_actions_batch`. Within-step needs are independent; steps preserve prerequisites. Exhaust tokens
+before advancing; construct dependent needs after responses.
 
-Needs within a step are independent; steps preserve prerequisites. Executors exhaust page tokens before
-advancing. Data-dependent needs are constructed after receiving their prerequisite.
-Bar requests fix 1Day/SIP/USD. Each adjustment requires a separate request; `asof` selects symbol mapping,
-not historical adjustment vintage. Date-only solver ranges mean New York midnight; timestamp ranges
-require a timezone. Batching respects URL/page limits and delivery slices; it is a bounded optimization,
-not a promise of globally minimal HTTP calls. CUSIPs stay exact.
+Bars: 1Day/SIP/USD; separate request per adjustment. `asof` selects mapping, not adjustment vintage.
+Date-only solver ranges: New York midnight; timestamps require timezone. Batching respects URL/page limits
+and delivery slices; bounded optimization, no global HTTP minimum guarantee. CUSIPs stay exact.
 
 ## Lineage reuse
 
-Complete groups can be reused only when inputs, dependency/recorded-absence sets and compatible versions
-match, with no pending pricing work or explicit metadata refresh.
-Completed work hints are authoritative. If their coverage is lost, one source-generation census restores it;
-matching entries do not open lineage receipts, and metadata prefetch is bounded to 1,000 dependency members.
-Rule-only changes may reuse approved metadata; they still recalculate affected assignments.
-Ordinary action acquisition resumes from the previously active month; older provider corrections need
-explicit metadata refresh. Closed-assignment reuse has stricter continuity and single-identity gates in
+Reuse complete groups only with matching inputs, dependency/recorded-absence sets, compatible versions,
+no pending pricing work or explicit metadata refresh. Receipts retain evidence requirements independently
+of approval via existing fingerprints. Matching evidence is not renewed by coverage/approval changes.
+Missing history approval republishes the completed decision through the journal without pricing decode or
+correlation; until then, no acknowledgement. Already projected approval requires no group reopening.
+
+Completed work hints are authoritative. Lost coverage permits one source-generation census; matches need
+no lineage receipts. Metadata prefetch bounds dependency members to 1,000. Rule-only changes may reuse
+approved metadata, but recalculate affected assignments.
+
+Ordinary actions resume from prior active month; older corrections require explicit metadata refresh.
+Known dependency catch-up preserves continuation and accepted refresh obligations; new dependencies require
+full evidence. Per-invocation, per-symbol containing completed action intervals satisfy filtered subsets.
+Failed/incomplete responses establish no coverage; wider ranges/new invocations acquire evidence. Exact CUSIP
+semantics remain independent. Group expansion reselects under enlarged locks; decoded inputs reuse only
+matching generation/scope. Closed assignments require stricter continuity/single-identity gates:
 [resume.py](../libs/alpaca_lineage_build/resume.py).
 
-A recorded exact rejection of missing auxiliary pricing is distinct from a successful empty history.
-It may remain metadata-only while independently supported pricing publishes; arbitrary failures do not
-qualify. The owning group records the rejected request, auxiliary metadata and accepted obligation
-identifier before durable work is acknowledged. Its compact projection permits interrupted acknowledgement
-without repeating acquisition. Seeds and retained price series cannot use this outcome.
-[acquisition.py](../libs/alpaca_lineage_build/acquisition.py) owns the recorded absence boundary.
+Exact rejected auxiliary pricing ≠ empty history. A missing auxiliary may remain metadata-only while supported
+histories publish; arbitrary failure, seeds and retained series cannot use this outcome. Owning group records
+rejected request, metadata and obligation ID before acknowledgement; projection permits interrupted reuse
+without acquisition. [Absence owner](../libs/alpaca_lineage_build/acquisition.py).
 
 ## Publication and recovery
 
-Per-ticker `.download.lock` files are stable flock inodes: exclusive producers, shared readers.
-A single lineage worker holds `.worker.lock`; sorted pricing locks and a brief publication gate protect
-each group. Readers select, lock and recheck the group before consumption. Unrelated groups can proceed.
+Stable per-ticker `.download.lock` flock inodes: exclusive producers/shared readers. One lineage worker holds
+`.worker.lock`; sorted pricing locks + brief publication gate protect groups. Readers select → lock → recheck
+before consuming; unrelated groups may proceed.
 
-Writers close temporary files and atomically replace selected files under a recovery journal.
-Payloads precede receipts/index selection; summary refresh precedes acknowledgement; the journal clears last.
-Acknowledgement cannot consume a newer notice or hint. Interrupted multi-file work blocks readers until
-producer recovery completes. Unpublished abandoned staging is cleaned by its owner under the ticker lock.
+Close temporary files → atomic replacement under journal. Payloads precede receipts/index; summary refresh
+precedes acknowledgement; journal clears last. Pricing hands new source/endpoints directly to summary/caller;
+retain unchanged historical references, inventory only replaced boundaries, reuse already selected documents.
+Recovery reconstructs durable inputs without in-memory handoff. Acknowledgement cannot consume newer notices/
+hints. Interrupted multi-file work blocks readers until recovery. Owner cleans abandoned unpublished staging
+under ticker lock.
 
-[SQLite connections](../libs/common/sqlite_connections.py) retain transactions and disk rollback journals,
-with `synchronous=OFF` for writes. Producers allow native interrupted-transaction recovery;
-consumers open read-only. Ordinary publication performs no forced disk synchronization.
-The contract covers process interruption, not machine or power failure; SQLite owns its internal recovery.
+[SQLite](../libs/common/sqlite_connections.py): transactions, disk rollback journals, write `synchronous=OFF`.
+Producers permit native transaction recovery; consumers read-only. No forced publication synchronization.
+Contract covers process interruption, not machine/power failure; SQLite owns internal recovery.
 
 ## Identity and catalogue
 
-Row ownership and UUID membership are separate decisions. Every source row is correlated or explicitly
-uncorrelated; a shared dependency or successor alone does not merge securities.
-Public IDs derive from sorted unique provider-UUID membership, not ticker spelling.
-Ambiguity remains unresolved; independently supported portions can still publish.
+Row ownership ≠ UUID membership. Every row correlated or explicitly uncorrelated; dependency/successor alone
+cannot merge securities. Public IDs derive from sorted unique provider UUIDs, not tickers. Ambiguity remains
+unresolved; independently supported portions may publish.
 
-The combined store separates `end_of_day/<SYMBOL>/`, `validation/`, `lineage/`, `correlation/`,
-`warnings/`, `availability/` and `catalogue/`. Its `.publication.lock` covers the whole write
-transaction; `.publication.pending.json` blocks reads after interruption.
-[Monthly boundary owners](../libs/alpaca_end_of_day_v6/) define their receipts and generations.
-Availability checks advertised reads and explained continuity; warnings are advisory.
-Only online identities cross the `DataLibrary` boundary.
+Combined directories: `end_of_day/<SYMBOL>/`, `validation/`, `lineage/`, `correlation/`, `warnings/`,
+`availability/`, `catalogue/`. `.publication.lock`: whole write transaction; `.publication.pending.json`:
+blocks interrupted reads. [Monthly owners](../libs/alpaca_end_of_day_v6/) define receipts/generations.
+Availability checks advertised reads/explained continuity; warnings advisory. `DataLibrary` exposes only online IDs.
 
 ## Parquet conversion
 
-The [converter](../libs/alpaca_bloodhound_export/) consumes complete resolved eight-view histories.
-It exports all-adjusted OHLC, raw close/volume, and a jointly inferred split factor.
-Inference assumptions and full public-ID mappings stay in the Parquet footer under `alpaca_bloodhound`;
-schema compatibility is not independent corporate-action certification.
+[Converter](../libs/alpaca_bloodhound_export/): complete resolved eight-view histories → fully adjusted OHLC,
+raw close/volume, jointly inferred split factor. Assumptions/full public-ID mappings: Parquet footer
+`alpaca_bloodhound`. Schema compatibility ≠ independent corporate-action certification.
 
-Full histories pass conversion before date filtering. Ambiguous labels, incompatible factors and ID
-collisions fail. Output is retained within the configured RAM allowance, serialized once, checked for
-source freshness, then atomically installed. No disk spill or diagnostic sidecar is created.
-The exact schema, factor model and arithmetic live in
+Convert full histories before filtering. Ambiguous labels, incompatible factors or ID collisions fail.
+Retain output within RAM allowance → serialize once → check source freshness → atomic install. No spill or
+diagnostic sidecar. Exact schema/model/arithmetic:
 [command_line.py](../libs/alpaca_bloodhound_export/command_line.py),
-[factors.py](../libs/alpaca_bloodhound_export/factors.py) and
+[factors.py](../libs/alpaca_bloodhound_export/factors.py),
 [projection.py](../libs/alpaca_bloodhound_export/projection.py).
