@@ -377,6 +377,9 @@ def absent_catalogue_stalls_known_empty_history():
             "known_active_empty_coverage_after_later_target": entry["projection"]["processed_through"],
             "stored_empty_row_count": len(read_pricing_views(case.store, "EMPTY")["all"]),
             "bar_calls_for_empty": sum("EMPTY" in p["symbols"].split(",") for p in case.pages),
+            "empty_tail_calls": sum(
+                "EMPTY" in p["symbols"].split(",") and p["start"][:10] == "2026-10-17" for p in case.pages
+            ),
             "provider_now_has_later_bar": True,
         }
     finally:
@@ -589,7 +592,8 @@ class DurableMaintenanceTests(unittest.TestCase):
         self.assertTrue(result["update_reported_complete"])
         self.assertEqual(result["known_active_empty_coverage_after_later_target"][:10], "2026-10-20")
         self.assertEqual(result["stored_empty_row_count"], 1)
-        self.assertEqual(result["bar_calls_for_empty"], 8)
+        self.assertEqual(result["empty_tail_calls"], 8)
+        self.assertEqual(result["bar_calls_for_empty"], 24)  # Eight tails, then first-row and overlap checks.
 
     def test_maintenance_denial_creates_durable_restricted_work(self):
         result = maintenance_denial_is_not_durable()

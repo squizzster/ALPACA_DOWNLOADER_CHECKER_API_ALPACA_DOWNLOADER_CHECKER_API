@@ -24,7 +24,7 @@ from .work_contract import (
     obligation,
     pricing_target,
     restriction,
-    satisfied,
+    satisfying_entry,
     work_graph,
 )
 
@@ -105,7 +105,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     satisfied_labels = {
         s
         for s, item in state["work"].items()
-        if item["status"] != "complete" and satisfied(item, entries.get(s), s in accepted["checks"]["checks"])
+        if item["status"] != "complete" and satisfying_entry(s, item, entries, accepted["checks"]["checks"])
     }
     restrictions = {
         s: reason

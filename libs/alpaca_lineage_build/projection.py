@@ -43,6 +43,7 @@ def project_receipt(receipt):
         "unresolved_rows": receipt["unresolved_rows"],
         "catalogue_observed_at_utc": receipt["evidence"].get("catalogue_observed_at_utc"),
         "update_obligation_id": receipt.get("update_obligation_id"),
+        "unavailable_obligations": receipt.get("unavailable_obligations", {}),
         "acquisition_evidence_sha256": receipt.get("acquisition_evidence_sha256"),
         "history_correction_id": receipt.get("history_correction_id"),
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),

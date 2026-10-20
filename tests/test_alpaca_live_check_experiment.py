@@ -265,6 +265,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
             with (
                 patch.object(check_summary, "read_snapshot", return_value=accepted) as read,
                 patch.object(check_summary, "assert_current"),
+                patch("libs.alpaca_lineage_build.registration.command_policy") as policy,
                 patch("libs.alpaca_cli.clients") as clients,
                 redirect_stdout(output),
             ):
@@ -272,6 +273,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
                 clients.return_value[0]._get.return_value = {"bars": {"A": [bar()]}}
                 self.assertEqual(main(["pricing", "check", "--store", str(root / "store")]), 0)
                 read.assert_called_once_with(root / "store")
+                policy.return_value.check.assert_called_once()
             self.assertEqual(json.loads(output.getvalue())["stats"]["matched"], 1)
             self.assertEqual(list(root.iterdir()), [])
 

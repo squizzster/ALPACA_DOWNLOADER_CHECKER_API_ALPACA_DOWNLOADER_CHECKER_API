@@ -94,6 +94,32 @@ def satisfied(item, entry, pending):
     )
 
 
+def auxiliary_work(item):
+    """Only dependency acquisition may finish with recorded missing pricing."""
+    reasons = set(item.get("reasons", ()))
+    return "dependency_reconciliation" in reasons and not reasons.intersection(
+        {"initial_acquisition", "explicit_pricing_acquisition"}
+    )
+
+
+def satisfying_entry(symbol, item, entries, pending):
+    """Select completion from either the own receipt or its published auxiliary outcome."""
+    entry = entries.get(symbol)
+    if satisfied(item, entry, symbol in pending):
+        return entry
+    if entry or not item.get("obligation_id") or not auxiliary_work(item):
+        return None
+    group = set(item.get("required_group", ()))
+    if group.intersection(pending):
+        return None
+    for member in sorted(group):
+        entry = entries.get(member)
+        published = (entry or {}).get("projection", {}).get("unavailable_obligations", {})
+        if published.get(symbol) == item["obligation_id"]:
+            return entry
+    return None
+
+
 def restriction(item, end, *, retry_blocked=False):
     from .universe_state import now_utc
 
@@ -229,13 +255,15 @@ class WorkPolicy:
             index = storage.read_index(root)
             pending = read_checks(self.store)["checks"]
         for symbol, item in self.work.items():
-            if symbol not in self.blocked and satisfied(item, index["symbols"].get(symbol), symbol in pending):
-                entry = index["symbols"][symbol]
+            entry = satisfying_entry(symbol, item, index["symbols"], pending)
+            if symbol not in self.blocked and entry:
                 universe_state.record_outcome(
                     self.store,
                     symbol,
                     status="complete",
-                    outcome={"lineage_generation": entry["sha256"], "source_generation": entry["source_sha256"]},
+                    outcome={"lineage_generation": entry["sha256"], "source_generation": entry["source_sha256"]}
+                    if symbol in index["symbols"]
+                    else {"lineage_generation": entry["sha256"], "outcome": "unavailable_auxiliary_pricing"},
                 )
                 self.pending_work.discard(symbol)
 
@@ -255,14 +283,21 @@ class WorkPolicy:
             raise WorkDeferred("affected group has deferred or failed update work")
 
     def needs_refresh(self, group, previous):
+        unavailable = {
+            symbol: obligation_id
+            for receipt in previous.values()
+            if receipt
+            for symbol, obligation_id in receipt.get("unavailable_obligations", {}).items()
+        }
         return any(
             symbol in self.work
             and self.work[symbol].get("refresh_metadata")
             and (previous.get(symbol) or {}).get("update_obligation_id") != self.work[symbol]["obligation_id"]
+            and unavailable.get(symbol) != self.work[symbol]["obligation_id"]
             for symbol in group
         )
 
-    def reconcile_evidence(self, evidence, sources, previous, *, group=None, target=None):
+    def reconcile_evidence(self, evidence, sources, previous, *, group=None, target=None, partial=False):
         """Bind newly acquired evidence before pricing delegation or lineage publication."""
         from . import universe_state
 
@@ -283,6 +318,8 @@ class WorkPolicy:
             )
             labels = own.keys() | prior.get("required_lookups", {}).keys()
             if labels - observed.keys():
+                if partial:
+                    continue  # Newly expanded members supply their evidence on the next group pass.
                 raise WorkDeferred(f"{symbol}: accepted symbol evidence is absent from the selected group")
             lookups[symbol] = {label: observed[label] for label in sorted(labels)}
             for label, current in lookups[symbol].items():
@@ -296,6 +333,8 @@ class WorkPolicy:
         for symbol in sorted(group):
             source = sources.get(symbol)
             prior = self.work.get(symbol, {})
+            if symbol not in lookups:
+                continue
             if not (
                 mapping
                 or symbol in changed
@@ -347,18 +386,25 @@ class WorkPolicy:
     def stamp(self, receipts, sources):
         """Called under group pricing locks, before the lineage owner publishes."""
         self.check(receipts)
-        observed = symbol_lookups({s: receipt["evidence"] for s, receipt in receipts.items()})
-        for symbol, receipt in receipts.items():
+        unavailable = next(iter(receipts.values())).get("unavailable_pricing", {}) if receipts else {}
+        observed = symbol_lookups(
+            {s: receipt["evidence"] for s, receipt in receipts.items()}
+            | {s: value["evidence"] for s, value in unavailable.items()}
+        )
+        group = receipts.keys() | unavailable.keys()
+        for symbol in group:
             item = self.work.get(symbol)
-            if item is None:
-                continue
-            if set(item.get("required_group", [])) - receipts.keys():
-                continue
-            if any(
+            if item and any(
                 label not in observed or lookup_fact(expected) != lookup_fact(observed[label])
                 for label, expected in item.get("required_lookups", {}).items()
             ):
                 raise WorkDeferred(f"{symbol}: lineage evidence differs from its accepted obligation")
+        for symbol, receipt in receipts.items():
+            item = self.work.get(symbol)
+            if item is None:
+                continue
+            if set(item.get("required_group", [])) - group:
+                continue
             source = sources[symbol]
             if item.get("invalidate_pricing") and source.get(
                 "acquisition_evidence_sha256"
@@ -375,6 +421,28 @@ class WorkPolicy:
             if item.get("correction_id") and source.get("history_correction_id") != item["correction_id"]:
                 continue
             receipt["update_obligation_id"] = item["obligation_id"]
+        # An unavailable auxiliary has no own pricing/lineage receipt. Its owning
+        # group publishes the accepted outcome before orchestration acknowledges it.
+        if any(
+            s in self.work and receipt.get("update_obligation_id") != self.work[s]["obligation_id"]
+            for s, receipt in receipts.items()
+        ):
+            return
+        completed = {}
+        for symbol, value in unavailable.items():
+            item = self.work.get(symbol)
+            if not item or not auxiliary_work(item) or set(item.get("required_group", ())) - group:
+                continue
+            request = value["request"]
+            if (
+                value["outcome"] == "invalid_symbol"
+                and request["end_exclusive"][:10] >= pricing_target(item)
+                and (not item.get("pricing_start") or request["start"][:10] <= item["pricing_start"])
+            ):
+                completed[symbol] = item["obligation_id"]
+        if completed:
+            for receipt in receipts.values():
+                receipt["unavailable_obligations"] = completed
 
     def require_correction(self, prepared, *, require_check=True):
         """Persist a discovered retained-span correction before its acquisition."""
@@ -407,10 +475,18 @@ class WorkPolicy:
             request["required_correction_id"] = correction
 
     def requires_publication(self, previous):
-        return any(
+        if any(
             symbol in self.work
             and (receipt or {}).get("update_obligation_id") != self.work[symbol]["obligation_id"]
             for symbol, receipt in previous.items()
+        ):
+            return True
+        return any(
+            symbol in self.work
+            and receipt.get("unavailable_obligations", {}).get(symbol) != self.work[symbol]["obligation_id"]
+            for receipt in previous.values()
+            if receipt
+            for symbol in receipt.get("unavailable_pricing", {})
         )
 
     def fail(self, symbols, outcome, *, stage):

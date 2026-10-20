@@ -133,6 +133,10 @@ standalone lineage/pricing commands. Changing commands does not authorize a retr
 groups can still proceed. Standalone lineage reports pending work when its publications cannot satisfy an
 accepted coverage or history-check requirement; use the daily updater to finish those requirements.
 
+A missing corporate-action auxiliary may have valid identity metadata while the bars endpoint rejects its
+label. The lineage owner can publish that exact rejection with the supported source histories and complete
+the dependency work. It retains the label and metadata without inventing an empty pricing publication.
+
 Rerun the owning producer after interruption. Stable locks, staging and journals finish publications with
 their original inputs; an older target cannot restart a larger unfinished acquisition. Do not delete lock
 files, journals or selected artifacts by hand. A lock file's existence does not mean its lock is held.

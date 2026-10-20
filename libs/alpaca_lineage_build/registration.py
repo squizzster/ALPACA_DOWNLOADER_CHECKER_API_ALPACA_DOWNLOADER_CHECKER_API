@@ -7,7 +7,7 @@ from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 
 from . import storage, universe_state
 from .contract import validate_version
-from .work_contract import RegistrationIncomplete, WorkPolicy, restriction, satisfied
+from .work_contract import RegistrationIncomplete, WorkPolicy, restriction, satisfying_entry
 
 
 def command_policy(store, end_date, *, state=None):
@@ -22,7 +22,7 @@ def command_policy(store, end_date, *, state=None):
     deferred = [
         {"symbol": s, "reason": reason}
         for s, item in work.items()
-        if not satisfied(item, index["symbols"].get(s), s in pending) and (reason := restriction(item, end_date))
+        if not satisfying_entry(s, item, index["symbols"], pending) and (reason := restriction(item, end_date))
     ]
     return WorkPolicy(store, index, work, deferred, end_date)
 

@@ -214,7 +214,10 @@ explicit metadata refresh. Closed-assignment reuse has stricter continuity and s
 
 A recorded exact rejection of missing auxiliary pricing is distinct from a successful empty history.
 It may remain metadata-only while independently supported pricing publishes; arbitrary failures do not
-qualify. [acquisition.py](../libs/alpaca_lineage_build/acquisition.py) owns that decision.
+qualify. The owning group records the rejected request, auxiliary metadata and accepted obligation
+identifier before durable work is acknowledged. Its compact projection permits interrupted acknowledgement
+without repeating acquisition. Seeds and retained price series cannot use this outcome.
+[acquisition.py](../libs/alpaca_lineage_build/acquisition.py) owns the recorded absence boundary.
 
 ## Publication and recovery
 

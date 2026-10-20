@@ -14,7 +14,6 @@ from test_alpaca_universe_update import CatalogueClient
 
 from libs.alpaca_lineage_build import storage, universe_state
 from libs.alpaca_lineage_build.pipeline import run_lineage
-from libs.alpaca_pricing_download.contract import BarsSymbolUnavailable
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 
 
@@ -355,7 +354,7 @@ class EvidenceWorkPolicyTests(unittest.TestCase):
             self.assertEqual(universe_state.read_state(case.store)["work"]["AAA"]["status"], "retry")
 
     def test_expanding_a_failed_group_preserves_restrictions_across_commands(self):
-        for failure in (403, 503, "invalid_symbol"):
+        for failure in (403, 503):
             with self.subTest(failure=failure), fixture() as case:
                 download_pricing(case.store, "NEW", "2026-10-17", client=FakeClient(case.old))
                 self.assertEqual(
@@ -373,8 +372,6 @@ class EvidenceWorkPolicyTests(unittest.TestCase):
                 def deny(symbol, *args, **kwargs):
                     if symbol == "DEP":
                         attempts.append(symbol)
-                        if failure == "invalid_symbol":
-                            raise BarsSymbolUnavailable(symbol, 400)
                         raise HTTPError("https://invalid", failure, "denied", {}, None)
                     return fetch(symbol, *args, **kwargs)
 

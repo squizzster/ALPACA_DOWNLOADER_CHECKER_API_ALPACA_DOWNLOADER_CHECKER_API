@@ -16,7 +16,7 @@ from .metadata import EvidenceClient
 from .pipeline import run_lineage
 from .refresh import refresh_required_history
 from .update import update_everything
-from .work_contract import WorkPolicy, acquisition_fingerprint, pricing_target, satisfied
+from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target, satisfying_entry
 
 
 def recover_publications(store):
@@ -157,7 +157,15 @@ def run_update(
             policy.fail({symbol}, failure, stage="selection")
         acquisition_groups = {}
         for symbol, item in work.items():
-            if item["acquire"] and policy.allowed({symbol}):
+            # Missing members accepted only through dependency expansion need
+            # group context. There the lineage owner can distinguish an exact
+            # auxiliary rejection from a rejected seed or retained history.
+            lineage_owned_auxiliary = (
+                symbol not in accepted["index"]["symbols"]
+                and bool(set(item.get("required_group", ())) - {symbol})
+                and auxiliary_work(item)
+            )
+            if item["acquire"] and not lineage_owned_auxiliary and policy.allowed({symbol}):
                 acquisition_groups.setdefault(pricing_target(item), []).append(symbol)
         pricing = {"results": [], "requests": {}, "failed": 0}
         for target, symbols in sorted(acquisition_groups.items()):
@@ -264,8 +272,8 @@ def run_update(
         for symbol, item in policy.work.items():
             if symbol in policy.blocked:
                 continue
-            entry = index["symbols"].get(symbol)
-            if satisfied(item, entry, symbol in pending):
+            entry = satisfying_entry(symbol, item, index["symbols"], pending)
+            if entry:
                 universe_state.record_outcome(
                     store,
                     symbol,
@@ -275,7 +283,9 @@ def run_update(
                         "source_generation": entry["source_sha256"],
                         "source_rows": entry["projection"]["source_rows"],
                         "unresolved_rows": entry["projection"]["unresolved_rows"],
-                    },
+                    }
+                    if symbol in index["symbols"]
+                    else {"lineage_generation": entry["sha256"], "outcome": "unavailable_auxiliary_pricing"},
                     attempts=1,
                 )
             else:

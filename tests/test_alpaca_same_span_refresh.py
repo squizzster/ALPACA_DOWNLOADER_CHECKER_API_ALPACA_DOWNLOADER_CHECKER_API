@@ -192,13 +192,15 @@ class SameSpanRefreshTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "test", "ALPACA_API_SECRET_KEY": "test"}),
-            patch.object(refresh, "refresh_existing", return_value={"failed": 0, "complete": True}) as run,
+            patch.object(
+                refresh, "refresh_existing", return_value={"failed": 0, "complete": True, "deferred_symbols": []}
+            ) as run,
             redirect_stdout(output),
             redirect_stderr(io.StringIO()),
         ):
             self.assertEqual(main(["pricing", "refresh", "--store", str(self.store)]), 0)
         self.assertEqual(run.call_args.args, (self.store,))
-        self.assertEqual(json.loads(output.getvalue()), {"failed": 0, "complete": True})
+        self.assertEqual(json.loads(output.getvalue()), {"failed": 0, "complete": True, "deferred_symbols": []})
 
 
 if __name__ == "__main__":

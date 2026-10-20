@@ -220,7 +220,7 @@ class Phase4FinalizationTests(unittest.TestCase):
         from alpaca_end_of_day import StandaloneReader
 
         with fixture() as case:
-            for version in (12, 13, 14, 15):
+            for version in (12, 13, 14, 15, 16, 17, 18):
                 with closing(connect_sqlite(case.store / "end_of_day/lineage/index.sqlite3")) as db, db:
                     db.execute(f"PRAGMA user_version={version}")
                 before = snapshot(case.store)

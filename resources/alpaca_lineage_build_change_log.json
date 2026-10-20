@@ -112,5 +112,11 @@
     "modifications": [
       "Persist validated inclusive pricing starts with accepted work and preserve the earliest unfinished start through selection, dependency reconciliation and command changes. Reject impossible ranges before creating intentions. Require published coverage of both range endpoints before acknowledgement, including empty histories and interrupted publication reuse."
     ]
+  },
+  {
+    "modifications": [
+      "Route missing dependency acquisition through complete lineage groups and preserve the established exact-rejection outcome for metadata-only auxiliaries. Publish their accepted obligation identifiers with the owning group before acknowledgement; project these optional facts for bounded interrupted reuse without a migration or receipt census. Rejected seeds, retained pricing, access denials and arbitrary failures remain blocking.",
+      "Gather newly expanded group evidence before enforcing its complete lookup requirements, preserving accepted obligations and retry restrictions without reporting a transient member-order failure. Preserve compatible v2-v18 publications and reader locks."
+    ]
   }
 ]

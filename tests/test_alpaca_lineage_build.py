@@ -723,7 +723,9 @@ class LineageBuildTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.dict("os.environ", {"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"}),
-            patch("libs.alpaca_lineage_build.pipeline.run_lineage", return_value={"failed": 0}) as run,
+            patch(
+                "libs.alpaca_lineage_build.pipeline.run_lineage", return_value={"failed": 0, "results": []}
+            ) as run,
             redirect_stdout(output),
         ):
             self.assertEqual(

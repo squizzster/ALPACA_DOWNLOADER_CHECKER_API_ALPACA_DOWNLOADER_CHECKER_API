@@ -34,7 +34,7 @@ from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
 from .selection import DependencyGraph
 from .transform import correlate, make_publication
-from .work_contract import acquisition_fingerprint, pricing_target
+from .work_contract import acquisition_fingerprint, auxiliary_work, pricing_target
 
 PREFETCH_MEMBERS = 1000
 
@@ -236,11 +236,6 @@ def process_group(
             end = max(
                 (source["latest_request"]["end_exclusive"][:10] for source in sources.values()), default=end_date
             )
-            if work_policy is not None and group - sources.keys():
-                work_policy.require_dependencies(group, end, group - sources.keys(), start=start)
-                work_policy.check(group)
-            if register_discoveries is not None:
-                register_discoveries(group)
             # Reload after delegation: concurrent publication outranks a remembered
             # rejection. Never turn a held source into an unavailable auxiliary.
             unavailable = {
@@ -264,6 +259,12 @@ def process_group(
             if reuse_metadata:
                 check_unavailable_pricing(store, prior_unavailable, locked, sources=sources)
                 unavailable = prior_unavailable
+            missing = group - sources.keys() - unavailable.keys()
+            if work_policy is not None and missing:
+                work_policy.require_dependencies(group, end, missing, start=start)
+                work_policy.check(group)
+            if register_discoveries is not None:
+                register_discoveries(group)
             if (
                 reuse_metadata
                 and all(reusable_versions(prior["versions"]) for prior in previous.values())
@@ -289,6 +290,7 @@ def process_group(
                     "symbol": seed,
                     "status": "unchanged",
                     "processed": sorted(sources),
+                    "unavailable_pricing": sorted(unavailable),
                     "pricing_replacements": pricing_replacements,
                 }
             if end_date and end and end > end_date:
@@ -351,12 +353,22 @@ def process_group(
                 )
                 if expanded != group:
                     if work_policy is not None:
-                        work_policy.require_dependencies(expanded, end, expanded - sources.keys(), start=start)
-                        work_policy.reconcile_evidence(evidence, sources, previous, group=expanded, target=end)
+                        work_policy.require_dependencies(
+                            expanded, end, expanded - sources.keys() - unavailable.keys(), start=start
+                        )
+                        work_policy.reconcile_evidence(
+                            evidence, sources, previous, group=expanded, target=end, partial=True
+                        )
                     group = expanded
                     continue  # Release every pricing lock before taking an enlarged, sorted set.
                 replacements = (
-                    work_policy.reconcile_evidence(evidence, sources, previous)
+                    work_policy.reconcile_evidence(
+                        evidence | {s: value["evidence"] for s, value in unavailable.items()},
+                        sources,
+                        previous,
+                        group=group,
+                        target=end,
+                    )
                     if work_policy is not None
                     else set()
                 )
@@ -483,10 +495,16 @@ def process_group(
                         if work_policy is not None:
                             work_policy.history_approved[symbol] = acquired["source_sha256"]
                 except InitialPricingUnavailable as error:
-                    if work_policy is not None:
-                        work_policy.fail({symbol}, error, stage="dependency_acquisition")
-                        raise
-                    if symbol == seed or symbol in sources or symbol in index["symbols"]:
+                    auxiliary = (
+                        symbol != seed
+                        and bool(sources)
+                        and symbol not in sources
+                        and symbol not in index["symbols"]
+                        and (work_policy is None or auxiliary_work(work_policy.work.get(symbol, {})))
+                    )
+                    if not auxiliary:
+                        if work_policy is not None:
+                            work_policy.fail({symbol}, error, stage="dependency_acquisition")
                         raise
                     # This is a provider requestability fact, not a successful empty
                     # price response or permission to discard an identity candidate.
@@ -620,6 +638,17 @@ def run_lineage(
         if work_policy is not None and symbols is None:
             selected = list(dict.fromkeys([*selected, *work_policy.work]))
             prefetch.update(work_policy.work)
+        if work_policy is not None:
+            # Start a durable dependency group from a published member. A missing
+            # auxiliary selected first would otherwise be mistaken for an
+            # independently requested, unpriceable seed.
+            selected.sort(
+                key=lambda label: (
+                    label not in index["symbols"],
+                    auxiliary_work(work_policy.work.get(label, {})),
+                    label,
+                )
+            )
         prefetch.update(known_pending)
         if work_policy is not None:
             work_policy.update_index(index["symbols"])
@@ -704,6 +733,7 @@ def run_lineage(
                             work_policy=work_policy,
                         )
                         processed.update(result["processed"])
+                        processed.update(result.get("unavailable_pricing", ()))
                         if on_processed is not None and result["processed"]:
                             on_processed(result["processed"])
                     except (RuntimeError, OSError, ValueError) as error:
@@ -728,6 +758,7 @@ def run_lineage(
 
         if not stop:
             process_selected(selected, prefetch)
+
         failed = any(item["status"] in {"failed", "waiting_for_pricing"} for item in results)
         if full_scan and not stop and not failed:
             changed = _source_generation_changes(
