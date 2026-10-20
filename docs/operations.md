@@ -132,6 +132,8 @@ requested cutoff. Restrictions cover affected groups and every update phase, inc
 standalone lineage/pricing commands. Changing commands does not authorize a retry. Unrelated selected
 groups can still proceed. Standalone lineage reports pending work when its publications cannot satisfy an
 accepted coverage or history-check requirement; use the daily updater to finish those requirements.
+Completed correction approvals stay bound to their published pricing generation even if the subsequent
+lineage decision removes that symbol from the active summary.
 
 A missing corporate-action auxiliary may have valid identity metadata while the bars endpoint rejects its
 label. The lineage owner can publish that exact rejection with the supported source histories and complete

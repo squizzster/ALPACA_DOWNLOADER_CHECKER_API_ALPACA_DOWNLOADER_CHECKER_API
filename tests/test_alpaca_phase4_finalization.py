@@ -91,6 +91,33 @@ class Phase4FinalizationTests(unittest.TestCase):
                     self.assertEqual(code, 0, (result, errors))
                 self.assertEqual(universe_state.read_state(case.store)["work"]["AAA"]["status"], "complete")
 
+    def test_correction_approval_survives_inactivity_observed_during_lineage(self):
+        for standalone in (False, True):
+            with self.subTest(standalone=standalone), fixture() as case:
+                case.identity = CatalogueClient(
+                    [{**asset("OTHER"), "status": "inactive"}],
+                    exact={"AAA": {**asset("AAA"), "status": "inactive"}},
+                )
+                case.live["AAA"] = [bar("2016-01-04", "50"), bar("2026-10-16", "50")]
+                if standalone:
+                    code, result, errors = invoke(case, "pricing", "refresh")
+                    self.assertEqual(code, 0, (result, errors))
+                else:
+                    result = case.update()
+                    self.assertTrue(result["complete"], result)
+                work = universe_state.read_state(case.store)["work"]["AAA"]
+                self.assertEqual(work["status"], "complete")
+                self.assertEqual(source(case)["history_correction_id"], work["correction_id"])
+                entry = storage.read_index(case.store / "end_of_day/lineage")["symbols"]["AAA"]
+                self.assertEqual(entry["projection"]["update_obligation_id"], work["obligation_id"])
+                self.assertEqual(
+                    entry["projection"]["last_observed_symbol_lookup"]["asset"]["status"], "inactive"
+                )
+                with patch.object(
+                    case.pricing, "_get", side_effect=AssertionError("completed correction repeated")
+                ):
+                    self.assertTrue(case.update()["complete"])
+
     def test_standalone_lineage_reports_remaining_accepted_coverage(self):
         with fixture() as case:
             case.identity = CatalogueClient([asset("AAA")])

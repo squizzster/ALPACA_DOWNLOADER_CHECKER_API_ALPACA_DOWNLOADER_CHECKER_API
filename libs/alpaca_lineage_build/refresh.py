@@ -198,12 +198,14 @@ def refresh_existing(
             }
         )
     if not failed and work_policy is not None:
-        work_policy.history_approved.update({s: generations[s] for s in verified if s in generations})
+        # A completed pricing replacement approves its generation even when
+        # lineage removes the now-inactive symbol from the active summary.
+        work_policy.history_approved.update(generations)
         # Standalone refresh owns its final lineage handoff too. Daily maintenance
         # supplies on_ready and stamps the checked generation after its append.
         finish = [
             s
-            for s in verified
+            for s in generations
             if s in work_policy.work
             and work_policy.work[s].get("required_history_check")
             and work_policy.allowed({s})
