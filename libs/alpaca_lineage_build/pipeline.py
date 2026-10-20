@@ -34,6 +34,7 @@ from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unique_assignment
 from .selection import DependencyGraph
 from .transform import correlate, make_publication
+from .work_contract import acquisition_fingerprint, pricing_target
 
 PREFETCH_MEMBERS = 1000
 
@@ -207,6 +208,7 @@ def process_group(
     graph = work_policy.graph if work_policy is not None else graph or DependencyGraph(index["symbols"])
     group = closure(index, {seed}, graph=graph)
     acquisition_waves = 0
+    pricing_replacements = {}
     metadata_cache = {}
     unavailable = {}
     evidence_client = evidence_client or EvidenceClient(identity_client)
@@ -276,7 +278,12 @@ def process_group(
 
                 refresh_check_summary(store, previous, sources=sources)
                 acknowledge_checks(store, checks, sources)
-                return {"symbol": seed, "status": "unchanged", "processed": sorted(sources)}
+                return {
+                    "symbol": seed,
+                    "status": "unchanged",
+                    "processed": sorted(sources),
+                    "pricing_replacements": pricing_replacements,
+                }
             if end_date and end and end > end_date:
                 raise LineageError(
                     f"{seed}: required group reconciliation extends beyond requested cutoff {end_date}; "
@@ -338,8 +345,22 @@ def process_group(
                 if expanded != group:
                     if work_policy is not None:
                         work_policy.require_dependencies(expanded, end, expanded - sources.keys())
+                        work_policy.reconcile_evidence(evidence, sources, previous, group=expanded, target=end)
                     group = expanded
                     continue  # Release every pricing lock before taking an enlarged, sorted set.
+                replacements = (
+                    work_policy.reconcile_evidence(evidence, sources, previous)
+                    if work_policy is not None
+                    else set()
+                )
+                for symbol in replacements:
+                    required[symbol] = {
+                        "from": start,
+                        "end_exclusive": max(end, pricing_target(work_policy.work[symbol])),
+                        "refresh_all": True,
+                        "selected_source_sha256": selected[symbol],
+                        "acquisition_evidence_sha256": acquisition_fingerprint(work_policy.work[symbol]),
+                    }
                 # A related input may exist but not cover the selected acquisition range.
                 # Empty published responses count as acquired, not as missing history.
                 for symbol, source in sources.items():
@@ -347,7 +368,7 @@ def process_group(
                         source.get("history_start", HISTORY_START)[:10] > start
                         or source["latest_request"]["end_exclusive"][:10] < end
                     ):
-                        required[symbol] = {"from": start, "end_exclusive": end}
+                        required.setdefault(symbol, {"from": start, "end_exclusive": end})
                 if not required:
                     check_unavailable_pricing(store, unavailable, locked, sources=sources)
                     if resume and not can_resume(
@@ -422,6 +443,7 @@ def process_group(
                         "pricing_acquisition_waves": acquisition_waves,
                         "reused_closed_boundaries": resume,
                         "unavailable_pricing": sorted(unavailable),
+                        "pricing_replacements": pricing_replacements,
                     }
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
@@ -437,10 +459,22 @@ def process_group(
             for symbol, request in required.items():
                 if work_policy is not None:
                     work_policy.check(group)
+                    fingerprint = acquisition_fingerprint(work_policy.work[symbol])
+                    if symbol not in sources and fingerprint:
+                        request.update(selected_source_sha256=None, acquisition_evidence_sha256=fingerprint)
                 try:
-                    download_pricing(
-                        store, symbol, request["end_exclusive"], client=pricing_client, from_date=request["from"]
+                    acquired = download_pricing(
+                        store,
+                        symbol,
+                        request["end_exclusive"],
+                        client=pricing_client,
+                        from_date=request["from"],
+                        **{k: v for k, v in request.items() if k not in {"from", "end_exclusive"}},
                     )
+                    if request.get("refresh_all"):
+                        pricing_replacements[symbol] = acquired["source_sha256"]
+                        if work_policy is not None:
+                            work_policy.history_approved[symbol] = acquired["source_sha256"]
                 except InitialPricingUnavailable as error:
                     if work_policy is not None:
                         work_policy.fail({symbol}, error, stage="dependency_acquisition")

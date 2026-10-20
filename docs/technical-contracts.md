@@ -129,6 +129,17 @@ append and group expansion through daily and canonical standalone commands. Fail
 prevents its sibling from publishing the affected identity group. Local interrupted registry publication
 remains pending for immediate owner recovery; it does not invent a provider retry delay.
 Exact-request restrictions discovered during metadata acquisition also survive through the durable outcome.
+The failure transaction returns its committed work state to the in-memory policy. Extending a dependency
+group or correction requirement preserves that status, its attempt count and retry deadline.
+
+Every lineage entry point reconciles the symbol evidence it actually uses against accepted unfinished work
+and the selected prior receipts. Changed identity mapping records replacement requirements for the complete
+affected group in one transaction before pricing requests. Discovery records available dependency identity
+evidence before initial acquisition too. Pricing binds the resulting evidence fingerprint and selected source
+generation; lineage cannot stamp completion against different lookup facts. Catalogue versus exact-lookup
+provenance alone does not invalidate otherwise identical evidence. Compatible completed replacements remain
+reusable after interruption. Disabled acquisition leaves the changed requirement pending. When reconciliation
+replaces pricing during a history refresh, its completed pricing generation supplies the subsequent approval.
 
 An identical completed pricing request is reusable even when empty. Advancing compatible empty coverage
 requests only the additional interval. Relevant identity changes or explicit retained-span refresh may

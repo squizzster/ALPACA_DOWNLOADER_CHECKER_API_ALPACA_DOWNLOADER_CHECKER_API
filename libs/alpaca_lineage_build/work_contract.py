@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 from libs.alpaca_pricing_download.contract import failure_outcome
+from libs.alpaca_security_lineage.lineage import compact_asset
 
 from .contract import LineageError, document_digest
 from .selection import DependencyGraph
@@ -35,6 +36,24 @@ def acquisition_fingerprint(item):
 
 def pricing_target(item):
     return item.get("pricing_end_exclusive", item["end_exclusive"])
+
+
+def lookup_fact(lookup):
+    """Catalogue and exact lookup provenance do not change the identity fact."""
+    return lookup.get("outcome"), compact_asset(lookup["asset"]) if lookup.get("asset") else None
+
+
+def symbol_lookups(evidence):
+    result = {}
+    for value in evidence.values():
+        for lookup in value["asset_lookups"]:
+            if lookup.get("lookup_kind") != "symbol":
+                continue
+            label = lookup["lookup"]
+            if label in result and lookup_fact(result[label]) != lookup_fact(lookup):
+                raise LineageError(f"{label}: conflicting symbol evidence in selected group")
+            result[label] = {k: lookup[k] for k in ("outcome", "http_status", "asset", "source") if k in lookup}
+    return result
 
 
 def work_graph(entries, work):
@@ -149,8 +168,7 @@ class WorkPolicy:
             prior,
         )
         if item != prior:
-            universe_state.put_work(self.store, symbol, item)
-            self.work[symbol] = item
+            self.work[symbol] = universe_state.put_work(self.store, symbol, item)
             linked = set(item["required_group"]) | {symbol}
             for member in linked:
                 self.required_groups.setdefault(member, set()).update(linked)
@@ -226,15 +244,103 @@ class WorkPolicy:
             for symbol in group
         )
 
+    def reconcile_evidence(self, evidence, sources, previous, *, group=None, target=None):
+        """Bind newly acquired evidence before pricing delegation or lineage publication."""
+        from . import universe_state
+
+        group = set(sources) if group is None else set(group)
+        self.check(group)
+        observed = symbol_lookups(evidence)
+        lookups, changed, mapping = {}, set(), False
+        for symbol in sorted(group):
+            prior = self.work.get(symbol, {})
+            old = symbol_lookups({symbol: previous[symbol]["evidence"]}) if previous.get(symbol) else {}
+            old.update(prior.get("required_lookups", {}))
+            own = (
+                symbol_lookups({symbol: evidence[symbol]})
+                if symbol in evidence
+                else {symbol: observed[symbol]}
+                if symbol in observed
+                else {}
+            )
+            labels = own.keys() | prior.get("required_lookups", {}).keys()
+            if labels - observed.keys():
+                raise WorkDeferred(f"{symbol}: accepted symbol evidence is absent from the selected group")
+            lookups[symbol] = {label: observed[label] for label in sorted(labels)}
+            for label, current in lookups[symbol].items():
+                if label not in old or lookup_fact(old[label]) == lookup_fact(current):
+                    continue
+                changed.add(symbol)
+                before, after = old[label].get("asset") or {}, current.get("asset") or {}
+                mapping |= (before.get("id"), before.get("symbol")) != (after.get("id"), after.get("symbol"))
+        updates = {}
+        group_fingerprint = document_digest({"lookups": observed})
+        for symbol in sorted(group):
+            source = sources.get(symbol)
+            prior = self.work.get(symbol, {})
+            if not (
+                mapping
+                or symbol in changed
+                or prior
+                and lookups[symbol].keys() - prior.get("required_lookups", {}).keys()
+            ):
+                continue
+            covered = source["latest_request"]["end_exclusive"][:10] if source else target
+            fingerprint = document_digest({"lookups": lookups[symbol]})
+            updates[symbol] = obligation(
+                {
+                    **prior,
+                    "reasons": sorted(
+                        set(prior.get("reasons", []))
+                        | {"changed_identity_mapping" if mapping else "lineage_evidence"}
+                    ),
+                    "end_exclusive": max(prior.get("end_exclusive", covered), covered),
+                    "pricing_end_exclusive": max(pricing_target(prior), covered) if prior else covered,
+                    "status": prior.get("status", "pending"),
+                    "attempts": prior.get("attempts", 0),
+                    "required_lookups": lookups[symbol],
+                    "evidence_fingerprint": fingerprint,
+                    "acquisition_evidence_fingerprint": group_fingerprint
+                    if mapping
+                    else acquisition_fingerprint(prior) or (fingerprint if source is None else None),
+                    "acquire": mapping or prior.get("acquire", False),
+                    "invalidate_pricing": mapping or prior.get("invalidate_pricing", False),
+                    "refresh_metadata": True,
+                    "required_group": sorted(set(prior.get("required_group", [])) | group),
+                },
+                prior,
+            )
+        if updates:
+            self.work.update(universe_state.put_work_group(self.store, updates))
+            for symbol, item in updates.items():
+                for member in item["required_group"]:
+                    self.required_groups.setdefault(member, set()).update(item["required_group"])
+                if pricing_target(item) > self.end:
+                    self.blocked.add(symbol)
+            self.graph.update(self._group_entries(group))
+        self.check(group)
+        return {
+            symbol
+            for symbol, source in sources.items()
+            if self.work.get(symbol, {}).get("invalidate_pricing")
+            and source.get("acquisition_evidence_sha256") != acquisition_fingerprint(self.work[symbol])
+        }
+
     def stamp(self, receipts, sources):
         """Called under group pricing locks, before the lineage owner publishes."""
         self.check(receipts)
+        observed = symbol_lookups({s: receipt["evidence"] for s, receipt in receipts.items()})
         for symbol, receipt in receipts.items():
             item = self.work.get(symbol)
             if item is None:
                 continue
             if set(item.get("required_group", [])) - receipts.keys():
                 continue
+            if any(
+                label not in observed or lookup_fact(expected) != lookup_fact(observed[label])
+                for label, expected in item.get("required_lookups", {}).items()
+            ):
+                raise WorkDeferred(f"{symbol}: lineage evidence differs from its accepted obligation")
             source = sources[symbol]
             if item.get("invalidate_pricing") and source.get(
                 "acquisition_evidence_sha256"
@@ -267,7 +373,7 @@ class WorkPolicy:
                     "reasons": sorted(set(prior.get("reasons", [])) | {"retained_history_correction"}),
                     "end_exclusive": max(prior.get("end_exclusive", target), target),
                     "pricing_end_exclusive": max(pricing_target(prior), target) if prior else target,
-                    "status": "pending",
+                    "status": prior.get("status", "pending"),
                     "required_history_check": require_check or prior.get("required_history_check", False),
                     "correction_id": correction,
                     "acquire": prior.get("acquire", False),
@@ -277,8 +383,7 @@ class WorkPolicy:
                 },
                 prior,
             )
-            self.work[symbol] = item
-            universe_state.put_work(self.store, symbol, item)
+            self.work[symbol] = universe_state.put_work(self.store, symbol, item)
             request["required_correction_id"] = correction
 
     def requires_publication(self, previous):
@@ -331,9 +436,8 @@ class WorkPolicy:
                 )
             if stage in {"history_check", "history_correction", "append"}:
                 item = {**item, "required_history_check": True, "obligation_id": uuid4().hex}
-            self.work[symbol] = item
             universe_state.put_work(self.store, symbol, item)
-            universe_state.record_outcome(
+            self.work[symbol] = universe_state.record_outcome(
                 self.store, symbol, status=status, outcome={**outcome, "stage": stage}, attempts=1
             )
             self.blocked.add(symbol)

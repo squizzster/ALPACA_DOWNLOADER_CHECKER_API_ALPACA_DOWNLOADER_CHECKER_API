@@ -144,6 +144,7 @@ def refresh_existing(
         if work_policy is not None:
             work_policy.record_results(replaced, stage="history_correction")
         selected = [item["symbol"] for item in replaced["results"] if item["status"] == "replaced"]
+        lineage_replacements = {}
         if selected:
             value = run_lineage(
                 store,
@@ -157,6 +158,8 @@ def refresh_existing(
             )
             lineage["results"].extend(value["results"])
             lineage["failed"] += value["failed"]
+            for item in value["results"]:
+                lineage_replacements.update(item.get("pricing_replacements", {}))
         else:
             assert_current(store, snapshot["token"])
         if pricing["failed"] or lineage["failed"]:
@@ -173,6 +176,9 @@ def refresh_existing(
         for item in replaced["results"]:
             if item["status"] == "replaced":
                 generations[item["symbol"]] = item["source_sha256"]
+        # Reconciliation may replace pricing again after observing a changed
+        # identity. Only its completed producer handoff approves that generation.
+        generations.update(lineage_replacements)
         # Re-read only the compact summary. New members get a fresh comparison;
         # changing membership cannot promote an unchecked source into approval.
     else:

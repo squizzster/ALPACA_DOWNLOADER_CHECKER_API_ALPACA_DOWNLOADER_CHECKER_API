@@ -101,5 +101,11 @@
       "Persist accepted maintenance coverage independently of execution flags and retain dependency acquisition and complete-group obligations before registration or requests.",
       "Apply durable access, retry-delay and cutoff restrictions to canonical standalone processing and acknowledge work only from satisfying producer publications."
     ]
+  },
+  {
+    "modifications": [
+      "Reconcile actual group identity evidence with accepted obligations before publication, atomically persist changed mapping requirements, and acquire compatible pricing through the selected source generation before acknowledgement.",
+      "Keep in-memory work synchronized with durable failure outcomes so dependency expansion preserves blocked requests, retry delays and attempt counts."
+    ]
   }
 ]

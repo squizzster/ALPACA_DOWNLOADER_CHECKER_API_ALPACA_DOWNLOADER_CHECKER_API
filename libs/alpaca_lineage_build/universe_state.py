@@ -117,12 +117,22 @@ def accept(store, observation, additions, work):
 
 def put_work(store, symbol, item):
     """Persist work first discovered in maintenance or dependency processing."""
+    return put_work_group(store, {symbol: item})[symbol]
+
+
+def put_work_group(store, work):
+    """Accept a complete group's changed requirements in one transaction."""
+    accepted = {}
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         _check(connection)
-        row = connection.execute("SELECT body FROM work WHERE symbol=?", (symbol,)).fetchone()
-        item = {**(json.loads(row[0]) if row else {}), **item}
-        connection.execute("INSERT OR REPLACE INTO work VALUES (?, ?)", (symbol, json.dumps(item)))
+        for symbol, item in work.items():
+            row = connection.execute("SELECT body FROM work WHERE symbol=?", (symbol,)).fetchone()
+            accepted[symbol] = {**(json.loads(row[0]) if row else {}), **item}
+            connection.execute(
+                "INSERT OR REPLACE INTO work VALUES (?, ?)", (symbol, json.dumps(accepted[symbol]))
+            )
         connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+    return accepted
 
 
 def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
@@ -155,6 +165,7 @@ def record_outcome(store, symbol, *, status, outcome, attempts=0):
         )
         connection.execute("UPDATE work SET body=? WHERE symbol=?", (json.dumps(value), symbol))
         connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+    return value
 
 
 def pending_count(state):
