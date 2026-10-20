@@ -117,5 +117,11 @@
       "Preserve accepted explicit history starts across command retries, respect them during batched acquisition and reuse only sources covering the complete required range. Retain compatible prior publications.",
       "Share acquisition-range validation with acceptance and work producers; reject impossible starts before registration, durable intentions, store initialization or buffered requests."
     ]
+  },
+  {
+    "modifications": [
+      "Resolve new inclusive pricing cutoffs to the last completed exchange session using the shared calendar, including weekends, holidays and exceptional closures. Retain the New York completion limit and reject unknown calendar coverage.",
+      "Keep already accepted exclusive boundaries separate from new cutoff resolution so durable obligations, retained publications and journal recovery preserve their original ranges. Retain compatible v1-v21 publications."
+    ]
   }
 ]

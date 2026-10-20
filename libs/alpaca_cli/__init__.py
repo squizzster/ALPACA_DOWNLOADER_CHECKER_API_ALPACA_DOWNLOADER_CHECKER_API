@@ -10,12 +10,12 @@ from datetime import timedelta
 from pathlib import Path
 
 from alpaca_end_of_day import ADJUSTMENTS, ReaderBusyError
-from libs.alpaca_pricing_download.download import parse_date, request_end
+from libs.alpaca_pricing_download.download import parse_date, pricing_session_end
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 3
+VERSION = 4
 REPOSITORY = Path(__file__).resolve().parents[2]
 DEFAULT_STORE = REPOSITORY / "data_pricing"
 
@@ -42,10 +42,16 @@ def bounded_integer(lower, upper):
     return parse
 
 
-def _dates(parser, *, start=True):
+def _dates(parser, *, start=True, pricing=False):
     if start:
         parser.add_argument("--from", dest="start", help="inclusive first session, YYYY-MM-DD")
-    parser.add_argument("--through", dest="end", help="inclusive last session, YYYY-MM-DD")
+    parser.add_argument(
+        "--through",
+        dest="end",
+        help="inclusive cutoff date, rounded back to a completed trading session, YYYY-MM-DD"
+        if pricing
+        else "inclusive last date, YYYY-MM-DD",
+    )
 
 
 def _selection(parser, *, required=False, recovery=False):
@@ -69,7 +75,7 @@ def build_parser():
         "update", help="discover, register, reconcile and update the standalone universe"
     )
     _store(update)
-    _dates(update, start=False)
+    _dates(update, start=False, pricing=True)
     _workers(update)
     update.add_argument("--plan", action="store_true", help="read-only preview; may fetch current metadata")
     update.add_argument(
@@ -121,7 +127,7 @@ def build_parser():
         _store(p, required=name == "acquire")
         _selection(p, required=name == "acquire", recovery=name == "acquire")
         if name == "acquire":
-            _dates(p)
+            _dates(p, pricing=True)
             _workers(p)
         if name == "check":
             p.add_argument("--batch-size", type=int, default=4000)
@@ -131,7 +137,7 @@ def build_parser():
         _store(p)
         if name in {"update", "refresh"}:
             _selection(p)
-            _dates(p, start=False)
+            _dates(p, start=False, pricing=True)
             p.add_argument("--no-pricing-acquisition", action="store_true")
         elif name == "inspect":
             p.add_argument("--symbol", required=True)
@@ -144,7 +150,7 @@ def build_parser():
         p = universe.add_parser(name)
         _store(p)
         if name == "reconcile":
-            _dates(p, start=False)
+            _dates(p, start=False, pricing=True)
     summary = commands.add_parser("summary").add_subparsers(dest="operation", required=True, parser_class=Parser)
     _store(summary.add_parser("rebuild"))
     catalogue = commands.add_parser(
@@ -171,7 +177,7 @@ def build_parser():
                 group.add_argument("--recovery-universe", action="store_true")
             else:
                 _selection(p, required=True)
-            _dates(p, start=name == "update")
+            _dates(p, start=name == "update", pricing=True)
         if name == "pin-universe":
             p.add_argument("--symbols-file", type=Path, default=DEFAULT_REGISTRY)
         if name in {"read", "export"}:
@@ -210,11 +216,18 @@ def symbols(args):
 
 
 def end_exclusive(value):
-    return (
-        request_end(None if value is None else (parse_date(value) + timedelta(days=1)).isoformat())
-        .date()
-        .isoformat()
-    )
+    return pricing_session_end(value).date().isoformat()
+
+
+def _pricing_end(args):
+    end = end_exclusive(args.end)
+    args.pricing_cutoff = {
+        "requested_through": args.end,
+        "pricing_through_session": (parse_date(end) - timedelta(days=1)).isoformat(),
+        "end_exclusive": end,
+    }
+    print("pricing cutoff: " + json.dumps(args.pricing_cutoff, separators=(",", ":")), file=sys.stderr)
+    return end
 
 
 def clients():
@@ -263,7 +276,7 @@ def dispatch(args):
 
         if operation == "rebuild":
             return rebuild_universe(args.store)
-        end = end_exclusive(args.end)
+        end = _pricing_end(args)
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
@@ -281,7 +294,7 @@ def dispatch(args):
             from libs.alpaca_lineage_build.evidence import output_evidence
 
             return output_evidence(args.store, args.symbol, offline=True)
-        end = end_exclusive(args.end)
+        end = _pricing_end(args)
         pricing, identity = clients()
         from libs.alpaca_lineage_build.pipeline import run_lineage
         from libs.alpaca_lineage_build.registration import standalone_registration
@@ -305,7 +318,7 @@ def dispatch(args):
         pending = sorted(s for s in policy.pending_work if policy.graph.closure({s}) & selected)
         return {**result, "pending_work": pending, "complete": not result["failed"] and not pending}
     if command == "update":
-        end = end_exclusive(args.end)
+        end = _pricing_end(args)
         pricing, identity = clients()
         from libs.alpaca_lineage_build.universe_update import plan_update, run_update
 
@@ -325,7 +338,7 @@ def dispatch(args):
             from libs.alpaca_lineage_build.registration import standalone_registration
             from libs.alpaca_pricing_download.command_line import run_arguments
 
-            args.request_end = end_exclusive(args.end)
+            args.request_end = _pricing_end(args)
             args.from_date, args.refresh_all = args.start, False
             args.all_symbols, args.file = args.recovery_universe, args.symbols_file
             return run_arguments(
@@ -428,7 +441,7 @@ def catalogue_command(args):
         )
     if operation == "activate":
         return activate_clean_room_generation(REPOSITORY, args.store, output=sys.stderr)
-    end = end_exclusive(args.end) + "T00:00:00Z"
+    end = _pricing_end(args) + "T00:00:00Z"
     if operation == "build":
         return run_clean_room_generation(
             DEFAULT_REGISTRY if args.recovery_universe else args.symbols_file,
@@ -460,6 +473,8 @@ def main(argv=None):
         result = dispatch(args)
         if isinstance(result, int):
             return result
+        if hasattr(args, "pricing_cutoff"):
+            result = {**result, "pricing_cutoff": args.pricing_cutoff}
         print(json.dumps(result, separators=(",", ":"), allow_nan=False))
         if args.command == "status":
             return int(not result["processing_complete"])

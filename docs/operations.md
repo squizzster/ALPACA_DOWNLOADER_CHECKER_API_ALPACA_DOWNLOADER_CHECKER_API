@@ -26,9 +26,17 @@ reconciles changed identity/status evidence, then checks, corrects and appends e
 Stage progress goes to stderr; the final report is JSON on stdout. Failures or unfinished required work
 return nonzero. Published unresolved identities are valid outcomes, distinct from failed processing.
 
-`--through` is inclusive: `2026-10-16` becomes the exclusive UTC boundary `2026-10-17T00:00:00Z`.
+`--through` is an inclusive cutoff date, resolved back to the latest exchange session on or before it.
+For example, Friday `2026-10-16`, Saturday `2026-10-17` and Sunday `2026-10-18` all select Friday's
+session and the exclusive UTC boundary `2026-10-17T00:00:00Z`. Weekends, exchange holidays and
+exceptional closures use the shared market calendar. The cutoff is resolved before work selection,
+registration or requests; closed days alone do not advance pricing coverage or require republication.
+Progress output identifies the requested date and effective session; update/preview JSON includes both
+in `pricing_cutoff`. Reader and export date filters remain inclusive calendar filters.
 The default is the last exchange session **strictly before today's New York date**, frozen once per run.
 Friday becomes eligible after Saturday midnight in New York. Crossing UTC midnight changes nothing.
+Explicit cutoff dates must also precede today's New York date; unsupported calendar ranges are rejected.
+Already accepted work and publication journals retain their original exclusive boundaries during recovery.
 The target reaches initial and dependent acquisitions. Sources already covered beyond it stay unchanged
 and are reported separately; they are not freshly checked or rewound. Reconciliation requiring a larger
 range remains incomplete. This is an update through a target, not a historical knowledge snapshot.
@@ -148,8 +156,8 @@ Initialize work state once before standalone pricing or lineage commands. For a 
 and run `summary rebuild` before daily updating; `status` identifies any remaining missing coverage.
 Ordinary acquisition requires an explicit compatible or empty store. It publishes pricing only; run
 lineage afterward. Initial history starts in 2016 unless `--from` specifies a later start. A start that
-excludes held observations is rejected. Explicit starts before 2016 or after the inclusive `--through`
-date are rejected before registration or durable work is accepted.
+excludes held observations is rejected. Explicit starts before 2016 or after the resolved final trading
+session are rejected before registration or durable work is accepted.
 `--symbols-file` accepts headerless CSV or one label per line;
 `--recovery-universe` explicitly selects the additive recovery list and can mean a full acquisition.
 Acquisition reads either selection file once. Registration, durable work, downloads and the completed-batch

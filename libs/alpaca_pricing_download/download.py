@@ -62,26 +62,31 @@ def parse_date(value: str) -> date:
         raise DownloadError("date must be YYYY-MM-DD") from error
 
 
-def request_end(value: str | None, *, now: datetime | None = None) -> datetime:
-    """Freeze a daily-bar boundary only after its session's New York date ends.
+def _session_end_before(day: date) -> datetime:
+    try:
+        coverage = expected_market_session_coverage(HISTORY_START[:10], day.isoformat())
+    except MarketCalendarError as error:
+        raise DownloadError(str(error)) from error
+    if coverage.last_session_date is None:
+        raise DownloadError("no completed exchange session after the historical lower bound")
+    end_day = parse_date(coverage.last_session_date) + timedelta(days=1)
+    return datetime(end_day.year, end_day.month, end_day.day, tzinfo=timezone.utc)
 
-    Automatic updates select the latest prior exchange session. Explicit ends
-    retain their UTC representation, but cannot include today's New York date.
+
+def request_end(value: str | None, *, now: datetime | None = None) -> datetime:
+    """Validate an already selected exclusive boundary without changing accepted work.
+
+    With no boundary, select the latest completed session. New user cutoffs must
+    use pricing_session_end; existing intentions and publications retain their
+    exact boundaries, including older calendar-range coverage.
     """
     instant = utc_now() if now is None else now
     if instant.tzinfo is None or instant.utcoffset() is None:
         raise DownloadError("update clock must include a timezone")
     today = instant.astimezone(NEW_YORK).date()
     if value is None:
-        try:
-            coverage = expected_market_session_coverage(HISTORY_START[:10], today.isoformat())
-        except MarketCalendarError as error:
-            raise DownloadError(str(error)) from error
-        if coverage.last_session_date is None:
-            raise DownloadError("no completed exchange session after the historical lower bound")
-        day = parse_date(coverage.last_session_date) + timedelta(days=1)
-    else:
-        day = parse_date(value)
+        return _session_end_before(today)
+    day = parse_date(value)
     if day > today:
         raise DownloadError(
             "request end cannot include the current or a future New York date; "
@@ -91,6 +96,19 @@ def request_end(value: str | None, *, now: datetime | None = None) -> datetime:
     if end <= timestamp(HISTORY_START):
         raise DownloadError("request end must be after the historical lower bound")
     return end
+
+
+def pricing_session_end(through: str | None, *, now: datetime | None = None) -> datetime:
+    """Resolve an inclusive user cutoff to its last completed exchange session.
+
+    Resolve before selection, registration or requests. The shared calendar
+    covers weekends, holidays and exceptional closures; no weekday guessing.
+    The New York completion rule and unknown-calendar rejection still apply.
+    """
+    if through is None:
+        return request_end(None, now=now)
+    end = request_end((parse_date(through) + timedelta(days=1)).isoformat(), now=now)
+    return _session_end_before(end.date())
 
 
 def request_start(value: str | None, end: datetime) -> datetime | None:
