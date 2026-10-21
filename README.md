@@ -1,31 +1,28 @@
 # Alpaca EOD Data Engine
 
-Exact US-equity pricing in eight adjustment views; dated security lineage. Tickers are labels, not identities.
-Scope ends at the data handoff.
+Maintains exact US-equity prices in eight adjustment views, dated security identities and a published
+serving catalogue. Incremental checks reuse completed work; journals recover interrupted publications.
+Local applications can search approved identities or inspect resolved histories and their evidence.
+Research and trading decisions are outside this data boundary.
 
-Read [Agent instructions](AGENTS.md) → [Architecture](docs/ARCHITECTURE.md) → the relevant guide:
+Requires Python 3.11, Unix `flock` and `America/New_York` timezone data. Provider acquisition requires
+`ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` and Alpaca SIP access; local readers and offline catalogue
+maintenance need compatible publications, no credentials/network. Parquet export additionally requires
+[PyArrow](requirements-bloodhound.txt). Runtime stores stay outside Git.
+See the [executable](alpaca-eod), [CLI](libs/alpaca_cli/__init__.py) and
+[pricing contract](libs/alpaca_pricing_download/contract.py) for these requirements.
 
-| Guide | Scope |
-|---|---|
-| [Operations](docs/operations.md) | Commands, setup, session cutoff, recovery. |
-| [Public API](docs/public-api.md) | Pricing reads, identity resolution. |
-| [Technical contracts](docs/technical-contracts.md) | Trusted handoffs, artifacts, publication. |
-| [Development](docs/development.md) | Changes, lineage research, verification. |
+## Run and consume
 
-## Daily update
+- [Operations](docs/operations.md): setup, daily update, cutoffs, recovery and export commands.
+- [Public API](docs/public-api.md): identity selection, histories, snapshots and errors.
 
-```bash
-./alpaca-eod update
-```
+## Understand and change
 
-Discovers active OTC/NYSE/NASDAQ/AMEX/TXSE labels, unions the recovery registry, and maintains pricing,
-lineage and the serving catalogue in `data_pricing/`. `update --plan`: read-only scope preview.
-Existing stores require explicit [catalogue bootstrap](docs/operations.md#serving-catalogue-maintenance).
+- [Architecture](docs/ARCHITECTURE.md): workflows and code ownership.
+- [Technical contracts](docs/technical-contracts.md): trusted artifacts, reuse and publication guarantees.
+- [Agent instructions](AGENTS.md): repository-wide boundaries and change rules.
+- [Development](docs/development.md): research, versioning and verification.
 
-Applications use `DataLibrary(store="data_pricing")` to search approved identities and read exact histories.
-`StandaloneReader` inspects resolved histories and evidence from the same store and history engine.
-
-Requires Python 3.11, Unix file locking, New York timezone data, Alpaca credentials and SIP access.
-Local readers require published data, no credentials/network. Runtime stores stay outside Git.
-
-This is the complete documentation index. Guides describe current behavior; Git holds history.
+This is the complete project documentation index. Start with [store setup](docs/operations.md#adopt-or-reconstruct-an-existing-store)
+before running `./alpaca-eod update`; `update --plan` previews work and may fetch metadata.

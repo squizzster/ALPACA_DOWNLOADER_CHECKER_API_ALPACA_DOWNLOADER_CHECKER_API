@@ -2,38 +2,42 @@
 
 ## Make the change at its owner
 
-Follow the [ownership map](ARCHITECTURE.md#code-ownership), then command imports. Keep root adapters thin;
-preserve existing work. Tests mirror boundaries using temporary stores/HTTP doubles, never production
-copies or ordinary live acquisition. Cover changed behavior and nearest failure; handoff tests verify
-publication before acknowledgement and no repeated upstream authentication.
+Follow [AGENTS.md](../AGENTS.md) and the [ownership map](ARCHITECTURE.md#code-ownership).
+Keep adapters thin; preserve existing work. Use temporary stores/HTTP doubles, never production copies or
+ordinary live acquisition. Test changed behavior and its nearest failure, including publication before
+acknowledgement and no repeated upstream authentication.
 
 ## Lineage research and rule-improvement loop
 
-Generic rules, never ticker exceptions. Main agent owns implementation/acceptance.
+Use generic rules, never ticker exceptions. The main agent owns implementation and acceptance.
 
-1. Define disputed ownership/continuity interval and agreed batch scope.
-2. Inspect [published evidence](operations.md#focused-standalone-work), trusting approved inputs.
-   `lineage inspect` reads; explicit `lineage refresh` may acquire/publish.
-3. Fresh research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`. Supply self-contained
-   question, evidence/current rules, no preferred verdict. Request primary-source facts, uncertainty,
-   counterexamples and generic rule concept. Research agents never edit/publish; report unavailable configurations.
-4. Map external facts to deterministic internal evidence. Public research cannot establish unseen bar
-   ownership or opaque provider UUIDs. Prefer correcting an existing rule; otherwise use the proper
-   ordered registry with explicit gates/vetoes.
-5. Test positive case, nearest counterexample, dates and adjacent-rule interactions across complete
-   affected groups. Reuse confirmed facts; close each case before the next.
-6. At the agreed batch boundary, compare the final cascade on identical approved inputs across every
-   affected identity: gains/losses, reassignment, membership. Run full verification. Publish only within
-   authorization; distinguish evidence changes from rule changes.
+1. Agree the disputed ownership/continuity interval and batch scope; inspect
+   [published evidence](operations.md#focused-standalone-work). Inspection reads; refresh may acquire/publish.
+2. Use a fresh research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`.
+   Supply a self-contained question, evidence/current rules and no preferred verdict. Request primary-source
+   facts, uncertainty, counterexamples and a generic rule concept. Researchers never edit/publish;
+   report unavailable configurations.
+3. Map facts to deterministic internal evidence. External research cannot establish unseen bar ownership
+   or opaque provider UUIDs. Prefer correcting an existing rule; new rules need ordered gates/vetoes.
+4. Test the positive case, nearest counterexample, dates and adjacent rules across complete affected groups.
+   Reuse confirmed facts; close each case before the next.
+5. At the batch boundary, compare the final cascade on identical approved inputs for every affected identity:
+   gains/losses, reassignment and membership. Run full checks; publish only within authorization.
+   Distinguish evidence changes from rule changes.
 
-Misattribution and withholding supported history are both errors. Leave ambiguity unresolved while
-preserving independently supported intervals. Standalone resolution ≠ online availability.
+Misattribution and withholding supported history are both errors. Preserve supported intervals while leaving
+ambiguity unresolved. Standalone resolution does not establish online availability.
 
 ## Versioned boundaries
 
-Behavior/serialized changes: bump owner constant; append exactly one `resources/*change_log.json` entry
-containing `modifications`, no `version`. One-based array position is runtime-checked version.
-Owner constants/validators are authoritative; review compatibility. Documentation-only changes: no bump/entry.
+Behavior/serialized changes require an owning constant bump and exactly one JSON changelog entry with
+`modifications`, no `version` field. One-based array position is the runtime-checked version; readable schemas
+need not be reusable. Documentation-only changes leave versions/changelogs unchanged.
+
+Constants, compatibility and changelog paths live with their owners: [public API](../alpaca_end_of_day/__init__.py),
+[pricing](../libs/alpaca_pricing_download/contract.py), [lineage](../libs/alpaca_lineage_build/contract.py),
+[serving](../libs/alpaca_serving_catalogue/contract.py), [monthly boundaries](../libs/alpaca_end_of_day_v6/versions.py)
+and the packages in the [ownership map](ARCHITECTURE.md#code-ownership).
 
 ## Verification
 
@@ -46,12 +50,12 @@ python3.11 -B -W error::ResourceWarning -m unittest discover -s tests -v
 git diff --check
 ```
 
-Optional Parquet integration tests require [requirements-bloodhound.txt](../requirements-bloodhound.txt); skip without
-PyArrow. No repository CI: report local results/gaps accurately.
+Optional Parquet tests skip without [PyArrow](../requirements-bloodhound.txt). No repository CI;
+report actual local results and gaps. Tests do not establish retained-store correctness or live-universe throughput.
 
-Documentation-only: check local links/anchors, complete README index, commands against
-`python3.11 -B <entrypoint> --help`, code consistency and diff. Never execute mutating examples;
-no runtime-test rerun needed for prose.
+Documentation-only: compare substantive old/new meaning, check links/anchors and complete README coverage,
+validate examples against the parser and `python3.11 -B alpaca-eod <command> --help`, and check the diff.
+Never execute mutating examples; prose changes need no runtime-suite rerun.
 
-One home per explanation, linked from README; current behavior only. Git holds history.
-No run diaries, status trackers, duplicated version tables or speculative plans.
+Keep each explanation in one guide linked from README. Describe current behavior; no run diaries, status
+trackers, duplicated version tables or speculative plans.

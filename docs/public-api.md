@@ -1,26 +1,25 @@
 # Public API
 
-Import only [alpaca_end_of_day](../alpaca_end_of_day/__init__.py). Both readers: local, read-only;
-no acquisition, repair or whole-store authentication. Neither substitutes another store format.
+Import only [alpaca_end_of_day](../alpaca_end_of_day/__init__.py). Both readers are local and read-only;
+missing/incomplete/incompatible publications fail without acquisition, repair, discovery or store substitution.
 
-| Reader | Input | Scope |
-|---|---|---|
-| `StandaloneReader(store)` | Standalone pricing/lineage | Resolved histories within a source group. |
-| `DataLibrary(store=...)` | Current pricing/lineage store; default `data_pricing/` in the repository | Published online identities only. |
+| Reader | Selected data |
+|---|---|
+| `StandaloneReader(store)` | Resolved histories/evidence within a source group, even if other rows remain unresolved. |
+| `DataLibrary(store=...)` | Published online identities; default repository `data_pricing/`. |
 
-The constructor is keyword-only for store selection. Old positional repository roots and `path=` raise
-an explicit migration error. [Bootstrap the serving catalogue](operations.md#serving-catalogue-maintenance)
-before opening the library. Missing or incompatible boundaries never trigger initialization or discovery.
+`DataLibrary` requires keyword store selection; old positional roots and `path=` raise migration errors.
+[Bootstrap](operations.md#serving-catalogue-maintenance) before opening it.
 
 ## Common semantics
 
-Tickers may match multiple dated securities; resolution preserves every match. Date filters never silently
-choose identity. Opaque 64-hex `public_id` is stable for fixed resolved provider-UUID membership; changed
-membership may change IDs. No old-ID crosswalk promised.
+Tickers are dated labels: resolution preserves multiple matches, and date filters never silently choose an
+identity. A 64-hex `public_id` is stable for fixed resolved provider-UUID membership; membership changes can
+change it, with no old-ID crosswalk promised.
 
-Dates: `datetime.date`, ISO date string or `None`; inclusive New York session bounds. Empty valid ranges
-return empty histories. Exact adjustments: `raw`, `split`, `dividend`, `spin-off`, `split,dividend`,
-`split,spin-off`, `dividend,spin-off`, `all`. `all` means fully adjusted, not every view.
+Dates accept `datetime.date`, ISO date strings or `None`, as inclusive New York session bounds. Valid empty
+ranges return empty histories. [ADJUSTMENTS](../libs/alpaca_pricing_download/contract.py) defines the eight names;
+`all` means fully adjusted, not every view. Numeric values stay exact.
 
 ## Standalone reader
 
@@ -33,21 +32,14 @@ for match in reader.resolve_ticker("DELL")["matches"]:
     print(match["public_id"], views["views"]["all"]["bar_count"])
 ```
 
-Symbol locates the source group; required even with `public_id`. Multiple matches without explicit ID:
-`AmbiguousTickerError`. Resolved portions remain readable despite other unresolved rows.
+Symbol locates the source group and remains required with `public_id`; multiple matches without an ID raise
+`AmbiguousTickerError`. [StandaloneReader](../alpaca_end_of_day/standalone.py#L418) defines signatures and dictionary
+schemas: `get_history` returns one view with exact numeric strings; `get_histories` returns `views[adjustment]`
+(default eight) from one snapshot, all succeeding or failing. `include_evidence=True` includes its evidence.
 
-`get_history(symbol, adjustment="raw", ...)`: dictionary with `generation`, `security`, `range`, `bar_count`,
-`bars`. Bars: session, timestamp, dated tickers, seven numeric fields as exact strings.
-`get_histories`: shared metadata + `views[adjustment]`; default eight views, one snapshot, all succeed or fail.
-`include_evidence=True` includes that snapshot's evidence.
-
-| Method | Result |
-|---|---|
-| `resolve_ticker(symbol)` | Metadata-only matches/observed coverage. |
-| `list_published_sources()` | Locators, possibly stale/unresolved; not an online catalogue. |
-| `get_evidence(symbol)` | Published group identities, assignments, normalized evidence. |
-| `get_generation(symbol)` | Fresh group generation; no price reads. |
-| `open_group(symbol)` | One snapshot across several IDs. |
+`resolve_ticker` and `get_generation` need no price reads. `list_published_sources` returns locators that may be
+stale/unresolved, not an online catalogue. `get_evidence` exposes published identities, assignments and normalized
+evidence. For several IDs, share a [group snapshot](../alpaca_end_of_day/_standalone_group.py):
 
 ```python
 with reader.open_group("DELL") as group:
@@ -56,27 +48,18 @@ with reader.open_group("DELL") as group:
 group.check_current()  # Optional freshness check before downstream publication.
 ```
 
-Calls select current receipts under shared group locks; separate calls may select different generations.
-Conflicting work: `ReaderBusyError`, or wait with `wait=True`. Incomplete/stale/incompatible publication:
-`StandaloneReaderError`.
+Separate calls may select different generations. Busy groups raise `ReaderBusyError`, or wait with `wait=True`;
+stale/incomplete/incompatible publications raise `StandaloneReaderError`. `cache_bytes` defaults to zero;
+`cache_info()` reports bounded RAM retention, and group `set_cache_limit` stays within that cap, not a total-process
+memory limit. Caching preserves locks/current selection/pending checks and trusts published digests.
 
-`cache_bytes=N` enables bounded cross-call RAM reuse; default zero. `cache_info()` reports usage;
-group `set_cache_limit(N)` reduces retention within that cap, not total process memory.
-Caching preserves current receipt selection, locks and pending checks. Published digests select content;
-neither first nor cached reads revalidate file metadata.
+Equal overlaps collapse. Conflicting adjusted bars prefer strictly broader correlated coverage, then a unique
+source matching the historical ticker; raw uses only the latter. Unsettled conflicts fail. Assembly precedes
+filtering, so narrow queries may read older payloads. Authority: [_history](../alpaca_end_of_day/standalone.py#L239).
 
-Equal overlaps collapse. Conflicting adjusted bars prefer strictly broader correlated coverage, then a
-unique source matching the historical ticker; raw bars use only the latter. Unsettled conflicts fail.
-Assembly precedes filtering: narrow queries may read older payloads.
-
-```bash
-./alpaca-eod resolve --store data_pricing --symbol DELL
-./alpaca-eod read --store data_pricing --symbol DELL --adjustment raw all --format csv
-```
-
-CLI: default `raw`; `--all-adjustments` selects eight views; ambiguity requires `--public-id` with symbol.
-Compound names are single arguments; `raw,all` is invalid selection syntax. Multiple-view CSV adds
-`adjustment`; output is prepared before printing.
+Reader CLI defaults to `raw`; `--all-adjustments` selects eight. Ambiguity needs symbol plus `--public-id`.
+Compound names are single arguments; `raw,all` is invalid. Multiple-view CSV adds `adjustment`; output is
+prepared before printing. [Commands/help](operations.md#read-and-export).
 
 ## Online catalogue reader
 
@@ -89,44 +72,29 @@ for security in data.search_securities("DELL", limit=5):
     print(security.public_id, len(history.bars))
 ```
 
-`catalog()`, `catalog_generation()`, `online_count()`: selected snapshot.
-`list_securities()`: online securities; `get_security(public_id)`: one security.
-`search_securities(query, limit=None)`: public ticker/name/identifier search.
-`resolve_ticker(ticker, on=None)`: every exact dated match, optionally covering one date.
+[DataLibrary](../alpaca_end_of_day/__init__.py#L477) defines catalogue/list/get/search/dated-resolution methods,
+history signatures and CSV export; [public types](../alpaca_end_of_day/__init__.py#L73) define all fields.
+`get_histories` locks once and returns adjustment → typed `History`, default eight views. OHLC/VWAP/volume
+are `Decimal`, trade count is integral; `to_dict()` emits exact decimal strings. `wait`/`cache_bytes` match
+standalone semantics.
 
-Metadata: public ID, tickers, known names/CUSIPs/exchanges/classes, external identifiers when published,
-coverage and adjustments. `observations` distinguish recorded observation times from supported effective
-intervals; missing dates remain `None`. `ticker_ownership_intervals` retain published dated label evidence,
-including unknown endpoints. Resolution ranges describe labels on stored histories. Undated names remain
-searchable without claiming they applied historically. Current upstream observations do not publish FIGIs;
-none are fabricated. Provider IDs, internal status and diagnostic paths stay hidden.
+Metadata retains known/conflicting observations and supported effective intervals separately. Undated exact
+fallbacks stay undated; catalogue time dates only catalogue-sourced lookups. Ownership evidence can support
+historical labels/CUSIPs, including unknown endpoints; observed names/exchanges/classes do not establish
+historical periods. Resolution ranges describe labels on stored histories. Undated names remain searchable.
+FIGIs are not currently supplied or fabricated.
+Provider IDs, internal status/reasons and diagnostic paths stay hidden. Coverage records approved stored
+sessions and explained gaps; [eligibility guarantees](technical-contracts.md#serving-catalogue) define its limits.
 
-Coverage is approved history held by this store: first/last session, stored session count and any explained
-missing sessions. It does not establish lifetime completeness or freshness through today. All eight views
-must qualify on the same session set; inactivity or missing descriptive metadata alone does not disqualify.
-[Exact serving policy](technical-contracts.md#serving-catalogue).
+Instances retain their opened catalogue snapshot without a long-lived transaction. Search/list/resolve do no
+ticker I/O. History checks the selected serving decision and lineage/pricing generations under shared locks.
+Changed selected inputs raise `CatalogChangedError`: finish maintenance and open a new instance. Unrelated
+updates remain readable; catalogues retain no old pricing files. `PublicIdUnavailableError` does not distinguish
+unknown from internally offline IDs. Both errors inherit `DataLibraryError`; malformed arguments raise
+`ValueError`, busy groups `ReaderBusyError`.
 
-`get_history(public_id, adjustment="raw", start=None, end=None)`: typed bars; OHLC/VWAP `Decimal`,
-volume `Decimal`, trade count integer. `to_dict()` serializes decimals as exact strings.
-`get_histories(public_id, adjustments=...)` returns adjustment → typed `History`, selecting and locking the
-group once; default all eight views. `wait` and `cache_bytes` have the standalone reader's meanings.
-
-Instances retain their opened catalogue generation without a long-lived SQLite transaction. A changed
-selected serving decision, lineage or pricing generation raises `CatalogChangedError`; finish maintenance
-and open a new instance. Unrelated group updates leave compatible reads available. Catalogues do not retain
-old pricing snapshots. `PublicIdUnavailableError` never distinguishes unknown from internally offline IDs.
-Both inherit `DataLibraryError`; malformed arguments raise `ValueError`. Busy groups raise `ReaderBusyError`.
-
-`write_flat_online_csv(destination, start=None, end=None)`: dated identity fields, separate raw/fully
-adjusted columns, ordered date → public ID. Mismatched sessions, duplicate rows or ambiguous dated metadata
-fail. Undated descriptive observations produce empty historical cells, not guessed values. Paths use disk
-spool + atomic replacement; streams lack that replacement guarantee. Exports declare the opened catalogue
-snapshot and match each consumed group's generations. They do not promise every group is still the latest
-at file installation. Destinations must be outside the source store.
-
-```bash
-./alpaca-eod catalogue search --store data_pricing DELL
-./alpaca-eod catalogue export --store data_pricing --output ./online.csv
-```
-
-Invocation/exit statuses: command `--help`, [Operations](operations.md#read-and-export).
+`write_flat_online_csv` orders date → public ID with separate raw/fully adjusted columns. Mismatched sessions,
+duplicates or ambiguous dated metadata fail; undated descriptions yield empty historical cells. Destinations
+must be outside the source store. Paths use disk spool + atomic replacement; streams lack replacement guarantees.
+Exports declare one catalogue snapshot and match each consumed group's generations, not a store-wide guarantee
+that every group remains latest at installation.
