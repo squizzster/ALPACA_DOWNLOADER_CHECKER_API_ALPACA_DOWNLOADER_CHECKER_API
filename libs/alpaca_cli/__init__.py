@@ -15,7 +15,7 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 5
+VERSION = 7
 REPOSITORY = Path(__file__).resolve().parents[2]
 DEFAULT_STORE = REPOSITORY / "data_pricing"
 
@@ -154,34 +154,22 @@ def build_parser():
     summary = commands.add_parser("summary").add_subparsers(dest="operation", required=True, parser_class=Parser)
     _store(summary.add_parser("rebuild"))
     catalogue = commands.add_parser(
-        "catalogue", help="separate combined monthly catalogue store"
+        "catalogue", help="published serving catalogue over the standalone store"
     ).add_subparsers(dest="operation", required=True, parser_class=Parser)
-    for name in ("update", "build", "resume", "audit", "activate", "pin-universe", "read", "export"):
+    for name in ("bootstrap", "rebuild", "update", "status", "list", "search", "resolve", "read", "export"):
         p = catalogue.add_parser(name)
-        if name in {"read", "export"}:
-            p.add_argument("--repository-root", type=Path, default=REPOSITORY)
-        else:
-            _store(
-                p,
-                REPOSITORY
-                / (
-                    "data_clean_room"
-                    if name in {"build", "resume", "audit", "activate", "pin-universe"}
-                    else "data_vtest"
-                ),
-            )
-        if name in {"update", "build"}:
-            if name == "build":
-                group = p.add_mutually_exclusive_group(required=True)
-                group.add_argument("--symbols-file", type=Path)
-                group.add_argument("--recovery-universe", action="store_true")
-            else:
-                _selection(p, required=True)
-            _dates(p, start=name == "update", pricing=True)
-        if name == "pin-universe":
-            p.add_argument("--symbols-file", type=Path, default=DEFAULT_REGISTRY)
+        _store(p)
+        if name in {"bootstrap", "rebuild", "update"}:
+            p.add_argument("--plan", action="store_true", help="offline scope preview; no writes or recovery")
+        if name == "search":
+            p.add_argument("query")
+            p.add_argument("--limit", type=bounded_integer(1, 100000))
+        if name == "resolve":
+            p.add_argument("--symbol", required=True)
+            p.add_argument("--on")
         if name in {"read", "export"}:
             _dates(p)
+            p.add_argument("--wait", action="store_true")
             if name == "read":
                 p.add_argument("--public-id", required=True)
                 p.add_argument("--adjustment", choices=ADJUSTMENTS, default="raw")
@@ -195,6 +183,22 @@ def build_parser():
         p.add_argument("--repository-root", type=Path, default=REPOSITORY)
         if name != "audit":
             p.add_argument("--symbol", required=True)
+    combined = legacy.add_parser("catalogue", help="retained combined monthly workflow")
+    combined.set_defaults(command="legacy-catalogue")
+    combined_commands = combined.add_subparsers(dest="operation", required=True, parser_class=Parser)
+    for name in ("update", "build", "resume", "audit", "activate", "pin-universe"):
+        p = combined_commands.add_parser(name)
+        _store(p, REPOSITORY / ("data_vtest" if name == "update" else "data_clean_room"))
+        if name in {"update", "build"}:
+            if name == "build":
+                group = p.add_mutually_exclusive_group(required=True)
+                group.add_argument("--symbols-file", type=Path)
+                group.add_argument("--recovery-universe", action="store_true")
+            else:
+                _selection(p, required=True)
+            _dates(p, start=name == "update", pricing=True)
+        if name == "pin-universe":
+            p.add_argument("--symbols-file", type=Path, default=DEFAULT_REGISTRY)
     return parser
 
 
@@ -321,7 +325,20 @@ def dispatch(args):
             for symbol in [item["symbol"], *item.get("processed", []), *item.get("affected", [])]
         }
         pending = sorted(s for s in policy.pending_work if policy.graph.closure({s}) & selected)
-        return {**result, "pending_work": pending, "complete": not result["failed"] and not pending}
+        complete = not result["failed"] and not pending
+        from libs.alpaca_serving_catalogue.producer import maintain
+        from libs.alpaca_serving_catalogue.storage import path as catalogue_path
+
+        if catalogue_path(Path(args.store)).exists():
+            serving = maintain(args.store, symbols=selected)
+            return {
+                **result,
+                "serving_catalogue": serving,
+                "pending_work": pending,
+                "failed": result["failed"] + serving["failed"],
+                "complete": complete and serving["complete"],
+            }
+        return {**result, "pending_work": pending, "complete": complete}
     if command == "update":
         end = _pricing_end(args)
         pricing, identity = clients()
@@ -402,6 +419,8 @@ def dispatch(args):
             return result
     if command == "catalogue":
         return catalogue_command(args)
+    if command == "legacy-catalogue":
+        return legacy_catalogue_command(args)
     if command == "legacy":
         args.ticker = getattr(args, "symbol", None)
         if operation == "audit":
@@ -421,7 +440,34 @@ def dispatch(args):
 
 
 def catalogue_command(args):
-    from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
+    if args.operation in {"read", "export"}:
+        from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
+
+        run_end_of_day_reader_command(args, store=args.store)
+        return 0
+    if args.operation in {"bootstrap", "rebuild", "update", "status"}:
+        from libs.alpaca_serving_catalogue.producer import maintain, preview, status
+
+        if args.operation == "status":
+            result = status(args.store)
+            return {**result, "complete": result["coverage_complete"] and not result["pending_symbols"]}
+        options = {"bootstrap": args.operation == "bootstrap", "rebuild": args.operation == "rebuild"}
+        if args.plan:
+            return preview(args.store, **options)
+        return maintain(args.store, **options, progress=progress_reporter())
+    from alpaca_end_of_day import DataLibrary
+
+    data = DataLibrary(store=args.store)
+    if args.operation == "search":
+        values = data.search_securities(args.query, limit=args.limit)
+    elif args.operation == "resolve":
+        values = data.resolve_ticker(args.symbol, on=args.on)
+    else:
+        values = data.list_securities()
+    return {"generation": data.catalog_generation(), "matches": [value.to_dict() for value in values]}
+
+
+def legacy_catalogue_command(args):
     from libs.alpaca_end_of_day_clean_room.generation import (
         UNIVERSE_SNAPSHOT,
         activate_clean_room_generation,
@@ -433,9 +479,6 @@ def catalogue_command(args):
     )
 
     operation = args.operation
-    if operation in {"read", "export"}:
-        run_end_of_day_reader_command(args, repository_root=args.repository_root)
-        return 0
     if operation == "pin-universe":
         return pin_universe(args.store, args.symbols_file)
     if operation == "resume":

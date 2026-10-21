@@ -52,7 +52,9 @@ class CanonicalCliTests(unittest.TestCase):
 
     def test_month_end_conversion_reaches_combined_producer_as_utc_boundary(self):
         self.assertEqual(end_exclusive("2026-09-30"), "2026-10-01")
-        args = build_parser().parse_args(["catalogue", "update", "--symbol", "AAA", "--through", "2026-09-30"])
+        args = build_parser().parse_args(
+            ["legacy", "catalogue", "update", "--symbol", "AAA", "--through", "2026-09-30"]
+        )
         with patch("libs.alpaca_end_of_day_v6.pipeline.run_v6_pipeline", return_value={}) as run:
             dispatch(args)
         self.assertEqual(run.call_args.kwargs["request_end_timestamp"], "2026-10-01T00:00:00Z")

@@ -182,6 +182,7 @@ class WorkPolicy:
                 "dependencies": set(self.index["symbols"].get(s, {}).get("dependencies", []))
                 | self.required_groups.get(s, set()),
                 "asset_ids": self.index["symbols"].get(s, {}).get("asset_ids", []),
+                "group_members": self.index["symbols"].get(s, {}).get("group_members", []),
             }
             for s in symbols
         }

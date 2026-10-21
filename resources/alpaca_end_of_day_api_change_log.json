@@ -68,5 +68,15 @@
     "modifications": [
       "Trust standalone published paths and digest-selected cached content from first consumption without file metadata probes. Select current source receipts after locks are reacquired, preserving changed-generation, pending-publication and missing-input failures without re-auditing payloads."
     ]
+  },
+  {
+    "modifications": [
+      "Replace DataLibrary repository-root/v6 access with explicit standalone store semantics, exact decimal volumes, observed metadata and generation-bound serving catalogue reads and atomic exports through the shared history engine."
+    ]
+  },
+  {
+    "modifications": [
+      "Read bounded source-presence evidence across all selected adjustment views, including unresolved observations and shared physical aliases, for the serving producer."
+    ]
   }
 ]

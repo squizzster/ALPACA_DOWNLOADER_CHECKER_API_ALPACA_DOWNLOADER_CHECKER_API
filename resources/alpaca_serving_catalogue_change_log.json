@@ -1,0 +1,22 @@
+[
+  {
+    "modifications": [
+      "Publish an offline, incremental serving catalogue over completed standalone groups with exact eligibility, observed metadata, generation-bound public snapshots, durable recovery and explicit bootstrap."
+    ]
+  },
+  {
+    "modifications": [
+      "Persist completed history-validation prefixes and source-coverage order; consume pricing change spans and published ownership to validate only append suffixes and continuity seams, with affected-history invalidation for replacement or changed selection."
+    ]
+  },
+  {
+    "modifications": [
+      "Scope maintenance to published complete groups and previous contributions; preserve independent identity checks across unrelated changes, load only selected checkpoints through separate compact controls, and trust upstream numeric finiteness."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind reused eligibility facts to all validated adjustment coverage and retain exact raw continuity boundaries; reject rename gaps with observations in any selected published view. Changed coverage reevaluates the affected identity while independent completed checks remain reusable."
+    ]
+  }
+]

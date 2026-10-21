@@ -6,7 +6,11 @@ no acquisition, repair or whole-store authentication. Neither substitutes anothe
 | Reader | Input | Scope |
 |---|---|---|
 | `StandaloneReader(store)` | Standalone pricing/lineage | Resolved histories within a source group. |
-| `DataLibrary(path=None)` | Repository root containing `data_vtest/`; default package parent | Published online identities only. |
+| `DataLibrary(store=...)` | Current pricing/lineage store; default `data_pricing/` in the repository | Published online identities only. |
+
+The constructor is keyword-only for store selection. Old positional repository roots and `path=` raise
+an explicit migration error. [Bootstrap the serving catalogue](operations.md#serving-catalogue-maintenance)
+before opening the library. Missing or incompatible boundaries never trigger initialization or discovery.
 
 ## Common semantics
 
@@ -79,7 +83,7 @@ Compound names are single arguments; `raw,all` is invalid selection syntax. Mult
 ```python
 from alpaca_end_of_day import DataLibrary
 
-data = DataLibrary()
+data = DataLibrary(store="data_pricing")
 for security in data.search_securities("DELL", limit=5):
     history = data.get_history(security.public_id, "all")
     print(security.public_id, len(history.bars))
@@ -90,21 +94,39 @@ for security in data.search_securities("DELL", limit=5):
 `search_securities(query, limit=None)`: public ticker/name/identifier search.
 `resolve_ticker(ticker, on=None)`: every exact dated match, optionally covering one date.
 
-Metadata: public ID, tickers, names, CUSIPs, external identifiers, exchanges, asset classes, coverage,
-adjustments. Provider IDs, internal status and diagnostic paths stay hidden.
-`get_history(public_id, adjustment="raw", start=None, end=None)`: typed bars; OHLC/VWAP `Decimal`,
-volume/trade count integers. `to_dict()` preserves exact values as JSON.
+Metadata: public ID, tickers, known names/CUSIPs/exchanges/classes, external identifiers when published,
+coverage and adjustments. `observations` distinguish recorded observation times from supported effective
+intervals; missing dates remain `None`. `ticker_ownership_intervals` retain published dated label evidence,
+including unknown endpoints. Resolution ranges describe labels on stored histories. Undated names remain
+searchable without claiming they applied historically. Current upstream observations do not publish FIGIs;
+none are fabricated. Provider IDs, internal status and diagnostic paths stay hidden.
 
-Instances retain their opened generation. Publication change → history read raises `CatalogChangedError`;
-open a new instance. `PublicIdUnavailableError` never distinguishes unknown from internally offline IDs.
-Both inherit `DataLibraryError`; malformed arguments raise `ValueError`.
+Coverage is approved history held by this store: first/last session, stored session count and any explained
+missing sessions. It does not establish lifetime completeness or freshness through today. All eight views
+must qualify on the same session set; inactivity or missing descriptive metadata alone does not disqualify.
+[Exact serving policy](technical-contracts.md#serving-catalogue).
+
+`get_history(public_id, adjustment="raw", start=None, end=None)`: typed bars; OHLC/VWAP `Decimal`,
+volume `Decimal`, trade count integer. `to_dict()` serializes decimals as exact strings.
+`get_histories(public_id, adjustments=...)` returns adjustment → typed `History`, selecting and locking the
+group once; default all eight views. `wait` and `cache_bytes` have the standalone reader's meanings.
+
+Instances retain their opened catalogue generation without a long-lived SQLite transaction. A changed
+selected serving decision, lineage or pricing generation raises `CatalogChangedError`; finish maintenance
+and open a new instance. Unrelated group updates leave compatible reads available. Catalogues do not retain
+old pricing snapshots. `PublicIdUnavailableError` never distinguishes unknown from internally offline IDs.
+Both inherit `DataLibraryError`; malformed arguments raise `ValueError`. Busy groups raise `ReaderBusyError`.
 
 `write_flat_online_csv(destination, start=None, end=None)`: dated identity fields, separate raw/fully
 adjusted columns, ordered date → public ID. Mismatched sessions, duplicate rows or ambiguous dated metadata
-fail. Paths use disk spool + atomic replacement; streams lack that replacement guarantee.
+fail. Undated descriptive observations produce empty historical cells, not guessed values. Paths use disk
+spool + atomic replacement; streams lack that replacement guarantee. Exports declare the opened catalogue
+snapshot and match each consumed group's generations. They do not promise every group is still the latest
+at file installation. Destinations must be outside the source store.
 
 ```bash
-./alpaca-eod catalogue export --output ./online.csv
+./alpaca-eod catalogue search --store data_pricing DELL
+./alpaca-eod catalogue export --store data_pricing --output ./online.csv
 ```
 
 Invocation/exit statuses: command `--help`, [Operations](operations.md#read-and-export).

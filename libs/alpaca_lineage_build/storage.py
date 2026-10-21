@@ -154,26 +154,7 @@ def reader_snapshot(
     def selection():
         # New lock order must not overlap an executable using the old order.
         # The worker upgrades this header under the old shared/exclusive gate.
-        if _index_version(root) not in {
-            None,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21,
-            VERSION,
-        }:
+        if _index_version(root) not in {None, *range(6, VERSION + 1)}:
             raise LineageError("lineage lock protocol needs upgrade; run lineage first")
         if path_at(root, ".pending.json").exists():
             raise LineageError("lineage publication incomplete; resume lineage first")
@@ -341,6 +322,11 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False) -> di
                 from .projection import PROJECTION_VERSION
 
                 count = connection.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+                from libs.alpaca_serving_catalogue.work import record_publication
+
+                # The serving obligation commits with the lineage selector, before
+                # upstream acknowledgement. Recovery can replay this transaction.
+                record_publication(connection, entries, empty=count == 0)
                 connection.execute(
                     "INSERT OR IGNORE INTO projection_state VALUES (1, ?, 0, ?)",
                     (PROJECTION_VERSION, int(count == 0)),
@@ -551,6 +537,7 @@ def publish(
             "source_sha256": receipt["source_sha256"],
             "dependencies": receipt["dependencies"],
             "asset_ids": receipt["asset_ids"],
+            "group_members": sorted(set(receipt["input_sources"]) | set(unavailable_pricing(receipt))),
             "versions": receipt["versions"],
             "projection": project_receipt(receipt),
         }

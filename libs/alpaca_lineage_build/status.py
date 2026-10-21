@@ -89,6 +89,11 @@ def inspect_status(store):
         }
 
     universe = read("universe", universe_status)
+    from libs.alpaca_serving_catalogue.producer import status as serving_status
+
+    serving = read("serving_catalogue", lambda: serving_status(store))
+    if serving is not None and not serving["coverage_complete"]:
+        result["blockers"].append("serving catalogue incomplete; run alpaca-eod catalogue bootstrap")
     selected = set(scheduling["checks"] if scheduling else ())
     if summary:
         selected.update(item["symbol"] for item in summary["pending_inputs"])
@@ -111,5 +116,6 @@ def inspect_status(store):
         or universe["work"]
         or universe["registration_pending"]
         or journals["pending_symbols"]
+        or serving["pending_symbols"]
     )
     return result

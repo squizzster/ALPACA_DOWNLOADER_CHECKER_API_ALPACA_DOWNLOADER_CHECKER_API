@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path, PurePosixPath
 
+from libs.alpaca_end_of_day_reader.errors import EndOfDayReaderError
 from libs.alpaca_end_of_day_reader.history import _resolve_bar_candidates
 from libs.alpaca_lineage_build.acquisition import check_unavailable_pricing, unavailable_pricing
 from libs.alpaca_lineage_build.contract import (
@@ -21,6 +22,7 @@ from libs.alpaca_lineage_build.contract import (
 from libs.alpaca_lineage_build.storage import (
     check_store,
     publication_lock,
+    read_boundaries,
     read_index,
     reader_snapshot,
     select_inputs,
@@ -51,6 +53,14 @@ class AmbiguousTickerError(StandaloneReaderError):
     """The ticker has multiple published identities; select a public ID."""
 
 
+class UnservableHistoryError(StandaloneReaderError):
+    """Completed assignments select conflicting or duplicate daily observations."""
+
+
+class HistoryPrefixChanged(StandaloneReaderError):
+    """An extension changes earlier source selection; select the affected history."""
+
+
 def _date(value, name):
     if value is None or type(value) is date:
         return value
@@ -76,13 +86,13 @@ def _symbol(value):
     return symbol_label(value)
 
 
-def _assignments(boundaries, receipt):
+def _assignments(boundaries, receipt, *, include_unresolved=False):
     for kind in ("completed_years", "current_year", "current_month"):
         for entry in boundaries[kind]["adjustments"]:
             for segment in entry["segments"]:
                 if kind == "current_year" and segment["from"][:7] >= receipt["anchor_month"]:
                     continue
-                if segment["branch"] == "correlated":
+                if include_unresolved or segment["branch"] == "correlated":
                     yield entry["adjustment"], kind, segment
 
 
@@ -226,7 +236,11 @@ def _rows(root, source, kind, adjustment, cache, retained=None):
     return cache[payload]
 
 
-def _history(assignments, sources, store, public_id, adjustment, cache, retained=None):
+def _history(
+    assignments, sources, store, public_id, adjustment, cache, retained=None, *, prefix=None, coverage_out=None
+):
+    from ._history_coverage import SelectedCoverage, extend_coverage, preserves_selection
+
     selected = []
     for symbol, items in assignments.items():
         by_boundary = defaultdict(list)
@@ -234,6 +248,16 @@ def _history(assignments, sources, store, public_id, adjustment, cache, retained
             if view == adjustment and _identity(segment) == public_id:
                 by_boundary[kind].append(segment)
         for kind, segments in by_boundary.items():
+            if prefix is not None:
+                skip = prefix["rows"].get(symbol, {}).get(adjustment, 0)
+                offset = prefix["offsets"][symbol][adjustment][kind]
+                segments = [
+                    {**segment, "row_start": max(segment["row_start"], skip - offset + 1)}
+                    for segment in segments
+                    if offset + segment["row_end"] > skip
+                ]
+                if not segments:
+                    continue
             root = _selected_path(cache, store, f"end_of_day/pricing/{symbol}")
             rows = _rows(root, sources[symbol], kind, adjustment, cache, retained)
             for segment in segments:
@@ -250,18 +274,33 @@ def _history(assignments, sources, store, public_id, adjustment, cache, retained
         adjustment != "raw",
         tuple((symbol, kind, id(rows), start, end, label) for symbol, kind, rows, start, end, label in selected),
     )
-    if key in cache:
+    if key in cache and prefix is None:
+        if coverage_out is not None:
+            coverage_out.update(cache[("coverage_order", key)])
         # Public view results remain independently mutable.
         return [{**bar, "tickers": list(bar["tickers"])} for bar in cache[key]]
     observations, overlaps, coverage = {}, {}, defaultdict(set)
     for symbol, _, rows, start, end, label in selected:
         for row in rows[start - 1 : end]:
+            if prefix is not None:
+                session_key = "session", row[0]
+                if session_key not in cache:
+                    cache[session_key] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                if cache[session_key] <= prefix["last_session"]:
+                    raise HistoryPrefixChanged("new assigned observations overlap the approved history")
             coverage[symbol].add(row[0])
             observation = row, symbol, label
             if row[0] in observations:
                 overlaps.setdefault(row[0], [observations[row[0]]]).append(observation)
             else:
                 observations[row[0]] = observation
+    old_order = prefix["coverage"][adjustment] if prefix is not None else None
+    order = extend_coverage(coverage, old_order)
+    if prefix is not None and adjustment != "raw" and not preserves_selection(old_order, order):
+        raise HistoryPrefixChanged("extended coverage changes historical source selection")
+    if coverage_out is not None:
+        coverage_out.update(order)
+    cache[("coverage_order", key)] = order
     # Reuse the established history-source policy, not a new identity rule:
     # adjusted overlaps prefer strictly broader correlated coverage, then the
     # historical ticker; raw overlaps use the historical ticker. Unsettled
@@ -283,11 +322,14 @@ def _history(assignments, sources, store, public_id, adjustment, cache, retained
             ]
             for instant, items in overlaps.items()
         }
-        bars, _ = _resolve_bar_candidates(
-            candidates,
-            {symbol: frozenset(values) for symbol, values in coverage.items()},
-            allow_strict_superset_selection=adjustment != "raw",
-        )
+        try:
+            bars, _ = _resolve_bar_candidates(
+                candidates,
+                {symbol: SelectedCoverage(order, symbol) for symbol in coverage},
+                allow_strict_superset_selection=adjustment != "raw",
+            )
+        except EndOfDayReaderError as error:
+            raise UnservableHistoryError(str(error)) from error
         resolved = {bar["timestamp"]: bar for bar in bars}
 
         def selected_rows():
@@ -313,7 +355,7 @@ def _history(assignments, sources, store, public_id, adjustment, cache, retained
             session_reuses += 1
         session = cache[session_key]
         if session in sessions:
-            raise StandaloneReaderError("multiple observations for one daily session")
+            raise UnservableHistoryError("multiple observations for one daily session")
         sessions.add(session)
         record = {"session": session, "tickers": tickers}
         record.update(zip(COLUMNS, row))
@@ -323,15 +365,45 @@ def _history(assignments, sources, store, public_id, adjustment, cache, retained
         # Raw/adjusted source policies are equivalent when there is no choice.
         # Exact payload/range/label aliases can then share this assembly too.
         cache[(key[0], key[1], not key[2], key[3])] = result
+        cache[("coverage_order", (key[0], key[1], not key[2], key[3]))] = order
     if retained is not None:
         retained.ledger.record("session_reuses", session_reuses)
     return result
 
 
-def _read_views(assignments, sources, store, public_id, adjustments, start, end, retained=None):
+def _read_views(
+    assignments,
+    sources,
+    store,
+    public_id,
+    adjustments,
+    start,
+    end,
+    retained=None,
+    *,
+    prefix=None,
+    coverage_out=None,
+):
     views, cache = {}, {}
     for adjustment in adjustments:
-        bars = _history(assignments, sources, store, public_id, adjustment, cache, retained)
+        selected_coverage = {} if coverage_out is not None else None
+        incremental = (
+            {"prefix": prefix, "coverage_out": selected_coverage}
+            if prefix is not None or coverage_out is not None
+            else {}
+        )
+        bars = _history(
+            assignments,
+            sources,
+            store,
+            public_id,
+            adjustment,
+            cache,
+            retained,
+            **incremental,
+        )
+        if coverage_out is not None:
+            coverage_out[adjustment] = selected_coverage
         # Bounds follow source selection, never change the winning source.
         bars = [
             bar
@@ -367,7 +439,16 @@ class StandaloneReader:
         return self._cache.info()
 
     @contextmanager
-    def _snapshot(self, symbol, *, include_assignments=True, reuse_documents=False):
+    def _snapshot(
+        self,
+        symbol,
+        *,
+        include_assignments=True,
+        reuse_documents=False,
+        expected=None,
+        include_unresolved=False,
+        before_payloads=None,
+    ):
         try:
             loader = self._cache.document if self._cache.maximum_bytes else None
             if reuse_documents:
@@ -385,19 +466,32 @@ class StandaloneReader:
                         self._cache.ledger.record("selected_document_reuses")
                     return documents[key]
 
+            def select(root):
+                if expected is None:
+                    return select_inputs(root, symbol, selected_loader=loader)
+                selected = {name: read_index(root, name)["symbols"].get(name) for name in expected["lineage"]}
+                if any(
+                    (entry["sha256"] if entry is not None else None) != expected["lineage"][name]
+                    for name, entry in selected.items()
+                ):
+                    raise StandaloneReaderError("selected lineage generation changed")
+                return selected
+
             with reader_snapshot(
                 self.store,
-                lambda root: select_inputs(root, symbol, selected_loader=loader),
+                select,
                 wait=self.wait,
                 selected_loader=loader,
-                include_boundaries=include_assignments,
+                include_boundaries=False,
             ) as snap:
                 seed = snap["receipts"][symbol]
-                expected = seed["input_sources"]
+                selected_sources = seed["input_sources"]
+                if expected is not None and selected_sources != expected["pricing"]:
+                    raise StandaloneReaderError("selected pricing generations changed")
                 absent = unavailable_pricing(seed)
                 check_unavailable_pricing(self.store, absent, snap["locked"])
-                sources, assignments, generations = {}, {}, {}
-                for name in sorted(expected):
+                sources, assignments, generations, all_assignments = {}, {}, {}, {}
+                for name in sorted(selected_sources):
                     pricing = published_path(self.store, f"end_of_day/pricing/{name}")
                     if name not in snap["locked"] or published_path(pricing, ".pending.json").exists():
                         raise StandaloneReaderError("pricing publication incomplete; resume downloader first")
@@ -405,26 +499,36 @@ class StandaloneReader:
                     if (
                         source is None
                         or read_update(pricing) is not None
-                        or document_digest(source) != expected[name]
+                        or document_digest(source) != selected_sources[name]
                     ):
                         raise StandaloneReaderError("lineage awaits changed pricing; run lineage first")
                     receipt = snap["receipts"][name]
                     if receipt is None or not reusable_versions(receipt["versions"]):
                         raise StandaloneReaderError("lineage is missing or uses older rules; run lineage first")
                     if (
-                        receipt["input_sources"] != expected
+                        receipt["input_sources"] != selected_sources
                         or unavailable_pricing(receipt) != absent
-                        or receipt["source_sha256"] != expected[name]
+                        or receipt["source_sha256"] != selected_sources[name]
                         or receipt["pricing_boundaries"] != source["boundaries"]
                         or receipt["anchor_month"] != source["anchor_month"]
                     ):
                         raise StandaloneReaderError("lineage group selects different input generations")
                     sources[name] = source
-                    if include_assignments:
-                        assignments[name] = tuple(_assignments(snap["boundaries"][name], receipt))
                     generations[name] = snap["entries"][name]["sha256"]
-                receipts = {name: snap["receipts"][name] for name in expected}
-                yield assignments, sources, document_digest(generations), receipts, generations
+                receipts = {name: snap["receipts"][name] for name in selected_sources}
+                if before_payloads is not None:
+                    before_payloads()
+                if include_assignments:
+                    root = self.store / "end_of_day/lineage"
+                    for name, receipt in receipts.items():
+                        boundaries = read_boundaries(root, receipt, selected_loader=loader)
+                        assignments[name] = tuple(_assignments(boundaries, receipt))
+                        if include_unresolved:
+                            all_assignments[name] = tuple(
+                                _assignments(boundaries, receipt, include_unresolved=True)
+                            )
+                values = assignments, sources, document_digest(generations), receipts, generations
+                yield (*values, all_assignments) if include_unresolved else values
         except LineageBusyError as error:
             raise ReaderBusyError(str(error)) from error
         except StandaloneReaderError:
@@ -520,14 +624,29 @@ class StandaloneReader:
         reads. Closing releases all working data and pricing locks; its small
         freshness token can still check_current() before downstream publication.
         """
+        with self._open_group(symbol) as group:
+            yield group
+
+    @contextmanager
+    def _open_group(
+        self, symbol, *, expected=None, include_unresolved=False, shared_cache=False, before_payloads=None
+    ):
+        """Shared locked consumption for inspection, serving production and reads."""
         from ._standalone_group import GroupSnapshot
 
         symbol = _symbol(symbol)
-        manager = self._snapshot(symbol, reuse_documents=True)
+        options = {"reuse_documents": True}
+        if expected is not None:
+            options["expected"] = expected
+        if include_unresolved:
+            options["include_unresolved"] = True
+        if before_payloads is not None:
+            options["before_payloads"] = before_payloads
+        manager = self._snapshot(symbol, **options)
         snapshot = manager.__enter__()
         group = None
         try:
-            group = GroupSnapshot(self, symbol, *snapshot)
+            group = GroupSnapshot(self, symbol, *snapshot, shared_cache=shared_cache)
             yield group
         finally:
             if group is not None:

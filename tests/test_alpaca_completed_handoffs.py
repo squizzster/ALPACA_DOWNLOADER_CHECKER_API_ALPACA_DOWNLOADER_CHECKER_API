@@ -25,6 +25,7 @@ from libs.alpaca_pricing_download import storage as pricing_storage
 from libs.alpaca_pricing_download.acquire import acquire_selected
 from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.update_checks import queue_check
+from libs.alpaca_serving_catalogue import storage as serving_storage
 
 
 class CompletedDecisionTests(unittest.TestCase):
@@ -245,6 +246,7 @@ class AcceptedOperationTests(unittest.TestCase):
             with (
                 patch.object(storage, "read_index", wraps=storage.read_index) as indexes,
                 patch.object(check_summary, "read_snapshot", wraps=check_summary.read_snapshot) as summaries,
+                patch.object(serving_storage, "controls", wraps=serving_storage.controls) as catalogues,
                 patch.object(
                     lineage_context, "validate_version", wraps=lineage_context.validate_version
                 ) as lineage_versions,
@@ -258,6 +260,7 @@ class AcceptedOperationTests(unittest.TestCase):
             self.assertTrue(result["complete"], result)
             self.assertEqual(indexes.call_count, 1)
             self.assertEqual(summaries.call_count, 1)
+            self.assertEqual(catalogues.call_count, 1)
             self.assertEqual(lineage_versions.call_count, 1)
             self.assertEqual(pricing_versions.call_count, 1)
             self.assertEqual(len(case.pages), 1)

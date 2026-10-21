@@ -23,10 +23,11 @@ def read_history(
     *,
     start: str | None = None,
     end: str | None = None,
-    repository_root: Path | str | None = None,
+    store: Path | str | None = None,
+    wait: bool = False,
 ) -> History:
     """Read one history through the same public library used by applications."""
-    return DataLibrary(repository_root).get_history(
+    return DataLibrary(store=store, wait=wait).get_history(
         public_id,
         adjustment,
         start=start,
@@ -37,11 +38,11 @@ def read_history(
 def run_end_of_day_reader_command(
     cli_arguments: argparse.Namespace,
     *,
-    repository_root: Path | str | None = None,
+    store: Path | str | None = None,
     output_stream: TextIO | None = None,
 ) -> History | FlatCsvExport:
     if cli_arguments.operation == "export":
-        data = DataLibrary(repository_root)
+        data = DataLibrary(store=store, wait=cli_arguments.wait)
         destination = (
             (sys.stdout if output_stream is None else output_stream)
             if cli_arguments.output == "-"
@@ -57,7 +58,8 @@ def run_end_of_day_reader_command(
         cli_arguments.adjustment,
         start=cli_arguments.start,
         end=cli_arguments.end,
-        repository_root=repository_root,
+        store=store,
+        wait=cli_arguments.wait,
     )
     command_output = sys.stdout if output_stream is None else output_stream
     json.dump(history.to_dict(), command_output, indent=2, allow_nan=False)

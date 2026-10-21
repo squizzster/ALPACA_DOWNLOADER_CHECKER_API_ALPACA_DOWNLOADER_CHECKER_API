@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from sqlite_crash_fixture import leave_hot_journal
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
@@ -78,6 +79,9 @@ class UniverseUpdateTests(unittest.TestCase):
         )
         rebuild(self.store)
         rebuild_universe(self.store)
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        self.assertTrue(maintain(self.store, bootstrap=True)["complete"])
         self.records = [
             asset("AAA"),
             asset("NEW"),
@@ -154,6 +158,15 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
 
+    def test_daily_update_recovers_catalogue_and_work_transactions_before_selection(self):
+        from libs.alpaca_serving_catalogue.storage import path as catalogue_path
+
+        leave_hot_journal(catalogue_path(self.store), "DELETE FROM groups")
+        leave_hot_journal(self.store / "end_of_day/lineage/index.sqlite3", "DELETE FROM serving_work")
+        result = self.update()
+        self.assertTrue(result["complete"], result)
+        self.assertTrue(result["stages"]["serving_catalogue"]["complete"])
+
     def test_resume_compares_identity_facts_from_full_and_compact_exact_lookups(self):
         class Interrupted(BaseException):
             pass
@@ -197,6 +210,30 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(set(report["work"]), {"NEW", "EMPTY"})
         self.assertEqual(before, snapshot(self.directory))
         self.assertFalse(self.pages)
+
+    def test_preview_blocks_incomplete_catalogue_even_after_all_work_is_acknowledged(self):
+        from libs.alpaca_serving_catalogue import storage as catalogue_storage
+        from libs.alpaca_serving_catalogue.producer import maintain, status
+
+        with (
+            patch.object(catalogue_storage, "finish_bootstrap", side_effect=RuntimeError("interrupted finish")),
+            self.assertRaisesRegex(RuntimeError, "interrupted finish"),
+        ):
+            maintain(self.store, rebuild=True)
+        state = status(self.store)
+        self.assertFalse(state["coverage_complete"])
+        self.assertEqual(state["pending_symbols"], [])
+        before = snapshot(self.store)
+        report = plan_update(self.store, "2026-10-17", identity_client=self.identity, registry=self.registry)
+        self.assertTrue(any("serving catalogue incomplete" in value for value in report["blockers"]), report)
+        self.assertEqual(snapshot(self.store), before)
+        requests = self.identity.request_count, len(self.pages)
+        with self.assertRaisesRegex(RuntimeError, "serving catalogue incomplete"):
+            self.update()
+        self.assertEqual((self.identity.request_count, len(self.pages)), requests)
+        self.assertTrue(maintain(self.store, bootstrap=True)["complete"])
+        report = plan_update(self.store, "2026-10-17", identity_client=self.identity, registry=self.registry)
+        self.assertEqual(report["blockers"], [])
 
     def test_publication_before_acknowledgement_does_not_repeat_acquisition(self):
         original = universe_state.record_outcome

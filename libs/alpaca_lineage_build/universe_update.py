@@ -86,10 +86,18 @@ def run_update(
     with universe_state.update_lock(store):
         # Fail before network or any recovery if durable state was never initialized.
         universe_state.read_state(store)
+        from libs.alpaca_serving_catalogue import work as serving_work
+
+        # Daily completion includes serving publication. Adoption is explicit and
+        # offline; never silently bootstrap from an ordinary network update.
+        context.select_serving(recover=True)
         from .projection import require_complete
 
         root = store / "end_of_day/lineage"
-        with storage.publication_lock(root):
+        # Recover SQLite's own interrupted transaction before accepting compact
+        # selectors. No payload repair or catalogue bootstrap occurs here.
+        with storage.writer_lock(store), storage.publication_lock(root):
+            serving_work.read(store)
             context.index = storage.read_index(root)
             require_complete(context.index)
         if not read_checks(store)["complete"]:
@@ -348,8 +356,17 @@ def run_update(
         result["failed"] = (
             len(policy.failures) + sum(group["failed"] for group in lineage_results) + maintained["failed"]
         )
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        try:
+            serving = maintain(store, progress=progress, context=context)
+        except (RuntimeError, OSError, ValueError) as error:
+            serving = {"complete": False, "failed": 1, "error": str(error)}
+        result["stages"]["serving_catalogue"] = serving
+        result["failed"] += serving["failed"]
         result["complete"] = (
             maintained["complete"]
+            and serving["complete"]
             and not result["failed"]
             and not result["pending_work"]
             and not selection["deferred"]

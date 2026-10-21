@@ -369,20 +369,13 @@ class CleanRoomGenerationTests(unittest.TestCase):
                 online_count=7,
             )
 
-            class FakeLibrary:
-                def __init__(self, repository_root):
-                    self.repository_root = repository_root
+            from types import SimpleNamespace
 
-                def catalog_generation(self):
-                    return generation
-
-                def online_count(self):
-                    return 7
-
-            with patch(
-                "libs.alpaca_end_of_day_clean_room.generation.DataLibrary",
-                FakeLibrary,
-            ):
+            selected = SimpleNamespace(
+                receipt={"security_master_generation_sha256": generation},
+                identities_by_master_id={str(i): {"online": True} for i in range(7)},
+            )
+            with patch("libs.alpaca_end_of_day_clean_room.generation.load_catalogue", return_value=selected):
                 activation = activate_clean_room_generation(root, "data_clean_room")
 
             self.assertEqual("active", activation["status"])

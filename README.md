@@ -18,8 +18,12 @@ Read [Agent instructions](AGENTS.md) â†’ [Architecture](docs/ARCHITECTURE.md) â†
 ./alpaca-eod update
 ```
 
-Discovers active OTC/NYSE/NASDAQ/AMEX/TXSE labels, unions the recovery registry, maintains pricing/lineage
-in `data_pricing/`. `update --plan`: read-only scope preview.
+Discovers active OTC/NYSE/NASDAQ/AMEX/TXSE labels, unions the recovery registry, and maintains pricing,
+lineage and the serving catalogue in `data_pricing/`. `update --plan`: read-only scope preview.
+Existing stores require explicit [catalogue bootstrap](docs/operations.md#serving-catalogue-maintenance).
+
+Applications use `DataLibrary(store="data_pricing")` to search approved identities and read exact histories.
+`StandaloneReader` inspects resolved histories and evidence from the same store and history engine.
 
 Requires Python 3.11, Unix file locking, New York timezone data, Alpaca credentials and SIP access.
 Local readers require published data, no credentials/network. Runtime stores stay outside Git.

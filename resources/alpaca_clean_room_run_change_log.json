@@ -14,5 +14,10 @@
       "Capture universe labels, hashes and snapshot publication from one byte sequence under serialized run initialization and input pinning. Journal the captured input, target and original contracts before snapshot and manifest publication so interrupted creation resumes coherently despite registry growth or a different subsequent request.",
       "Retain compatible v1-v2 run identities and checkpoints without changing their provenance or relaxing producer contract checks."
     ]
+  },
+  {
+    "modifications": [
+      "Isolate retained combined-store audit and activation from the standalone public DataLibrary, using the combined owner reader directly."
+    ]
   }
 ]

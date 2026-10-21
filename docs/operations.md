@@ -20,7 +20,7 @@ Explicit inactivity is separate evidence. Empty range ≠ unavailable/failed acq
 uses SIP; OTC-labelled registration does not promise separate OTC-feed access.
 
 [Flow](ARCHITECTURE.md#daily-update): register → acquire missing history → reconcile changed identity/status
-→ check/correct/append → lineage. Ordinary summary advancement without pending inputs appends before
+→ check/correct/append → lineage → serving catalogue. Ordinary summary advancement without pending inputs appends before
 publishing new lineage; it does not republish the old span first. Metadata prefetch applies accepted
 complete-group refresh requirements, including full history. Published unresolved identity is a valid
 processing outcome, distinct from failure.
@@ -47,7 +47,7 @@ are explicit blockers. Execution observes/reselects independently; preview is no
 ## Inspect local progress
 
 `./alpaca-eod status --store data_pricing`: offline, read-only orchestration/registration work, scheduling,
-selected pricing journals, lineage publication and summary pending inputs. Missing/incomplete boundaries
+selected pricing journals, lineage publication, summary pending inputs and serving catalogue work. Missing/incomplete boundaries
 name blockers and reconstruction commands; inspection never reconstructs them.
 
 `ready_for_update`: required boundaries available. `processing_complete`: also no outstanding local
@@ -61,7 +61,7 @@ independent of last observed bars. [Observation contract](technical-contracts.md
 Before recovery-registry expansion, pin an existing interrupted clean-room build's original input:
 
 ```bash
-./alpaca-eod catalogue pin-universe --store data_clean_room --symbols-file resources/ticker.csv
+./alpaca-eod legacy catalogue pin-universe --store data_clean_room --symbols-file resources/ticker.csv
 ```
 
 Original labels/contracts must match; pinning cannot make incompatible versions resumable. Then adopt an
@@ -70,12 +70,15 @@ existing standalone store:
 ```bash
 ./alpaca-eod lineage migrate-index --store data_pricing
 ./alpaca-eod universe rebuild --store data_pricing
+./alpaca-eod catalogue bootstrap --store data_pricing --plan
+./alpaca-eod catalogue bootstrap --store data_pricing
 ./alpaca-eod status --store data_pricing
 ./alpaca-eod update --store data_pricing --through 2026-10-16 --plan
 ```
 
 `migrate-index`: bounded, resumable indexed-receipt reads; no pricing payloads/recalculation. Projects used
-lookup evidence; unknown historical times stay unknown. Schema upgrade alone does not establish coverage.
+lookup evidence and completed input-group membership; unknown historical times stay unknown. Schema upgrade
+alone does not establish coverage.
 `universe rebuild`: initialize durable registration/work state or retain a compatible queue; accepts an
 empty store before lineage/summary construction. Does not finish work or establish those boundaries.
 Reject incompatible state for explicit examination; never erase it silently.
@@ -89,6 +92,42 @@ After pending publications finish, explicitly rebuild missing/incomplete summary
 Offline indexed-status/validator reads, no pricing history/provider requests. Normal publications maintain
 membership/baselines thereafter. Missing scheduling coverage requires explicit `lineage update`, which may
 perform a bounded source-generation census; daily updating refuses silent reconstruction.
+
+## Serving catalogue maintenance
+
+```bash
+./alpaca-eod catalogue bootstrap --store data_pricing --plan
+./alpaca-eod catalogue bootstrap --store data_pricing
+./alpaca-eod catalogue status --store data_pricing
+./alpaca-eod catalogue update --store data_pricing --plan
+./alpaca-eod catalogue update --store data_pricing
+```
+
+Bootstrap is an explicit offline operation over the lineage index. Its preview reads compact boundaries
+only and reports selected symbols, membership-projection receipt reads for older indexes, selected receipt
+and payload bounds, derived publications, and zero provider requests, identity-rule execution or pricing
+writes. Establishing the new serving guarantees requires full selected histories, potentially reread per
+identity within the bounded cache. Narrow date filters cannot reduce this work: adjusted source selection
+can depend on broader coverage. No price redownload, copying or rewriting occurs.
+
+Run bootstrap once after lineage publication; rerun it after interruption to finish coverage. Daily update
+and its preview require a complete serving selector even when the outstanding work queue is empty, then
+maintain affected groups. Focused `lineage update/refresh` also maintains an
+existing serving catalogue for its selected complete groups, leaving unrelated obligations pending; it does
+not bootstrap one implicitly. Direct pricing writes need lineage next.
+`catalogue update` consumes outstanding obligations and reuses matching completed decisions. Ordinary
+append reuses approved prefixes and checks the new rows in all eight views plus their continuity seam.
+It decodes only payload containers containing the suffix; those containers can also hold older rows.
+Publication reports `reused_history_prefixes`, `full_history_evaluations` and `checked_bars` so broad
+recalculation is visible. Replacements and changed historical selection require affected-history work;
+independent identities retain completed checks within the selected group. Changed policy requires explicit
+`catalogue rebuild --plan` followed by `catalogue rebuild`, with the same store argument.
+Rebuild reevaluates indexed groups and preserves completed upstream identity decisions.
+
+Status distinguishes ineligible identities from unfinished work. After an interrupted catalogue commit,
+retry recognizes its selected decisions and acknowledges them without recalculating histories. If lineage
+or pricing publication itself is pending, resume that owner first. Ordinary application reads never run
+these maintenance operations. [Serving guarantees](technical-contracts.md#serving-catalogue).
 
 ## Recovery registry and retries
 
@@ -142,7 +181,7 @@ restoration over a live store.
 ./alpaca-eod lineage inspect --store data_pricing --symbol DELL
 ```
 
-Initialize work state once. New stores need lineage then `summary rebuild` before daily update;
+Initialize work state once. New stores need lineage, `summary rebuild` and `catalogue bootstrap` before daily update;
 `status` identifies missing boundaries. Acquisition requires explicit compatible/empty store and publishes
 pricing only; follow with lineage. Initial start: 2016 unless later `--from`; reject starts excluding held
 observations, before 2016 or after the resolved final session, before registration/work/requests.
@@ -171,6 +210,8 @@ append shortcut or redundant aliases.
 ```bash
 ./alpaca-eod resolve --store data_pricing --symbol DELL
 ./alpaca-eod read --store data_pricing --symbol DELL --adjustment raw all
+./alpaca-eod catalogue search --store data_pricing DELL
+./alpaca-eod catalogue export --store data_pricing --output ./online.csv
 ./alpaca-eod export bloodhound --output ./alpaca.parquet --symbol DELL
 ```
 
@@ -184,29 +225,28 @@ identities; diagnostics only stderr. `--replace` permits output replacement afte
 Snapshot changes, ID collisions, memory exhaustion or writer failures abort. Only persistent output:
 Parquet; no Bloodhound registration.
 
-## Separate catalogue workflow
+## Retained combined workflow
 
 Combined monthly store, separate from standalone:
 
 ```bash
-./alpaca-eod catalogue update --store data_vtest --symbol DELL --through 2026-10-16
-./alpaca-eod catalogue export --repository-root . --output ./online.csv
+./alpaca-eod legacy catalogue update --store data_vtest --symbol DELL --through 2026-10-16
 ```
 
 Resolve canonical symbols → full catalogue cascade. New symbols acquire from 2016; existing ones replace
 selected months. `--from` must start a month. Standalone cutoff/completion rules apply; reject cutoffs before
 retained coverage/observations. Interrupted publication retains canonical/submitted symbols and exact bounds.
 
-Catalogue read/export use `--repository-root` → `data_vtest/` via `DataLibrary`; no standalone/unactivated
-fallback. One producer holds the combined publication lock for the entire transaction.
+This workflow has no role in the current `DataLibrary` or serving catalogue. Its internal monthly reader
+supports clean-room audit and activation. One producer holds its publication lock for the entire transaction.
 
 Explicit fresh-universe workflow:
 
 ```bash
-./alpaca-eod catalogue build --recovery-universe --store data_clean_room --through 2026-10-16
-./alpaca-eod catalogue resume --store data_clean_room
-./alpaca-eod catalogue audit --store data_clean_room
-./alpaca-eod catalogue activate --store data_clean_room
+./alpaca-eod legacy catalogue build --recovery-universe --store data_clean_room --through 2026-10-16
+./alpaca-eod legacy catalogue resume --store data_clean_room
+./alpaca-eod legacy catalogue audit --store data_clean_room
+./alpaca-eod legacy catalogue activate --store data_clean_room
 ```
 
 Build starts empty, pins immutable input, consumes its own responses and mandates final audit. Resume:

@@ -12,18 +12,39 @@ from ._standalone_cache import GenerationCache
 from .standalone import (
     ReaderBusyError,
     StandaloneReaderError,
+    _date,
+    _group_evidence,
     _group_securities,
     _public_id,
     _read_views,
+    _rows,
 )
 
 
 class GroupSnapshot:
-    def __init__(self, reader, symbol, assignments, sources, generation, receipts, generations):
+    def __init__(
+        self,
+        reader,
+        symbol,
+        assignments,
+        sources,
+        generation,
+        receipts,
+        generations,
+        all_assignments=None,
+        *,
+        shared_cache=False,
+    ):
         self._reader, self._symbol = reader, symbol
         self._assignments, self._sources = assignments, sources
+        self._all_assignments = all_assignments
+        self._receipts, self._generations = receipts, generations
         self._unavailable = tuple(sorted(unavailable_pricing(receipts[symbol])))
-        self._cache = GenerationCache(reader._cache.maximum_bytes, ledger=reader._cache.ledger)
+        self._cache = (
+            reader._cache
+            if shared_cache
+            else GenerationCache(reader._cache.maximum_bytes, ledger=reader._cache.ledger)
+        )
         self._summary = {
             "generation": generation,
             "source_symbols": sorted(sources),
@@ -57,6 +78,131 @@ class GroupSnapshot:
 
     def close(self):
         self._assignments = self._sources = self._cache = None
+        self._all_assignments = self._receipts = None
+
+    @property
+    def references(self):
+        return {
+            "lineage": {
+                **{n: e["lineage"] for n, e in self._expected.items()},
+                **dict.fromkeys(self._unavailable),
+            },
+            "pricing": {n: e["pricing"] for n, e in self._expected.items()},
+        }
+
+    @property
+    def evidence(self):
+        if self._assignments is None:
+            raise StandaloneReaderError("group snapshot is closed")
+        return _group_evidence(
+            self._assignments, self._sources, self._receipts, self._generations, self._summary["generation"]
+        )
+
+    @property
+    def assignments(self):
+        if self._all_assignments is None:
+            raise StandaloneReaderError("full assignments were not selected")
+        return self._all_assignments
+
+    def serving_inputs(self):
+        """Compact published ownership runs, independent of physical rollover.
+
+        Row positions include unresolved observations. This describes assignments;
+        it neither recomputes ownership nor authenticates the selected prices.
+        """
+        inputs, offsets = {}, {}
+        for symbol, assignments in self.assignments.items():
+            views, view_offsets = {}, {}
+            for adjustment in ADJUSTMENTS:
+                runs, count, last, boundaries = [], 0, None, {}
+                for kind in ("completed_years", "current_year", "current_month"):
+                    boundaries[kind] = count
+                    for view, boundary, segment in assignments:
+                        if view != adjustment or boundary != kind:
+                            continue
+                        identity = segment.get("security_identity") or {}
+                        owner = (
+                            [identity.get("security_id"), segment.get("historical_symbol")]
+                            if segment["branch"] == "correlated"
+                            else [None, None]
+                        )
+                        size = segment["row_count"]
+                        if runs and runs[-1]["owner"] == owner:
+                            runs[-1]["rows"] += size
+                        else:
+                            runs.append({"owner": owner, "rows": size})
+                        count += size
+                        last = max(last or segment["to"], segment["to"])
+                views[adjustment] = {"rows": count, "last_session": last, "ownership": runs}
+                view_offsets[adjustment] = boundaries
+            inputs[symbol] = {"pricing_generation": self._expected[symbol]["pricing"], "views": views}
+            offsets[symbol] = view_offsets
+        return inputs, offsets
+
+    def preserves_pricing_prefix(self, symbol, previous, *, through=None):
+        source = self._sources[symbol]
+        if previous["pricing_generation"] == self._expected[symbol]["pricing"]:
+            return True
+        ancestor = next(
+            (
+                item
+                for item in source.get("history_changes", ())
+                if item["source_sha256"] == previous["pricing_generation"]
+            ),
+            None,
+        )
+        if ancestor is None:
+            return False
+        if through is not None:
+            return ancestor["changed_from"] is None or ancestor["changed_from"] > through
+        return ancestor["changed_from"] is None or all(
+            view["last_session"] is None or ancestor["changed_from"] > view["last_session"]
+            for view in previous["views"].values()
+        )
+
+    def serving_histories(self, public_id, *, prefix=None):
+        """One shared assembly, with a producer's completed prefix when selected."""
+        coverage = {}
+        views = _read_views(
+            self._assignments,
+            self._sources,
+            self._reader.store,
+            public_id,
+            ADJUSTMENTS,
+            None,
+            None,
+            self._cache if self._cache.maximum_bytes else None,
+            prefix=prefix,
+            coverage_out=coverage,
+        )
+        return views, coverage
+
+    def source_sessions(self, *, start=None, end=None):
+        """Selected gap evidence across every published view, including unresolved rows."""
+        from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
+
+        if self._sources is None:
+            raise StandaloneReaderError("group snapshot is closed")
+        cache, result = {}, set()
+        for name, source in self._sources.items():
+            root = self._reader.store / "end_of_day/pricing" / name
+            selected = {
+                (adjustment, kind)
+                for adjustment, kind, segment in self.assignments[name]
+                if (start is None or segment["to"] >= start) and (end is None or segment["from"] <= end)
+            }
+            for adjustment, kind in sorted(selected):
+                for row in _rows(
+                    root, source, kind, adjustment, cache, self._cache if self._cache.maximum_bytes else None
+                ):
+                    session = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                    if (
+                        (kind != "current_year" or session[:7] < source["anchor_month"])
+                        and (start is None or session >= start)
+                        and (end is None or session <= end)
+                    ):
+                        result.add(session)
+        return result
 
     def set_cache_limit(self, cache_bytes):
         """Adjust retained reuse between reads, within the reader's configured cap."""
@@ -66,16 +212,26 @@ class GroupSnapshot:
             raise ValueError("cache_bytes must be within the configured reader cache budget")
         self._cache.resize(cache_bytes)
 
-    def get_histories(self, *, public_id):
+    def get_histories(self, *, public_id, adjustments=ADJUSTMENTS, start=None, end=None):
         from . import API_VERSION
 
         if self._assignments is None:
             raise StandaloneReaderError("group snapshot is closed")
         public_id = _public_id(public_id)
+        if (
+            not isinstance(adjustments, (tuple, list))
+            or not adjustments
+            or any(a not in ADJUSTMENTS for a in adjustments)
+        ):
+            raise ValueError("adjustments must be a nonempty list or tuple of supported views")
+        adjustments = tuple(dict.fromkeys(adjustments))
+        start, end = _date(start, "start"), _date(end, "end")
+        if start is not None and end is not None and start > end:
+            raise ValueError("start must not be after end")
         security = next((s for s in self._summary["securities"] if s["public_id"] == public_id), None)
         if security is None:
             raise StandaloneReaderError("public ID is unavailable for this group")
-        if any(name not in security["adjustments"] for name in ADJUSTMENTS):
+        if any(name not in security["adjustments"] for name in adjustments):
             raise StandaloneReaderError("adjustment is unavailable for this public ID")
         try:
             views = _read_views(
@@ -83,11 +239,13 @@ class GroupSnapshot:
                 self._sources,
                 self._reader.store,
                 public_id,
-                ADJUSTMENTS,
-                None,
-                None,
+                adjustments,
+                start,
+                end,
                 self._cache if self._cache.maximum_bytes else None,
             )
+        except StandaloneReaderError:
+            raise
         except (OSError, RuntimeError, ValueError, KeyError, TypeError, StopIteration) as error:
             raise StandaloneReaderError(f"cannot read standalone publication: {error}") from error
         return {
@@ -100,7 +258,11 @@ class GroupSnapshot:
                 for key, value in security.items()
                 if key not in {"latest_tickers", "read_symbol"}
             },
-            "range": {"start": None, "end": None, "inclusive": True},
+            "range": {
+                "start": start.isoformat() if start else None,
+                "end": end.isoformat() if end else None,
+                "inclusive": True,
+            },
             "views": views,
             "evidence": self.summary,
         }

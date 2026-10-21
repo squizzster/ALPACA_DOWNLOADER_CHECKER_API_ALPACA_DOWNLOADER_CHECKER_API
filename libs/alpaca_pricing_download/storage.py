@@ -223,6 +223,10 @@ def load_source(root: Path, symbol: str) -> dict | None:
             or not timestamp(HISTORY_START) <= timestamp(source["history_start"]) < end
         ):
             raise DownloadError("invalid pricing history start")
+    if source["schema_version"] >= 25 or "history_changes" in source:
+        from .changes import validate_history_changes
+
+        validate_history_changes(source.get("history_changes"))
     return source
 
 

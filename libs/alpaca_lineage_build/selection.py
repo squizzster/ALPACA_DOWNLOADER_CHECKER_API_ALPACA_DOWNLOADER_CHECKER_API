@@ -15,11 +15,16 @@ class DependencyGraph:
 
     def update(self, entries):
         for symbol, entry in entries.items():
+            if "sha256" in entry and "group_members" not in entry:
+                raise LineageError("lineage group membership incomplete; run alpaca-eod lineage migrate-index")
             for label in self.dependencies.get(symbol, ()):
                 self.dependants[label].discard(symbol)
             for asset in self.assets.get(symbol, ()):
                 self.members[asset].discard(symbol)
-            self.dependencies[symbol] = set(entry["dependencies"])
+            # Current evidence may drop a link before its complete publication
+            # has been retired. Select the previous group from the index until
+            # the producer replaces every contribution in one journal.
+            self.dependencies[symbol] = set(entry["dependencies"]) | set(entry.get("group_members", ()))
             self.assets[symbol] = set(entry["asset_ids"])
             for label in self.dependencies[symbol]:
                 self.dependants[label].add(symbol)

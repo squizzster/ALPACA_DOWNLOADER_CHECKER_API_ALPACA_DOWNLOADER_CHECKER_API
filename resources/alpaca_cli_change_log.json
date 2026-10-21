@@ -23,5 +23,15 @@
     "modifications": [
       "Always show phase completion and failure callbacks even when they arrive inside the progress throttle window, preserving final request counts and short-phase visibility."
     ]
+  },
+  {
+    "modifications": [
+      "Make catalogue commands operate on the standalone serving store, add explicit offline bootstrap/rebuild/preview, and move retained combined workflow commands under legacy catalogue."
+    ]
+  },
+  {
+    "modifications": [
+      "Limit automatic serving maintenance after focused lineage commands to their selected complete groups, leaving unrelated pending catalogue work untouched."
+    ]
   }
 ]

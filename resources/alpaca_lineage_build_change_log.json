@@ -141,5 +141,15 @@
       "Retain accepted evidence requirements independently of history approval and publish remaining approval through the existing journal without repeating compatible complete-group decisions. Preserve metadata continuation for known dependencies and reuse completed containing action intervals within each operation.",
       "Carry accepted index and summary snapshots, package compatibility and decoded generation/scope inputs across operation stages; refresh only changed selectors and retain lock-based generation guards. Select remaining approval from the completion projection without reopening already approved groups. Expose lineage, acquisition and conditional work progress by phase, and use execution's append batching limits in previews. Preserve compatible v2-v22 decisions and existing recovery boundaries."
     ]
+  },
+  {
+    "modifications": [
+      "Record complete input-group membership and durable serving catalogue obligations in the lineage selector transaction, preserve compatible completed decisions, accept all compatible reader lock protocols, and integrate serving maintenance and status."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain previous publication membership while selecting refresh work, require explicit index migration when membership is missing, correlate replacement components independently, and retire split groups in one lineage journal; require a complete serving selector during daily planning as during execution."
+    ]
   }
 ]

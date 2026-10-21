@@ -84,6 +84,9 @@ def seed_group(case, *, inactive_second=False, end="2026-10-17"):
     assert not result["failed"], result
     rebuild(store)
     rebuild_universe(store)
+    from libs.alpaca_serving_catalogue.producer import maintain
+
+    assert maintain(store, bootstrap=True)["complete"]
     return store
 
 
@@ -291,6 +294,9 @@ def unchecked_dependency_append():
         assert seeded["failed"] == 0, seeded
         rebuild(store)
         rebuild_universe(store)
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        assert maintain(store, bootstrap=True)["complete"]
         # A successful independent update advances BBB; AAA still needs maintenance.
         download_pricing(store, "BBB", "2026-10-17", client=FakeClient(corrected))
         client = BarsClient("fake", "fake")

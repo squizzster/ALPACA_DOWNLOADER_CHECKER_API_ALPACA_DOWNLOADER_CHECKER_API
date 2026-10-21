@@ -31,6 +31,9 @@ from .work_contract import (
 
 
 def boundaries(store, registry, *, allow_pending=False, context=None):
+    from libs.alpaca_serving_catalogue.producer import status as serving_status
+    from libs.alpaca_serving_catalogue.storage import controls as serving_controls
+
     store = Path(store)
     storage.check_store(store)
     root = store / "end_of_day/lineage"
@@ -55,6 +58,9 @@ def boundaries(store, registry, *, allow_pending=False, context=None):
         "checks": checks,
         "registry": set(load_labels(registry)),
         "state": universe_state.read_state(store),
+        "serving_catalogue": serving_status(
+            store, controls=serving_controls(store) if context is None else context.select_serving()
+        ),
     }
 
 
@@ -380,6 +386,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
                 "pricing_check_summary",
                 "universe_work_state",
                 "lineage_hints",
+                "serving_catalogue_and_obligations",
             ],
             "selected_pricing_manifests": len(initial) + len(empty),
             "append_approval_manifest_reads": len(append),
@@ -413,6 +420,9 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "conditional_work": "retained dependency endpoint checks and their selected incremental/replacement acquisitions, same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions, dependency expansion and publications for every resulting complete group; these may dominate the known minimum",
             "pricing_publications_estimate": len(initial) + len(empty) + len(append),
             "lineage_publications": "complete affected groups; dependency expansion may add work",
+            "serving_pending_symbols": accepted["serving_catalogue"]["pending_symbols"],
+            "serving_history_reads": "published append scopes reuse completed history checks; suffix payloads supply all eight views; replacement or changed historical selection reevaluates affected histories",
+            "serving_publications": "one transaction per affected complete component, including previous contributions; zero extra provider requests or pricing writes",
         },
         "blockers": ["pending lineage must finish before live history selection"]
         if accepted.get("summary_pending")

@@ -230,7 +230,7 @@ class PricingCutoffTests(unittest.TestCase):
                 )
                 selection = ["--symbol", "AAA"] if operation == "update" else ["--recovery-universe"]
                 args = alpaca_cli.build_parser().parse_args(
-                    ["catalogue", operation, *selection, "--through", "2026-04-03"]
+                    ["legacy", "catalogue", operation, *selection, "--through", "2026-04-03"]
                 )
                 with patch(entry, return_value={}) as producer, redirect_stderr(io.StringIO()):
                     alpaca_cli.dispatch(args)
@@ -243,7 +243,7 @@ class PricingCutoffTests(unittest.TestCase):
                 "alpaca_end_of_day.standalone_cli.run_arguments",
             ),
             (
-                ["catalogue", "resume"],
+                ["legacy", "catalogue", "resume"],
                 "libs.alpaca_end_of_day_clean_room.generation.resume_clean_room_generation",
             ),
         )

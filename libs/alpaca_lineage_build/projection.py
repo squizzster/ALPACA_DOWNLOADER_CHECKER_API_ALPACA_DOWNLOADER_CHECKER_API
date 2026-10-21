@@ -79,13 +79,20 @@ def migrate_index(store, *, batch_size=128, progress=None):
             symbol
             for symbol, entry in index["symbols"].items()
             if entry.get("projection", {}).get("schema_version") != PROJECTION_VERSION
+            or "group_members" not in entry
         ]
         completed = 0
         for offset in range(0, len(selected), batch_size):
             updates = {}
             for symbol in selected[offset : offset + batch_size]:
                 receipt = storage.read_receipt(root, symbol, index)
-                updates[symbol] = {**index["symbols"][symbol], "projection": project_receipt(receipt)}
+                updates[symbol] = {
+                    **index["symbols"][symbol],
+                    "projection": project_receipt(receipt),
+                    "group_members": sorted(
+                        set(receipt["input_sources"]) | set(receipt.get("unavailable_pricing", {}))
+                    ),
+                }
             with storage.publication_lock(root, exclusive=True):
                 storage._update_index(root, updates)
             completed += len(updates)

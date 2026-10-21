@@ -112,6 +112,7 @@ class UpdateCheckTests(unittest.TestCase):
                 "source_sha256": storage.document_digest(source),
                 "dependencies": [],
                 "asset_ids": [],
+                "group_members": [symbol],
                 "versions": current,
             }
         opened = []

@@ -134,5 +134,10 @@
       "Batch retained endpoint probes by endpoint work, then bound the actual incremental or replacement acquisitions separately. Reuse typed completed normalized responses while preserving all eight views, full pagination, exact comparisons, independent first-session checks and source-generation publication guards.",
       "Carry newly published source and endpoint results into summary projection and return values without rereading them. Retain unchanged historical boundary references, reuse selected changed-boundary inventories, and establish store/package compatibility once per operation. Keep durable reconstruction for interrupted publication and compatible v1-v23 artifacts."
     ]
+  },
+  {
+    "modifications": [
+      "Publish a bounded ancestor/change-span handoff with pricing selectors so downstream serving maintenance trusts append versus replacement decisions, including rollover and interrupted consumers."
+    ]
   }
 ]

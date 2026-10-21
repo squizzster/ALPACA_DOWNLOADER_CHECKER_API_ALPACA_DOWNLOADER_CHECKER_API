@@ -27,7 +27,8 @@ Paths relative to standalone store:
 | Pricing `completed_years`, current-year/current-month boundaries | CSV/gzip payloads + selecting manifests. |
 | `end_of_day/manifests/<TICKER>/update.json` | Unconsumed inclusive changed range: `from`, `to`. |
 | `end_of_day/lineage/<TICKER>/lineage.manifest.json` | Evidence, input generations, chronological assignments. |
-| `end_of_day/lineage/index.sqlite3` | Published groups/generations, lookup-evidence projection. |
+| `end_of_day/lineage/index.sqlite3` | Published groups/generations, complete input-group membership, lookup-evidence projection and durable serving obligations. |
+| `end_of_day/catalogue/serving_catalogue.sqlite3` | Serving selector, public projections, input references, eligibility decisions and previous group contributions. |
 | `universe_updates.sqlite3` | Accepted observations, registration intentions, targets, attempts, outcomes. |
 | `pricing_check_summary.sqlite3` | Minimal live-check baseline. |
 | `lineage_update_check.sqlite3`, `download_completion.json` | Disposable scheduling hints, never data authority. |
@@ -58,6 +59,14 @@ Append approval is an in-memory handoff of checked source generations for select
 the summary stays minimal. Publication rechecks generations under ticker locks, even if concurrent edits
 preserve the last row. New summary membership cannot expand prior approval. Empty append requires all eight
 retained views empty; partial views use ordinary history checks.
+
+Pricing selectors publish `history_changes`: up to 64 ancestor source generations and the earliest session
+that may have changed since each ancestor, across every view and including removals. Null means identical
+observations. This carries the downloader's existing append/replacement decision and changed span; no
+consumer repeats its first/last checks. The chain survives lineage acknowledgement and physical month/year
+rollover. An absent or expired ancestor establishes no unchanged prefix.
+After ancestry expiry, maintenance reevaluates the selected affected histories. This recovery cost is
+part of the bounded provenance contract; it does not authorize a store-wide metadata audit.
 
 Buffered initial/invalidated acquisitions bind selected generation, including explicit absence. Under ticker
 lock: recover journal → compare current source with selection → publish. Conflict rejects buffered replacement
@@ -152,7 +161,7 @@ Preview consumes compact boundaries without writes/recovery; pages/expansion dep
 say so. Execution independently reselects boundaries/current catalogue. Inclusive targets → exclusive UTC;
 newer spans remain preserved, excluded from older-target checking/correction.
 
-Offline status reads index/projection, summary, scheduling and work state read-only. Scheduling/summary pending
+Offline status reads index/projection, summary, scheduling, serving catalogue and work state read-only. Scheduling/summary pending
 symbols select the only per-ticker pricing-journal existence checks. Check lineage pending marker under shared
 publication lock. No payload/receipt reads, ticker scans or recovery. Each boundary is coherent separately;
 report is not a cross-producer transaction. [Status semantics](operations.md#inspect-local-progress).
@@ -185,6 +194,13 @@ no pending pricing work or explicit metadata refresh. Receipts retain evidence r
 of approval via existing fingerprints. Matching evidence is not renewed by coverage/approval changes.
 Missing history approval republishes the completed decision through the journal without pricing decode or
 correlation; until then, no acknowledgement. Already projected approval requires no group reopening.
+
+Selection retains previous published group membership from the index until retirement. When evidence
+links disappear, the producer correlates the replacement components independently and publishes every
+replacement receipt and selector through one journal. Later refreshes can select the separated groups.
+Readers and serving maintenance never repair an incompatible group or infer its replacement membership.
+An older index lacking published membership requires explicit `lineage migrate-index`; normal selection
+fails closed without opening receipts to reconstruct missing coverage.
 
 Completed work hints are authoritative. Lost coverage permits one source-generation census; matches need
 no lineage receipts. Metadata prefetch bounds dependency members to 1,000. Rule-only changes may reuse
@@ -220,7 +236,101 @@ under ticker lock.
 Producers permit native transaction recovery; consumers read-only. No forced publication synchronization.
 Contract covers process interruption, not machine/power failure; SQLite owns internal recovery.
 
-## Identity and catalogue
+## Serving catalogue
+
+The [serving owner](../libs/alpaca_serving_catalogue/) accepts completed ownership assignments and exact
+pricing publications. It adds availability guarantees; it never recomputes public IDs, correlates rows,
+reauthenticates upstream files or substitutes current metadata for historical evidence.
+
+Eligibility is per resolved identity over its complete selected group. The first policy requires:
+
+- All eight adjustment histories on the same nonempty, unique session set, with deterministic shared
+  source selection. Conflicting daily histories are ineligible; unreadable publications leave work pending.
+- Exact finite prices and volumes, guaranteed by the accepted pricing publication; serving adds New York
+  session-midnight timestamps on market sessions. OHLC must be
+  positive, with open/close between low/high. VWAP must be positive and within low/high except zero activity.
+- Nonnegative decimal volume and nonnegative integral trade count. Ordinary activity has positive count
+  and volume; split-adjusted views may have zero rounded volume. Flat positive OHLC with volume, count and
+  VWAP all zero is the explicit zero-activity case. Fractional volume is preserved exactly.
+- Explained continuity from first to last stored session. No filling or trimming gaps to obtain approval.
+  A gap of at most five sessions between renamed labels may qualify only with complete action evidence,
+  one unchanged UUID/CUSIP/exchange, one matching dated name-change action, compatible exact symbol/CUSIP
+  lookups, no conflicting occupant/event, and no source observations during the gap. The evaluator records
+  the excluded dates; it assigns no observations or identities.
+- Unresolved assignments affecting this identity's advertised span veto serving. Unrelated unresolved
+  rows and uncertainty outside the advertised span do not automatically discard independently resolved
+  history. Empty and entirely unresolved groups publish completed decisions with no public identities.
+
+Inactive or nontradable securities may qualify. Missing descriptive metadata may remain unknown. Coverage
+means approved stored history, not the issuer's lifetime or current freshness. The policy version and
+calendar digest select completed eligibility; matching inputs reuse positive and negative decisions alike.
+
+The serving producer persists history-validation checkpoints with selected pricing generations, published
+ownership runs, source-coverage subset order, numeric outcomes, dated labels and gap evidence. Reuse is per
+identity, including across group merges and splits. Changes to another identity's labels or independent
+pricing do not invalidate its completed checks. On append, the pricing change handoff establishes retained
+observations; ordinal ownership prefixes for that identity establish retained
+assignments across file rollover. The shared engine skips prior rows and unopened closed payloads. It uses
+the extended coverage order in the same overlap resolver, rejecting prefix reuse when earlier adjusted
+source selection changes. Reused facts are bound through the latest validated session across all views,
+including adjusted observations beyond raw coverage. Changes inside that span require affected-identity
+evaluation, which can clear a formerly negative cross-view decision; independent identities retain their
+checks. Only a proven suffix receives new numeric/session checks. Continuity checkpoints retain the exact
+raw boundary session and labels separately from public labels combined across adjustments.
+Negative numeric checks also persist. Missing-session facts and source presence
+are retained while their explanations are reconsidered against current published evidence. If a changed
+group member could alter source presence in a recorded gap, only that gap evidence is refreshed; the
+identity's unaffected numeric checks remain completed. Metadata and unresolved-candidate projections follow
+current lineage. Gap presence includes unresolved observations in every published adjustment view, using
+only selected group members and overlapping dated containers; physical aliases share their decoded payload.
+
+Replacement, changed ownership, changed historical source selection, or unavailable change ancestry requires
+affected-history evaluation. A container holding suffix rows may also contain older rows; decoding that
+selected container does not repeat their serving checks. Checkpoints contain no copied prices. They commit
+with the decisions and selector, so interrupted acknowledgement cannot repeat completed validation. Policy
+changes require explicit rebuild; there is one current checkpoint format.
+
+Public metadata retains known observations, their recorded times where available, supported effective
+intervals, and conflicting values. Catalogue observations date only lookups sourced from that observation;
+an undated exact fallback stays undated. Published ownership intervals can support historical labels and
+CUSIPs. An observed name/exchange/class does not establish a historical effective period. Public projections
+never expose provider UUIDs or internal eligibility reasons. CSV behavior is in the [API guide](public-api.md).
+
+The catalogue uses one SQLite transaction to replace a component's previous contributions: decisions,
+public records, dated matches, public-ID/group mappings and exact lineage/pricing generation references.
+The selector is written last with schema, policy, publication time, completeness and a transaction token;
+readers never hash the database. IDs appearing in incompatible groups fail publication atomically. Merges,
+splits and explicitly absent dependencies retain enough prior membership to retire superseded mappings.
+Compact group selections hold generations, input references, policy and eligibility counts separately from
+decision bodies and validation checkpoints. Status, preview, public snapshots and unchanged work consume
+only those compact selections. Maintenance opens checkpoints only for selected groups whose inputs changed;
+matching contributions are neither revalidated nor rewritten.
+
+The lineage selector transaction also writes `serving_work` obligations keyed by member and selected
+receipt generation, before upstream acknowledgement. Catalogue commits precede exact obligation deletion.
+Native SQLite rollback is performed only by maintenance; readers and previews fail closed on transactions
+requiring recovery. Interruption before commit rolls back; interruption after commit reuses the completed decision without
+history reads, then acknowledges. The lineage worker serializes catalogue maintenance; selected pricing
+locks remain held through new decision publication. A failure is bounded to the selected component.
+Components follow published `group_members` and previous catalogue contributions, without reconstructing
+lineage dependency or evidence-asset closure. Focused lineage commands maintain only their selected complete
+components; unrelated obligations stay pending for daily or explicit catalogue maintenance.
+
+Explicit bootstrap selects all indexed groups and seeds durable coverage. Older entries missing complete
+input-group membership are projected from indexed receipts in bounded batches, preserving receipt digests
+and identity decisions. This migration is never triggered by ordinary reads or incremental maintenance.
+Bootstrap may read full selected prices to establish eligibility. Policy rebuild uses the same mechanism;
+incompatible schemas require an explicit supported migration. [Commands and preview](operations.md#serving-catalogue-maintenance).
+
+Opening `DataLibrary` materializes only public catalogue fields and their group references in a short read
+transaction. Search/list/resolve do no ticker I/O. Each history checks the selected serving decision plus
+lineage and pricing generations within the shared locked operation, before assignment/price payloads.
+Unrelated catalogue updates leave compatible groups readable. Old catalogues retain no old pricing files;
+changed sources are rejected even when the catalogue itself has not advanced. Exports consume generation-
+matched groups from one declared catalogue snapshot and install atomically; independent final freshness
+checks would not establish a store-wide snapshot at installation and are not promised.
+
+## Retained monthly identity and catalogue
 
 Row ownership ≠ UUID membership. Every row correlated or explicitly uncorrelated; dependency/successor alone
 cannot merge securities. Public IDs derive from sorted unique provider UUIDs, not tickers. Ambiguity remains
@@ -229,7 +339,8 @@ unresolved; independently supported portions may publish.
 Combined directories: `end_of_day/<SYMBOL>/`, `validation/`, `lineage/`, `correlation/`, `warnings/`,
 `availability/`, `catalogue/`. `.publication.lock`: whole write transaction; `.publication.pending.json`:
 blocks interrupted reads. [Monthly owners](../libs/alpaca_end_of_day_v6/) define receipts/generations.
-Availability checks advertised reads/explained continuity; warnings advisory. `DataLibrary` exposes only online IDs.
+Availability checks advertised reads/explained continuity; warnings advisory. The retained clean-room
+workflow uses its own monthly reader; it is not a storage adapter for `DataLibrary`.
 
 ## Parquet conversion
 

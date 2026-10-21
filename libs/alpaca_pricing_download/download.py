@@ -277,6 +277,8 @@ def publish_acquired(
     old_documents=None,
 ):
     """Publish through the original recovery, notice and summary transaction."""
+    from .changes import change_history
+
     paths = boundary_paths(anchor)
     references = dict(previous["boundaries"]) if previous is not None else {}
     documents = {}
@@ -299,6 +301,7 @@ def publish_acquired(
         "history_start": history_start.isoformat().replace("+00:00", "Z"),
         "validator": {"file": VALIDATOR_FILE, "sha256": digest(json_bytes(validator))},
         "boundaries": references,
+        "history_changes": change_history(previous, update),
     }
     evidence = acquisition_evidence_sha256 or (previous or {}).get("acquisition_evidence_sha256")
     if evidence is not None:
@@ -308,6 +311,12 @@ def publish_acquired(
     correction = history_correction_id or (previous or {}).get("history_correction_id")
     if correction is not None:
         source["history_correction_id"] = correction
+    if previous is not None and {key: value for key, value in source.items() if key != "history_changes"} == {
+        key: value for key, value in previous.items() if key != "history_changes"
+    }:
+        # Identical selected output is already complete. A repeated acquisition
+        # notice must not manufacture a new generation solely for its ancestry.
+        source["history_changes"] = previous["history_changes"]
     written = publish(
         root,
         previous,

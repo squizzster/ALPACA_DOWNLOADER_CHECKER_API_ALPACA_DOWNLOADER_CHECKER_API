@@ -457,7 +457,33 @@ def process_group(
                         inputs[seed] = load_pricing(store, seed, source=sources[seed])
                     if progress:
                         progress("lineage_correlation", {"symbols": sorted(inputs)})
-                    reports = correlate(store, inputs, evidence)
+                    # Retiring publications determine the locked work scope;
+                    # current evidence determines the replacement components.
+                    # Correlate each replacement with exactly the inputs its
+                    # receipt will select, then publish all of them together.
+                    current_graph = DependencyGraph(
+                        {
+                            symbol: {
+                                "dependencies": set(deps[symbol]) | unavailable.keys(),
+                                "asset_ids": [item["id"] for item in facts["identities"] if item.get("id")],
+                            }
+                            for symbol, facts in evidence.items()
+                        }
+                    )
+                    components, reports = {}, {}
+                    for symbol in sorted(inputs):
+                        if symbol in components:
+                            continue
+                        component = current_graph.closure({symbol})
+                        members = component & inputs.keys()
+                        components.update(dict.fromkeys(members, component))
+                        reports.update(
+                            correlate(
+                                store,
+                                {name: inputs[name] for name in members},
+                                {name: evidence[name] for name in members},
+                            )
+                        )
                     if resume and (
                         reports[seed]["uncorrelated"]["row_count"]
                         or not unique_assignment(
@@ -481,7 +507,8 @@ def process_group(
                             resume_closed=resume,
                         )
                         receipts[symbol]["input_sources"] = {
-                            name: item.source_sha256 for name, item in inputs.items()
+                            name: inputs[name].source_sha256
+                            for name in sorted(components[symbol] & inputs.keys())
                         }
                         if unavailable:
                             receipts[symbol]["unavailable_pricing"] = unavailable

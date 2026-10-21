@@ -1,409 +1,371 @@
+"""Native standalone producer -> serving catalogue -> public application contract."""
+
 import csv
 import io
 import json
 import tempfile
 import unittest
+from contextlib import closing
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from cli_support import parser_for
+from test_alpaca_lineage_build import IdentityClient, asset
+from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from alpaca_end_of_day import (
     API_CHANGE_LOG_PATH,
     API_VERSION,
-    FLAT_ONLINE_CSV_COLUMNS,
     CatalogChangedError,
     DataLibrary,
     DataLibraryError,
-    FlatCsvExport,
     PublicIdUnavailableError,
-    Security,
-    _IdentityTimeline,
+    StandaloneReader,
 )
 from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
-from libs.alpaca_end_of_day_pipeline import validate_and_publish_alpaca_download
-from libs.alpaca_end_of_day_reader import read_alpaca_end_of_day_security_history
-from libs.alpaca_end_of_day_security_correlation import authenticate_security_master
-from tests.test_alpaca_end_of_day_reader import (
-    SECOND_ASSET_UUID,
-    SECOND_MASTER_ID,
-    TEST_ASSET_UUID,
-    TEST_FIXTURES_DIRECTORY,
-    TEST_MASTER_ID,
-    _publish_reader_fixture,
-    _request_identity,
-)
+from libs.alpaca_lineage_build import storage as lineage
+from libs.alpaca_lineage_build.pipeline import run_lineage
+from libs.alpaca_pricing_download.contract import NEW_YORK
+from libs.alpaca_pricing_download.download import download_pricing
+from libs.alpaca_serving_catalogue import storage
+from libs.alpaca_serving_catalogue.producer import maintain
+from libs.common.sqlite_connections import connect_sqlite
+from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 
-def _publish_raw_and_all_fixture(
-    repository_root: Path,
-    *,
-    symbol: str = "TEST",
-    asset_id: str = TEST_ASSET_UUID,
-    name: str = "Test Security",
-) -> None:
-    bars = json.loads((TEST_FIXTURES_DIRECTORY / "ten_valid_daily_bars.json").read_text(encoding="utf-8"))
-    for bar in bars:
-        for field_name in ("o", "h", "l", "c", "vw"):
-            bar[field_name] /= 2
-        bar["v"] *= 2
-    request_identity = _request_identity(symbol)
-    request_identity["adjustment"] = "all"
-    validate_and_publish_alpaca_download(
-        repository_root / "data" / "end_of_day" / symbol / "all.csv.gz",
-        bars,
-        request_identity,
-    )
-    _publish_reader_fixture(
-        repository_root,
-        with_integrity_failure=False,
-        symbol=symbol,
-        asset_id=asset_id,
-        name=name,
-    )
-
-
-class AlpacaEndOfDayPublicApiTests(unittest.TestCase):
-    def setUp(self) -> None:
-        # These fixtures exercise the public transformation contract with the
-        # established synthetic logical inputs. Native v6 storage/readback is
-        # covered by the v6 boundary integration tests.
-        self.catalogue_patcher = patch(
-            "alpaca_end_of_day.load_catalogue",
-            side_effect=authenticate_security_master,
+def valid_bars(start="2026-10-01", end="2026-10-14"):
+    result = []
+    for day in expected_market_session_coverage(start, end).session_dates:
+        instant = datetime.combine(date.fromisoformat(day), time(), NEW_YORK).astimezone(timezone.utc)
+        result.append(
+            {**bar(day), "t": instant.isoformat().replace("+00:00", "Z"), "v": Decimal("9007199254740993.5")}
         )
+    return result
 
-        def read_established_history(*args, master=None, inputs=None, **kwargs):
-            del master, inputs
-            return read_alpaca_end_of_day_security_history(*args, **kwargs)
 
-        self.history_patcher = patch(
-            "alpaca_end_of_day._read_published_history",
-            side_effect=read_established_history,
-        )
-        self.catalogue_reader = self.catalogue_patcher.start()
-        self.history_reader = self.history_patcher.start()
-
-    def tearDown(self) -> None:
-        self.history_patcher.stop()
-        self.catalogue_patcher.stop()
-
-    def test_public_api_version_has_one_changelog_entry_per_version(self) -> None:
-        entries = json.loads(API_CHANGE_LOG_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(API_VERSION, len(entries))
-
-    def test_catalog_exposes_only_online_securities(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_reader_fixture(repository_root, with_integrity_failure=False)
-            _publish_reader_fixture(
-                repository_root,
-                with_integrity_failure=False,
-                fixture_name="nine_daily_bars_one_market_session_missing.json",
-                symbol="NEXT",
-                asset_id=SECOND_ASSET_UUID,
-                name="Next Security",
+class NativeCase(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.store = self.directory / "store"
+        self.root = self.store / "end_of_day/lineage"
+        self.bars = valid_bars()
+        self.enterContext(
+            patch(
+                "libs.alpaca_pricing_download.download.utc_now",
+                return_value=datetime(2030, 1, 1, tzinfo=timezone.utc),
             )
-
-            data = DataLibrary(repository_root)
-            catalog = data.catalog()
-            securities = data.list_securities()
-
-            self.assertEqual(1, data.online_count())
-            self.assertEqual(1, catalog.online_count)
-            self.assertEqual(data.catalog_generation(), catalog.generation)
-            self.assertIsNotNone(catalog.published_at.tzinfo)
-            self.assertEqual((TEST_MASTER_ID,), tuple(item.public_id for item in securities))
-            self.assertEqual(TEST_MASTER_ID, data.get_security(TEST_MASTER_ID).public_id)
-            resolutions = data.resolve_ticker("test")
-            self.assertEqual(1, len(resolutions))
-            self.assertEqual(TEST_MASTER_ID, resolutions[0].public_id)
-            self.assertEqual("TEST", resolutions[0].ticker)
-            self.assertEqual(date(2024, 1, 2), resolutions[0].first_session)
-            self.assertEqual(date(2024, 1, 16), resolutions[0].last_session)
-            self.assertEqual(resolutions, data.resolve_ticker("TEST", on="2024-01-05"))
-            self.assertEqual((), data.resolve_ticker("TEST", on="2023-01-05"))
-            self.assertEqual((), data.resolve_ticker("NEXT"))
-            self.assertEqual((), data.search_securities("Next Security"))
-            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
-                data.get_security(SECOND_MASTER_ID)
-            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
-                data.get_security("f" * 64)
-            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
-                data.get_history(SECOND_MASTER_ID)
-            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
-                data.get_history("f" * 64)
-
-    def test_get_security_does_not_expose_an_offline_catalogue_identity(self) -> None:
-        offline_master = SimpleNamespace(
-            receipt={
-                "security_master_generation_sha256": "published-generation",
-                "created_at": "2026-10-13T00:00:00Z",
-            },
-            identities_by_master_id={
-                TEST_MASTER_ID: {
-                    "master_id": TEST_MASTER_ID,
-                    "online": False,
-                }
-            },
         )
-        with patch("alpaca_end_of_day.load_catalogue", return_value=offline_master):
-            data = DataLibrary(Path("unused"))
-            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
-                data.get_security(TEST_MASTER_ID)
+        self.add_symbol("TEST", self.bars)
 
-    def test_history_uses_exact_types_and_inclusive_session_dates(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_reader_fixture(repository_root, with_integrity_failure=False)
-
-            data = DataLibrary(repository_root)
-            history = data.get_history(
-                TEST_MASTER_ID.upper(),
-                start="2024-01-04",
-                end=date(2024, 1, 8),
-            )
-            serialized = history.to_dict()
-
-        self.assertEqual(TEST_MASTER_ID, history.security.public_id)
-        self.assertEqual("raw", history.adjustment)
-        self.assertEqual(
-            (date(2024, 1, 4), date(2024, 1, 5), date(2024, 1, 8)),
-            tuple(bar.session for bar in history.bars),
+    def add_symbol(self, symbol, bars=None, *, metadata=None, end="2026-10-14"):
+        download_pricing(self.store, symbol, end, client=FakeClient(self.bars if bars is None else bars))
+        result = run_lineage(
+            self.store, [symbol], identity_client=IdentityClient({symbol: metadata or asset(symbol)})
         )
-        self.assertIsInstance(history.bars[0].open, Decimal)
-        self.assertIsInstance(history.bars[0].volume, int)
-        self.assertEqual("2024-01-04", serialized["range"]["start"])
-        self.assertEqual("2024-01-08", serialized["range"]["end"])
-        self.assertNotIn("online", json.dumps(serialized))
-        self.assertNotIn("provenance", serialized)
-        self.assertNotIn("integrity", serialized)
+        self.assertEqual(result["failed"], 0, result)
 
-    def test_history_calls_reuse_the_open_catalogue_and_reader_inputs(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_raw_and_all_fixture(repository_root)
-            data = DataLibrary(repository_root)
+    def bootstrap(self):
+        result = maintain(self.store, bootstrap=True)
+        self.assertTrue(result["complete"], result)
+        return DataLibrary(store=self.store)
 
-            data.get_history(TEST_MASTER_ID, "raw")
-            data.get_history(TEST_MASTER_ID, "all")
+    def publish_change(self, mutate, symbol="TEST"):
+        index = lineage.read_index(self.root)
+        receipt = lineage.read_receipt(self.root, symbol, index)
+        boundaries = lineage.read_boundaries(self.root, receipt)
+        mutate(receipt, boundaries)
+        for kind, boundary in boundaries.items():
+            receipt["boundaries"][kind]["sha256"] = lineage.document_digest(boundary)
+        with lineage.pricing_locks(self.store, receipt["input_sources"]):
+            lineage.publish(self.store, self.root, index, {symbol: receipt}, {symbol: boundaries}, {})
 
-        first, second = self.history_reader.call_args_list[-2:]
-        self.assertIs(data._master, first.kwargs["master"])
-        self.assertIs(data._master, second.kwargs["master"])
-        self.assertIs(first.kwargs["inputs"], second.kwargs["inputs"])
+    def catalogue_groups(self, *keys):
+        return storage.read_groups(self.store, keys, generation=storage.selector_state(self.store)["generation"])
 
-    def test_ticker_resolution_preserves_reuse_across_public_ids_and_dates(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_reader_fixture(repository_root, with_integrity_failure=False)
-            _publish_reader_fixture(
-                repository_root,
-                with_integrity_failure=False,
-                symbol="NEXT",
-                asset_id=SECOND_ASSET_UUID,
-                name="Next Security",
+
+class AlpacaEndOfDayPublicApiTests(NativeCase):
+    def test_version_and_explicit_migration(self):
+        self.assertEqual(API_VERSION, len(json.loads(API_CHANGE_LOG_PATH.read_text())))
+        for invoke in (lambda: DataLibrary(self.directory), lambda: DataLibrary(path=self.directory)):
+            with self.assertRaisesRegex(TypeError, "store="):
+                invoke()
+        before = snapshot(self.store)
+        with self.assertRaisesRegex(DataLibraryError, "bootstrap"):
+            DataLibrary(store=self.store)
+        self.assertEqual(snapshot(self.store), before)
+
+    def test_native_exact_history_matches_standalone_and_all_views_share_selection(self):
+        data = self.bootstrap()
+        (security,) = data.list_securities()
+        self.assertEqual(security.names, ("TEST company",))
+        self.assertEqual(security.stored_session_count, len(self.bars))
+        with patch.object(data._reader, "_snapshot", wraps=data._reader._snapshot) as select:
+            views = data.get_histories(security.public_id)
+        self.assertEqual(select.call_count, 1)
+        expected = StandaloneReader(self.store).get_histories("TEST")
+        for name, history in views.items():
+            self.assertEqual(history.generation, data.catalog_generation())
+            self.assertEqual(
+                [str(b.close) for b in history.bars], [b["close"] for b in expected["views"][name]["bars"]]
             )
-            authenticated = authenticate_security_master(repository_root)
-            first_record = deepcopy(authenticated.identities_by_master_id[TEST_MASTER_ID])
-            second_record = deepcopy(authenticated.identities_by_master_id[SECOND_MASTER_ID])
-            first_record["tickers"] = ["SHARED"]
-            first_record["names"] = ["Owens Corning"]
-            first_record["observed_history_ranges"] = [
+            self.assertEqual(history.bars[0].volume, Decimal("9007199254740993.5"))
+            self.assertEqual(history.to_dict()["bars"][0]["volume"], "9007199254740993.5")
+            self.assertEqual(history.bars[0].trade_count, 7)
+        filtered = data.get_history(security.public_id.upper(), start="2026-10-02", end=date(2026, 10, 2))
+        self.assertEqual(len(filtered.bars), 1)
+        self.assertEqual(data.get_history(security.public_id, start="2027-01-01").bars, ())
+        with self.assertRaises(ValueError):
+            data.get_history(security.public_id, start="2026-10-03", end="2026-10-02")
+
+    def test_open_search_listing_and_unknown_id_use_only_catalogue(self):
+        self.bootstrap()
+        before = snapshot(self.store)
+        original = Path.open
+        touched = []
+
+        def opened(path, *args, **kwargs):
+            if path.is_relative_to(self.store):
+                touched.append(path)
+                self.assertTrue(path.is_relative_to(self.store / "end_of_day/catalogue"), path)
+            return original(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "open", opened),
+            patch.object(Path, "iterdir", side_effect=AssertionError("crawl")),
+        ):
+            data = DataLibrary(store=self.store)
+            self.assertEqual(len(data.search_securities("test company")), 1)
+            self.assertEqual(len(data.resolve_ticker("test", on="2026-10-05")), 1)
+            self.assertEqual(data.resolve_ticker("TEST", on="2020-01-01"), ())
+            self.assertEqual(data.online_count(), 1)
+            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
+                data.get_history("0" * 64)
+        self.assertEqual(snapshot(self.store), before)
+
+    def test_unknown_and_ineligible_ids_are_indistinguishable(self):
+        self.add_symbol("BAD", [{**b, "v": -1} for b in self.bars])
+        unavailable = StandaloneReader(self.store).resolve_ticker("BAD")["matches"][0]["public_id"]
+        data = self.bootstrap()
+        self.assertEqual(data.search_securities("BAD"), ())
+        self.assertEqual(data.resolve_ticker("BAD"), ())
+        self.assertEqual(data.online_count(), 1)
+        for public_id in (unavailable, "0" * 64):
+            for method in (data.get_security, data.get_history, data.get_histories):
+                with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
+                    method(public_id)
+
+    def test_observations_are_not_historical_csv_values(self):
+        data = self.bootstrap()
+        (security,) = data.list_securities()
+        self.assertTrue(security.observations)
+        self.assertTrue(all(o.observed_at is None and o.effective_from is None for o in security.observations))
+        output = io.StringIO()
+        with patch.object(data._reader, "_snapshot", wraps=data._reader._snapshot) as select:
+            receipt = data.write_flat_online_csv(output)
+        self.assertEqual(select.call_count, 1)
+        rows = list(csv.DictReader(io.StringIO(output.getvalue())))
+        self.assertEqual(receipt.row_count, len(self.bars))
+        self.assertTrue(
+            all(row["ticker"] == "TEST" and row["name"] == row["exchange"] == row["cusip"] == "" for row in rows)
+        )
+        self.assertEqual(rows[0]["raw_volume"], "9007199254740993.5")
+        for internal in ("TEST-id", "source_sha256", "online", str(self.store)):
+            self.assertNotIn(internal, json.dumps(security.to_dict()))
+
+    def test_missing_descriptive_metadata_and_inactive_security_can_serve(self):
+        self.add_symbol(
+            "OLD", metadata={**asset("OLD"), "name": "", "exchange": "", "status": "inactive", "tradable": False}
+        )
+        data = self.bootstrap()
+        matches = data.search_securities("OLD")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].names, ())
+        self.assertEqual(matches[0].exchanges, ())
+
+    def test_catalogue_observation_time_does_not_date_exact_fallback(self):
+        def change(receipt, _):
+            receipt["evidence"]["catalogue_observed_at_utc"] = "2026-10-15T12:00:00Z"
+            receipt["evidence"]["asset_lookups"].append(
                 {
-                    "ticker": "SHARED",
-                    "first_session_date": "2024-01-02",
-                    "last_session_date": "2024-01-08",
-                    "adjustments": ["raw"],
+                    "lookup_kind": "cusip",
+                    "lookup": "123456789",
+                    "outcome": "found",
+                    "asset": asset("TEST"),
                 }
-            ]
-            second_record["tickers"] = ["SHARED"]
-            second_record["names"] = ["Morningstar, Inc. Common Stock"]
-            second_record["observed_history_ranges"] = [
-                {
-                    "ticker": "SHARED",
-                    "first_session_date": "2024-01-09",
-                    "last_session_date": "2024-01-16",
-                    "adjustments": ["raw"],
-                }
-            ]
-            public_master = SimpleNamespace(
-                receipt=authenticated.receipt,
-                identities_by_master_id={
-                    TEST_MASTER_ID: first_record,
-                    SECOND_MASTER_ID: second_record,
-                },
             )
+            receipt["evidence"]["asset_lookups"][0]["source"] = "asset_catalogue"
 
-            with patch("alpaca_end_of_day.load_catalogue", return_value=public_master):
-                data = DataLibrary(repository_root)
-                all_resolutions = data.resolve_ticker("shared")
-                first_date = data.resolve_ticker("SHARED", on="2024-01-05")
-                second_date = data.resolve_ticker("SHARED", on=date(2024, 1, 12))
-                search_results = data.search_securities("  ORNING  ")
-                limited_search = data.search_securities("orning", limit=1)
+        self.publish_change(change)
+        (security,) = self.bootstrap().list_securities()
+        self.assertIn("123456789", security.cusips)
+        self.assertTrue(any(o.observed_at is not None for o in security.observations))
+        self.assertTrue(any(o.field == "cusip" and o.observed_at is None for o in security.observations))
 
-        self.assertEqual((TEST_MASTER_ID, SECOND_MASTER_ID), tuple(item.public_id for item in all_resolutions))
-        self.assertEqual((TEST_MASTER_ID,), tuple(item.public_id for item in first_date))
-        self.assertEqual((SECOND_MASTER_ID,), tuple(item.public_id for item in second_date))
-        self.assertEqual(
-            ("Morningstar, Inc. Common Stock", "Owens Corning"),
-            tuple(item.names[0] for item in search_results),
-        )
-        self.assertEqual(search_results[:1], limited_search)
+    def test_selected_changes_reject_old_instance_unrelated_changes_do_not(self):
+        data = self.bootstrap()
+        (security,) = data.list_securities()
+        self.add_symbol("OTHER")
+        self.assertTrue(maintain(self.store)["complete"])
+        self.assertNotEqual(DataLibrary(store=self.store).catalog_generation(), data.catalog_generation())
+        self.assertEqual(len(data.get_history(security.public_id).bars), len(self.bars))
+        self.publish_change(lambda receipt, _: receipt["evidence"].update(warnings=["changed"]))
+        with self.assertRaises(CatalogChangedError):
+            data.get_history(security.public_id)
+        self.assertTrue(maintain(self.store)["complete"])
+        with self.assertRaises(CatalogChangedError):
+            data.get_history(security.public_id)
+        self.assertTrue(DataLibrary(store=self.store).get_history(security.public_id).bars)
 
-    def test_library_rejects_a_history_from_a_newer_catalog_generation(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_reader_fixture(repository_root, with_integrity_failure=False)
-            data = DataLibrary(repository_root)
-            original_generation = data.catalog_generation()
-
-            _publish_reader_fixture(
-                repository_root,
-                with_integrity_failure=False,
-                symbol="NEXT",
-                asset_id=SECOND_ASSET_UUID,
-                name="Next Security",
-            )
-
-            self.assertNotEqual(original_generation, DataLibrary(repository_root).catalog_generation())
+    def test_changed_pricing_and_pending_publication_reject_without_recovery(self):
+        data = self.bootstrap()
+        public_id = data.list_securities()[0].public_id
+        download_pricing(self.store, "TEST", "2026-10-15", client=FakeClient(valid_bars(end="2026-10-15")))
+        before = snapshot(self.store)
+        with (
+            patch("alpaca_end_of_day.standalone.read_boundaries", side_effect=AssertionError("assignment read")),
+            patch("alpaca_end_of_day.standalone._rows", side_effect=AssertionError("pricing read")),
+        ):
             with self.assertRaises(CatalogChangedError):
-                data.get_history(TEST_MASTER_ID)
+                data.get_history(public_id)
+        self.assertEqual(snapshot(self.store), before)
+        lineage.atomic_json(self.root / ".pending.json", {})
+        with self.assertRaises(CatalogChangedError):
+            data.get_history(public_id)
 
-    def test_flat_csv_dump_is_date_ordered_with_raw_and_all_adjusted_values(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_raw_and_all_fixture(repository_root)
-            _publish_raw_and_all_fixture(
-                repository_root,
-                symbol="NEXT",
-                asset_id=SECOND_ASSET_UUID,
-                name="Next Security",
-            )
-            output_path = repository_root / "exports" / "online.csv"
-            arguments = parser_for("catalogue", "export").parse_args(
-                [
-                    "--output",
-                    str(output_path),
-                    "--from",
-                    "2024-01-04",
-                    "--through",
-                    "2024-01-05",
-                ]
-            )
+    def test_changed_serving_decision_without_upstream_change_rejects(self):
+        data = self.bootstrap()
+        group = deepcopy(self.catalogue_groups("TEST")["TEST"])
+        group["decision_generation"] = "new-decision"
+        storage.commit(self.store, {"TEST"}, [group])
+        with (
+            patch("alpaca_end_of_day.standalone.read_boundaries", side_effect=AssertionError("assignment read")),
+            patch("alpaca_end_of_day.standalone._rows", side_effect=AssertionError("pricing read")),
+        ):
+            with self.assertRaises(CatalogChangedError):
+                data.get_history(data.list_securities()[0].public_id)
 
-            with patch("alpaca_end_of_day._FLAT_CSV_SORT_CHUNK_ROWS", 2):
-                receipt = run_end_of_day_reader_command(
-                    arguments,
-                    repository_root=repository_root,
-                )
+    def test_csv_failure_preserves_destination_and_stream(self):
+        data = self.bootstrap()
+        destination = self.directory / "result.csv"
+        destination.write_text("original")
+        with patch.object(data, "_read_views", side_effect=CatalogChangedError("changed")):
+            with self.assertRaises(CatalogChangedError):
+                data.write_flat_online_csv(destination)
+            stream = io.StringIO()
+            with self.assertRaises(CatalogChangedError):
+                data.write_flat_online_csv(stream)
+            self.assertEqual(stream.getvalue(), "")
+        self.assertEqual(destination.read_text(), "original")
+        with self.assertRaises(ValueError):
+            data.write_flat_online_csv(self.store / "unsafe.csv")
 
-            with output_path.open(encoding="utf-8", newline="") as output_file:
-                reader = csv.DictReader(output_file)
-                rows = list(reader)
+    def test_cli_uses_store_for_read_search_and_export(self):
+        data = self.bootstrap()
+        public_id = data.list_securities()[0].public_id
+        args = parser_for("catalogue", "read").parse_args(["--store", str(self.store), "--public-id", public_id])
+        output = io.StringIO()
+        run_end_of_day_reader_command(args, store=args.store, output_stream=output)
+        self.assertEqual(json.loads(output.getvalue())["security"]["public_id"], public_id)
+        args = parser_for("catalogue", "export").parse_args(["--store", str(self.store), "--output", "-"])
+        output = io.StringIO()
+        run_end_of_day_reader_command(args, store=args.store, output_stream=output)
+        self.assertIn("9007199254740993.5", output.getvalue())
 
-        self.assertIsInstance(receipt, FlatCsvExport)
-        self.assertEqual(2, receipt.online_security_count)
-        self.assertEqual(2, receipt.exported_security_count)
-        self.assertEqual(4, receipt.row_count)
-        self.assertEqual(list(FLAT_ONLINE_CSV_COLUMNS), reader.fieldnames)
-        self.assertEqual(
-            sorted((row["date"], row["unique_id"]) for row in rows),
-            [(row["date"], row["unique_id"]) for row in rows],
-        )
-        test_row = next(
-            row for row in rows if row["date"] == "2024-01-04" and row["unique_id"] == TEST_MASTER_ID
-        )
-        self.assertEqual("TEST", test_row["ticker"])
-        self.assertEqual("Test Security", test_row["name"])
-        self.assertEqual(Decimal("102"), Decimal(test_row["raw_open"]))
-        self.assertEqual(Decimal("51"), Decimal(test_row["all_adjusted_open"]))
-        self.assertEqual("1200", test_row["raw_volume"])
-        self.assertEqual("2400", test_row["all_adjusted_volume"])
-        self.assertEqual("120", test_row["raw_trade_count"])
-        self.assertEqual("120", test_row["all_adjusted_trade_count"])
+    def test_first_and_cached_reads_do_not_authenticate_selected_payloads(self):
+        self.bootstrap()
+        from libs.alpaca_end_of_day_security_correlation import security_identity
 
-    def test_flat_csv_identity_prefers_the_ticker_whose_observed_range_continues(self) -> None:
-        public_id = "a" * 64
-        security = Security(
-            public_id=public_id,
-            tickers=("NEXT", "NEXTV"),
-            names=("Next Security",),
-            cusips=("123456789",),
-            external_identifiers=(),
-            exchanges=("NASDAQ",),
-            asset_classes=("us_equity",),
-            first_session=date(2025, 7, 1),
-            last_session=date(2026, 10, 5),
-            adjustments=("raw", "all"),
-        )
-        record = {
-            "alpaca_identities": [
-                {
-                    "tickers": ["NEXT", "NEXTV"],
-                    "names": ["Next Security"],
-                    "cusips": ["123456789"],
-                    "exchanges": ["NASDAQ"],
-                    "asset_classes": ["us_equity"],
-                    "ticker_ownership_periods": [],
-                }
-            ],
-            "observed_history_ranges": [
-                {
-                    "ticker": "NEXT",
-                    "first_session_date": "2025-07-01",
-                    "last_session_date": "2026-10-05",
-                },
-                {
-                    "ticker": "NEXTV",
-                    "first_session_date": "2025-07-01",
-                    "last_session_date": "2025-07-01",
-                },
-            ],
-        }
+        original_stat = Path.stat
+        pricing = self.store / "end_of_day/pricing/TEST"
+        assignments = self.store / "end_of_day/lineage/TEST"
 
-        identity = _IdentityTimeline(record, security).for_session(date(2025, 7, 1))
+        def no_selected_stat(path, *args, **kwargs):
+            if path.is_relative_to(pricing) or path.is_relative_to(assignments):
+                self.assertEqual(path.name, ".pending.json", f"published input inspected: {path}")
+            return original_stat(path, *args, **kwargs)
 
-        self.assertEqual("NEXT", identity.ticker)
+        for cache in (0, 2 * 1024 * 1024):
+            data = DataLibrary(store=self.store, cache_bytes=cache)
+            with (
+                patch.object(Path, "stat", no_selected_stat),
+                patch.object(Path, "iterdir", side_effect=AssertionError("crawl")),
+                patch.object(
+                    security_identity,
+                    "security_id_for_alpaca_asset_ids",
+                    side_effect=AssertionError("identity recomputation"),
+                ),
+                patch(
+                    "libs.alpaca_serving_catalogue.producer.evaluate",
+                    side_effect=AssertionError("eligibility recomputation"),
+                ),
+            ):
+                first = data.get_history(data.list_securities()[0].public_id)
+                second = data.get_history(data.list_securities()[0].public_id)
+                self.assertEqual(first, second)
 
-        record["observed_history_ranges"][1]["last_session_date"] = "2026-10-05"
-        with self.assertRaisesRegex(DataLibraryError, "has no unique ticker"):
-            _IdentityTimeline(record, security).for_session(date(2025, 7, 1))
+    def test_cache_reuses_selected_payload_by_digest_without_reopening_it(self):
+        self.bootstrap()
+        data = DataLibrary(store=self.store, cache_bytes=2 * 1024 * 1024)
+        public_id = data.list_securities()[0].public_id
+        expected = data.get_history(public_id)
+        original = Path.read_bytes
 
-    def test_command_line_reader_is_a_client_of_the_public_library(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            _publish_reader_fixture(repository_root, with_integrity_failure=False)
-            arguments = parser_for("catalogue", "read").parse_args(
-                [
-                    "--public-id",
-                    TEST_MASTER_ID,
-                    "--adjustment",
-                    "raw",
-                    "--from",
-                    "2024-01-04",
-                    "--through",
-                    "2024-01-05",
-                ]
-            )
-            output = io.StringIO()
+        def no_payload(path):
+            if path.suffix == ".gz":
+                raise AssertionError("cached payload reopened")
+            return original(path)
 
-            history = run_end_of_day_reader_command(
-                arguments,
-                repository_root=repository_root,
-                output_stream=output,
-            )
+        with patch.object(Path, "read_bytes", no_payload):
+            self.assertEqual(data.get_history(public_id), expected)
+        self.assertLessEqual(data._reader.cache_info()["used_bytes"], 2 * 1024 * 1024)
 
-        document = json.loads(output.getvalue())
-        self.assertEqual(2, len(history.bars))
-        self.assertEqual(API_VERSION, document["api_version"])
-        self.assertEqual(TEST_MASTER_ID, document["security"]["public_id"])
-        self.assertEqual(["2024-01-04", "2024-01-05"], [bar["session"] for bar in document["bars"]])
+    def test_generations_checked_inside_lock_before_assignment_or_price_payloads(self):
+        data = self.bootstrap()
+        public_id = data.list_securities()[0].public_id
+        self.publish_change(lambda receipt, _: receipt["evidence"].update(warnings=["changed"]))
+        with (
+            patch("alpaca_end_of_day.standalone.read_boundaries", side_effect=AssertionError("assignment read")),
+            patch("alpaca_end_of_day.standalone._rows", side_effect=AssertionError("pricing read")),
+        ):
+            with self.assertRaises(CatalogChangedError):
+                data.get_history(public_id)
+
+    def test_read_io_is_independent_of_unrelated_group_population(self):
+        self.bootstrap()
+
+        def paths_read(data):
+            opened = []
+            original = Path.read_bytes
+
+            def read(path):
+                if path.is_relative_to(self.store):
+                    opened.append(path.relative_to(self.store))
+                return original(path)
+
+            with patch.object(Path, "read_bytes", read):
+                data.get_history(data.search_securities("TEST")[0].public_id)
+            return opened
+
+        before = paths_read(DataLibrary(store=self.store))
+        for name in ("AAA", "BBB", "CCC"):
+            self.add_symbol(name)
+        self.assertTrue(maintain(self.store)["complete"])
+        after = paths_read(DataLibrary(store=self.store))
+        self.assertEqual(before, after)
+
+    def test_v22_lock_protocol_and_decisions_are_reused(self):
+        with closing(connect_sqlite(self.root / "index.sqlite3")) as connection, connection:
+            connection.execute("PRAGMA user_version=22")
+        self.assertTrue(StandaloneReader(self.store).get_history("TEST")["bars"])
+        with patch(
+            "libs.alpaca_lineage_build.transform.correlate", side_effect=AssertionError("identity replay")
+        ):
+            self.assertEqual(self.bootstrap().online_count(), 1)
 
 
 if __name__ == "__main__":

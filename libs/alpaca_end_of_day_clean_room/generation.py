@@ -7,7 +7,6 @@ import io
 import json
 import os
 import re
-import tempfile
 import time
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -15,13 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
-from alpaca_end_of_day import ADJUSTMENTS, DataLibrary
 from libs.alpaca_end_of_day_pipeline import PIPELINE_VERSION
 from libs.alpaca_end_of_day_security_correlation import CORRELATION_VERSION
 from libs.alpaca_end_of_day_ticker_pipeline.orchestration import (
     resolve_authoritative_alpaca_symbol,
 )
-from libs.alpaca_end_of_day_v6.catalogue import authenticate_catalogue_store
+from libs.alpaca_end_of_day_v6.catalogue import authenticate_catalogue_store, load_catalogue
 from libs.alpaca_end_of_day_v6.common import (
     assert_publication_complete,
     canonical_sha256,
@@ -34,6 +32,7 @@ from libs.alpaca_end_of_day_v6.common import (
 from libs.alpaca_end_of_day_v6.correlation import authenticate_correlation
 from libs.alpaca_end_of_day_v6.lineage import authenticate_lineage
 from libs.alpaca_end_of_day_v6.pipeline import _request_source_view_batch, run_v6_pipeline
+from libs.alpaca_end_of_day_v6.reader import PublishedHistoryInputs, read_history_from_master
 from libs.alpaca_end_of_day_v6.source import (
     SOURCE_MANIFEST,
     authenticate_monthly_source,
@@ -52,14 +51,15 @@ from libs.alpaca_end_of_day_v6.versions import (
 )
 from libs.alpaca_end_of_day_v6.warnings import authenticate_warnings
 from libs.alpaca_end_of_day_warning_pipeline import WARNING_PIPELINE_VERSION
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_recovery_registry import atomic_bytes
 from libs.alpaca_security_lineage import AlpacaIdentityRequestRateLimiter
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.download_alpaca_end_of_day_bars import AlpacaRequestRateLimiter
 from libs.download_alpaca_end_of_day_bars.settings import EARLIEST_REQUEST_TIMESTAMP
 
-CLEAN_ROOM_RUN_VERSION = 3
-SUPPORTED_RUN_VERSIONS = (1, 2, CLEAN_ROOM_RUN_VERSION)
+CLEAN_ROOM_RUN_VERSION = 4
+SUPPORTED_RUN_VERSIONS = (1, 2, 3, CLEAN_ROOM_RUN_VERSION)
 CLEAN_ROOM_RUN_BOUNDARY = "alpaca_end_of_day_clean_room_run"
 RUN_STATE_DIRECTORY = "clean_room_run"
 RUN_MANIFEST = "manifest.json"
@@ -300,7 +300,7 @@ def _recover_initialization(state: Path) -> None:
     _discard_initialization_staging(state)
     intent = read_json_object(pending, "clean-room initialization")
     if (
-        intent.get("schema_version") != 3
+        intent.get("schema_version") not in (3, CLEAN_ROOM_RUN_VERSION)
         or intent.get("boundary") != "alpaca_end_of_day_clean_room_initialization"
         or not isinstance(intent.get("manifest"), dict)
         or not isinstance(intent.get("universe_csv_utf8"), str)
@@ -812,35 +812,32 @@ def audit_clean_room_generation(
         audit_counts["catalogue_sources"] = len(catalogue_symbols)
         audit_counts["catalogue_identities"] = len(master.identities_by_master_id)
 
-    # Exercise the exact public package against a read-only facade for this store.
-    with tempfile.TemporaryDirectory(prefix="alpaca-clean-room-public-") as directory:
-        facade = Path(directory)
-        os.symlink(store.resolve(), facade / "data_vtest", target_is_directory=True)
-        library = DataLibrary(facade)
-        securities = library.list_securities()
-        if library.catalog_generation() != master.receipt["security_master_generation_sha256"]:
-            raise CleanRoomError("public reader selected another catalogue generation")
+    # Retained combined-store audits use their own reader. They do not exercise
+    # or configure the standalone application's DataLibrary.
+    with publication_lock(store, exclusive=False):
+        assert_publication_complete(store)
+        from libs.alpaca_end_of_day_v6.catalogue import _load_catalogue_store
+
+        current = _load_catalogue_store(store)
+        if (
+            current.receipt["security_master_generation_sha256"]
+            != master.receipt["security_master_generation_sha256"]
+        ):
+            raise CleanRoomError("combined catalogue changed during audit selection")
+        securities = [record for record in master.identities_by_master_id.values() if record["online"]]
         public_bar_reads = 0
         for number, security in enumerate(securities, start=1):
-            if len(security.adjustments) != len(ADJUSTMENTS) or set(security.adjustments) != set(ADJUSTMENTS):
-                raise CleanRoomError(f"online security advertises incomplete adjustments: {security.public_id}")
+            public_id = security["master_id"]
+            if set(security["available_adjustments"]) != set(ADJUSTMENTS):
+                raise CleanRoomError(f"online security advertises incomplete adjustments: {public_id}")
+            inputs = PublishedHistoryInputs()
             for adjustment in ADJUSTMENTS:
-                history = library.get_history(security.public_id, adjustment)
-                if (
-                    history.security.public_id != security.public_id
-                    or history.adjustment != adjustment
-                    or history.generation != library.catalog_generation()
-                    or not history.bars
-                ):
-                    raise CleanRoomError(f"public history contract failed: {security.public_id}/{adjustment}")
-                public_bar_reads += len(history.bars)
-            # The public object deliberately caches within a normal consumer snapshot.
-            # A universe audit bounds memory by dropping that cache after each identity.
-            library._history_inputs = type(library._history_inputs)()  # noqa: SLF001
+                history = read_history_from_master(store, master, public_id, adjustment, inputs=inputs)
+                if not history["bars"]:
+                    raise CleanRoomError(f"combined history contract failed: {public_id}/{adjustment}")
+                public_bar_reads += len(history["bars"])
             if number % 10 == 0 or number == len(securities):
-                _emit(output, f"audit: exercised {number}/{len(securities)} online public identities")
-        if DataLibrary(facade).catalog_generation() != library.catalog_generation():
-            raise CleanRoomError("catalogue generation changed during public audit")
+                _emit(output, f"audit: exercised {number}/{len(securities)} combined identities")
         audit_counts["online_identities"] = len(securities)
         audit_counts["public_history_reads"] = len(securities) * len(ADJUSTMENTS)
         audit_counts["public_bar_observations_read"] = public_bar_reads
@@ -1237,9 +1234,9 @@ def activate_clean_room_generation(
             )
 
     try:
-        library = DataLibrary(repository)
-        public_generation = library.catalog_generation()
-        online_count = library.online_count()
+        selected = load_catalogue(repository)
+        public_generation = selected.receipt["security_master_generation_sha256"]
+        online_count = sum(record["online"] for record in selected.identities_by_master_id.values())
         if public_generation != completion["catalogue_generation_sha256"]:
             raise CleanRoomError("activated public reader selected another generation")
         expected_online = audit.get("counts", {}).get("online_identities")

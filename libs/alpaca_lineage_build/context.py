@@ -15,6 +15,7 @@ class OperationContext:
         self.store = Path(store).absolute()
         self.index = None
         self.summary = None
+        self.serving = None
         self._pricing = None
 
     def pricing(self):
@@ -29,6 +30,12 @@ class OperationContext:
     def select_summary(self):
         self.summary = refresh_snapshot(self.store, self.summary)
         return self.summary
+
+    def select_serving(self, *, recover=False):
+        from libs.alpaca_serving_catalogue.storage import refresh_controls
+
+        self.serving = refresh_controls(self.store, self.serving, recover=recover)
+        return self.serving
 
 
 def accept_context(store, context=None, work_policy=None):

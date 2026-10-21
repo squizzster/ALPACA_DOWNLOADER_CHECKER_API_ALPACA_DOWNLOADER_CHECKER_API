@@ -4,7 +4,7 @@ Consumer code should import this package and no module below ``libs``. The
 pipeline has already checked its published boundaries; this consumer reads the
 resulting online universe, public identities, and daily histories. The separate
 StandaloneReader consumes resolved pricing from the standalone twins without
-claiming the combined catalogue's online-availability contract.
+claiming the serving catalogue's availability contract.
 """
 
 from __future__ import annotations
@@ -17,32 +17,19 @@ import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
-from zoneinfo import ZoneInfo
 
-from libs.alpaca_end_of_day_reader import EndOfDayReaderError
-from libs.alpaca_end_of_day_security_correlation import (
-    SecurityCorrelationError,
-    is_master_id,
-)
-from libs.alpaca_end_of_day_v6.catalogue import load_catalogue
-from libs.alpaca_end_of_day_v6.errors import V6Error
-from libs.alpaca_end_of_day_v6.reader import (
-    PublishedHistoryInputs,
-)
-from libs.alpaca_end_of_day_v6.reader import (
-    read_v6_history as _read_published_history,
-)
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.alpaca_serving_catalogue import storage as catalogue_storage
+from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 11
+API_VERSION = 13
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
-ADJUSTMENTS = tuple(ALPACA_ADJUSTMENT_MODES)
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
     "unique_id",
@@ -66,16 +53,12 @@ FLAT_ONLINE_CSV_COLUMNS = (
     "all_adjusted_trade_count",
     "all_adjusted_vwap",
 )
-_DEFAULT_LIBRARY_PATH = _REPOSITORY_ROOT
-_NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
+_DEFAULT_STORE = _REPOSITORY_ROOT / "data_pricing"
 _FLAT_CSV_SORT_CHUNK_ROWS = 100_000
-_CATALOG_CHANGED_MESSAGE = (
-    "the data catalog changed after this library snapshot was opened; create a new DataLibrary"
-)
 
 
 class DataLibraryError(RuntimeError):
-    """Raised when the public library cannot authenticate or return data."""
+    """Raised when the public library cannot select or return data."""
 
 
 class PublicIdUnavailableError(DataLibraryError):
@@ -84,6 +67,44 @@ class PublicIdUnavailableError(DataLibraryError):
 
 class CatalogChangedError(DataLibraryError):
     """Raised rather than combining results from different catalog generations."""
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataObservation:
+    """Known metadata, with explicit unknown observation/effective dates."""
+
+    field: str
+    value: str
+    observed_at: datetime | None
+    effective_from: date | None = None
+    effective_through: date | None = None
+
+    def to_dict(self):
+        return {
+            "field": self.field,
+            "value": self.value,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "effective_from": self.effective_from.isoformat() if self.effective_from else None,
+            "effective_through": self.effective_through.isoformat() if self.effective_through else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TickerOwnershipInterval:
+    """Published dated label evidence; unknown endpoints stay unknown."""
+
+    ticker: str
+    start_inclusive: date | None
+    end_exclusive: date | None
+    cusip: str | None
+
+    def to_dict(self):
+        return {
+            "ticker": self.ticker,
+            "start_inclusive": self.start_inclusive.isoformat() if self.start_inclusive else None,
+            "end_exclusive": self.end_exclusive.isoformat() if self.end_exclusive else None,
+            "cusip": self.cusip,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +132,10 @@ class Security:
     first_session: date
     last_session: date
     adjustments: tuple[str, ...]
+    observations: tuple[MetadataObservation, ...]
+    ticker_ownership_intervals: tuple[TickerOwnershipInterval, ...]
+    stored_session_count: int
+    explained_missing_sessions: tuple[date, ...]
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible public representation."""
@@ -125,6 +150,13 @@ class Security:
             "first_session": self.first_session.isoformat(),
             "last_session": self.last_session.isoformat(),
             "adjustments": list(self.adjustments),
+            "observations": [item.to_dict() for item in self.observations],
+            "ticker_ownership_intervals": [item.to_dict() for item in self.ticker_ownership_intervals],
+            "coverage": {
+                "meaning": "approved_stored_history",
+                "session_count": self.stored_session_count,
+                "explained_missing_sessions": [d.isoformat() for d in self.explained_missing_sessions],
+            },
         }
 
 
@@ -159,7 +191,7 @@ class DailyBar:
     high: Decimal
     low: Decimal
     close: Decimal
-    volume: int
+    volume: Decimal
     trade_count: int
     vwap: Decimal
 
@@ -171,7 +203,7 @@ class DailyBar:
             "high": str(self.high),
             "low": str(self.low),
             "close": str(self.close),
-            "volume": self.volume,
+            "volume": str(self.volume),
             "trade_count": self.trade_count,
             "vwap": str(self.vwap),
         }
@@ -207,7 +239,7 @@ class History:
 
 @dataclass(frozen=True, slots=True)
 class Catalog:
-    """Identity and size of one authenticated public-universe snapshot."""
+    """Identity and size of one published public-universe snapshot."""
 
     generation: str
     published_at: datetime
@@ -252,15 +284,6 @@ class FlatCsvExport:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class _SessionIdentity:
-    ticker: str
-    name: str
-    cusip: str
-    exchange: str
-    asset_class: str
-
-
 @lru_cache(maxsize=1)
 def _validate_api_change_log() -> None:
     try:
@@ -280,150 +303,6 @@ def _validate_api_change_log() -> None:
             or any(not isinstance(item, str) or not item for item in modifications)
         ):
             raise DataLibraryError(f"public API changelog entry {implicit_version} has no modifications")
-
-
-def _canonical_public_id(public_id: str) -> str:
-    if not isinstance(public_id, str):
-        raise ValueError("public ID must be a string")
-    canonical_id = public_id.lower()
-    if not is_master_id(canonical_id):
-        raise ValueError(f"invalid public ID: {public_id!r}")
-    return canonical_id
-
-
-def _string_tuple(record: dict[str, Any], field_name: str) -> tuple[str, ...]:
-    values = record[field_name]
-    if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values):
-        raise DataLibraryError(f"authenticated security has invalid {field_name}")
-    return tuple(values)
-
-
-def _external_identifiers(record: dict[str, Any]) -> tuple[ExternalIdentifier, ...]:
-    identifiers = record["figi_identifiers"]
-    if not isinstance(identifiers, list):
-        raise DataLibraryError("authenticated security has invalid external identifiers")
-    result = []
-    for identifier in identifiers:
-        if (
-            not isinstance(identifier, dict)
-            or not isinstance(identifier.get("type"), str)
-            or not identifier["type"]
-            or not isinstance(identifier.get("value"), str)
-            or not identifier["value"]
-        ):
-            raise DataLibraryError("authenticated security has invalid external identifiers")
-        result.append(ExternalIdentifier(kind=identifier["type"], value=identifier["value"]))
-    return tuple(result)
-
-
-def _security_from_record(record: dict[str, Any]) -> Security:
-    try:
-        if record["online"] is not True:
-            raise PublicIdUnavailableError("public ID is not available")
-        return Security(
-            public_id=record["master_id"],
-            tickers=_string_tuple(record, "tickers"),
-            names=_string_tuple(record, "names"),
-            cusips=_string_tuple(record, "cusips"),
-            external_identifiers=_external_identifiers(record),
-            exchanges=_string_tuple(record, "exchanges"),
-            asset_classes=_string_tuple(record, "asset_classes"),
-            first_session=date.fromisoformat(record["first_observed_session_date"]),
-            last_session=date.fromisoformat(record["last_observed_session_date"]),
-            adjustments=_string_tuple(record, "available_adjustments"),
-        )
-    except PublicIdUnavailableError:
-        raise
-    except (KeyError, TypeError, ValueError) as error:
-        raise DataLibraryError("authenticated security metadata does not satisfy the public contract") from error
-
-
-def _ticker_resolutions_from_record(
-    record: dict[str, Any],
-    security: Security,
-) -> tuple[TickerResolution, ...]:
-    ranges = record.get("observed_history_ranges")
-    if not isinstance(ranges, list):
-        raise DataLibraryError("authenticated security has invalid observed history ranges")
-    resolutions = set()
-    try:
-        for observed_range in ranges:
-            if not isinstance(observed_range, dict):
-                raise TypeError("observed history range is not an object")
-            ticker = observed_range["ticker"]
-            if not isinstance(ticker, str) or not ticker:
-                raise TypeError("observed history range has no ticker")
-            resolutions.add(
-                TickerResolution(
-                    ticker=ticker,
-                    public_id=security.public_id,
-                    names=security.names,
-                    first_session=date.fromisoformat(observed_range["first_session_date"]),
-                    last_session=date.fromisoformat(observed_range["last_session_date"]),
-                    adjustments=_string_tuple(observed_range, "adjustments"),
-                )
-            )
-    except (KeyError, TypeError, ValueError) as error:
-        raise DataLibraryError("authenticated security has invalid observed history ranges") from error
-    return tuple(
-        sorted(
-            resolutions,
-            key=lambda item: (item.ticker, item.first_session, item.last_session, item.public_id),
-        )
-    )
-
-
-def _exact_decimal(bar: dict[str, Any], field_name: str) -> Decimal:
-    try:
-        return Decimal(bar[field_name])
-    except (KeyError, TypeError, InvalidOperation) as error:
-        raise DataLibraryError(f"authenticated bar has invalid {field_name}") from error
-
-
-def _exact_integer(bar: dict[str, Any], field_name: str) -> int:
-    value = _exact_decimal(bar, field_name)
-    if value != value.to_integral_value():
-        raise DataLibraryError(f"authenticated bar has non-integral {field_name}")
-    return int(value)
-
-
-def _daily_bar_from_record(record: dict[str, Any]) -> DailyBar:
-    try:
-        timestamp_text = record["timestamp"]
-        if not isinstance(timestamp_text, str):
-            raise TypeError("timestamp is not a string")
-        normalized_timestamp = timestamp_text[:-1] + "+00:00" if timestamp_text.endswith("Z") else timestamp_text
-        timestamp = datetime.fromisoformat(normalized_timestamp)
-        if timestamp.tzinfo is None:
-            raise ValueError("timestamp has no time zone")
-        session = timestamp.astimezone(_NEW_YORK_TIME_ZONE).date()
-    except (KeyError, TypeError, ValueError) as error:
-        raise DataLibraryError("authenticated bar has an invalid timestamp") from error
-    return DailyBar(
-        session=session,
-        open=_exact_decimal(record, "open"),
-        high=_exact_decimal(record, "high"),
-        low=_exact_decimal(record, "low"),
-        close=_exact_decimal(record, "close"),
-        volume=_exact_integer(record, "volume"),
-        trade_count=_exact_integer(record, "trade_count"),
-        vwap=_exact_decimal(record, "vwap"),
-    )
-
-
-def _optional_date(value: date | str | None, field_name: str) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        raise ValueError(f"{field_name} must be a date, not a datetime")
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value)
-        except ValueError as error:
-            raise ValueError(f"{field_name} must use YYYY-MM-DD format") from error
-    raise ValueError(f"{field_name} must be a date, YYYY-MM-DD string, or None")
 
 
 def _normalized_search_text(value: str) -> str:
@@ -450,180 +329,6 @@ def _security_search_rank(security: Security, query: str) -> tuple[int, int, int
         return None
     display_name = security.names[0] if security.names else security.tickers[0]
     return (*min(ranks), display_name.casefold(), security.public_id)
-
-
-def _joined_identity_values(values: Iterator[str]) -> str:
-    return " | ".join(sorted(set(values)))
-
-
-def _identity_date(value: object, field_name: str) -> date | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise DataLibraryError(f"authenticated identity has invalid {field_name}")
-    try:
-        return date.fromisoformat(value)
-    except ValueError as error:
-        raise DataLibraryError(f"authenticated identity has invalid {field_name}") from error
-
-
-@dataclass(frozen=True, slots=True)
-class _DatedIdentity:
-    ticker: str
-    start: date | None
-    end: date | None
-    names: tuple[str, ...]
-    cusips: tuple[str, ...]
-    exchanges: tuple[str, ...]
-    asset_classes: tuple[str, ...]
-
-    def contains(self, session: date) -> bool:
-        return (self.start is None or session >= self.start) and (self.end is None or session < self.end)
-
-
-@dataclass(frozen=True, slots=True)
-class _ObservedTickerRange:
-    ticker: str
-    first_session: date
-    last_session: date
-
-    def contains(self, session: date) -> bool:
-        return self.first_session <= session <= self.last_session
-
-
-class _IdentityTimeline:
-    def __init__(self, record: dict[str, Any], security: Security) -> None:
-        self._security = security
-        self._dated_identities: list[_DatedIdentity] = []
-        self._observed_ranges: list[_ObservedTickerRange] = []
-        self._identities_by_ticker: dict[str, list[_DatedIdentity]] = {}
-        try:
-            identities = record["alpaca_identities"]
-            observed_ranges = record["observed_history_ranges"]
-            if not isinstance(identities, list) or not isinstance(observed_ranges, list):
-                raise TypeError("identity timelines are not arrays")
-            for identity in identities:
-                if not isinstance(identity, dict):
-                    raise TypeError("identity is not an object")
-                tickers = _string_tuple(identity, "tickers")
-                names = _string_tuple(identity, "names")
-                cusips = _string_tuple(identity, "cusips")
-                exchanges = _string_tuple(identity, "exchanges")
-                asset_classes = _string_tuple(identity, "asset_classes")
-                undated = _DatedIdentity(
-                    ticker="",
-                    start=None,
-                    end=None,
-                    names=names,
-                    cusips=cusips,
-                    exchanges=exchanges,
-                    asset_classes=asset_classes,
-                )
-                for ticker in tickers:
-                    self._identities_by_ticker.setdefault(ticker, []).append(undated)
-                periods = identity["ticker_ownership_periods"]
-                if not isinstance(periods, list):
-                    raise TypeError("ticker ownership periods are not an array")
-                for period in periods:
-                    if not isinstance(period, dict):
-                        raise TypeError("ticker ownership period is not an object")
-                    ticker = period["ticker"]
-                    if not isinstance(ticker, str) or not ticker:
-                        raise TypeError("ticker ownership period has no ticker")
-                    period_cusip = period.get("cusip")
-                    dated = _DatedIdentity(
-                        ticker=ticker,
-                        start=_identity_date(period.get("start_date_inclusive"), "ticker start date"),
-                        end=_identity_date(period.get("end_date_exclusive"), "ticker end date"),
-                        names=names,
-                        cusips=(period_cusip,) if isinstance(period_cusip, str) and period_cusip else cusips,
-                        exchanges=exchanges,
-                        asset_classes=asset_classes,
-                    )
-                    self._dated_identities.append(dated)
-            for observed_range in observed_ranges:
-                if not isinstance(observed_range, dict):
-                    raise TypeError("observed ticker range is not an object")
-                ticker = observed_range["ticker"]
-                if not isinstance(ticker, str) or not ticker:
-                    raise TypeError("observed ticker range has no ticker")
-                self._observed_ranges.append(
-                    _ObservedTickerRange(
-                        ticker=ticker,
-                        first_session=date.fromisoformat(observed_range["first_session_date"]),
-                        last_session=date.fromisoformat(observed_range["last_session_date"]),
-                    )
-                )
-        except DataLibraryError:
-            raise
-        except (KeyError, TypeError, ValueError) as error:
-            raise DataLibraryError("authenticated identity does not contain a usable ticker timeline") from error
-
-    def for_session(self, session: date) -> _SessionIdentity:
-        active_identities = [identity for identity in self._dated_identities if identity.contains(session)]
-        matching_observed_ranges = [
-            observed_range for observed_range in self._observed_ranges if observed_range.contains(session)
-        ]
-        observed_tickers = {observed_range.ticker for observed_range in matching_observed_ranges}
-        preferred_observed_ticker = None
-        if len(observed_tickers) == 1:
-            preferred_observed_ticker = next(iter(observed_tickers))
-        elif observed_tickers:
-            latest_session_by_ticker = {
-                ticker: max(
-                    observed_range.last_session
-                    for observed_range in matching_observed_ranges
-                    if observed_range.ticker == ticker
-                )
-                for ticker in observed_tickers
-            }
-            latest_session = max(latest_session_by_ticker.values())
-            continuing_tickers = {
-                ticker
-                for ticker, last_session in latest_session_by_ticker.items()
-                if last_session == latest_session
-            }
-            if len(continuing_tickers) == 1:
-                preferred_observed_ticker = next(iter(continuing_tickers))
-        active_tickers = {identity.ticker for identity in active_identities}
-        if len(active_tickers) > 1 and preferred_observed_ticker is not None:
-            narrowed = [
-                identity for identity in active_identities if identity.ticker == preferred_observed_ticker
-            ]
-            narrowed_tickers = {identity.ticker for identity in narrowed}
-            if len(narrowed_tickers) == 1:
-                active_identities = narrowed
-                active_tickers = narrowed_tickers
-        if len(active_tickers) == 1:
-            ticker = next(iter(active_tickers))
-            metadata = [identity for identity in active_identities if identity.ticker == ticker]
-        else:
-            if len(active_tickers) > 1:
-                raise DataLibraryError(
-                    f"online security {self._security.public_id} has ambiguous ticker ownership on {session}"
-                )
-            if preferred_observed_ticker is not None:
-                ticker = preferred_observed_ticker
-            elif not observed_tickers and len(self._security.tickers) == 1:
-                ticker = self._security.tickers[0]
-            else:
-                raise DataLibraryError(
-                    f"online security {self._security.public_id} has no unique ticker on {session}"
-                )
-            metadata = self._identities_by_ticker.get(ticker, [])
-        names = _joined_identity_values(value for identity in metadata for value in identity.names)
-        cusips = _joined_identity_values(value for identity in metadata for value in identity.cusips)
-        exchanges = _joined_identity_values(value for identity in metadata for value in identity.exchanges)
-        asset_classes = _joined_identity_values(
-            value for identity in metadata for value in identity.asset_classes
-        )
-        return _SessionIdentity(
-            ticker=ticker,
-            name=names or _joined_identity_values(iter(self._security.names)),
-            cusip=cusips or _joined_identity_values(iter(self._security.cusips)),
-            exchange=exchanges or _joined_identity_values(iter(self._security.exchanges)),
-            asset_class=asset_classes or _joined_identity_values(iter(self._security.asset_classes)),
-        )
 
 
 def _bar_csv_values(bar: DailyBar | None) -> tuple[str, ...]:
@@ -721,146 +426,209 @@ def _write_flat_csv_text_document(
             output.write(encoded_segment.decode("utf-8"))
 
 
-class DataLibrary:
-    """Read one consistent snapshot of the authenticated online universe.
+def _security(record):
+    return Security(
+        public_id=record["public_id"],
+        tickers=tuple(record["tickers"]),
+        names=tuple(record["names"]),
+        cusips=tuple(record["cusips"]),
+        exchanges=tuple(record["exchanges"]),
+        asset_classes=tuple(record["asset_classes"]),
+        external_identifiers=tuple(ExternalIdentifier(**i) for i in record["external_identifiers"]),
+        first_session=date.fromisoformat(record["first_session"]),
+        last_session=date.fromisoformat(record["last_session"]),
+        adjustments=tuple(record["adjustments"]),
+        observations=tuple(
+            MetadataObservation(
+                field=o["field"],
+                value=o["value"],
+                observed_at=datetime.fromisoformat(o["observed_at"]) if o["observed_at"] else None,
+                effective_from=date.fromisoformat(o["effective_from"]) if o["effective_from"] else None,
+                effective_through=date.fromisoformat(o["effective_through"]) if o["effective_through"] else None,
+            )
+            for o in record["observations"]
+        ),
+        ticker_ownership_intervals=tuple(
+            TickerOwnershipInterval(
+                ticker=interval["ticker"],
+                start_inclusive=date.fromisoformat(interval["start_inclusive"])
+                if interval["start_inclusive"]
+                else None,
+                end_exclusive=date.fromisoformat(interval["end_exclusive"])
+                if interval["end_exclusive"]
+                else None,
+                cusip=interval["cusip"],
+            )
+            for interval in record["ticker_ownership_intervals"]
+        ),
+        stored_session_count=record["coverage"]["session_count"],
+        explained_missing_sessions=tuple(
+            date.fromisoformat(d) for d in record["coverage"]["explained_missing_sessions"]
+        ),
+    )
 
-    ``path`` is the data-engine repository root. It defaults to the parent of
-    this package, so applications importing this checkout need no path
-    configuration. Create a new instance to observe a newer publication.
+
+def _optional_date(value, name):
+    from .standalone import _date
+
+    return _date(value, name)
+
+
+class DataLibrary:
+    """One in-memory public catalogue snapshot over an explicit standalone store.
+
+    Histories compare the selected decision and upstream generations under group
+    locks. Unrelated catalogue updates leave a compatible group readable.
     """
 
-    def __init__(self, path: Path | str | None = None) -> None:
+    def __init__(self, *args, store=None, wait=False, cache_bytes=0, **legacy):
+        if args or legacy:
+            raise TypeError(
+                "DataLibrary now accepts store=PATH; positional repository roots and path= are removed. Bootstrap the standalone serving catalogue and migrate CLI callers to --store."
+            )
         _validate_api_change_log()
-        self._path = _DEFAULT_LIBRARY_PATH if path is None else Path(path)
+        self.store = Path(_DEFAULT_STORE if store is None else store).absolute()
+        self._reader = StandaloneReader(self.store, wait=wait, cache_bytes=cache_bytes)
         try:
-            self._master = load_catalogue(self._path)
-        except (SecurityCorrelationError, V6Error) as error:
-            raise DataLibraryError(f"cannot open the authenticated data catalog: {error}") from error
-        generation = self._master.receipt.get("security_master_generation_sha256")
-        published_at = self._master.receipt.get("created_at")
-        if not isinstance(generation, str) or not generation:
-            raise DataLibraryError("authenticated data catalog has no generation")
-        if not isinstance(published_at, str):
-            raise DataLibraryError("authenticated data catalog has no publication time")
-        try:
-            self._published_at = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise DataLibraryError("authenticated data catalog has an invalid publication time") from error
-        if self._published_at.tzinfo is None:
-            raise DataLibraryError("authenticated data catalog publication time has no time zone")
-        self._generation = generation
-        self._securities: tuple[Security, ...] | None = None
-        self._ticker_resolutions: dict[str, tuple[TickerResolution, ...]] | None = None
-        self._history_inputs = PublishedHistoryInputs()
+            selected = catalogue_storage.snapshot(self.store)
+            self._generation = selected["state"]["generation"]
+            self._published_at = datetime.fromisoformat(selected["state"]["published_at"])
+            self._records, self._groups = selected["records"], selected["groups"]
+            self._securities = {
+                public_id: _security(record["public"]) for public_id, record in self._records.items()
+            }
+            self._resolutions = {}
+            for public_id, record in self._records.items():
+                security = self._securities[public_id]
+                for interval in record["public"]["ticker_ranges"]:
+                    match = TickerResolution(
+                        interval["ticker"],
+                        public_id,
+                        security.names,
+                        date.fromisoformat(interval["first_session"]),
+                        date.fromisoformat(interval["last_session"]),
+                        security.adjustments,
+                    )
+                    self._resolutions.setdefault(match.ticker, []).append(match)
+            self._resolutions = {
+                ticker: tuple(sorted(matches, key=lambda r: (r.first_session, r.last_session, r.public_id)))
+                for ticker, matches in self._resolutions.items()
+            }
+        except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
+            raise DataLibraryError(f"cannot open serving catalogue: {error}") from error
 
-    def _assert_current_generation(self) -> None:
-        try:
-            current_master = load_catalogue(self._path)
-        except (SecurityCorrelationError, V6Error) as error:
-            raise DataLibraryError(f"cannot authenticate the current data catalog: {error}") from error
-        current_generation = current_master.receipt.get("security_master_generation_sha256")
-        if current_generation != self._generation:
-            raise CatalogChangedError(_CATALOG_CHANGED_MESSAGE)
-
-    def catalog_generation(self) -> str:
-        """Return the digest identifying the current authenticated catalog."""
+    def catalog_generation(self):
         return self._generation
 
-    def catalog(self) -> Catalog:
-        """Return version, publication, size, and adjustment metadata."""
-        return Catalog(
-            generation=self._generation,
-            published_at=self._published_at,
-            online_count=self.online_count(),
-            adjustments=ADJUSTMENTS,
-        )
+    def catalog(self):
+        return Catalog(self._generation, self._published_at, self.online_count(), ADJUSTMENTS)
 
-    def online_count(self) -> int:
-        """Return the number of securities in the online public universe."""
-        return len(self.list_securities())
+    def online_count(self):
+        return len(self._securities)
 
-    def list_securities(self) -> tuple[Security, ...]:
-        """Return every online security, ordered by public ID."""
-        if self._securities is not None:
-            return self._securities
-        securities = []
-        ticker_resolutions: dict[str, list[TickerResolution]] = {}
-        try:
-            for public_id in sorted(self._master.identities_by_master_id):
-                record = self._master.identities_by_master_id[public_id]
-                if record["online"] is True:
-                    security = _security_from_record(record)
-                    securities.append(security)
-                    for resolution in _ticker_resolutions_from_record(record, security):
-                        ticker_resolutions.setdefault(resolution.ticker.upper(), []).append(resolution)
-        except (SecurityCorrelationError, V6Error) as error:
-            raise DataLibraryError(f"cannot read the online security catalog: {error}") from error
-        self._ticker_resolutions = {
-            ticker: tuple(
-                sorted(
-                    resolutions,
-                    key=lambda item: (item.first_session, item.last_session, item.public_id),
-                )
-            )
-            for ticker, resolutions in ticker_resolutions.items()
-        }
-        self._securities = tuple(securities)
-        return self._securities
+    def list_securities(self):
+        return tuple(self._securities.values())
 
-    def resolve_ticker(
-        self,
-        ticker: str,
-        *,
-        on: date | str | None = None,
-    ) -> tuple[TickerResolution, ...]:
-        """Resolve an exact ticker to every observed online public-ID date range."""
-        if not isinstance(ticker, str) or not ticker.strip():
-            raise ValueError("ticker must be a non-empty string")
-        session = _optional_date(on, "on")
-        if self._ticker_resolutions is None:
-            self.list_securities()
-        assert self._ticker_resolutions is not None
-        resolutions = self._ticker_resolutions.get(ticker.strip().upper(), ())
-        if session is None:
-            return resolutions
+    def get_security(self, public_id):
+        from .standalone import _public_id
+
+        security = self._securities.get(_public_id(public_id))
+        if security is None:
+            raise PublicIdUnavailableError("public ID is not available")
+        return security
+
+    def resolve_ticker(self, ticker, *, on=None):
+        from .standalone import _symbol
+
+        ticker, session = _symbol(ticker), _optional_date(on, "on")
         return tuple(
-            resolution
-            for resolution in resolutions
-            if resolution.first_session <= session <= resolution.last_session
+            r
+            for r in self._resolutions.get(ticker, ())
+            if session is None or r.first_session <= session <= r.last_session
         )
 
-    def search_securities(
-        self,
-        query: str,
-        *,
-        limit: int | None = None,
-    ) -> tuple[Security, ...]:
-        """Search online identities by name, ticker, CUSIP, external ID, or public ID."""
+    def search_securities(self, query, *, limit=None):
         if not isinstance(query, str) or not query.strip():
             raise ValueError("search query must be a non-empty string")
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError("search limit must be a positive integer or None")
-        normalized_query = _normalized_search_text(query)
-        ranked_matches = []
-        for security in self.list_securities():
-            rank = _security_search_rank(security, normalized_query)
-            if rank is not None:
-                ranked_matches.append((rank, security))
-        ranked_matches.sort(key=lambda item: item[0])
-        if limit is not None:
-            ranked_matches = ranked_matches[:limit]
-        return tuple(security for _, security in ranked_matches)
+        query = _normalized_search_text(query)
+        matches = [
+            (rank, security)
+            for security in self._securities.values()
+            if (rank := _security_search_rank(security, query)) is not None
+        ]
+        return tuple(s for _, s in sorted(matches, key=lambda pair: pair[0])[:limit])
 
-    def get_security(self, public_id: str) -> Security:
-        """Return public identity metadata for one online security."""
-        canonical_id = _canonical_public_id(public_id)
+    def _read_views(self, public_id, adjustments, start, end):
+        # All public access paths resolve availability before touching storage.
+        security = self.get_security(public_id)
+        key = self._records[security.public_id]["group_key"]
+        expected = self._groups[key]
         try:
-            record = self._master.identities_by_master_id.get(canonical_id)
-        except (SecurityCorrelationError, V6Error) as error:
-            raise DataLibraryError(f"cannot read security {canonical_id}: {error}") from error
-        if record is None or record.get("online") is not True:
-            raise PublicIdUnavailableError("public ID is not available")
-        return _security_from_record(record)
+            with self._reader._open_group(
+                expected["locator"],
+                expected=expected["references"],
+                shared_cache=True,
+                before_payloads=lambda: catalogue_storage.assert_group(
+                    self.store, key, expected["decision_generation"]
+                ),
+            ) as group:
+                return group.get_histories(
+                    public_id=security.public_id, adjustments=adjustments, start=start, end=end
+                )["views"]
+        except ReaderBusyError:
+            raise
+        except (CatalogueError, StandaloneReaderError) as error:
+            raise CatalogChangedError(
+                "selected serving history is no longer compatible; finish maintenance and open a new DataLibrary"
+            ) from error
+
+    def _history(self, security, adjustment, view, start, end):
+        bars = tuple(
+            DailyBar(
+                session=date.fromisoformat(b["session"]),
+                **{n: Decimal(b[n]) for n in ("open", "high", "low", "close", "volume", "vwap")},
+                trade_count=int(Decimal(b["trade_count"])),
+            )
+            for b in view["bars"]
+        )
+        return History(security, adjustment, start, end, bars, self._generation)
+
+    def get_histories(self, public_id, adjustments=ADJUSTMENTS, *, start=None, end=None):
+        security = self.get_security(public_id)
+        if (
+            not isinstance(adjustments, (tuple, list))
+            or not adjustments
+            or any(a not in ADJUSTMENTS for a in adjustments)
+        ):
+            raise ValueError("adjustments must be a nonempty list or tuple of supported views")
+        adjustments = tuple(dict.fromkeys(adjustments))
+        start, end = _optional_date(start, "start"), _optional_date(end, "end")
+        if start is not None and end is not None and start > end:
+            raise ValueError("start must be on or before end")
+        views = self._read_views(security.public_id, adjustments, start, end)
+        return {a: self._history(security, a, views[a], start, end) for a in adjustments}
+
+    def get_history(self, public_id, adjustment="raw", *, start=None, end=None):
+        return self.get_histories(public_id, (adjustment,), start=start, end=end)[adjustment]
+
+    @staticmethod
+    def _dated_metadata(security, session):
+        values = []
+        for field in ("name", "cusip", "exchange", "asset_class"):
+            matching = {
+                o.value
+                for o in security.observations
+                if o.field == field
+                and o.effective_from is not None
+                and o.effective_through is not None
+                and o.effective_from <= session <= o.effective_through
+            }
+            if len(matching) > 1:
+                raise DataLibraryError(f"ambiguous historical {field} on {session}")
+            values.append(next(iter(matching), ""))
+        return values
 
     def write_flat_online_csv(
         self,
@@ -878,6 +646,8 @@ class DataLibrary:
         if destination_path is None and not hasattr(destination, "write"):
             raise TypeError("CSV destination must be a path or writable text stream")
         if destination_path is not None:
+            if destination_path.resolve().is_relative_to(self.store.resolve()):
+                raise ValueError("CSV destination must be outside the source store")
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_parent = destination_path.parent
         else:
@@ -894,30 +664,10 @@ class DataLibrary:
             pending_rows: list[tuple[str, ...]] = []
             with spool_path.open("w+b") as spool:
                 for security in securities:
-                    required_adjustments = {"raw", "all"}
-                    if not required_adjustments.issubset(security.adjustments):
-                        raise DataLibraryError(
-                            f"online security {security.public_id} does not provide raw and all-adjusted histories"
-                        )
-                    try:
-                        record = self._master.identities_by_master_id[security.public_id]
-                    except (KeyError, SecurityCorrelationError, V6Error) as error:
-                        raise DataLibraryError(
-                            f"cannot read online security {security.public_id} for CSV export"
-                        ) from error
-                    timeline = _IdentityTimeline(record, security)
-                    raw_history = self.get_history(
-                        security.public_id,
-                        "raw",
-                        start=start_date,
-                        end=end_date,
-                    )
-                    adjusted_history = self.get_history(
-                        security.public_id,
-                        "all",
-                        start=start_date,
-                        end=end_date,
-                    )
+                    results = self._read_views(security.public_id, ("raw", "all"), start_date, end_date)
+                    raw_history = self._history(security, "raw", results["raw"], start_date, end_date)
+                    adjusted_history = self._history(security, "all", results["all"], start_date, end_date)
+                    ranges = self._records[security.public_id]["public"]["ticker_ranges"]
                     raw_by_session = {bar.session: bar for bar in raw_history.bars}
                     adjusted_by_session = {bar.session: bar for bar in adjusted_history.bars}
                     if len(raw_by_session) != len(raw_history.bars) or len(adjusted_by_session) != len(
@@ -933,16 +683,23 @@ class DataLibrary:
                     if raw_by_session:
                         exported_security_count += 1
                     for session in sorted(raw_by_session):
-                        identity = timeline.for_session(session)
+                        tickers = sorted(
+                            {
+                                r["ticker"]
+                                for r in ranges
+                                if r["first_session"] <= session.isoformat() <= r["last_session"]
+                            }
+                        )
+                        if len(tickers) != 1:
+                            raise DataLibraryError(f"ambiguous historical ticker on {session}")
+                        # Undated observations never become historical row metadata.
+                        metadata = self._dated_metadata(security, session)
                         pending_rows.append(
                             (
                                 session.isoformat(),
                                 security.public_id,
-                                identity.ticker,
-                                identity.name,
-                                identity.cusip,
-                                identity.exchange,
-                                identity.asset_class,
+                                tickers[0],
+                                *metadata,
                                 *_bar_csv_values(raw_by_session[session]),
                                 *_bar_csv_values(adjusted_by_session[session]),
                             )
@@ -992,65 +749,6 @@ class DataLibrary:
             end=end_date,
         )
 
-    def get_history(
-        self,
-        public_id: str,
-        adjustment: str = "raw",
-        *,
-        start: date | str | None = None,
-        end: date | str | None = None,
-    ) -> History:
-        """Return all sessions or an inclusive date range for one online security."""
-        canonical_id = _canonical_public_id(public_id)
-        if adjustment not in ADJUSTMENTS:
-            supported = ", ".join(ADJUSTMENTS)
-            raise ValueError(f"unsupported adjustment {adjustment!r}; expected one of: {supported}")
-        start_date = _optional_date(start, "start")
-        end_date = _optional_date(end, "end")
-        if start_date is not None and end_date is not None and start_date > end_date:
-            raise ValueError("start must be on or before end")
-
-        security = self.get_security(canonical_id)
-
-        try:
-            result = _read_published_history(
-                canonical_id,
-                adjustment,
-                repository_root=self._path,
-                master=self._master,
-                inputs=self._history_inputs,
-            )
-        except (EndOfDayReaderError, SecurityCorrelationError, V6Error) as error:
-            self._assert_current_generation()
-            raise DataLibraryError(f"cannot read security history: {error}") from error
-
-        try:
-            generation = result["provenance"]["security_master"]["security_master_generation_sha256"]
-            if not isinstance(generation, str) or not generation:
-                raise DataLibraryError("published history has no data generation")
-            if generation != self._generation:
-                raise CatalogChangedError(_CATALOG_CHANGED_MESSAGE)
-            all_bars = tuple(_daily_bar_from_record(bar) for bar in result["bars"])
-        except DataLibraryError:
-            raise
-        except (KeyError, TypeError) as error:
-            raise DataLibraryError("published history does not satisfy the public contract") from error
-
-        bars = tuple(
-            bar
-            for bar in all_bars
-            if (start_date is None or bar.session >= start_date)
-            and (end_date is None or bar.session <= end_date)
-        )
-        return History(
-            security=security,
-            adjustment=adjustment,
-            start=start_date,
-            end=end_date,
-            bars=bars,
-            generation=generation,
-        )
-
 
 from .standalone import (  # noqa: E402
     AmbiguousTickerError,
@@ -1072,10 +770,12 @@ __all__ = [
     "FLAT_ONLINE_CSV_COLUMNS",
     "FlatCsvExport",
     "History",
+    "MetadataObservation",
     "PublicIdUnavailableError",
     "ReaderBusyError",
     "Security",
     "StandaloneReader",
     "StandaloneReaderError",
     "TickerResolution",
+    "TickerOwnershipInterval",
 ]

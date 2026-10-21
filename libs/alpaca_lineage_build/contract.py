@@ -8,8 +8,8 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 23
-SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, VERSION)
+VERSION = 25
+SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
 
@@ -32,17 +32,14 @@ def versions() -> dict:
 
 
 def reusable_versions(published: dict) -> bool:
-    """Execution and trusted-handoff changes preserve v2-v22 decisions.
+    """Execution and trusted-handoff changes preserve v2-v24 decisions.
 
     Do not generalize this exception to other execution or rule versions. Older
     readable schemas are not necessarily reusable, and all other version fields
     must still match exactly.
     """
     current = versions()
-    return any(
-        published == {**current, "lineage": version}
-        for version in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, VERSION)
-    )
+    return any(published == {**current, "lineage": version} for version in range(2, VERSION + 1))
 
 
 def reusable_metadata_versions(published: dict) -> bool:

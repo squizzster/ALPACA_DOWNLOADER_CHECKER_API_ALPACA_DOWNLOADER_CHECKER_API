@@ -438,6 +438,7 @@ class LineageIOTests(unittest.TestCase):
                     "source_sha256": "1" * 64,
                     "dependencies": [],
                     "asset_ids": [],
+                    "group_members": [symbol],
                     "versions": current,
                 }
                 for symbol in selected
