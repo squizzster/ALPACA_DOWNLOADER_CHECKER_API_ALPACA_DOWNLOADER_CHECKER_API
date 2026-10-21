@@ -405,7 +405,8 @@ def _finish_evidence(evidence, window):
     for lookup in evidence["asset_lookups"]:
         if lookup["lookup_kind"] == "symbol" and lookup["lookup"] in window.lookup_sources:
             lookup["source"] = window.lookup_sources[lookup["lookup"]]
-    # The legacy inspector's warning describes its filesystem adapter, not this one.
+    # build_identity_report emits this filesystem warning for logical descriptors too.
+    # Preserve the in-memory handoff; do not turn this wording into file authentication.
     evidence["warnings"] = [
         warning
         for warning in evidence["warnings"]

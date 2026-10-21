@@ -528,6 +528,7 @@ class DataLibrary:
         return self._generation
 
     def catalog(self):
+        # Public API entry point for external consumers, even without internal call sites.
         return Catalog(self._generation, self._published_at, self.online_count(), ADJUSTMENTS)
 
     def online_count(self):

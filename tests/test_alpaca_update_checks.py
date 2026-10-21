@@ -76,8 +76,8 @@ class UpdateCheckTests(unittest.TestCase):
             patch.object(pipeline, "load_source", side_effect=AssertionError("source receipt")),
             patch.object(storage, "read_receipt", side_effect=AssertionError("lineage receipt")),
         ):
-            for all_symbols in (False, True, False, True):
-                self.assertEqual(self.build(all_symbols=all_symbols)["results"], [])
+            for _ in range(4):
+                self.assertEqual(self.build()["results"], [])
         self.assertEqual(self.client.request_count, requests)
 
     def test_deleted_work_list_rebuilds_from_source_generations_without_lineage_reads(self):
@@ -351,7 +351,7 @@ class UpdateCheckTests(unittest.TestCase):
             patch.object(pipeline, "local_symbols", side_effect=AssertionError("source scan")),
             patch.object(pipeline, "process_group", side_effect=AssertionError("receipt opened")),
         ):
-            self.assertEqual(self.build(all_symbols=True)["results"], [])
+            self.assertEqual(self.build()["results"], [])
 
     def test_lookup_preserves_reverse_links_shared_uuids_and_link_removal(self):
         graph = DependencyGraph(

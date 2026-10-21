@@ -4,7 +4,7 @@ from datetime import date
 from typing import Any
 
 from .alpaca_http import AlpacaIdentityClient
-from .local_downloads import local_query_dates
+from .query_dates import local_query_dates
 from .settings import (
     CUSIP_FIELD_PATTERN,
     MAX_NAME_CHANGE_SYMBOLS,

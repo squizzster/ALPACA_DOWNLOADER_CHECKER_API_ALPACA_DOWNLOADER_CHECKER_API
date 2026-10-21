@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -9,10 +8,8 @@ from libs.common.us_equity_market_session_calendar import (
     expected_market_session_coverage,
     market_session_dates_sha256,
 )
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 from .errors import SecurityCorrelationError
-from .frozen_downloads import read_authenticated_frozen_download
 from .uuid_lineage import build_uuid_lineage_edges
 
 NEW_YORK_TIME_ZONE = ZoneInfo("America/New_York")
@@ -183,6 +180,8 @@ def _transition_candidates(
 
 
 def _session_date(timestamp: object) -> date:
+    # Shared by predecessor-prefix and retired-security continuation rules.
+    # This conversion consumes in-memory evidence; it must not reopen source files.
     if not isinstance(timestamp, str):
         raise SecurityCorrelationError("authenticated transition evidence has a non-string timestamp")
     normalized = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
@@ -197,36 +196,6 @@ def _session_date(timestamp: object) -> date:
             f"authenticated transition evidence timestamp has no timezone: {timestamp!r}"
         )
     return parsed.astimezone(timezone.utc).astimezone(NEW_YORK_TIME_ZONE).date()
-
-
-def _authenticated_symbol_sessions(
-    repository_root: Path,
-    symbol: str,
-) -> tuple[tuple[date, ...], tuple[tuple[str, str, str], ...]] | None:
-    sessions_by_adjustment = []
-    supporting_downloads = []
-    for adjustment in ALPACA_ADJUSTMENT_MODES:
-        filename = f"{adjustment.replace(',', '_')}.csv.gz"
-        path = repository_root / "data" / "end_of_day" / symbol / filename
-        if not path.is_file() or not path.with_name(path.name + ".manifest.json").is_file():
-            return None
-        authenticated = read_authenticated_frozen_download(
-            repository_root,
-            f"data/end_of_day/{symbol}",
-            {"file": filename},
-        )
-        sessions = tuple(_session_date(row.get("t")) for row in authenticated.rows)
-        if len(set(sessions)) != len(sessions) or tuple(sorted(sessions)) != sessions:
-            raise SecurityCorrelationError(
-                f"authenticated {symbol} {adjustment} sessions are not strictly increasing"
-            )
-        sessions_by_adjustment.append(sessions)
-        supporting_downloads.append((symbol, adjustment, authenticated.manifest["sha256"]))
-    if not sessions_by_adjustment or any(
-        sessions != sessions_by_adjustment[0] for sessions in sessions_by_adjustment[1:]
-    ):
-        return None
-    return sessions_by_adjustment[0], tuple(supporting_downloads)
 
 
 def _assess_candidate(
@@ -278,14 +247,12 @@ def _assess_candidate(
 
 
 def assess_one_session_distinct_uuid_transition(
-    repository_root: Path,
     lineage: dict[str, Any],
     *,
     evidence_issues: list[dict[str, Any]] | None = None,
     authenticated_symbol_sessions: Callable[
         [str], tuple[tuple[date, ...], tuple[tuple[str, str, str], ...]] | None
-    ]
-    | None = None,
+    ],
 ) -> OneSessionDistinctUuidTransition | None:
     """Resolve one absent session between two exact, distinct ticker UUIDs."""
     matches = []
@@ -294,11 +261,7 @@ def assess_one_session_distinct_uuid_transition(
         supporting_downloads = []
         for identity in (candidate.predecessor, candidate.successor):
             try:
-                authenticated = (
-                    _authenticated_symbol_sessions(repository_root, identity.symbol)
-                    if authenticated_symbol_sessions is None
-                    else authenticated_symbol_sessions(identity.symbol)
-                )
+                authenticated = authenticated_symbol_sessions(identity.symbol)
             except (KeyError, OSError, SecurityCorrelationError, TypeError, ValueError):
                 authenticated = None
             if authenticated is None:

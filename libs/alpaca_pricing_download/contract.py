@@ -116,6 +116,7 @@ def symbol_label(value: str) -> str:
 
 
 def json_bytes(value: object) -> bytes:
+    # Receipt generations bind these exact bytes, including field order, escaping and newline.
     return (json.dumps(value, separators=(",", ":"), ensure_ascii=True, allow_nan=False) + "\n").encode()
 
 

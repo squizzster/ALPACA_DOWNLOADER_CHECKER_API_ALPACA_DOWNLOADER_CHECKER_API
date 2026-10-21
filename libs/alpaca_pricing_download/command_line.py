@@ -14,9 +14,6 @@ from .download import download_pricing, request_end, request_start
 from .http import BarsClient
 from .update_checks import begin_checks, read_checks
 
-MAX_WORKERS = 3
-DEFAULT_UPDATE_STORE = Path(__file__).resolve().parents[2] / "data_pricing"
-
 
 def selected_symbols(arguments) -> list[str]:
     if arguments.symbol is not None:

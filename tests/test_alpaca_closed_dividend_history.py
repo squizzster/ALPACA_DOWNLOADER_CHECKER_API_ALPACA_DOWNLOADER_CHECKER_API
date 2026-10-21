@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from libs.alpaca_lineage_build.transform import correlate
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from tests import test_alpaca_closed_split_history as split_fixtures
 from tests.test_alpaca_end_of_day_security_correlation import asset
 

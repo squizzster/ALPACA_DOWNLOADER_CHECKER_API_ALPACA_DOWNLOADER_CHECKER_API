@@ -418,9 +418,9 @@ class LineageIOTests(unittest.TestCase):
         planned = []
         prefetch = pipeline._prefetch_metadata
 
-        def capture(_store, _root, labels, *args, **kwargs):
+        def capture(_store, labels, *args, **kwargs):
             planned.extend(labels)
-            return prefetch(_store, _root, labels, *args, **kwargs)
+            return prefetch(_store, labels, *args, **kwargs)
 
         with patch.object(pipeline, "_prefetch_metadata", side_effect=capture):
             result = self.run_build()
@@ -448,7 +448,6 @@ class LineageIOTests(unittest.TestCase):
 
         def prefetch(
             _store,
-            _root,
             labels,
             _index,
             _graph,

@@ -245,6 +245,7 @@ def read_validator(root: Path, source: dict, *, published=True) -> dict | None:
 
 def authenticate_validator(root: Path, source: dict) -> dict | None:
     """Explicit audit; normal consumers use the published validator directly."""
+    # Keep this audit entry point outside ordinary completed-handoff reads.
     return read_validator(root, source, published=False)
 
 

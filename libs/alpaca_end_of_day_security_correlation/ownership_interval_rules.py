@@ -811,6 +811,7 @@ def ownership_interval_rule_order() -> list[dict[str, Any]]:
 def _asset_ids_by_symbol_and_cusip(
     lineage: dict[str, Any],
 ) -> tuple[dict[tuple[str, str], str], list[dict[str, Any]]]:
+    # Ownership needs one unambiguous UUID and explicit issues for conflicting candidates.
     asset_ids: dict[tuple[str, str], str] = {}
     ambiguous_keys = set()
     evidence_issues = []

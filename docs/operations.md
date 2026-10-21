@@ -175,32 +175,3 @@ Default selection is all indexed lineage groups; any rejected identity aborts by
 `--include-all-passed` allows output despite rejected identities;
 diagnostics remain stderr. `--replace` permits replacement after successful conversion. Parquet is the sole
 persistent output. [Conversion guarantees and failure modes](technical-contracts.md#parquet-conversion).
-
-## Retained combined workflow
-
-This separate monthly store does not serve `DataLibrary`:
-
-```bash
-./alpaca-eod legacy catalogue update --store data_vtest --symbol DELL
-./alpaca-eod legacy catalogue build --recovery-universe --store data_clean_room
-./alpaca-eod legacy catalogue resume --store data_clean_room
-./alpaca-eod legacy catalogue audit --store data_clean_room
-./alpaca-eod legacy catalogue activate --store data_clean_room
-```
-
-Focused updates resolve canonical symbols, acquire new histories from 2016 and replace selected months for
-existing histories. `--from` must start a month; cutoff/completion rules apply, and cutoffs before retained
-coverage/observations fail. Interrupted publication retains canonical/submitted symbols and exact bounds.
-The producer holds its publication lock through provider requests and the full transaction.
-
-Build starts empty, pins immutable inputs and mandates final audit. Resume uses original labels, target and
-compatible contracts despite registry growth; `--symbols-file` may choose another sorted unique single-record
-universe. Activation retains the preceding `data_vtest/`; do not run competing producers/activators during the
-swap. Audit is bound to the clean-room ledger, not an arbitrary restored store.
-
-Before registry expansion, pin an interrupted build's original universe with
-`./alpaca-eod legacy catalogue pin-universe --store data_clean_room --symbols-file resources/ticker.csv`.
-Original labels/contracts must match; pinning cannot make incompatible versions resumable.
-
-`legacy probe/correlate/audit` address `data/end_of_day/` through `--repository-root`; probe/correlate also need
-`--symbol`. There is no fallback between store formats. [Monthly authorities](technical-contracts.md#retained-monthly-identity-and-catalogue).

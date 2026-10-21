@@ -7,7 +7,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import (
     download_session_dates,
 )
 from libs.alpaca_end_of_day_security_correlation.ticker_reuse_gap import adjustment_session_consensus
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from tests.test_alpaca_end_of_day_security_correlation import (
     complete_market_session_rows,
     correlation_source,

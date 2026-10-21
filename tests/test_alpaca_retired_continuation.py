@@ -11,8 +11,8 @@ from libs.alpaca_end_of_day_security_correlation.retired_continuation import (
 )
 from libs.alpaca_end_of_day_security_correlation.row_correlation import download_session_dates
 from libs.alpaca_lineage_build.transform import correlate
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 from tests.test_alpaca_end_of_day_security_correlation import asset, correlation_source
 
 

@@ -2,7 +2,7 @@
 
 The supported [public package](../alpaca_end_of_day/__init__.py) reads one standalone store, normally
 `data_pricing/`: `DataLibrary` exposes approved identities; `StandaloneReader` exposes resolved histories
-and evidence. Both use the same locked history assembly. Neither reads the separate monthly stores.
+and evidence. Both use the same locked history assembly.
 
 ## Daily update
 
@@ -39,17 +39,6 @@ The [serving policy](technical-contracts.md#serving-catalogue) adds eligibility 
 it makes no provider requests or identity decisions. Empty/ineligible results are completed work;
 unreadable required publications leave work pending. Reader behavior belongs in the [API guide](public-api.md).
 
-## Retained combined workflow
-
-The separate monthly [pipeline](../libs/alpaca_end_of_day_v6/pipeline.py) resolves symbols, acquires source
-and evidence, validates, correlates, evaluates advisory warnings, then publishes identity candidates,
-availability and catalogue. Only submitted canonical symbols reacquire; affected-identity closure covers
-correlation/availability and unrelated objects survive. Availability never changes membership or bars.
-
-[Clean-room generation](../libs/alpaca_end_of_day_clean_room/generation.py) schedules this pipeline with
-checkpoints, immutable inputs, mandatory audit and separate activation. Its monthly reader is independent
-of `DataLibrary`. [Commands and limits](operations.md#retained-combined-workflow).
-
 ## Code ownership
 
 Consumer applications import only `alpaca_end_of_day`; `libs/` is internal. Root commands are executable
@@ -65,11 +54,8 @@ adapters. Tests use synthetic fixtures/HTTP doubles; resources hold runtime cont
 | [alpaca_serving_catalogue](../libs/alpaca_serving_catalogue/) | Eligibility, public projections, catalogue publication and recovery. |
 | [alpaca_data_api_solver](../libs/alpaca_data_api_solver/) | Pure request planning. |
 | [alpaca_security_lineage](../libs/alpaca_security_lineage/) | Identity/action acquisition and normalization. |
-| [alpaca_end_of_day_security_correlation](../libs/alpaca_end_of_day_security_correlation/) | Ownership, row/UUID rules, catalogue engine. |
-| [alpaca_end_of_day_v6](../libs/alpaca_end_of_day_v6/) | Combined monthly cascade/publication. |
-| [alpaca_end_of_day_clean_room](../libs/alpaca_end_of_day_clean_room/) | Isolated construction, audit, activation. |
-| [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Shared validation rules. |
-| [alpaca_end_of_day_warning_pipeline](../libs/alpaca_end_of_day_warning_pipeline/) | Advisory warnings. |
-| [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Internal history/source selection. |
+| [alpaca_end_of_day_security_correlation](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row assignment and UUID rules. |
+| [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
+| [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Shared history source selection. |
 | [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |
-| [common](../libs/common/) | Calendar, atomic writes, SQLite connections. |
+| [common](../libs/common/) | Calendar and SQLite connections. |

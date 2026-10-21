@@ -122,7 +122,6 @@ def _select_pending_pricing(store, members, index, pending, pricing_handoff):
 
 def _prefetch_metadata(
     store,
-    root,
     selected,
     index,
     graph,
@@ -438,8 +437,7 @@ def process_group(
                     )
                 )
                 resume = unchanged or (
-                    len(group) == 1
-                    and eligible_source(sources[seed], previous[seed], notices.get(seed), refresh=refresh)
+                    len(group) == 1 and eligible_source(sources[seed], previous[seed], refresh=refresh)
                 )
                 retained_kinds = {}
                 for symbol, prior in previous.items():
@@ -559,8 +557,7 @@ def process_group(
                 if not required:
                     check_unavailable_pricing(store, unavailable, locked, sources=sources)
                     if resume and not all(
-                        can_resume(view, previous[symbol], old_boundaries[symbol], evidence[symbol])
-                        for symbol, view in inputs.items()
+                        can_resume(view, previous[symbol], evidence[symbol]) for symbol, view in inputs.items()
                     ):
                         resume = False
                         inputs = {
@@ -814,7 +811,6 @@ def run_lineage(
     *,
     identity_client,
     pricing_client=None,
-    all_symbols=False,
     refresh=False,
     observer=None,
     on_processed=None,
@@ -990,7 +986,6 @@ def run_lineage(
                         progress("metadata_prefetch", {"state": "started", "selected": len(requests)})
                     _prefetch_metadata(
                         store,
-                        root,
                         requests,
                         index,
                         graph,

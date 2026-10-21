@@ -27,7 +27,6 @@ def correlate(store, inputs, evidence):
                 authenticated_symbol_sessions=sessions,
                 correlation_loader=correlation,
                 source_rows_loader=rows,
-                assess_episode_partitions=iteration > 0,
                 cache=cache,
             )
             for symbol, view in sorted(inputs.items())

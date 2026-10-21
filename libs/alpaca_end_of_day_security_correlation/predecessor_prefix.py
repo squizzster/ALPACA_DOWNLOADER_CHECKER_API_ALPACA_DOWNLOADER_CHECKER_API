@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import (
     MarketCalendarError,
     expected_market_session_coverage,
 )
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 from .errors import SecurityCorrelationError
 from .identity_partition import _session_date

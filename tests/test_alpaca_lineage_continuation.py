@@ -140,12 +140,10 @@ class LineageContinuationTests(unittest.TestCase):
 
         case.download(end="2026-10-15", bars=case.bars + [fixture.bar("2026-10-14")])
         source = load_source(case.store / "end_of_day/pricing/GOOG", "GOOG")
-        self.assertTrue(eligible_source(source, previous, None, refresh=False))
-        self.assertFalse(eligible_source(source, previous, None, refresh=True))
+        self.assertTrue(eligible_source(source, previous, refresh=False))
+        self.assertFalse(eligible_source(source, previous, refresh=True))
         for changes in ([], [{"source_sha256": previous["source_sha256"], "changed_from": "2026-09-01"}]):
-            self.assertFalse(
-                eligible_source({**source, "history_changes": changes}, previous, None, refresh=False)
-            )
+            self.assertFalse(eligible_source({**source, "history_changes": changes}, previous, refresh=False))
 
     def test_unchanged_prices_advance_without_payload_reads_or_rule_execution(self):
         from libs.alpaca_lineage_build import pricing

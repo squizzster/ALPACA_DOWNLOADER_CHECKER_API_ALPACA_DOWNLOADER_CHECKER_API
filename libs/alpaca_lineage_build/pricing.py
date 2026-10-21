@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
 from libs.alpaca_end_of_day_security_correlation.row_correlation import CorrelationCache
-from libs.alpaca_end_of_day_security_correlation.session_exclusions import (
+from libs.alpaca_end_of_day_security_correlation.settings import (
     VERIFIED_SESSION_EXCLUSIONS_MANIFEST_TYPE,
     VERIFIED_SESSION_EXCLUSIONS_VERSION,
 )
@@ -37,6 +37,7 @@ class PricingInput:
     previous_assignment_summary: dict | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
+        # Ignored paths satisfy the injected interface; they must not trigger filesystem access.
         return self.downloads[descriptor["file"]]
 
 
@@ -182,6 +183,7 @@ def _added_views(root, source, start):
 
 
 def empty_exclusions(_root, symbol):
+    # Keep the injected interface and representation without consulting filesystem sidecars.
     return {
         "manifest_type": VERIFIED_SESSION_EXCLUSIONS_MANIFEST_TYPE,
         "manifest_version": VERIFIED_SESSION_EXCLUSIONS_VERSION,

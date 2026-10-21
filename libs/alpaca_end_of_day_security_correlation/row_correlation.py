@@ -11,7 +11,6 @@ from .current_symbol_reuse import (
     CurrentSymbolReuseAssessment,
     assess_current_symbol_reuse,
 )
-from .episode_partition import PARTITION_RULE_NAME, DistinctUuidEpisodePartition
 from .errors import SecurityCorrelationError
 from .evidence import (
     TickerOwnershipInterval,
@@ -72,7 +71,6 @@ class _RowDecision:
     candidates: tuple[tuple[str, str | None], ...] = ()
     ticker_reuse_gap: TickerReuseGapAssessment | None = None
     distinct_uuid_transition: OneSessionDistinctUuidTransition | None = None
-    distinct_uuid_episode_partition: DistinctUuidEpisodePartition | None = None
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
     historical_symbol: str | None = None
     use_rule_identity_basis: bool = False
@@ -91,7 +89,6 @@ class _RowDecision:
                 self.warning_codes,
                 self.ticker_reuse_gap,
                 self.distinct_uuid_transition,
-                self.distinct_uuid_episode_partition,
                 self.current_symbol_reuse,
                 self.historical_symbol,
                 self.use_rule_identity_basis,
@@ -106,7 +103,6 @@ class _RowDecision:
             self.candidates,
             self.ticker_reuse_gap,
             self.distinct_uuid_transition,
-            self.distinct_uuid_episode_partition,
             self.current_symbol_reuse,
             self.historical_symbol,
             self.use_rule_identity_basis,
@@ -123,7 +119,6 @@ class _RowRuleContext:
     lineage: dict[str, Any]
     ticker_reuse_gap: TickerReuseGapAssessment | None
     distinct_uuid_transition: OneSessionDistinctUuidTransition | None
-    distinct_uuid_episode_partitions: tuple[DistinctUuidEpisodePartition, ...] = ()
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
     dated_same_symbol_predecessors: frozenset[tuple] = frozenset()
     predecessor_prefixes: tuple[PredecessorPrefix, ...] = ()
@@ -1042,7 +1037,6 @@ def correlate_download_rows(
     adjustment_consensus: AdjustmentSessionConsensus | None = None,
     evidence_issues: list[dict[str, Any]] | None = None,
     distinct_uuid_transition: OneSessionDistinctUuidTransition | None = None,
-    distinct_uuid_episode_partitions: tuple[DistinctUuidEpisodePartition, ...] = (),
     predecessor_prefixes: tuple[PredecessorPrefix, ...] = (),
     terminal_episode: TerminalTradedEpisode | None = None,
     bridged_episodes: tuple[TerminalTradedEpisode, ...] = (),
@@ -1124,7 +1118,6 @@ def correlate_download_rows(
         lineage=lineage,
         ticker_reuse_gap=ticker_reuse_gap,
         distinct_uuid_transition=distinct_uuid_transition,
-        distinct_uuid_episode_partitions=distinct_uuid_episode_partitions,
         current_symbol_reuse=current_symbol_reuse,
         dated_same_symbol_predecessors=dated_same_symbol_predecessors,
         predecessor_prefixes=predecessor_prefixes,
@@ -1180,8 +1173,6 @@ def correlate_download_rows(
             segment["ticker_reuse_gap"] = decision.ticker_reuse_gap.as_report_object()
         if decision.distinct_uuid_transition is not None:
             segment["identity_partition"] = decision.distinct_uuid_transition.as_report_object()
-        elif decision.distinct_uuid_episode_partition is not None:
-            segment["identity_partition"] = decision.distinct_uuid_episode_partition.as_report_object()
         elif decision.current_symbol_reuse is not None:
             segment["identity_partition"] = decision.current_symbol_reuse.as_report_object()
         if decision.branch == CORRELATED_BRANCH:
@@ -1196,9 +1187,7 @@ def correlate_download_rows(
                 else "single_alpaca_asset_id"
             )
             identity_basis = (
-                PARTITION_RULE_NAME
-                if decision.distinct_uuid_episode_partition is not None
-                else decision.rule_name
+                decision.rule_name
                 if decision.use_rule_identity_basis
                 and not (
                     decision.distinct_uuid_transition is not None and identity_basis == "explicit_uuid_lineage"
