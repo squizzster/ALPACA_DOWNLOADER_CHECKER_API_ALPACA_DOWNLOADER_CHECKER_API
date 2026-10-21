@@ -10,8 +10,9 @@ from libs.alpaca_security_lineage.lineage import (
     action_identity_key,
     build_identity_report,
     compact_asset,
+    extract_cusips,
 )
-from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY
+from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, MAX_NAME_CHANGE_SYMBOLS
 
 from .contract import LineageError
 
@@ -63,6 +64,7 @@ class EvidenceClient:
         self.action_intervals = defaultdict(dict)
         self.by_id = {}
         self.catalogue = None
+        self.catalogue_assets = {}
         self.catalogue_attempted = False
         self.action_error = None
         self.observation = observation
@@ -80,7 +82,7 @@ class EvidenceClient:
     def request_count(self):
         return self.client.request_count
 
-    def get_asset_lookup(self, identifier):
+    def get_asset_lookup(self, identifier, *, completed_lookup=None):
         if self.work_policy is not None:
             self.restricted_identifiers.update(self.work_policy.restricted_identifiers)
         if identifier in self.restricted_identifiers:
@@ -90,6 +92,16 @@ class EvidenceClient:
         if self.work_policy is not None:
             self.work_policy.check({identifier})
         if identifier not in self.assets:
+            asset = (completed_lookup or {}).get("asset")
+            if (
+                asset
+                and completed_lookup["outcome"] == "found"
+                and self.catalogue_assets.get(asset["id"]) == asset
+            ):
+                # The receipt owns the CUSIP-to-ID mapping; the fresh catalogue
+                # supplies matching current asset facts. Do not seed the exact
+                # lookup cache: a new action may still require a fresh mapping.
+                return {key: completed_lookup[key] for key in ("outcome", "http_status", "asset")}
             try:
                 self.assets[identifier] = self.client.get_asset_lookup(identifier)
             except (RuntimeError, OSError, ValueError) as error:
@@ -153,7 +165,7 @@ class EvidenceClient:
     def _load_catalogue(self, assets):
         if not isinstance(assets, list):
             raise LineageError("asset catalogue must be an array")
-        catalogue = {}
+        catalogue, assets_by_id = {}, {}
         for asset in assets:
             if not isinstance(asset, dict) or not isinstance(asset.get("symbol"), str) or not asset["symbol"]:
                 raise LineageError("invalid asset catalogue entry")
@@ -168,8 +180,14 @@ class EvidenceClient:
             ):
                 catalogue[symbol] = None  # This label needs exact evidence; other valid entries remain useful.
                 continue
-            catalogue[symbol] = None if symbol in catalogue else compact_asset(asset)
+            compact = compact_asset(asset)
+            catalogue[symbol] = None if symbol in catalogue else compact
+            identity = asset["id"]
+            assets_by_id[identity] = (
+                None if identity in assets_by_id and assets_by_id[identity] != compact else compact
+            )
         self.catalogue = catalogue
+        self.catalogue_assets = assets_by_id
 
     def prefetch_corporate_actions(self, requests):
         if not self.supports_plans:
@@ -294,19 +312,42 @@ class EvidenceClient:
         return self._value(self.actions[key])
 
 
+class _CompletedLookupChanged(RuntimeError):
+    """Newly traversed evidence replaced a lookup consumed earlier in this report."""
+
+
 class WindowClient:
     def __init__(self, client, symbol, previous, refresh):
         self.client, self.symbol = client, symbol
         self.previous = previous
         self.start = None if refresh or previous is None else previous["anchor_month"] + "-01"
         self.lookup_sources = {}
+        evidence = (previous or {}).get("evidence", {}) if client is not None else {}
+        self.completed_actions = {
+            action_identity_key(action): action for action in evidence.get("corporate_actions", ())
+        }
+        self.completed_cusip_lookups = {
+            lookup["lookup"]: lookup
+            for lookup in evidence.get("asset_lookups", ())
+            if lookup["lookup_kind"] == "cusip"
+        }
+        self.changed_cusips = set()
+        self.retained_lookups = {}
 
     @property
     def request_count(self):
         return self.client.request_count
 
     def get_asset_lookup(self, identifier):
-        return self.client.get_asset_lookup(identifier)
+        previous = (
+            self.completed_cusip_lookups.get(identifier)
+            if self.start and identifier not in self.changed_cusips
+            else None
+        )
+        result = self.client.get_asset_lookup(identifier, completed_lookup=previous)
+        if previous is not None and identifier not in self.client.assets:
+            self.retained_lookups[identifier] = result
+        return result
 
     def get_symbol_lookup(self, symbol):
         lookup = self.client.get_symbol_lookup(symbol)
@@ -324,6 +365,17 @@ class WindowClient:
     def get_corporate_actions(self, symbol, start, end):
         # Labels newly discovered in this run have no earlier acquisition checkpoint.
         current = self.client.get_corporate_actions(symbol, self.lower(symbol, start), end)
+        for action in current:
+            accepted = self.completed_actions.get(action_identity_key(action))
+            if accepted != action:
+                self.changed_cusips.update(extract_cusips([action, *([accepted] if accepted else [])]))
+        replaced = False
+        for identifier in sorted(self.changed_cusips & self.retained_lookups.keys()):
+            accepted = self.retained_lookups.pop(identifier)
+            fresh = self.client.get_asset_lookup(identifier)
+            replaced |= any(fresh[key] != accepted[key] for key in ("outcome", "http_status", "asset"))
+        if replaced:
+            raise _CompletedLookupChanged("new action changed a retained CUSIP lookup")
         historical = []
         if self.start and symbol == self.symbol:
             historical = [
@@ -335,9 +387,14 @@ class WindowClient:
 
 
 def acquire(view, client, previous=None, *, refresh=False):
-    window = WindowClient(client, view.symbol, previous, refresh)
-    evidence = build_identity_report(view.symbol, view.local, window)
-    return _finish_evidence(evidence, window)
+    for _ in range(MAX_NAME_CHANGE_SYMBOLS + 1):
+        window = WindowClient(client, view.symbol, previous, refresh)
+        try:
+            evidence = build_identity_report(view.symbol, view.local, window)
+        except _CompletedLookupChanged:
+            continue  # The fresh lookup is now authoritative in this operation's cache.
+        return _finish_evidence(evidence, window)
+    raise LineageError("metadata lookup changes exceeded the name-change traversal limit")
 
 
 def _finish_evidence(evidence, window):

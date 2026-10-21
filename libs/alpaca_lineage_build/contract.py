@@ -8,7 +8,7 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 25
+VERSION = 26
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -32,7 +32,7 @@ def versions() -> dict:
 
 
 def reusable_versions(published: dict) -> bool:
-    """Execution and trusted-handoff changes preserve v2-v24 decisions.
+    """Execution and trusted-handoff changes preserve compatible earlier decisions.
 
     Do not generalize this exception to other execution or rule versions. Older
     readable schemas are not necessarily reusable, and all other version fields

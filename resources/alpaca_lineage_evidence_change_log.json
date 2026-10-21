@@ -15,5 +15,10 @@
     "modifications": [
       "Report a formerly unavailable auxiliary pricing input which now has a source as changed input evidence during offline inspection, preserving the published rejection and metadata in the receipt without replaying rules."
     ]
+  },
+  {
+    "modifications": [
+      "Report added-session calculation scope and distinguish newly calculated assignments from retained decisions within the same month and across rollover, using the actual producer report without replaying rules. Report unchanged-history continuation as reused publication without inventing a calculation report."
+    ]
   }
 ]

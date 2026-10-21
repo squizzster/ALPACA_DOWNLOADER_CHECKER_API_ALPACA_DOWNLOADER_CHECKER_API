@@ -10,12 +10,20 @@ from libs.alpaca_end_of_day_security_correlation.session_exclusions import (
     VERIFIED_SESSION_EXCLUSIONS_MANIFEST_TYPE,
     VERIFIED_SESSION_EXCLUSIONS_VERSION,
 )
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS, FIELDS, HISTORY_START
+from libs.alpaca_pricing_download.contract import (
+    ADJUSTMENTS,
+    FIELDS,
+    HISTORY_START,
+    NEW_YORK,
+    month_of,
+    timestamp,
+)
 from libs.alpaca_pricing_download.handoff import load_published_boundary, load_published_views
 from libs.alpaca_pricing_download.storage import load_source, regular_path
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from .contract import LineageError, document_digest
+from .resume import assignment_summary, unchanged_source
 
 
 @dataclass
@@ -26,13 +34,21 @@ class PricingInput:
     views: dict
     downloads: dict
     local: dict
+    previous_assignment_summary: dict | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
         return self.downloads[descriptor["file"]]
 
 
 def load_pricing(
-    store: Path, symbol: str, *, source=None, active_only=False, previous_boundaries=None
+    store: Path,
+    symbol: str,
+    *,
+    source=None,
+    active_only=False,
+    previous_boundaries=None,
+    resume_from=None,
+    previous=None,
 ) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
     selected = source is not None
@@ -40,12 +56,18 @@ def load_pricing(
     source = load_source(root, symbol) if source is None else source
     if source is None:
         raise LineageError(f"no published pricing for {symbol}")
-    views = (
-        load_published_boundary(root, source, "current_month", selected=selected)
-        if active_only
-        else load_published_views(root, source, selected=selected)
-    )
     generation = document_digest(source)
+    views = (
+        {adjustment: () for adjustment in ADJUSTMENTS}
+        if resume_from is not None and unchanged_source(source, previous, selected=generation)
+        else _added_views(root, source, resume_from)
+        if resume_from is not None
+        else (
+            load_published_boundary(root, source, "current_month", selected=selected)
+            if active_only
+            else load_published_views(root, source, selected=selected)
+        )
+    )
     request = source["latest_request"]
     # The downloader's latest accepted asof selects the effective view. Original
     # per-boundary acquisition provenance remains in its selected source receipt.
@@ -58,6 +80,7 @@ def load_pricing(
     }
     downloads, descriptors = {}, []
     converted_views = {}
+    prior_summary = assignment_summary(previous, previous_boundaries) if resume_from is not None else None
     for adjustment in ADJUSTMENTS:
         values = views[adjustment]
         rows = converted_views.get(id(values))
@@ -96,7 +119,14 @@ def load_pricing(
                 "integrity_failure": None,
             }
         )
-        if active_only:
+        if resume_from is not None:
+            prior = prior_summary[adjustment]
+            descriptors[-1]["rows"] += prior["rows"]
+            descriptors[-1]["sessions"] = descriptors[-1]["rows"]
+            descriptors[-1]["gzip_present"] = bool(descriptors[-1]["rows"])
+            descriptors[-1]["from"] = prior["first_timestamp"] or descriptors[-1]["from"]
+            descriptors[-1]["to"] = descriptors[-1]["to"] or prior["last_timestamp"]
+        elif active_only:
             earlier = [
                 entry
                 for kind in ("completed_years", "current_year")
@@ -121,7 +151,34 @@ def load_pricing(
         "downloads": descriptors,
         "manifest_errors": [],
     }
-    return PricingInput(symbol, source, generation, views, downloads, local)
+    return PricingInput(symbol, source, generation, views, downloads, local, prior_summary)
+
+
+def _added_views(root, source, start):
+    """Read only pricing partitions intersecting the producer-approved added range."""
+    anchor = source["anchor_month"]
+    kinds = ["current_month"]
+    if start[:7] < anchor:
+        kinds.insert(0, "current_year")
+    if start[:4] < anchor[:4]:
+        kinds.insert(0, "completed_years")
+    parts = {kind: load_published_boundary(root, source, kind, selected=True) for kind in kinds}
+    assembled, dates, views = {}, {}, {}
+    for adjustment in ADJUSTMENTS:
+        key = tuple(id(parts[kind][adjustment]) for kind in kinds)
+        if key not in assembled:
+            rows = []
+            for kind in kinds:
+                for row in parts[kind][adjustment]:
+                    if kind == "current_year" and month_of(row) >= anchor:
+                        continue
+                    if row[0] not in dates:
+                        dates[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                    if dates[row[0]] >= start:
+                        rows.append(row)
+            assembled[key] = tuple(rows)
+        views[adjustment] = assembled[key]
+    return views
 
 
 def empty_exclusions(_root, symbol):

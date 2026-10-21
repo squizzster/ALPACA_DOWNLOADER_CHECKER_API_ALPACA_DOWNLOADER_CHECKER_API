@@ -159,6 +159,38 @@ class AlpacaEndOfDayPublicApiTests(NativeCase):
                 with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
                     method(public_id)
 
+    def test_digit_leading_historical_labels_resolve_from_catalogue_without_io(self):
+        self.add_symbol("OTHER")
+        for label in ("1TEST.A-B", "123456"):
+            with self.subTest(label=label):
+
+                def rename(_, boundaries):
+                    for boundary in boundaries.values():
+                        for entry in boundary["adjustments"]:
+                            for segment in entry["segments"]:
+                                segment["historical_symbol"] = label
+
+                for symbol in ("TEST", "OTHER"):
+                    self.publish_change(rename, symbol)
+                data = self.bootstrap()
+                securities = data.list_securities()
+                self.assertEqual(len(securities), 2)
+                self.assertTrue(all(label in security.tickers for security in securities))
+                with patch.object(Path, "open", side_effect=AssertionError("catalogue lookup touched a file")):
+                    matches = data.resolve_ticker(f" {label.lower()} ")
+                    self.assertEqual({match.public_id for match in matches}, {s.public_id for s in securities})
+                    self.assertTrue(all(match.ticker == label for match in matches))
+                    self.assertEqual(data.resolve_ticker(label, on="2026-10-05"), matches)
+                    self.assertEqual(data.resolve_ticker(label, on="2026-09-30"), ())
+                    self.assertEqual(data.resolve_ticker(label, on="2026-10-14"), ())
+                    self.assertEqual(data.resolve_ticker("9UNKNOWN"), ())
+
+    def test_catalogue_ticker_lookup_rejects_malformed_labels(self):
+        data = self.bootstrap()
+        for label in (None, 123, b"TEST", "", " ", "../TEST", "1/TEST", "1 TEST", ".", "-TEST"):
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                data.resolve_ticker(label)
+
     def test_observations_are_not_historical_csv_values(self):
         data = self.bootstrap()
         (security,) = data.list_securities()

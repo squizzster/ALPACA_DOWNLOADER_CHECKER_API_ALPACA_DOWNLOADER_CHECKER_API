@@ -220,6 +220,9 @@ def update_everything(
                     work_policy=work_policy,
                     context=context,
                     progress=progress,
+                    pricing_handoff={
+                        item["symbol"]: item for item in appended["results"] if "source_sha256" in item
+                    },
                     on_pricing=(
                         (lambda pricing_stage, values: progress("lineage_dependency_" + pricing_stage, values))
                         if progress

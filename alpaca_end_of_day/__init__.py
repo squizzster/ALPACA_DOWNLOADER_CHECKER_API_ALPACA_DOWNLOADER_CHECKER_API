@@ -13,6 +13,7 @@ import csv
 import io
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 13
+API_VERSION = 14
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -309,6 +310,12 @@ def _normalized_search_text(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _ticker_label(value: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[A-Z0-9][A-Z0-9.-]*", value.strip().upper()) is None:
+        raise ValueError("ticker must be a ticker label")
+    return value.strip().upper()
+
+
 def _security_search_rank(security: Security, query: str) -> tuple[int, int, int, str, str] | None:
     searchable_values = (
         *((0, value) for value in security.tickers),
@@ -538,9 +545,7 @@ class DataLibrary:
         return security
 
     def resolve_ticker(self, ticker, *, on=None):
-        from .standalone import _symbol
-
-        ticker, session = _symbol(ticker), _optional_date(on, "on")
+        ticker, session = _ticker_label(ticker), _optional_date(on, "on")
         return tuple(
             r
             for r in self._resolutions.get(ticker, ())

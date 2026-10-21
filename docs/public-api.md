@@ -82,6 +82,8 @@ Metadata retains known/conflicting observations and supported effective interval
 fallbacks stay undated; catalogue time dates only catalogue-sourced lookups. Ownership evidence can support
 historical labels/CUSIPs, including unknown endpoints; observed names/exchanges/classes do not establish
 historical periods. Resolution ranges describe labels on stored histories. Undated names remain searchable.
+`resolve_ticker` accepts catalogue labels beginning with a letter or digit, followed by letters, digits,
+periods or hyphens; it trims surrounding whitespace and ignores case. This includes historical numeric labels.
 FIGIs are not currently supplied or fabricated.
 Provider IDs, internal status/reasons and diagnostic paths stay hidden. Coverage records approved stored
 sessions and explained gaps; [eligibility guarantees](technical-contracts.md#serving-catalogue) define its limits.

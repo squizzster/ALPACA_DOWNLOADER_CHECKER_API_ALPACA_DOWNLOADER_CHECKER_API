@@ -536,6 +536,7 @@ def publish(
     on_check=None,
     endpoints=None,
     old_documents=None,
+    handoff=None,
 ) -> int:
     # Unchanged references already select their inventory. Only replaced boundaries
     # can retire files; they occupy disjoint directories (or the completed-years prefix).
@@ -585,6 +586,8 @@ def publish(
         update = merge_ranges(existing, update)
         if update != existing:
             notice = json_bytes(update)
+    if handoff is not None:
+        handoff["pending_update"] = update if update is not None else existing
     if not changed and notice is None:
         return 0
     # Source receipt is also staged for an otherwise byte-identical selection.

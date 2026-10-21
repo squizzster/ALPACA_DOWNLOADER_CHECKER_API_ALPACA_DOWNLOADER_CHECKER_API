@@ -44,6 +44,8 @@ Replacement notices include removed sessions. [Download](../libs/alpaca_pricing_
 [HTTP/pagination](../libs/alpaca_pricing_download/http.py) and [completed responses](../libs/alpaca_pricing_download/responses.py)
 own endpoint/acquisition stages, row budgets, exact fallback, overlap checks and bounded retries.
 Completed normalized responses are sliced downstream without renormalization; fresh first-session probes remain independent.
+Completed request executors release response bodies with their consumer; request-size splits preserve ordered
+pagination without retaining earlier acquisition cohorts through recursive closures or handled tracebacks.
 
 [Append approval](../libs/alpaca_pricing_download/append.py) binds checked source generations to selected missing
 intervals. Publication rechecks generations under ticker locks even when the last row is unchanged.
@@ -122,13 +124,34 @@ replacements through one journal. Consumers never repair incompatible groups or 
 Missing indexed membership requires explicit `lineage migrate-index`, not an implicit receipt crawl.
 
 Completed scheduling hints are authoritative; lost coverage permits one explicit source-generation census,
-with no receipts for matching sources. [Metadata selection](../libs/alpaca_lineage_build/pipeline.py#L78) bounds prefetch;
+with no receipts for matching sources. [Metadata selection](../libs/alpaca_lineage_build/pipeline.py) plans from completed
+pricing results (including accepted ranges and effective pending changes for already-covered requests) and
+accepted index ranges. Covered acquisition consumes its source boundary without reopening the endpoint
+validator. After interruption, only selected pending source receipts supply
+missing planning facts, one bounded cohort at a time; publication reselects generations under its own locks.
+Prefetch reads selected lineage receipt bodies for evidence queries;
 [EvidenceClient](../libs/alpaca_lineage_build/metadata.py#L56) reuses containing completed action intervals only within
 an invocation. Failed/incomplete responses establish no coverage; wider requests/new invocations acquire evidence.
 Ordinary action continuation starts at the prior active month; older corrections require explicit refresh.
+An unchanged action's completed positive CUSIP-to-ID lookup is reusable when the fresh catalogue contains
+that exact asset ID with identical, unambiguous asset facts. This consumes the published mapping; it does
+not infer a CUSIP from a ticker. New or changed actions, changed/missing/ambiguous asset facts, negative
+lookups and explicit refresh retain exact acquisition. A later traversal that replaces an already consumed
+lookup restarts metadata assembly using the operation's now-authoritative exact lookup cache.
 Known dependencies retain continuation/refresh obligations; new dependencies need full evidence.
 Expanded groups reselect under sorted enlarged locks; decoded input reuse requires matching generation/scope.
-Closed-assignment continuation has stricter [single-identity gates](../libs/alpaca_lineage_build/resume.py).
+Assignment continuation uses the pricing producer's ancestor/change-range proof and
+[single-identity gates](../libs/alpaca_lineage_build/resume.py). With compatible resolved assignments, unchanged
+evidence and a complete added session range, correlation receives only the added rows. Receipt assignment
+summaries supply accepted counts and endpoints without reopening closed assignments. Older receipts acquire
+that summary from their selected assignment bodies, without reopening prices or rerunning old decisions.
+Month and year rollover combine accepted assignments with new decisions; only required output bodies are
+opened and published. Historical corrections, missing change proof, changed evidence, unresolved assignments
+and dependency groups retain complete-group reconciliation.
+When the pricing producer confirms that every group input has unchanged rows and identity evidence remains
+unchanged, the group carries its accepted assignments forward without pricing reads or rule execution.
+This includes unresolved assignments and empty histories. Advancing the cutoff or crossing a month/year
+boundary alone does not invalidate those decisions; rollover reads only the assignment bodies it must regroup.
 
 An exactly rejected missing auxiliary can retain metadata and complete its group alongside independently
 supported histories, without inventing an empty source. This exception cannot cover arbitrary failure, seeds

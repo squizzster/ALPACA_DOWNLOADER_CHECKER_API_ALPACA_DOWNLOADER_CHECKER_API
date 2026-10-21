@@ -303,6 +303,112 @@ class LineageBatchingTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in window.get_corporate_actions("B", START, END)], ["b"])
         self.assertEqual({p["start"] for kind, p in provider.calls}, {START, "2026-10-01"})
 
+    def test_completed_mapping_reuse_requires_unchanged_action_and_fresh_asset_facts(self):
+        for scenario in (
+            "unchanged",
+            "new_action",
+            "changed_action",
+            "changed_asset",
+            "ambiguous_asset",
+            "missing_asset",
+            "negative_lookup",
+            "explicit_refresh",
+            "fresh_exact_lookup",
+        ):
+            with self.subTest(scenario=scenario):
+                accepted = event("A", "accepted", cusip="CUSIP")
+                previous = {
+                    "anchor_month": "2026-10",
+                    "evidence": {
+                        "queried_symbols": ["A"],
+                        "corporate_actions": [accepted],
+                        "asset_lookups": [
+                            {
+                                "lookup": "CUSIP",
+                                "lookup_kind": "cusip",
+                                "outcome": "found",
+                                "http_status": 200,
+                                "asset": asset("A"),
+                            }
+                        ],
+                    },
+                }
+                current = dict(accepted)
+                catalogue = [asset("A")]
+                if scenario == "new_action":
+                    current["id"] = "new"
+                if scenario == "changed_action":
+                    current["process_date"] = "2026-10-02"
+                if scenario == "changed_asset":
+                    catalogue[0]["name"] = "changed name"
+                if scenario == "ambiguous_asset":
+                    catalogue.append({**asset("A"), "symbol": "B"})
+                if scenario == "missing_asset":
+                    catalogue = []
+                if scenario == "negative_lookup":
+                    previous["evidence"]["asset_lookups"][0].update(
+                        outcome="not_found", http_status=404, asset=None
+                    )
+                provider = Provider(["A"], [current], catalogue=catalogue)
+                provider.assets["CUSIP"] = asset("A", "fresh-id")
+                client = EvidenceClient(
+                    provider.client, observation={"records": catalogue, "catalogue_observed_at_utc": "now"}
+                )
+                if scenario == "fresh_exact_lookup":
+                    client.get_asset_lookup("CUSIP")
+                window = WindowClient(client, "A", previous, scenario == "explicit_refresh")
+                window.get_corporate_actions("A", START, END)
+                result = window.get_asset_lookup("CUSIP")
+                calls = [value for kind, value in provider.calls if kind == "asset"]
+                self.assertEqual(calls, [] if scenario == "unchanged" else ["CUSIP"])
+                self.assertEqual(result["asset"]["id"], "A-id" if scenario == "unchanged" else "fresh-id")
+
+    def test_newly_traversed_action_replaces_an_earlier_retained_mapping(self):
+        from types import SimpleNamespace
+
+        from libs.alpaca_lineage_build.metadata import acquire
+
+        rename = event(
+            "A",
+            "rename",
+            action_type="name_change",
+            process_date="2025-12-01",
+            old_symbol="A",
+            new_symbol="B",
+            old_cusip="OLD-CUSIP",
+            new_cusip="NEW-CUSIP",
+        )
+        discovered = event("C", "new-evidence", cusip="OLD-CUSIP")
+        canonical = asset("C", "canonical-id")
+
+        def provider(changed):
+            value = Provider(["A", "B", "C"], [rename, *([discovered] if changed else [])])
+            value.assets["C"] = canonical
+            value.assets["OLD-CUSIP"] = asset("D", "new-id") if changed else canonical
+            value.assets["NEW-CUSIP"] = canonical
+            catalogue = [value.assets[name] for name in ("A", "B", "C")]
+            client = EvidenceClient(
+                value.client, observation={"records": catalogue, "catalogue_observed_at_utc": "now"}
+            )
+            return value, client
+
+        view = SimpleNamespace(
+            symbol="A",
+            local={
+                "present": False,
+                "downloads": [{"request_from": START, "asof": END, "stat_matches_sidecar": True}],
+            },
+        )
+        _, initial = provider(False)
+        previous = {"anchor_month": "2026-10", "evidence": acquire(view, initial)}
+        self.assertIn("C", previous["evidence"]["queried_symbols"])
+        current_provider, current = provider(True)
+        continued = acquire(view, current, previous)
+        _, fresh = provider(True)
+        rebuilt = acquire(view, fresh, previous, refresh=True)
+        self.assertTrue(stable_evidence(continued, rebuilt))
+        self.assertEqual([value for kind, value in current_provider.calls if kind == "asset"], ["OLD-CUSIP"])
+
     def test_newly_discovered_labels_share_next_wave(self):
         actions = [
             event("A", "ab", action_type="name_change", old_symbol="A", new_symbol="B"),

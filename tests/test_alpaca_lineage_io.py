@@ -49,7 +49,7 @@ class LineageIOTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "unchanged")
         self.assertEqual(events, [["GOOG"]])
         self.assertEqual(opened[self.root / "GOOG/lineage.manifest.json"], 1)
-        self.assertEqual(opened[pricing / "source.manifest.json"], 2)  # Reselect after prefetch unlocks.
+        self.assertEqual(opened[pricing / "source.manifest.json"], 1)  # Planning uses the accepted index.
         self.assertEqual(opened[pricing / "validator_first_last_sessions.json"], 1)
         self.assertEqual(provider.calls, [])
         self.assertEqual(before, snapshot(self.store))
@@ -457,6 +457,7 @@ class LineageIOTests(unittest.TestCase):
             receipt_cache,
             end_date=None,
             work_policy=None,
+            pricing_handoff=None,
         ):
             caches.append(receipt_cache)
             planned.append(list(labels))

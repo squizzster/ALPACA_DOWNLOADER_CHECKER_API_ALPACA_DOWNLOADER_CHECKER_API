@@ -1,7 +1,9 @@
 import copy
+import gc
 import json
 import unittest
 import urllib.error
+import weakref
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -292,6 +294,88 @@ class ApiSolverTests(unittest.TestCase):
         self.assertEqual(result, original)
         self.assertEqual(len(rows), 2)
         self.assertEqual(metrics, {"page_requests": 3, "oversize_splits": 1})
+
+    def test_completed_responses_are_released_with_their_consumer(self):
+        for mode in ("complete", "split", "partial_failure"):
+            with self.subTest(mode=mode):
+                result = plan(
+                    need(["A", "B"], start="2026-10-14", end="2026-10-15"),
+                    max_symbols=1 if mode == "partial_failure" else 4000,
+                )
+
+                def get_page(parameters):
+                    symbols = parameters["symbols"].split(",")
+                    if mode == "split" and len(symbols) > 1:
+                        raise urllib.error.HTTPError("test", 414, "too long", {}, None)
+                    if mode == "partial_failure" and symbols == ["B"]:
+                        raise DownloadError("unavailable")
+                    return {"bars": {symbol: [bar("2026-10-14")] for symbol in symbols}}
+
+                enabled = gc.isenabled()
+                gc.disable()
+                try:
+                    for _ in range(3):
+                        failures = []
+                        rows = execute_bar_plan(
+                            result, get_page, on_failure=lambda step, action, error: failures.append(str(error))
+                        )
+                        self.assertEqual(len(rows), 1 if mode == "partial_failure" else 2)
+                        self.assertEqual(failures, ["unavailable"] if mode == "partial_failure" else [])
+                        observations = [weakref.ref(value) for value in rows.values()]
+                        del rows
+                        self.assertTrue(
+                            all(observation() is None for observation in observations),
+                            "completed request retains consumer-released histories until cyclic collection",
+                        )
+                finally:
+                    if enabled:
+                        gc.enable()
+                    gc.collect()
+
+    def test_nested_request_splits_finish_pages_before_the_next_ordered_step(self):
+        result = build_plan(
+            {
+                "steps": [
+                    {"needs": [need(["A", "B", "C", "D"], start="2026-10-14", end="2026-10-15")]},
+                    {"needs": [need(["X"], start="2026-10-14", end="2026-10-15")]},
+                ]
+            }
+        )
+        original = copy.deepcopy(result)
+        calls, metrics = [], {}
+
+        def get_page(parameters):
+            symbols = parameters["symbols"]
+            token = parameters.get("page_token")
+            calls.append((symbols, token))
+            if "," in symbols:
+                raise urllib.error.HTTPError("test", 414, "too long", {}, None)
+            if token is None:
+                return {"bars": {}, "next_page_token": "next"}
+            return {"bars": {symbols: [bar("2026-10-14")]}}
+
+        rows = execute_bar_plan(result, get_page, metrics=metrics)
+        self.assertEqual(
+            calls,
+            [
+                ("A,B,C,D", None),
+                ("A,B", None),
+                ("A", None),
+                ("A", "next"),
+                ("B", None),
+                ("B", "next"),
+                ("C,D", None),
+                ("C", None),
+                ("C", "next"),
+                ("D", None),
+                ("D", "next"),
+                ("X", None),
+                ("X", "next"),
+            ],
+        )
+        self.assertEqual({key[3] for key in rows}, {"A", "B", "C", "D", "X"})
+        self.assertEqual(metrics, {"page_requests": 13, "oversize_splits": 3})
+        self.assertEqual(result, original)
 
     def test_invalid_need_is_rejected_before_execution(self):
         for item in (

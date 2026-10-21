@@ -406,12 +406,13 @@ class ReceiptCache:
             self._remember(symbol, (self.index["symbols"][symbol]["sha256"], receipt))
 
 
-def read_boundaries(root: Path, receipt: dict, *, selected_loader=None) -> dict:
+def read_boundaries(root: Path, receipt: dict, *, selected_loader=None, kinds=None) -> dict:
     return {
         kind: (selected_loader or selected_document)(
             path_at(root, f"{receipt['symbol']}/{entry['manifest']}", published=True), entry["sha256"]
         )
         for kind, entry in receipt["boundaries"].items()
+        if kinds is None or kind in kinds
     }
 
 

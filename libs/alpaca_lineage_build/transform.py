@@ -38,6 +38,24 @@ def correlate(store, inputs, evidence):
     raise LineageError("lineage correlation did not reach its established fixed point")
 
 
+def retained_decision_report(previous):
+    """Adapt an accepted decision to publication when there are no new rows."""
+    return {
+        **{
+            key: previous[key]
+            for key in (
+                "evidence_issues",
+                "ownership_interval_rule_order",
+                "row_correlation_rule_order",
+                "row_partition_complete",
+            )
+        },
+        "source_row_count": 0,
+        "correlated": {"row_count": 0, "segments": []},
+        "uncorrelated": {"row_count": 0, "segments": []},
+    }
+
+
 # Persist the decision, not a second audit trail of the rule's changing whole-
 # history diagnostics. These assignments plus normalized evidence are the boundary.
 ASSIGNMENT_FIELDS = {
@@ -150,6 +168,41 @@ def _split_months(report, indexes):
     return result
 
 
+def _continued_documents(view, report, indexes, previous, old):
+    """Append new decisions to accepted assignments; regroup only at rollover."""
+    anchor = view.source["anchor_month"]
+    same_month = previous["anchor_month"] == anchor
+    same_year = previous["anchor_month"][:4] == anchor[:4]
+    if same_month and not any(view.views.values()):
+        return {}
+    documents = {}
+    for kind in boundary_paths(anchor):
+        if (kind == "completed_years" and same_year) or (kind == "current_year" and same_month):
+            continue
+        document = boundary(view, report, kind, anchor, indexes)
+        for entry in document["adjustments"]:
+            prefix = [
+                segment
+                for old_kind, prior in old.items()
+                for item in prior["adjustments"]
+                if item["adjustment"] == entry["adjustment"]
+                for segment in item["segments"]
+                if (old_kind != "current_year" or segment["from"][:7] < previous["anchor_month"])
+                and (
+                    (kind == "completed_years" and segment["from"][:4] < anchor[:4])
+                    or (kind == "current_year" and segment["from"][:4] == anchor[:4])
+                    or (kind == "current_month" and segment["from"][:7] == anchor)
+                )
+            ]
+            offset, segments = 0, []
+            for segment in sorted(prefix, key=lambda s: s["from"]) + entry["segments"]:
+                segments.append({**segment, "row_start": offset + 1, "row_end": offset + segment["row_count"]})
+                offset += segment["row_count"]
+            entry.update(rows=offset, segments=segments)
+        documents[kind] = document
+    return documents
+
+
 def make_publication(view, evidence, report, deps, previous=None, old_boundaries=None, *, resume_closed=False):
     from .projection import last_observed_symbol_lookup
 
@@ -157,13 +210,14 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
     indexes = _row_indexes(view)
     report = _split_months(report, indexes)
     old_boundaries = old_boundaries or {}
-    documents = {
-        kind: old_boundaries[kind]
-        if resume_closed and kind != "current_month"
-        else boundary(view, report, kind, anchor, indexes)
-        for kind in boundary_paths(anchor)
-    }
+    documents = (
+        _continued_documents(view, report, indexes, previous, old_boundaries)
+        if resume_closed
+        else {kind: boundary(view, report, kind, anchor, indexes) for kind in boundary_paths(anchor)}
+    )
     for kind, old in old_boundaries.items():
+        if kind not in documents:
+            continue
         new = documents[kind]
         same_anchor = previous["anchor_month"] == anchor
         if kind == "current_year" and same_anchor and _prefix(old, anchor) == _prefix(new, anchor):
@@ -172,16 +226,7 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             k: v for k, v in new.items() if k != "anchor_month"
         }:
             documents[kind] = old
-    closed_rows = 0
-    if resume_closed:
-        for kind in ("completed_years", "current_year"):
-            documents[kind] = old_boundaries[kind]
-            closed_rows += sum(
-                segment["row_count"]
-                for entry in documents[kind]["adjustments"]
-                for segment in entry["segments"]
-                if segment["from"][:7] < anchor
-            )
+    closed_rows = previous["source_rows"] if resume_closed else 0
     assets = {identity["id"] for identity in evidence["identities"] if identity.get("id")}
     receipt = {
         "schema_version": VERSION,
@@ -205,14 +250,27 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         "row_correlation_rule_order": report["row_correlation_rule_order"],
         "row_partition_complete": report["row_partition_complete"],
         "source_rows": report["source_row_count"] + closed_rows,
-        "correlated_rows": report["correlated"]["row_count"] + closed_rows,
-        "unresolved_rows": report["uncorrelated"]["row_count"],
+        "correlated_rows": report["correlated"]["row_count"]
+        + (previous["correlated_rows"] if resume_closed else 0),
+        "unresolved_rows": report["uncorrelated"]["row_count"]
+        + (previous["unresolved_rows"] if resume_closed else 0),
+        "assignment_summary": {
+            item["adjustment"]: {
+                "rows": item["rows"],
+                "first_timestamp": item["from"],
+                "last_timestamp": item["to"],
+                "last_session": timestamp(item["to"]).astimezone(NEW_YORK).date().isoformat()
+                if item["to"]
+                else None,
+            }
+            for item in view.local["downloads"]
+        },
         "boundaries": {
             kind: {
                 "manifest": relative,
                 "sha256": (
                     previous["boundaries"][kind]["sha256"]
-                    if documents[kind] is old_boundaries.get(kind)
+                    if kind not in documents or documents[kind] is old_boundaries.get(kind)
                     else document_digest(documents[kind])
                 ),
             }

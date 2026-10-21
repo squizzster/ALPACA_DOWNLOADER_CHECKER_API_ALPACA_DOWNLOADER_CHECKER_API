@@ -39,6 +39,7 @@ from .storage import (
     publish,
     read_boundary,
     read_document,
+    read_update,
     read_validator,
     recover,
     regular_path,
@@ -317,6 +318,7 @@ def publish_acquired(
         # Identical selected output is already complete. A repeated acquisition
         # notice must not manufacture a new generation solely for its ancestry.
         source["history_changes"] = previous["history_changes"]
+    handoff = {}
     written = publish(
         root,
         previous,
@@ -328,12 +330,14 @@ def publish_acquired(
         on_check=on_check,
         endpoints=selected_endpoints,
         old_documents=old_documents,
+        handoff=handoff,
     )
     return {
         "files_written": written,
         "source": source,
         "source_sha256": digest(json_bytes(source)),
         "endpoints": selected_endpoints,
+        "pending_update": handoff["pending_update"],
     }
 
 
@@ -416,6 +420,8 @@ def download_pricing(
                 "recovered": recovered,
                 "requests": 0,
                 "changed": False,
+                "history_start": previous.get("history_start", HISTORY_START),
+                "pending_update": read_update(root, published=True),
             }
         endpoints = read_validator(root, previous) if previous is not None else None
         if endpoints is None:
@@ -529,6 +535,8 @@ def download_pricing(
             "restarted": restarted,
             "has_data": any(selected_endpoints.values()),
             "changed": update is not None,
+            "history_start": written["source"]["history_start"],
+            "pending_update": written["pending_update"],
         }
 
 

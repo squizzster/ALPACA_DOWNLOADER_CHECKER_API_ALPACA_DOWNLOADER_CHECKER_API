@@ -78,5 +78,10 @@
     "modifications": [
       "Read bounded source-presence evidence across all selected adjustment views, including unresolved observations and shared physical aliases, for the serving producer."
     ]
+  },
+  {
+    "modifications": [
+      "Accept digit-leading historical labels in DataLibrary ticker resolution, independently of standalone source-locator syntax, while preserving dated matches, ambiguity, normalization and metadata-only lookup from the opened catalogue."
+    ]
   }
 ]

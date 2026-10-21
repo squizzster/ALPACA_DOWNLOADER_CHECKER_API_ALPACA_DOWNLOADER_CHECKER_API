@@ -139,5 +139,11 @@
     "modifications": [
       "Publish a bounded ancestor/change-span handoff with pricing selectors so downstream serving maintenance trusts append versus replacement decisions, including rollover and interrupted consumers."
     ]
+  },
+  {
+    "modifications": [
+      "Return completed source ranges and the producer's effective pending update in acquisition and append handoffs, including already-covered requests, so downstream planning consumes the selected result without reopening sources or notices. Covered acquisitions trust the source's accepted range without reopening its endpoint validator. Preserve compatible v1-v25 artifacts and existing publication recovery.",
+      "Release completed bar-plan response bodies with their consumers, including request-size splitting and handled failures, so successive replacement cohorts do not retain earlier histories through executor cycles. Preserve exact request order, pagination, failure isolation and publication recovery."
+    ]
   }
 ]

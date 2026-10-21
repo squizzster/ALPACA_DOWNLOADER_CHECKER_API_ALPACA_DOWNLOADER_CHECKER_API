@@ -177,6 +177,8 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
             "added_rows": {name: len(rows) for name, rows in views.items()},
             "files_written": written["files_written"],
             "source_sha256": written["source_sha256"],
+            "history_start": written["source"]["history_start"],
+            "pending_update": written["pending_update"],
         }
 
 

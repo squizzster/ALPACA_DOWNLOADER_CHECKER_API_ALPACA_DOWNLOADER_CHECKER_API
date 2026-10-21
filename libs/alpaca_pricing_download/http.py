@@ -241,11 +241,12 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
             }
         except (DownloadError, OSError) as error:
             cause = error.__cause__ or error
-            if isinstance(cause, urllib.error.HTTPError) and cause.code == 414 and len(symbols) > 1:
+            oversize = isinstance(cause, urllib.error.HTTPError) and cause.code == 414 and len(symbols) > 1
+            # A handled exception's traceback must not retain this response frame.
+            del cause
+            if oversize:
                 metrics["oversize_splits"] += 1
-                for replacement in split_action(action):
-                    execute(step_index, replacement)
-                return
+                return split_action(action)
             if on_failure is None:
                 raise
             failed_steps.add(step_index)
@@ -260,8 +261,13 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                 ].select(symbol, adjustment, lower, upper, parameters["asof"])
 
     for step_index, step in enumerate(plan["steps"]):
-        for action in step["actions"]:
-            execute(step_index, action)
+        actions = deque(step["actions"])
+        while actions:
+            replacements = execute(step_index, actions.popleft())
+            if replacements:
+                # Keep split delivery ordered without a recursive closure retaining
+                # every completed response after its consumer releases the plan.
+                actions.extendleft(reversed(replacements))
         # Callers that continue independent failures must not execute a dependent step.
         if step_index in failed_steps:
             break

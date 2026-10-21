@@ -18,7 +18,7 @@ from .contract import LineageError, versions
 from .pipeline import closure, run_lineage
 from .pricing import load_pricing
 
-EVIDENCE_VERSION = 3
+EVIDENCE_VERSION = 4
 
 
 def validate_evidence_version():
@@ -155,7 +155,18 @@ class EvidenceCapture:
             registry = receipt["row_correlation_rule_order"]
             assignments = published_assignments(receipt, boundaries[symbol])
             for segment in assignments:
-                fresh = report is not None and (not resumed or segment["pricing_boundary"] == "current_month")
+                fresh = report is not None and (
+                    not resumed
+                    or any(
+                        current["adjustment"] == segment["adjustment"]
+                        and current["first_session_date"]
+                        <= segment["from"]
+                        <= segment["to"]
+                        <= current["last_session_date"]
+                        for branch in ("correlated", "uncorrelated")
+                        for current in report[branch]["segments"]
+                    )
+                )
                 segment["decision_origin"] = "calculated" if fresh else "reused_publication"
                 segment["rule_path"] = rule_path(segment, registry, fresh=fresh)
             changed_inputs = [
@@ -166,7 +177,7 @@ class EvidenceCapture:
             changed_inputs.extend(name for name in unavailable_pricing(receipt) if name in views)
             self.sources[symbol] = {
                 "status": "calculated_with_closed_reuse"
-                if resumed
+                if resumed and report
                 else "calculated"
                 if report
                 else "reused_publication",
@@ -180,7 +191,11 @@ class EvidenceCapture:
                 "pricing": pricing_context(view) if view else None,
                 "receipt": receipt,
                 "assignments": assignments,
-                "actual_calculation_scope": "current_month" if resumed else "full_history" if report else None,
+                "actual_calculation_scope": "added_sessions"
+                if resumed and report
+                else "full_history"
+                if report
+                else None,
                 "actual_report": (
                     {key: value for key, value in report.items() if key != "lineage_report"} if report else None
                 ),

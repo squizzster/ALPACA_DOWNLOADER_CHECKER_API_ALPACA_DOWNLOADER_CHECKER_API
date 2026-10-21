@@ -12,22 +12,65 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 from .contract import reusable_versions
 
 
+def unchanged_source(source, previous, *, selected=None):
+    """The pricing producer's completed proof covers every retained row."""
+    return (
+        previous is not None
+        and reusable_versions(previous["versions"])
+        and previous["processed_through"] <= source["latest_request"]["end_exclusive"]
+        and (
+            selected == previous["source_sha256"]
+            or any(
+                change["source_sha256"] == previous["source_sha256"] and change["changed_from"] is None
+                for change in source.get("history_changes", ())
+            )
+        )
+    )
+
+
 def eligible_source(source, previous, notice, *, refresh):
     return (
         not refresh
         and previous is not None
         and reusable_versions(previous["versions"])
-        and previous["anchor_month"] == source["anchor_month"]
+        and previous["processed_through"] <= source["latest_request"]["end_exclusive"]
         and previous["source_rows"] > 0
         and previous["unresolved_rows"] == 0
         and not previous["dependencies"]
         and len(previous["asset_ids"]) == 1
-        and (notice is None or notice["from"] >= source["anchor_month"] + "-01")
-        and all(
-            previous["pricing_boundaries"][kind] == source["boundaries"][kind]
-            for kind in ("completed_years", "current_year")
+        and any(
+            change["source_sha256"] == previous["source_sha256"]
+            and (change["changed_from"] is None or change["changed_from"] >= previous["processed_through"][:10])
+            for change in source.get("history_changes", ())
         )
     )
+
+
+def assignment_summary(previous, boundaries):
+    """Consume published assignments when an older receipt lacks their summary.
+
+    This is a projection of accepted results, not another rule execution or
+    pricing audit. New receipts carry it so closed assignment bodies stay closed.
+    """
+    if "assignment_summary" in previous:
+        return previous["assignment_summary"]
+    result = {}
+    for adjustment in ADJUSTMENTS:
+        segments = [
+            segment
+            for kind, document in boundaries.items()
+            for item in document["adjustments"]
+            if item["adjustment"] == adjustment
+            for segment in item["segments"]
+            if kind != "current_year" or segment["from"][:7] < previous["anchor_month"]
+        ]
+        result[adjustment] = {
+            "rows": sum(segment["row_count"] for segment in segments),
+            "first_timestamp": min((s["first_timestamp"] for s in segments), default=None),
+            "last_timestamp": max((s["last_timestamp"] for s in segments), default=None),
+            "last_session": max((s["to"] for s in segments), default=None),
+        }
+    return result
 
 
 def stable_evidence(previous, current):
@@ -64,27 +107,30 @@ def unique_assignment(segments, asset_id):
 def can_resume(view, previous, old, evidence):
     if not stable_evidence(previous["evidence"], evidence):
         return False
-    asset_id = previous["asset_ids"][0]
-    anchor = view.source["anchor_month"]
+    if not any(view.views.values()):
+        return True
+    summary = view.previous_assignment_summary
+    checked, dates, calendars = set(), {}, {}
     for adjustment in ADJUSTMENTS:
-        segments = [
-            segment
-            for document in old.values()
-            for item in document["adjustments"]
-            if item["adjustment"] == adjustment
-            for segment in item["segments"]
-        ]
-        if not unique_assignment(segments, asset_id):
-            return False
         rows = view.views[adjustment]
-        if not rows:
+        last = summary[adjustment]["last_session"]
+        if last is None:
             return False
-        sessions = tuple(timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows)
-        prior = [segment["to"] for segment in segments if segment["from"][:7] < anchor]
-        # Check only the newly acquired month and its single predecessor seam.
-        # Previously published sessions/decisions are neither reopened nor audited.
-        first = (date.fromisoformat(max(prior)) + timedelta(days=1)).isoformat() if prior else sessions[0]
-        expected = expected_market_session_coverage(first, view.source["latest_request"]["end_exclusive"])
+        key = id(rows), last
+        if key in checked:
+            continue
+        checked.add(key)
+        for row in rows:
+            if row[0] not in dates:
+                dates[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+        sessions = tuple(dates[row[0]] for row in rows)
+        # Only the added range and its predecessor seam are new evidence.
+        first = (date.fromisoformat(last) + timedelta(days=1)).isoformat()
+        if first not in calendars:
+            calendars[first] = expected_market_session_coverage(
+                first, view.source["latest_request"]["end_exclusive"]
+            )
+        expected = calendars[first]
         if sessions != expected.session_dates:
             return False
     return True

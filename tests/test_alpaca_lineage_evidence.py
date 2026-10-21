@@ -124,13 +124,23 @@ class LineageEvidenceTests(unittest.TestCase):
             result = self.output(identity_client=IdentityClient())
         self.assertEqual(calculate.call_count, 1)
         self.assertEqual(result["status"], "calculated_with_closed_reuse")
-        self.assertEqual(result["actual_calculation_scope"], "current_month")
-        current_month_rows = sum(item["t"].startswith("2026-10") for item in self.bars) + 1
-        self.assertEqual(result["actual_report"]["source_row_count"], current_month_rows * 8)
+        self.assertEqual(result["actual_calculation_scope"], "added_sessions")
+        self.assertEqual(result["actual_report"]["source_row_count"], 8)
         self.assertEqual(result["pricing"]["session_grids"][0]["rows"], len(self.bars) + 1)
         for segment in result["assignments"]:
-            expected = "calculated" if segment["pricing_boundary"] == "current_month" else "reused_publication"
+            expected = "calculated" if segment["from"] >= "2026-10-14" else "reused_publication"
             self.assertEqual(segment["decision_origin"], expected)
+
+    def test_empty_advance_reports_retained_decisions_without_an_actual_calculation(self):
+        self.publish()
+        self.download(self.bars, "2026-10-15")
+        with patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=AssertionError("no replay")):
+            result = self.output(identity_client=IdentityClient())
+        self.assertEqual(result["status"], "reused_publication")
+        self.assertIsNone(result["actual_calculation_scope"])
+        self.assertIsNone(result["actual_report"])
+        self.assertEqual(result["calculation_paths"], [])
+        self.assertTrue(all(s["decision_origin"] == "reused_publication" for s in result["assignments"]))
 
     def test_cli_runs_actual_missing_seed_and_dependency_downloads(self):
         from cli_support import initialize_command_registration

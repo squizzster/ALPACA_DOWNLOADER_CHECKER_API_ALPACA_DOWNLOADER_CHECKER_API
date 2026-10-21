@@ -227,7 +227,13 @@ class AcceptedOperationTests(unittest.TestCase):
     def test_completed_acquisition_reports_reuse_without_requests(self):
         with fixture() as case:
             events = []
-            with patch.object(case.pricing, "_get", side_effect=AssertionError("acquisition repeated")):
+            with (
+                patch.object(case.pricing, "_get", side_effect=AssertionError("acquisition repeated")),
+                patch(
+                    "libs.alpaca_pricing_download.acquire.read_validator",
+                    side_effect=AssertionError("covered endpoint reopened"),
+                ),
+            ):
                 result = acquire_selected(
                     case.store,
                     ["AAA"],
@@ -239,6 +245,10 @@ class AcceptedOperationTests(unittest.TestCase):
             self.assertEqual(events[0][0], "acquisition_selection")
             self.assertEqual(events[0][1]["reused"], 1)
             self.assertFalse(result["requests"])
+            handoff = result["results"][0]
+            self.assertEqual(handoff["request"]["end_exclusive"][:10], "2026-10-17")
+            self.assertEqual(len(handoff["source_sha256"]), 64)
+            self.assertIsNone(handoff["pending_update"])
 
     def test_covered_update_reads_membership_once_and_uses_only_live_comparison(self):
         with fixture() as case:

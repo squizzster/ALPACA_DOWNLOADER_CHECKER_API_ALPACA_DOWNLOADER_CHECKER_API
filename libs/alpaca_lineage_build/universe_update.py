@@ -235,7 +235,7 @@ def run_update(
         }
         lineage_results = []
 
-        def lineage_phase(name, labels):
+        def lineage_phase(name, labels, publications=()):
             callback = (lambda stage, values: progress(name + "_" + stage, values)) if progress else None
             if progress:
                 progress(name, {"state": "started", "selected": len(labels)})
@@ -251,6 +251,7 @@ def run_update(
                 context=context,
                 progress=callback,
                 on_pricing=callback,
+                pricing_handoff={item["symbol"]: item for item in publications if "source_sha256" in item},
             )
             if progress:
                 progress(name, {"state": "completed", "failed": value["failed"]})
@@ -261,7 +262,7 @@ def run_update(
         if selected:
             # The policy distinguishes unfinished evidence from an outstanding
             # approval. An unconditional refresh would discard a completed decision.
-            lineage_phase("discovery_lineage", selected)
+            lineage_phase("discovery_lineage", selected, pricing["results"])
         result["stages"].setdefault("discovery_lineage", [])
         if not pending_symbols(store):
             checked = refresh_required_history(
@@ -277,6 +278,7 @@ def run_update(
                 lineage_phase(
                     "required_history_lineage",
                     [s for s in checked["checked"] if policy.allowed({s})],
+                    checked["results"],
                 )
         # Preserve the established check -> correction -> append sequence.
         maintained = (

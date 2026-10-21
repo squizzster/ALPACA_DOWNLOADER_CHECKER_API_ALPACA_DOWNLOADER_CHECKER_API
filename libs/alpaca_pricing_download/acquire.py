@@ -20,7 +20,7 @@ from .contract import (
 from .download import download_pricing, request_end, request_start
 from .http import BarsClient
 from .refresh import acquire_full, acquire_retained
-from .storage import load_source, read_validator, recover, regular_path, ticker_lock
+from .storage import load_source, read_update, read_validator, recover, regular_path, ticker_lock
 
 
 class MeasuredRequests:
@@ -89,11 +89,33 @@ def acquire_selected(
         with ticker_lock(root, exclusive=True, create=True):
             recover(root)
             source = load_source(root, symbol)
-            endpoints = read_validator(root, source, published=True) if source else None
             selected_generations[symbol] = digest(json_bytes(source)) if source is not None else None
-        covered = timestamp(source["latest_request"]["end_exclusive"]) if source else None
-        stored_start = source.get("history_start", HISTORY_START)[:10] if source else None
-        requested_start = from_dates.get(symbol)
+            covered = timestamp(source["latest_request"]["end_exclusive"]) if source else None
+            stored_start = source.get("history_start", HISTORY_START)[:10] if source else None
+            requested_start = from_dates.get(symbol)
+            accepted_evidence = (
+                symbol in evidence_fingerprints
+                and source is not None
+                and source.get("acquisition_evidence_sha256") == evidence_fingerprints[symbol]
+            )
+            if (
+                source
+                and (requested_start is None or requested_start >= stored_start)
+                and (covered > end or covered == end and (symbol not in invalidate or accepted_evidence))
+            ):
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "status": "covered",
+                        "already_beyond_target": covered > end,
+                        "source_sha256": selected_generations[symbol],
+                        "history_start": source.get("history_start", HISTORY_START),
+                        "request": source["latest_request"],
+                        "pending_update": read_update(root, published=True),
+                    }
+                )
+                continue
+            endpoints = read_validator(root, source, published=True) if source else None
         start = (
             min(stored_start, requested_start)
             if stored_start and requested_start
@@ -112,18 +134,6 @@ def acquire_selected(
                     ),
                 }
             )
-            continue
-        accepted_evidence = (
-            symbol in evidence_fingerprints
-            and source is not None
-            and source.get("acquisition_evidence_sha256") == evidence_fingerprints[symbol]
-        )
-        if (
-            source
-            and not extending
-            and (covered > end or covered == end and (symbol not in invalidate or accepted_evidence))
-        ):
-            results.append({"symbol": symbol, "status": "covered", "already_beyond_target": covered > end})
             continue
         if source and not extending and (symbol not in invalidate or accepted_evidence):
             # Retain this coherent selection for batched ordinary endpoint checks.

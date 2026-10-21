@@ -151,5 +151,13 @@
     "modifications": [
       "Retain previous publication membership while selecting refresh work, require explicit index migration when membership is missing, correlate replacement components independently, and retire split groups in one lineage journal; require a complete serving selector during daily planning as during execution."
     ]
+  },
+  {
+    "modifications": [
+      "Plan dependency and metadata work from completed pricing results and accepted lineage projections; recover missing in-memory handoffs only for selected pending inputs within bounded cohorts, preserving publication-time generation selection.",
+      "Consume the pricing producer's changed-range proof to retain approved single-identity assignments across arbitrary append ranges and month/year rollover. Publish compact assignment summaries, resolve only added sessions, retain closed references without reopening their bodies, and preserve complete-group reconciliation for changed evidence, historical corrections or unresolved continuity. Preserve compatible earlier decisions and journal recovery.",
+      "Carry unchanged pricing groups and stable identity evidence through cutoff and partition changes without reading prices or rerunning decisions, including empty and unresolved histories; preserve accepted counts and assignments and report complete decision reuse explicitly.",
+      "Consume completed positive CUSIP mappings for unchanged actions when the fresh catalogue supplies identical, unambiguous asset facts; preserve exact acquisition for new evidence, changed or unavailable facts, negatives and explicit refresh, and invalidate reused mappings when later traversal produces conflicting fresh evidence."
+    ]
   }
 ]

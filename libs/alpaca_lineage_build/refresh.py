@@ -181,6 +181,9 @@ def refresh_existing(
                 context=context,
                 progress=progress,
                 on_pricing=progress,
+                pricing_handoff={
+                    item["symbol"]: item for item in replaced["results"] if "source_sha256" in item
+                },
             )
             lineage["results"].extend(value["results"])
             lineage["failed"] += value["failed"]
