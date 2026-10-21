@@ -1,14 +1,16 @@
 """Production live check: trusted summary -> solver -> exact last-session comparison.
 
-The versioned JSON result is also usable by explicit research helpers.
+The versioned JSON result retains its established experiment boundary name.
 No ticker-file discovery, publication or saved report occurs here.
 """
 
+import json
 import time
 import urllib.error
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
 
@@ -17,6 +19,13 @@ from .http import execute_bar_plan
 
 VERSION = 4
 DEFAULT_BATCH_SIZE = 4000
+
+
+def validate_version():
+    path = Path(__file__).resolve().parents[2] / "resources/alpaca_live_check_experiment_change_log.json"
+    entries = json.loads(path.read_bytes())
+    if len(entries) != VERSION or any("version" in entry or not entry.get("modifications") for entry in entries):
+        raise DownloadError("live-check experiment changelog/version mismatch")
 
 
 def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):

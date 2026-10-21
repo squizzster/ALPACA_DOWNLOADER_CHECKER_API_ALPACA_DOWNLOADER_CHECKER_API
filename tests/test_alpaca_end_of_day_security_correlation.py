@@ -1,42 +1,28 @@
-import argparse
 import copy
-import hashlib
-import io
 import json
-import tempfile
-import time
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-import libs.alpaca_end_of_day_security_correlation.security_master as security_master_module
-from libs.alpaca_end_of_day_pipeline import validate_and_publish_alpaca_download
 from libs.alpaca_end_of_day_security_correlation import (
     CORRELATION_VERSION,
     SUPPORTED_CORRELATION_VERSIONS,
-    authenticate_security_master,
-    correlate_and_publish_alpaca_end_of_day_security_segments,
-    correlated_pipeline_path,
-    run_security_correlation_command,
-    security_correlation_manifest_path,
+    build_security_correlation_report,
     security_id_for_alpaca_asset_ids,
-    security_master_manifest_path,
-    security_master_path,
-    uncorrelated_pipeline_path,
     validate_correlation_change_log,
 )
 from libs.alpaca_end_of_day_security_correlation.action_identity import complete_stock_merger_endpoints
 from libs.alpaca_end_of_day_security_correlation.current_symbol_reuse import (
     CURRENT_SYMBOL_REUSE_RULE_NAME,
 )
-from libs.alpaca_end_of_day_security_correlation.episode_partition import _qualify_component
 from libs.alpaca_end_of_day_security_correlation.evidence import (
     build_ticker_ownership_intervals,
     ownership_interval_rule_order,
 )
+from libs.alpaca_end_of_day_security_correlation.evidence_digest import lineage_evidence_sha256
 from libs.alpaca_end_of_day_security_correlation.identity_partition import (
     _assess_candidate,
     _transition_candidates,
@@ -61,18 +47,16 @@ from libs.alpaca_end_of_day_security_correlation.ticker_reuse_gap import (
     adjustment_session_consensus,
 )
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import (
-    UuidLineageEdge,
     build_uuid_lineage_edges,
 )
+from libs.alpaca_lineage_build.pricing import empty_exclusions
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.alpaca_security_lineage import (
     EXCHANGE_TEST_SYMBOL,
     HISTORICAL_MARKET_DATA_ONLY,
-    inspect_local_downloads,
     market_data_series_identity,
 )
-from libs.common.file_integrity import calculate_file_sha256
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 TEST_FIXTURES_DIRECTORY = Path(__file__).with_name("fixtures")
 
@@ -1052,58 +1036,8 @@ class DistinctUuidTransitionTests(unittest.TestCase):
                 )
 
 
-class DistinctUuidEpisodePartitionTests(unittest.TestCase):
-    def _sessions_by_adjustment(
-        self,
-        first_asset_sessions: set[date],
-        second_asset_sessions: set[date],
-    ) -> dict[tuple[str, str], set[date]]:
-        return {
-            (asset_id, adjustment): set(sessions)
-            for asset_id, sessions in (
-                ("first-asset-id", first_asset_sessions),
-                ("second-asset-id", second_asset_sessions),
-            )
-            for adjustment in ALPACA_ADJUSTMENT_MODES
-        }
-
-    def test_partitions_two_action_linked_continuous_uuid_episodes(self) -> None:
-        edge = UuidLineageEdge(
-            edge_type="name_change",
-            action_id="action-id",
-            effective_date=date(2024, 1, 10),
-            predecessor_asset_id="first-asset-id",
-            predecessor_symbol="OLD",
-            predecessor_cusip="111111111",
-            successor_asset_id="second-asset-id",
-            successor_symbol="NEW",
-            successor_cusip="222222222",
-        )
-        sessions = self._sessions_by_adjustment(
-            {date(2024, 1, day) for day in (2, 3, 4, 5)},
-            {date(2024, 1, day) for day in (10, 11, 12)},
-        )
-
-        result = _qualify_component(
-            frozenset(("first-asset-id", "second-asset-id")),
-            [edge],
-            sessions,
-            {"NEW", "OLD"},
-            {("NEW", "raw.csv.gz", "e" * 64), ("OLD", "raw.csv.gz", "f" * 64)},
-        )
-
-        self.assertIsNotNone(result)
-        self.assertEqual(2, result.separating_session_count)
-        self.assertEqual(
-            ("first-asset-id", "second-asset-id"),
-            result.asset_ids,
-        )
-        serialized = json.dumps(result.as_report_object(), sort_keys=True)
-        self.assertNotIn("correlation_generation_sha256", serialized)
-        self.assertNotIn("correlated_output_sha256", serialized)
-        self.assertNotIn("uncorrelated_output_sha256", serialized)
-
-    def test_episode_partition_cannot_suppress_a_certified_uuid_edge(self) -> None:
+class CertifiedUuidEdgeTests(unittest.TestCase):
+    def test_certified_uuid_edge_retains_both_members(self) -> None:
         lineage = DistinctUuidTransitionTests._lineage()
         lineage["symbol_occupancy_evidence"] = [
             occupancy(
@@ -1126,31 +1060,15 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
             ),
         ]
         edges, edge_issues = build_uuid_lineage_edges(lineage)
-        partition = _qualify_component(
-            frozenset(("old-asset-id", "new-asset-id")),
-            edges,
-            {
-                (asset_id, adjustment): set(sessions)
-                for asset_id, sessions in (
-                    ("old-asset-id", (date(2024, 1, 2),)),
-                    ("new-asset-id", (date(2024, 1, 4),)),
-                )
-                for adjustment in ALPACA_ADJUSTMENT_MODES
-            },
-            {"NEW", "OLD"},
-            {("NEW", "raw.csv.gz", "e" * 64), ("OLD", "raw.csv.gz", "f" * 64)},
-        )
         intervals, interval_issues = build_ticker_ownership_intervals(lineage)
 
         self.assertEqual([], edge_issues)
         self.assertEqual([], interval_issues)
-        self.assertIsNotNone(partition)
         branches = correlate_download_rows(
             [{"t": "2024-01-02T05:00:00Z"}],
             correlation_source("OLD", asof="2024-01-02"),
             lineage,
             intervals,
-            distinct_uuid_episode_partitions=(partition,),
         )
 
         self.assertEqual([], branches["uncorrelated"])
@@ -1161,7 +1079,7 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
             segment["security_identity"]["member_alpaca_asset_ids"],
         )
 
-    def test_partition_retains_both_name_change_and_split_edges(self) -> None:
+    def test_membership_retains_both_name_change_and_split_edges(self) -> None:
         lineage = same_symbol_split_lineage()
         add_name_change_edge(
             lineage,
@@ -1171,26 +1089,10 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
             successor=("old-split-asset-id", "SPLT", "111111111", "Split Test Security"),
         )
         edges, edge_issues = build_uuid_lineage_edges(lineage)
-        name_edge = next(edge for edge in edges if edge.edge_type == "name_change")
-        partition = _qualify_component(
-            frozenset(("spac-asset-id", "old-split-asset-id")),
-            [name_edge],
-            {
-                (asset_id, adjustment): set(sessions)
-                for asset_id, sessions in (
-                    ("spac-asset-id", (date(2024, 1, 2),)),
-                    ("old-split-asset-id", (date(2024, 1, 4),)),
-                )
-                for adjustment in ALPACA_ADJUSTMENT_MODES
-            },
-            {"SPAC", "SPLT"},
-            {("SPAC", "raw.csv.gz", "e" * 64), ("SPLT", "raw.csv.gz", "f" * 64)},
-        )
         intervals, interval_issues = build_ticker_ownership_intervals(lineage)
 
         self.assertEqual([], edge_issues)
         self.assertEqual([], interval_issues)
-        self.assertIsNotNone(partition)
         expected_split_members = ["new-split-asset-id", "old-split-asset-id", "spac-asset-id"]
         for timestamp, expected_asset_id in (
             ("2026-09-28T04:00:00Z", "old-split-asset-id"),
@@ -1202,7 +1104,6 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
                     correlation_source("SPLT", asof="2026-10-06"),
                     lineage,
                     intervals,
-                    distinct_uuid_episode_partitions=(partition,),
                 )
                 segment = branches["correlated"][0]
                 self.assertEqual(expected_asset_id, segment["canonical_security"]["alpaca_asset_id"])
@@ -1214,33 +1115,6 @@ class DistinctUuidEpisodePartitionTests(unittest.TestCase):
                     "spac-asset-id",
                     segment["security_identity"]["member_alpaca_asset_ids"],
                 )
-
-    def test_rejects_a_uuid_that_disappears_and_then_returns(self) -> None:
-        edge = UuidLineageEdge(
-            edge_type="name_change",
-            action_id="action-id",
-            effective_date=date(2024, 1, 4),
-            predecessor_asset_id="first-asset-id",
-            predecessor_symbol="OLD",
-            predecessor_cusip="111111111",
-            successor_asset_id="second-asset-id",
-            successor_symbol="NEW",
-            successor_cusip="222222222",
-        )
-        sessions = self._sessions_by_adjustment(
-            {date(2024, 1, day) for day in (2, 8, 9, 10)},
-            {date(2024, 1, day) for day in (3, 4, 5)},
-        )
-
-        result = _qualify_component(
-            frozenset(("first-asset-id", "second-asset-id")),
-            [edge],
-            sessions,
-            set(),
-            set(),
-        )
-
-        self.assertIsNone(result)
 
 
 class OwnershipEpisodeBoundaryTests(unittest.TestCase):
@@ -3536,144 +3410,17 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertNotEqual(forward, security_id_for_alpaca_asset_ids(["alpaca-a"]))
 
 
-class CorrelationPublicationTests(unittest.TestCase):
+class CorrelationReportTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
         self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
         self.assertEqual(frozenset(range(8, CORRELATION_VERSION + 1)), SUPPORTED_CORRELATION_VERSIONS)
 
-    def test_concurrent_security_master_updates_preserve_every_symbol(self) -> None:
-        def source_contribution(
-            correlation_report,
-            correlation_receipt,
-            online_by_master_id,
-        ):
-            symbol = correlation_report["symbol"]
-            digest = hashlib.sha256(symbol.encode("ascii")).hexdigest()
-            return {
-                "symbol": symbol,
-                "correlation_version": CORRELATION_VERSION,
-                "correlation_generation_sha256": digest,
-                "correlated_output_sha256": digest,
-                "uncorrelated_output_sha256": digest,
-                "verified_session_exclusions": {
-                    "manifest_type": "verified_market_session_exclusions",
-                    "manifest_version": 1,
-                    "symbol": symbol,
-                    "input_file": None,
-                    "input_sha256": None,
-                    "calendar_sha256": "0" * 64,
-                    "events": [],
-                },
-                "identities": [],
-            }
-
-        original_authenticator = security_master_module._authenticate_optional_security_master
-
-        def deliberately_slow_authenticator(repository_root):
-            authenticated = original_authenticator(repository_root)
-            time.sleep(0.05)
-            return authenticated
-
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            with (
-                patch.object(
-                    security_master_module,
-                    "_source_contribution",
-                    side_effect=source_contribution,
-                ),
-                patch.object(
-                    security_master_module,
-                    "_authenticate_optional_security_master",
-                    side_effect=deliberately_slow_authenticator,
-                ),
-                ThreadPoolExecutor(max_workers=2) as executor,
-            ):
-                futures = [
-                    executor.submit(
-                        security_master_module.publish_security_master_update,
-                        repository_root,
-                        {"symbol": symbol},
-                        {},
-                    )
-                    for symbol in ("FIRST", "SECOND")
-                ]
-                for future in futures:
-                    future.result()
-
-            authenticated_master = authenticate_security_master(repository_root)
-            authenticated_symbols = [
-                source["symbol"] for source in authenticated_master.sources_by_symbol.values()
-            ]
-
-        self.assertEqual(
-            ["FIRST", "SECOND"],
-            authenticated_symbols,
-        )
-
-    def test_source_only_update_reuses_the_security_inventory(self) -> None:
-        generation = 0
-
-        def source_contribution(
-            correlation_report,
-            correlation_receipt,
-            online_by_master_id,
-        ):
-            digest = hashlib.sha256(f"TEST:{generation}".encode("ascii")).hexdigest()
-            return {
-                "symbol": "TEST",
-                "correlation_version": CORRELATION_VERSION,
-                "correlation_generation_sha256": digest,
-                "correlated_output_sha256": digest,
-                "uncorrelated_output_sha256": digest,
-                "verified_session_exclusions": {
-                    "manifest_type": "verified_market_session_exclusions",
-                    "manifest_version": 1,
-                    "symbol": "TEST",
-                    "input_file": None,
-                    "input_sha256": None,
-                    "calendar_sha256": "0" * 64,
-                    "events": [],
-                },
-                "identities": [],
-            }
-
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            with patch.object(
-                security_master_module,
-                "_source_contribution",
-                side_effect=source_contribution,
-            ):
-                security_master_module.publish_security_master_update(
-                    repository_root,
-                    {"symbol": "TEST"},
-                    {},
-                )
-                first = authenticate_security_master(repository_root)
-                first_source_inventory = first.master["source_inventory"]
-                first_security_inventory = first.master["security_inventory"]
-                generation = 1
-                security_master_module.publish_security_master_update(
-                    repository_root,
-                    {"symbol": "TEST"},
-                    {},
-                )
-                second = authenticate_security_master(repository_root)
-
-            root_size = security_master_path(repository_root).stat().st_size
-
-        self.assertNotEqual(first_source_inventory, second.master["source_inventory"])
-        self.assertEqual(first_security_inventory, second.master["security_inventory"])
-        self.assertEqual(1, second.master["source_count"])
-        self.assertEqual(0, second.master["master_id_count"])
-        self.assertLess(root_size, 2_500)
-
-    def test_publishes_both_digest_bound_branches_and_then_uses_cache(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            download_path = repository_root / "data" / "end_of_day" / "TEST" / "raw.csv.gz"
-            request_identity = {
+    def test_report_preserves_partition_and_semantic_evidence_digest(self) -> None:
+        rows = load_bars("ten_valid_daily_bars.json")
+        source = SimpleNamespace(
+            path=Path("raw.csv.gz"),
+            rows=rows,
+            manifest={
                 "symbol": "TEST",
                 "adjustment": "raw",
                 "feed": "sip",
@@ -3681,129 +3428,53 @@ class CorrelationPublicationTests(unittest.TestCase):
                 "request_from": "2024-01-01T00:00:00Z",
                 "request_to": "2024-01-17T00:00:00Z",
                 "asof": "2024-01-17",
-            }
-            validate_and_publish_alpaca_download(
-                download_path,
-                load_bars("ten_valid_daily_bars.json"),
-                request_identity,
-            )
-            lineage_report = self._test_lineage_report(repository_root)
-            lineage_calls = []
-
-            def lineage_inspector(symbol, api_key_id, api_secret_key, *, repository_root):
-                lineage_calls.append((symbol, api_key_id, api_secret_key, repository_root))
-                return copy.deepcopy(lineage_report)
-
-            source_state_before = self._file_state(download_path.parent)
-            first_receipt = correlate_and_publish_alpaca_end_of_day_security_segments(
-                "TEST",
-                "key",
-                "secret",
-                repository_root=repository_root,
-                lineage_inspector=lineage_inspector,
-            )
-            source_state_after = self._file_state(download_path.parent)
-
-            correlated_path = correlated_pipeline_path(repository_root, "TEST")
-            uncorrelated_path = uncorrelated_pipeline_path(repository_root, "TEST")
-            receipt_path = security_correlation_manifest_path(repository_root, "TEST")
-            self.assertEqual(download_path.parent, receipt_path.parent)
-            self.assertEqual(
-                source_state_before,
-                {filename: source_state_after[filename] for filename in source_state_before},
-            )
-            self.assertEqual(
-                {
-                    "correlated.pipeline.json",
-                    "security_correlation.manifest.json",
-                    "uncorrelated.pipeline.json",
-                },
-                set(source_state_after) - set(source_state_before),
-            )
-            self.assertEqual("published", first_receipt["publication_status"])
-            self.assertEqual("published", first_receipt["security_master"]["publication_status"])
-            self.assertTrue(first_receipt["partition"]["row_partition_complete"])
-            self.assertEqual(10, first_receipt["partition"]["correlated_row_count"])
-            self.assertEqual(0, first_receipt["partition"]["uncorrelated_row_count"])
-            self.assertEqual(
-                calculate_file_sha256(correlated_path),
-                first_receipt["outputs"]["correlated"]["sha256"],
-            )
-            self.assertEqual(
-                calculate_file_sha256(uncorrelated_path),
-                first_receipt["outputs"]["uncorrelated"]["sha256"],
-            )
-            receipt_document = json.loads(receipt_path.read_text(encoding="utf-8"))
-            self.assertNotIn("publication_status", receipt_document)
-            self.assertEqual(CORRELATION_VERSION, receipt_document["correlation_version"])
-            self.assertEqual(
-                "alpaca_asset_identity_available",
-                receipt_document["symbol_disposition"]["classification"],
-            )
-            self.assertEqual(1, len(receipt_document["uuid_lineage_edges"]))
-            self.assertEqual(
-                receipt_document["uuid_lineage_edges"],
-                json.loads(correlated_path.read_text(encoding="utf-8"))["uuid_lineage_edges"],
-            )
-            authenticated_master = authenticate_security_master(repository_root)
-            self.assertTrue(security_master_path(repository_root).is_file())
-            self.assertTrue(security_master_manifest_path(repository_root).is_file())
-            self.assertEqual(
-                authenticated_master.master_sha256,
-                first_receipt["security_master"]["output_sha256"],
-            )
-            self.assertNotIn(
-                "warning",
-                json.dumps(list(authenticated_master.identities_by_master_id.values())).lower(),
-            )
-            self.assertNotIn(
-                "error",
-                json.dumps(list(authenticated_master.identities_by_master_id.values())).lower(),
-            )
-
-            output_state_before_cache = self._file_state(receipt_path.parent)
-            lineage_report["generated_at"] = "2099-01-01T00:00:00Z"
-            lineage_report["lineage"]["api_request_count"] = 999
-            second_receipt = correlate_and_publish_alpaca_end_of_day_security_segments(
-                "TEST",
-                "key",
-                "secret",
-                repository_root=repository_root,
-                lineage_inspector=lineage_inspector,
-            )
-            output_state_after_cache = self._file_state(receipt_path.parent)
-
-        self.assertEqual("cached", second_receipt["publication_status"])
-        self.assertEqual("cached", second_receipt["security_master"]["publication_status"])
-        self.assertEqual(output_state_before_cache, output_state_after_cache)
-        self.assertEqual(2, len(lineage_calls))
-
-    def test_command_serializes_the_publication_receipt_to_stdout(self) -> None:
-        expected_receipt = {
-            "publication_status": "published",
-            "correlation_version": CORRELATION_VERSION,
-        }
-
-        def correlator(symbol, api_key_id, api_secret_key, *, repository_root):
-            self.assertEqual(("FB", "key", "secret"), (symbol, api_key_id, api_secret_key))
-            return expected_receipt
-
-        output_stream = io.StringIO()
-        receipt = run_security_correlation_command(
-            argparse.Namespace(ticker="fb"),
-            repository_root=Path("/example"),
-            environment={
-                "ALPACA_API_KEY_ID": "key",
-                "ALPACA_API_SECRET_KEY": "secret",
+                "sha256": "a" * 64,
             },
-            output_stream=output_stream,
-            correlator=correlator,
+            pipeline_state="source_published",
+            integrity_failure=None,
         )
+        lineage_report = self._test_lineage_report()
+        root = Path("/unused-correlation-input")
+        reader = Mock(return_value=source)
+        exclusions = empty_exclusions(root, "TEST")
+        exclusion_reader = Mock(return_value=exclusions)
+        sessions = Mock(return_value=None)
+        first = build_security_correlation_report(
+            lineage_report,
+            root,
+            authenticated_download_reader=reader,
+            verified_session_exclusions_reader=exclusion_reader,
+            authenticated_symbol_sessions=sessions,
+        )
+        reader.assert_called_once_with(root, lineage_report["local"]["directory"], {"file": "raw.csv.gz"})
+        exclusion_reader.assert_called_once_with(root, "TEST")
+        self.assertEqual(first["verified_session_exclusions"], exclusions)
+        self.assertTrue(first["row_partition_complete"])
+        self.assertEqual(first["source_row_count"], 10)
+        self.assertEqual(first["correlated"]["row_count"], 10)
+        self.assertEqual(first["uncorrelated"]["row_count"], 0)
+        self.assertEqual(first["correlation_version"], CORRELATION_VERSION)
+        self.assertEqual(first["symbol_disposition"]["classification"], "alpaca_asset_identity_available")
+        self.assertEqual(len(first["uuid_lineage_edges"]), 1)
+        self.assertEqual(first["lineage_evidence_sha256"], lineage_evidence_sha256(lineage_report))
 
-        self.assertEqual(expected_receipt, receipt)
-        self.assertEqual(expected_receipt, json.loads(output_stream.getvalue()))
+        lineage_report["generated_at"] = "2099-01-01T00:00:00Z"
+        lineage_report["lineage"]["api_request_count"] = 999
+        second = build_security_correlation_report(
+            lineage_report,
+            root,
+            authenticated_download_reader=reader,
+            verified_session_exclusions_reader=exclusion_reader,
+            authenticated_symbol_sessions=sessions,
+        )
+        self.assertEqual(first["lineage_evidence_sha256"], second["lineage_evidence_sha256"])
+        self.assertEqual(first["correlated"], second["correlated"])
+        self.assertEqual(first["uncorrelated"], second["uncorrelated"])
+        self.assertEqual(first["uuid_lineage_edges"], second["uuid_lineage_edges"])
+        lineage_report["lineage"]["identities"][0]["name"] = "Changed evidence"
+        self.assertNotEqual(first["lineage_evidence_sha256"], lineage_evidence_sha256(lineage_report))
 
-    def _test_lineage_report(self, repository_root: Path) -> dict:
+    def _test_lineage_report(self) -> dict:
         old_asset_id = "old-test-id"
         current_asset_id = "current-test-id"
         name_change = {
@@ -3827,7 +3498,11 @@ class CorrelationPublicationTests(unittest.TestCase):
             "report_version": 1,
             "generated_at": "2024-01-17T12:00:00Z",
             "symbol": "TEST",
-            "local": inspect_local_downloads(repository_root, "TEST"),
+            "local": {
+                "directory": "end_of_day/pricing/TEST",
+                "present": True,
+                "downloads": [{"file": "raw.csv.gz"}],
+            },
             "lineage": {
                 "api_request_count": 3,
                 "corporate_actions": [name_change, current_dividend],
@@ -3888,17 +3563,6 @@ class CorrelationPublicationTests(unittest.TestCase):
                     "test_symbol_evidence": None,
                 },
             },
-        }
-
-    def _file_state(self, directory: Path) -> dict[str, tuple[int, int, str]]:
-        return {
-            path.name: (
-                path.stat().st_size,
-                path.stat().st_mtime_ns,
-                calculate_file_sha256(path),
-            )
-            for path in directory.iterdir()
-            if path.is_file()
         }
 
 

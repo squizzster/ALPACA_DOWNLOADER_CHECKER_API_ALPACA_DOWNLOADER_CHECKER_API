@@ -1,12 +1,6 @@
-import argparse
 import io
-import json
-import os
-import tempfile
 import unittest
 import urllib.error
-from datetime import datetime, timezone
-from pathlib import Path
 from unittest import mock
 
 from libs.alpaca_security_lineage import (
@@ -18,10 +12,7 @@ from libs.alpaca_security_lineage import (
     UNSUPPORTED_EMPTY_SYMBOL,
     AlpacaIdentityClient,
     build_identity_report,
-    inspect_alpaca_security_lineage,
-    inspect_local_downloads,
     recurring_pipeline_should_skip,
-    run_security_lineage_command,
 )
 
 META_ASSET = {
@@ -129,9 +120,6 @@ class FakeIdentityClient:
         self.request_count += 1
         self.last_date_range = (start_date, end_date)
         return self.actions[symbol]
-
-    def get_asset(self, identifier: str) -> dict | None:
-        return self.get_asset_lookup(identifier)["asset"]
 
     def get_asset_lookup(self, identifier: str) -> dict:
         self.request_count += 1
@@ -677,141 +665,6 @@ class IdentityReportTests(unittest.TestCase):
 
         self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
         self.assertEqual("run", disposition["recurring_pipeline_action"])
-
-    def test_public_api_returns_report_without_writing(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            paths_before = list(repository_root.rglob("*"))
-
-            report = inspect_alpaca_security_lineage(
-                "fb",
-                "key",
-                "secret",
-                repository_root=repository_root,
-                client_factory=FakeIdentityClient,
-                generated_at=datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc),
-            )
-
-            paths_after = list(repository_root.rglob("*"))
-
-        self.assertEqual(paths_before, paths_after)
-        self.assertEqual(4, report["report_version"])
-        self.assertEqual("2026-10-06T12:00:00Z", report["generated_at"])
-        self.assertEqual("FB", report["symbol"])
-        self.assertFalse(report["local"]["present"])
-
-    def test_command_writes_one_json_document_to_selected_stream(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            output_stream = io.StringIO()
-            returned_report = run_security_lineage_command(
-                argparse.Namespace(ticker="fb"),
-                repository_root=Path(temporary_directory),
-                environment={
-                    "ALPACA_API_KEY_ID": "key",
-                    "ALPACA_API_SECRET_KEY": "secret",
-                },
-                output_stream=output_stream,
-                client_factory=FakeIdentityClient,
-            )
-
-        serialized_report = output_stream.getvalue()
-        self.assertTrue(serialized_report.endswith("\n"))
-        self.assertEqual(returned_report, json.loads(serialized_report))
-
-
-class LocalInspectionTests(unittest.TestCase):
-    def test_summarizes_sidecar_receipt_and_integrity_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            symbol_directory = repository_root / "data" / "end_of_day" / "TEST"
-            symbol_directory.mkdir(parents=True)
-            data_path = symbol_directory / "raw.csv.gz"
-            data_path.write_bytes(b"x")
-            os.utime(data_path, ns=(1_000_000_000, 1_000_000_000))
-            data_stat = data_path.stat()
-            sidecar = {
-                "file": "raw.csv.gz",
-                "adjustment": "raw",
-                "sha256": "abc",
-                "bytes": data_stat.st_size,
-                "mtime_ns": data_stat.st_mtime_ns,
-                "rows": 2,
-                "sessions": 2,
-                "from": "2024-01-02T05:00:00Z",
-                "to": "2024-01-03T05:00:00Z",
-                "request_from": "2016-01-01T00:00:00Z",
-                "request_to": "2024-01-04T00:00:00Z",
-                "asof": "2024-01-04",
-                "feed": "sip",
-                "timeframe": "1Day",
-            }
-            (symbol_directory / "raw.csv.gz.manifest.json").write_text(json.dumps(sidecar))
-            pipeline_manifest = {
-                "pipeline_version": 14,
-                "receipt_count": 1,
-                "receipts": [{"data_file": "raw.csv.gz", "download_sha256": "abc"}],
-            }
-            (symbol_directory / "pipeline.manifest.json").write_text(json.dumps(pipeline_manifest))
-            integrity_manifest = {
-                "pipeline_version": 14,
-                "failure_count": 1,
-                "failures": [
-                    {
-                        "data_file": "raw.csv.gz",
-                        "pipeline_version": 14,
-                        "row_failure_count": 0,
-                        "dataset_failure_count": 1,
-                        "dataset_failures": [
-                            {
-                                "validation_error": "US market session coverage failed",
-                                "missing_sessions": ["2024-01-04", "2024-01-05"],
-                                "unexpected_sessions": [],
-                            }
-                        ],
-                    }
-                ],
-            }
-            (symbol_directory / "integrity_failure.manifest.json").write_text(json.dumps(integrity_manifest))
-
-            report = inspect_local_downloads(repository_root, "TEST")
-
-        self.assertTrue(report["present"])
-        self.assertFalse(report["download_sha256_authentication_performed"])
-        self.assertEqual(1, report["download_count"])
-        download = report["downloads"][0]
-        self.assertTrue(download["stat_matches_sidecar"])
-        self.assertTrue(download["pipeline_receipt_matches"])
-        self.assertEqual("sip", download["feed"])
-        self.assertEqual("1Day", download["timeframe"])
-        dataset_failure = download["integrity_failure"]["dataset_failures"][0]
-        self.assertEqual(2, dataset_failure["missing_sessions_count"])
-        self.assertEqual("2024-01-04", dataset_failure["first_missing_sessions"])
-        self.assertEqual("2024-01-05", dataset_failure["last_missing_sessions"])
-
-    def test_reports_gzip_without_sidecar(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            symbol_directory = repository_root / "data" / "end_of_day" / "TEST"
-            symbol_directory.mkdir(parents=True)
-            (symbol_directory / "raw.csv.gz").write_bytes(b"orphan")
-
-            report = inspect_local_downloads(repository_root, "TEST")
-
-        self.assertEqual(1, report["download_count"])
-        self.assertTrue(report["downloads"][0]["gzip_present"])
-        self.assertFalse(report["downloads"][0]["sidecar_present"])
-        self.assertFalse(report["downloads"][0]["stat_matches_sidecar"])
-
-    def test_missing_symbol_directory_is_reported_without_creating_it(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            report = inspect_local_downloads(repository_root, "ABSENT")
-
-            self.assertFalse((repository_root / "data").exists())
-
-        self.assertFalse(report["present"])
-        self.assertEqual([], report["downloads"])
-        self.assertEqual([], report["manifest_errors"])
 
 
 class AlpacaIdentityClientTests(unittest.TestCase):

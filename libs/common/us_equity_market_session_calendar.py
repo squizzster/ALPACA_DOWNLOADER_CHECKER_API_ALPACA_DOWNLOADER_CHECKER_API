@@ -24,11 +24,8 @@ class ExpectedMarketSessionCoverage:
         return len(self.session_dates)
 
     @property
-    def first_session_date(self) -> str | None:
-        return self.session_dates[0] if self.session_dates else None
-
-    @property
     def last_session_date(self) -> str | None:
+        # Pricing cutoff selection relies on this endpoint and its empty-range None result.
         return self.session_dates[-1] if self.session_dates else None
 
 

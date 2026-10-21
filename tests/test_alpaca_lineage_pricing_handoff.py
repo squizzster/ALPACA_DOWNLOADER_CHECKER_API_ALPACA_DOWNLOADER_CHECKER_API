@@ -69,7 +69,6 @@ class CompletedPricingHandoffTests(unittest.TestCase):
             root = Path(directory)
             _prefetch_metadata(
                 root,
-                root,
                 ["CURRENT"],
                 index,
                 DependencyGraph(index["symbols"]),

@@ -33,5 +33,10 @@
     "modifications": [
       "Limit automatic serving maintenance after focused lineage commands to their selected complete groups, leaving unrelated pending catalogue work untouched."
     ]
+  },
+  {
+    "modifications": [
+      "Remove the legacy command family and unused monthly, clean-room and ticker workflows, retaining the current standalone commands and shared identity and source-selection rules."
+    ]
   }
 ]

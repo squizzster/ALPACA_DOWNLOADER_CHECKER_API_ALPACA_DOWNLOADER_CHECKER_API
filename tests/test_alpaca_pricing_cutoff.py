@@ -1,8 +1,6 @@
 """User cutoff dates select sessions before producers accept or execute work."""
 
-import io
 import unittest
-from contextlib import redirect_stderr
 from functools import partial
 from pathlib import Path
 from unittest.mock import patch
@@ -220,31 +218,11 @@ class PricingCutoffTests(unittest.TestCase):
             self.assertEqual(universe_state.read_state(case.store), before)
             self.assertEqual(case.registry.read_bytes(), registry)
 
-    def test_combined_build_and_update_use_same_historical_holiday_cutoff(self):
-        for operation in ("update", "build"):
-            with self.subTest(operation=operation):
-                entry = (
-                    "libs.alpaca_end_of_day_v6.pipeline.run_v6_pipeline"
-                    if operation == "update"
-                    else "libs.alpaca_end_of_day_clean_room.generation.run_clean_room_generation"
-                )
-                selection = ["--symbol", "AAA"] if operation == "update" else ["--recovery-universe"]
-                args = alpaca_cli.build_parser().parse_args(
-                    ["legacy", "catalogue", operation, *selection, "--through", "2026-04-03"]
-                )
-                with patch(entry, return_value={}) as producer, redirect_stderr(io.StringIO()):
-                    alpaca_cli.dispatch(args)
-                self.assertEqual(producer.call_args.kwargs["request_end_timestamp"], "2026-04-03T00:00:00Z")
-
-    def test_reader_filters_and_pinned_resume_do_not_reselect_cutoffs(self):
+    def test_reader_filters_do_not_reselect_cutoffs(self):
         cases = (
             (
                 ["read", "--symbol", "AAA", "--through", "2026-10-17"],
                 "alpaca_end_of_day.standalone_cli.run_arguments",
-            ),
-            (
-                ["legacy", "catalogue", "resume"],
-                "libs.alpaca_end_of_day_clean_room.generation.resume_clean_room_generation",
             ),
         )
         for argv, entry in cases:
@@ -259,5 +237,4 @@ class PricingCutoffTests(unittest.TestCase):
             ):
                 args = alpaca_cli.build_parser().parse_args(argv)
                 self.assertEqual(alpaca_cli.dispatch(args), 0)
-                if argv[0] == "read":
-                    self.assertEqual(args.end, "2026-10-17")
+                self.assertEqual(args.end, "2026-10-17")

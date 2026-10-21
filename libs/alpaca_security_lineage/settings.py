@@ -2,8 +2,6 @@ import re
 
 REPORT_VERSION = 4
 
-ASSET_API_BASE_URL = "https://paper-api.alpaca.markets/v2/assets"
-CORPORATE_ACTIONS_API_URL = "https://data.alpaca.markets/v1/corporate-actions"
 EARLIEST_BAR_DATE = "2016-01-01"
 
 REQUESTS_PER_MINUTE = 199

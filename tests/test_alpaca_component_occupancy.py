@@ -6,7 +6,7 @@ from datetime import date
 from libs.alpaca_end_of_day_security_correlation.evidence import build_ticker_ownership_intervals
 from libs.alpaca_end_of_day_security_correlation.occupancy_anchor import dated_occupancy_anchors
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge, correlation_source
 
 

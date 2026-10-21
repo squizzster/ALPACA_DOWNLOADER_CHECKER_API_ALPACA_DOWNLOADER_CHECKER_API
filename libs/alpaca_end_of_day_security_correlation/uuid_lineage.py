@@ -51,6 +51,8 @@ class _UuidLineageEdgeCandidate:
 
 
 def _asset_ids_by_symbol_and_cusip(lineage: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
+    # Edge assessment needs all candidates, including conflicts; ownership's unique-ID
+    # projection deliberately has different semantics.
     asset_ids: dict[tuple[str, str], set[str]] = {}
     occupancy_evidence = lineage.get("symbol_occupancy_evidence")
     if not isinstance(occupancy_evidence, list):

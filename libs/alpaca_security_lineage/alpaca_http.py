@@ -137,11 +137,9 @@ class AlpacaIdentityClient:
                 raise RuntimeError(f"Alpaca request failed for {url}: {request_error.reason}") from request_error
         raise RuntimeError(f"Alpaca request retry limit reached for {url}")
 
-    def get_asset(self, identifier: str) -> dict[str, Any] | None:
-        return self.get_asset_lookup(identifier)["asset"]
-
     def get_asset_lookup(self, identifier: str) -> dict[str, Any]:
         """Return an asset plus the explicit HTTP outcome used as evidence."""
+        # Negative lookups are evidence too; keep the outcome and HTTP status with the asset.
         seeded = self._seeded_asset_lookups.pop(identifier, None)
         if seeded is not None:
             return seeded
@@ -185,6 +183,7 @@ class AlpacaIdentityClient:
             raise RuntimeError("unsupported API action-plan version")
         for step in plan["steps"]:
             for action in step["actions"]:
+                # Plans and executor endpoint checks share the solver's URL constants.
                 strategy, url = action["strategy"], action["request"]["url"]
                 if not (
                     strategy == "asset_lookup"

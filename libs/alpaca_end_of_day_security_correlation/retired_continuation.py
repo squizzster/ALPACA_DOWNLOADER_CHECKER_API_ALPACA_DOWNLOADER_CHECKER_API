@@ -8,8 +8,8 @@ and the successor UUID must never be presented as a historical endpoint UUID.
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 
 from .action_identity import exact_cusip_lookup_asset
 from .errors import SecurityCorrelationError

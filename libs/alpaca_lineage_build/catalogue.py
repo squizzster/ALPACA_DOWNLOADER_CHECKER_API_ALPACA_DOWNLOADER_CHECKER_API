@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 
 from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download.contract import symbol_label
-from libs.alpaca_security_lineage.lineage import compact_asset
 
 from .contract import LineageError, document_digest
 
@@ -56,13 +55,3 @@ def discovery_labels(observation):
             except (RuntimeError, ValueError):
                 pass  # Preserve unsupported labels in the observation, never use them as paths.
     return result
-
-
-def evidence_fingerprint(records):
-    return document_digest(
-        {
-            "assets": sorted(
-                (compact_asset(asset) for asset in records), key=lambda asset: (asset["id"], str(asset))
-            )
-        }
-    )

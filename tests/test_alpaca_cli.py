@@ -1,21 +1,14 @@
-"""Canonical dispatch, inclusive dates and combined-store cutoff protection."""
+"""Canonical dispatch and inclusive dates for the standalone commands."""
 
 import argparse
 import io
 import subprocess
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from pathlib import Path
 from unittest.mock import patch
 
-from test_alpaca_end_of_day_clean_room import _resolution
-from test_alpaca_pricing_download import snapshot
-
 from libs.alpaca_cli import build_parser, dispatch, end_exclusive
-from libs.alpaca_end_of_day_v6.errors import V6Error
-from libs.alpaca_end_of_day_v6.pipeline import run_v6_pipeline
 
 
 class CanonicalCliTests(unittest.TestCase):
@@ -45,40 +38,23 @@ class CanonicalCliTests(unittest.TestCase):
             with self.subTest(path=path), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as error:
                 parser.parse_args([*path, "--help"])
             self.assertEqual(error.exception.code, 0)
-        for arguments in (["--update"], ["update", "--thr", "2026-10-16"], ["pricing", "acquire", "--all"]):
+        for arguments in (
+            ["legacy"],
+            ["--update"],
+            ["update", "--thr", "2026-10-16"],
+            ["pricing", "acquire", "--all"],
+        ):
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
                 parser.parse_args(arguments)
             self.assertEqual(error.exception.code, 2)
 
-    def test_month_end_conversion_reaches_combined_producer_as_utc_boundary(self):
+    def test_month_end_conversion_reaches_daily_producer(self):
         self.assertEqual(end_exclusive("2026-09-30"), "2026-10-01")
-        args = build_parser().parse_args(
-            ["legacy", "catalogue", "update", "--symbol", "AAA", "--through", "2026-09-30"]
-        )
-        with patch("libs.alpaca_end_of_day_v6.pipeline.run_v6_pipeline", return_value={}) as run:
+        args = build_parser().parse_args(["update", "--through", "2026-09-30"])
+        with (
+            patch("libs.alpaca_cli.clients", return_value=(object(), object())),
+            patch("libs.alpaca_lineage_build.universe_update.run_update", return_value={}) as run,
+            redirect_stderr(io.StringIO()),
+        ):
             dispatch(args)
-        self.assertEqual(run.call_args.kwargs["request_end_timestamp"], "2026-10-01T00:00:00Z")
-        self.assertIsNone(run.call_args.kwargs["request_start_timestamp"])
-
-    def test_combined_store_rejects_backward_empty_coverage_before_network_or_publication(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = Path(directory) / "combined"
-            arguments = dict(
-                store_root=store,
-                environment={"ALPACA_API_KEY_ID": "key", "ALPACA_API_SECRET_KEY": "secret"},
-                request_start_timestamp="2016-01-01T00:00:00Z",
-                request_end_timestamp="2026-10-17T00:00:00Z",
-                symbol_resolutions=[_resolution("EMPTY", "EMPTY")],
-                accept_failed_validation=True,
-            )
-            with patch("libs.alpaca_end_of_day_v6.pipeline.request_alpaca_daily_bars", return_value=[]):
-                run_v6_pipeline(["EMPTY"], **arguments)
-            before = snapshot(store)
-            arguments["request_end_timestamp"] = "2026-10-16T00:00:00Z"
-            with patch(
-                "libs.alpaca_end_of_day_v6.pipeline.request_alpaca_daily_bars",
-                side_effect=AssertionError("network"),
-            ):
-                with self.assertRaisesRegex(V6Error, "precedes retained source coverage"):
-                    run_v6_pipeline(["EMPTY"], **arguments)
-            self.assertEqual(before, snapshot(store))
+        self.assertEqual(run.call_args.args[1], "2026-10-01")

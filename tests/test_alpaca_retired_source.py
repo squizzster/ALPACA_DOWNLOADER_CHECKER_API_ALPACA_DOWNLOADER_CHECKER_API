@@ -13,8 +13,8 @@ from libs.alpaca_end_of_day_security_correlation.source_continuity import (
     retired_source_identity,
 )
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 from tests import test_alpaca_predecessor_prefix as prefix_fixtures
 from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge, asset, correlation_source
 

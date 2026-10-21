@@ -9,9 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from libs.alpaca_pricing_download import live_check_experiment as experiment
+from libs.alpaca_pricing_download import live_check
 from libs.alpaca_pricing_download.contract import FIELDS
-from libs.alpaca_pricing_download.http import BarsClient
 
 
 def bar(day="2026-10-14", **changes):
@@ -37,84 +36,13 @@ def snapshot(*entries):
     return {"entries": list(entries), "sha256": "a" * 64, "token": ("epoch", 1)}
 
 
-class LiveCheckExperimentTests(unittest.TestCase):
-    def test_three_samples_consume_batched_plan_and_normal_publication(self):
-        from test_alpaca_pricing_download import FakeClient
-        from test_alpaca_pricing_download import snapshot as files_snapshot
-
-        with tempfile.TemporaryDirectory() as temporary:
-            store, destination = Path(temporary) / "original", Path(temporary) / "sample"
-            symbols = ["AAA", "BBB", "CCC"]
-            for symbol in symbols:
-                experiment.download_pricing(store, symbol, "2026-10-15", client=FakeClient([bar()]))
-            before = files_snapshot(store)
-            handoff = {"differences": [{"symbol": symbol} for symbol in symbols]}
-            client = BarsClient("test", "test")
-            calls = []
-
-            def get_page(parameters):
-                calls.append(parameters)
-                return {
-                    "bars": {symbol: [bar(v=9007199254740994)] for symbol in parameters["symbols"].split(",")}
-                }
-
-            with (
-                patch.object(client, "_get", side_effect=get_page),
-                patch(
-                    "libs.alpaca_pricing_download.check_summary.read_snapshot",
-                    side_effect=AssertionError("summary rescan"),
-                ),
-            ):
-                result = experiment.full_download_samples(handoff, store, destination, symbols, client=client)
-            self.assertEqual(files_snapshot(store), before)
-            self.assertEqual([len(step["actions"]) for step in result["plan"]["steps"]], [8, 8])
-            self.assertEqual(len(calls), 16)
-            self.assertTrue(all(row["views"]["all"]["other_fields_only"] == 1 for row in result["results"]))
-            self.assertTrue(all(call["symbols"] == "AAA,BBB,CCC" for call in calls))
-
-    def test_full_history_counts_revisions_and_added_removed_sessions(self):
-        old = [entry("A", day)["last_all"] for day in ("2026-10-12", "2026-10-13", "2026-10-14")]
-        new = copy.deepcopy(old[1:])
-        new[0][5] = "9007199254740994"
-        new[1][4] = "124"
-        new.append(entry("A", "2026-10-15")["last_all"])
-        result = experiment.compare_history(old, new)
-        self.assertEqual((result["changed"], result["ohlc_changed"], result["other_fields_only"]), (2, 1, 1))
-        self.assertEqual((result["added"], result["removed"], result["matched"]), (1, 1, 0))
-        self.assertEqual((result["first_changed"], result["last_changed"]), ("2026-10-13", "2026-10-14"))
-        self.assertEqual(result["fields"], {"volume": 1, "close": 1})
-
-    def test_full_sample_uses_handoff_and_same_range_without_modifying_original(self):
-        from test_alpaca_pricing_download import FakeClient
-        from test_alpaca_pricing_download import snapshot as files_snapshot
-
-        with tempfile.TemporaryDirectory() as temporary:
-            store, destination = Path(temporary) / "original", Path(temporary) / "sample"
-            experiment.download_pricing(store, "SAMPLE", "2026-10-15", client=FakeClient([bar()]))
-            before = files_snapshot(store)
-            handoff = {"differences": [{"symbol": "SAMPLE"}]}
-            client = FakeClient([bar(v=9007199254740994)])
-            with patch(
-                "libs.alpaca_pricing_download.check_summary.read_snapshot",
-                side_effect=AssertionError("summary rescan"),
-            ):
-                result = experiment.full_download_sample(handoff, store, destination, "SAMPLE", client=client)
-            self.assertEqual(files_snapshot(store), before)
-            self.assertEqual(result["from"], "2016-01-01")
-            self.assertEqual(result["end_exclusive"], "2026-10-15")
-            self.assertEqual(result["views"]["all"]["other_fields_only"], 1)
-            self.assertEqual(len(client.calls), 16)
-            with self.assertRaisesRegex(experiment.DownloadError, "separate"):
-                experiment.full_download_sample(handoff, store, store, "SAMPLE", client=client)
-            with self.assertRaisesRegex(experiment.DownloadError, "already exists"):
-                experiment.full_download_sample(handoff, store, destination, "SAMPLE", client=client)
-
+class LiveCheckTests(unittest.TestCase):
     def test_plan_batches_exact_dates_and_saved_identity_mapping(self):
         value = snapshot(
             entry("C"), entry("A"), entry("B"), entry("D", asof="2026-10-17"), entry("E", "2026-10-13")
         )
         original = copy.deepcopy(value)
-        actions = experiment.plan(value, batch_size=2)["steps"][0]["actions"]
+        actions = live_check.plan(value, batch_size=2)["steps"][0]["actions"]
         seen = {}
         for action in actions:
             symbols = action["request"]["params"]["symbols"].split(",")
@@ -123,7 +51,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
         self.assertEqual(seen, {symbol: "2026-10-17" if symbol == "D" else "2026-10-15" for symbol in "ABCDE"})
         self.assertEqual(value, original)
         with self.assertRaises(ValueError):
-            experiment.plan(value, batch_size=0)
+            live_check.plan(value, batch_size=0)
 
     def test_exact_comparisons_classification_missing_and_no_filesystem_access(self):
         value = snapshot(*(entry(symbol) for symbol in ("A", "B", "C", "D")))
@@ -139,7 +67,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
             patch.object(Path, "open", side_effect=AssertionError("file access")),
             patch.object(Path, "iterdir", side_effect=AssertionError("directory scan")),
         ):
-            result = experiment.verify(value, lambda parameters: response)
+            result = live_check.verify(value, lambda parameters: response)
         self.assertEqual(
             result["stats"],
             {
@@ -173,7 +101,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
                 return {"bars": {"A": [bar()]}, "next_page_token": "next"}
             return {"bars": {"B": [bar()]}, "next_page_token": None}
 
-        result = experiment.verify(snapshot(entry("A"), entry("B")), get_page)
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
         self.assertTrue(result["complete"])
         self.assertEqual(result["stats"]["matched"], 2)
         self.assertEqual(result["requests"]["page_requests"], 2)
@@ -204,14 +132,14 @@ class LiveCheckExperimentTests(unittest.TestCase):
             {"bars": {"A": "invalid"}},
         ):
             with self.subTest(response=response):
-                result = experiment.verify(snapshot(entry("A")), lambda parameters: response)
+                result = live_check.verify(snapshot(entry("A")), lambda parameters: response)
                 self.assertFalse(result["complete"])
                 self.assertEqual(result["stats"]["failed"], 1)
                 self.assertEqual(result["stats"]["checked"], 0)
                 self.assertEqual(result["failures"][0]["symbols"], ["A"])
 
     def test_multiple_distinct_daily_rows_are_not_compared_as_one(self):
-        result = experiment.verify(
+        result = live_check.verify(
             snapshot(entry("A")), lambda parameters: {"bars": {"A": [bar(), bar(t="2026-10-14T05:00:00Z")]}}
         )
         self.assertEqual(result["stats"]["failed"], 1)
@@ -222,10 +150,10 @@ class LiveCheckExperimentTests(unittest.TestCase):
         def get_page(parameters):
             if "," in parameters["symbols"]:
                 error = urllib.error.HTTPError("https://example.test", 414, "too long", {}, None)
-                raise experiment.DownloadError("request failed") from error
+                raise live_check.DownloadError("request failed") from error
             return {"bars": {parameters["symbols"]: [bar()]}}
 
-        result = experiment.verify(snapshot(entry("A"), entry("B")), get_page)
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
         self.assertTrue(result["complete"])
         self.assertEqual(result["stats"]["matched"], 2)
         self.assertEqual(result["requests"], {"planned_batches": 1, "page_requests": 3, "oversize_splits": 1})
@@ -234,7 +162,7 @@ class LiveCheckExperimentTests(unittest.TestCase):
         def get_page(parameters):
             raise urllib.error.HTTPError("https://example.test", 400, "bad request", {}, None)
 
-        result = experiment.verify(snapshot(entry("A"), entry("B")), get_page)
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
         self.assertEqual(result["stats"]["failed"], 2)
         self.assertEqual(result["stats"]["missing"], 0)
         self.assertEqual(result["requests"]["page_requests"], 1)
@@ -277,17 +205,11 @@ class LiveCheckExperimentTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["stats"]["matched"], 1)
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_handoff_refuses_to_overwrite_existing_output_and_cleans_temporary(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "handoff.json"
-            experiment.write_handoff(output, {"test": 1})
-            with self.assertRaises(FileExistsError):
-                experiment.write_handoff(output, {"test": 2})
-            self.assertEqual(json.loads(output.read_bytes()), {"test": 1})
-            self.assertEqual(list(output.parent.iterdir()), [output])
-
-    def test_experimental_contract_has_own_runtime_validated_version(self):
-        experiment.validate_version()
+    def test_live_check_preserves_experiment_boundary_and_version(self):
+        live_check.validate_version()
+        result = live_check.verify(snapshot(entry("A")), lambda parameters: {"bars": {"A": [bar()]}})
+        self.assertEqual(result["boundary"], "alpaca_last_session_live_check_experiment")
+        self.assertEqual(result["schema_version"], live_check.VERSION)
 
 
 if __name__ == "__main__":

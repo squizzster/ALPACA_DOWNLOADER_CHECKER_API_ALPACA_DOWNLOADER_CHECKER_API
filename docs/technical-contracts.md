@@ -228,16 +228,6 @@ preserving digests/identity decisions. It may read full selected histories; ordi
 bootstrap. Policy rebuild uses this path; incompatible schemas need a supported explicit migration.
 [Operational scope](operations.md#serving-catalogue-maintenance), [public metadata/snapshot semantics](public-api.md#online-catalogue-reader).
 
-## Retained monthly identity and catalogue
-
-[Monthly paths](../libs/alpaca_end_of_day_v6/paths.py), [versions](../libs/alpaca_end_of_day_v6/versions.py) and
-[publication](../libs/alpaca_end_of_day_v6/pipeline.py) define source, validation, lineage, correlation, warnings,
-availability and catalogue receipts. The publication lock spans the whole write transaction; its pending marker
-blocks interrupted reads. Warnings are advisory; availability checks advertised reads/explained continuity.
-This format is not a `DataLibrary` adapter. [Clean-room initialization/activation](../libs/alpaca_end_of_day_clean_room/generation.py)
-freezes labels, hashes and snapshot bytes together; journal recovery completes original inputs before target/
-contract checks, and pinning cannot upgrade old work.
-
 ## Parquet conversion
 
 [Conversion](../libs/alpaca_bloodhound_export/command_line.py) uses complete resolved eight-view histories to

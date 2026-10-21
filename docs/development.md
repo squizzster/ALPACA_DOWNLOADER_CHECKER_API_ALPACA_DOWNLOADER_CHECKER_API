@@ -36,8 +36,8 @@ need not be reusable. Documentation-only changes leave versions/changelogs uncha
 
 Constants, compatibility and changelog paths live with their owners: [public API](../alpaca_end_of_day/__init__.py),
 [pricing](../libs/alpaca_pricing_download/contract.py), [lineage](../libs/alpaca_lineage_build/contract.py),
-[serving](../libs/alpaca_serving_catalogue/contract.py), [monthly boundaries](../libs/alpaca_end_of_day_v6/versions.py)
-and the packages in the [ownership map](ARCHITECTURE.md#code-ownership).
+[serving](../libs/alpaca_serving_catalogue/contract.py) and the packages in the
+[ownership map](ARCHITECTURE.md#code-ownership).
 
 ## Verification
 

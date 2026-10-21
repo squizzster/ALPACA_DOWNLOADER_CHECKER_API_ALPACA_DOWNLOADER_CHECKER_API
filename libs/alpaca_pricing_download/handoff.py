@@ -22,7 +22,8 @@ def load_published_boundary(root: Path, source: dict, kind: str, *, selected=Fal
     The producer has already authenticated values and exact-copy aliases. This
     normal handoff decodes selected data without filesystem revalidation or
     recalculating digests. selected means the caller already checked publication
-    completion under the continuously held lock. read_boundary is the audit path.
+    completion under the continuously held lock. read_boundary uses this trusted
+    consumption path; authenticate_boundary is the explicit audit.
     """
     if not selected and regular_path(root, ".pending.json").exists():
         raise DownloadError("pricing publication is incomplete; resume the downloader")

@@ -28,7 +28,7 @@ def unchanged_source(source, previous, *, selected=None):
     )
 
 
-def eligible_source(source, previous, notice, *, refresh):
+def eligible_source(source, previous, *, refresh):
     return (
         not refresh
         and previous is not None
@@ -104,7 +104,7 @@ def unique_assignment(segments, asset_id):
     )
 
 
-def can_resume(view, previous, old, evidence):
+def can_resume(view, previous, evidence):
     if not stable_evidence(previous["evidence"], evidence):
         return False
     if not any(view.views.values()):

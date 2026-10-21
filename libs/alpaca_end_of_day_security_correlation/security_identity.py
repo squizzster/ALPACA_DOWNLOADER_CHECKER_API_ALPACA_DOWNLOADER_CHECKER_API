@@ -1,12 +1,10 @@
-import re
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Iterable
+from typing import Iterable
 
 from .uuid_lineage import UuidLineageEdge
 
 SECURITY_ID_SCHEME_VERSION = 1
-SECURITY_ID_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -52,13 +50,9 @@ def _validated_tickers(tickers: Iterable[str]) -> tuple[str, ...]:
 
 def security_id_for_alpaca_asset_ids(alpaca_asset_ids: Iterable[str]) -> str:
     """Hash a canonical Alpaca-ID set into this application's security ID."""
+    # Member validation and canonical ordering are part of the stable ID contract.
     members = _validated_member_asset_ids(alpaca_asset_ids)
     return sha256("\n".join(members).encode("utf-8")).hexdigest()
-
-
-def master_id_for_alpaca_asset_ids(alpaca_asset_ids: Iterable[str]) -> str:
-    """Return the repository master ID for one canonical Alpaca-ID membership set."""
-    return security_id_for_alpaca_asset_ids(alpaca_asset_ids)
 
 
 def _connected_identity_data(
@@ -103,40 +97,4 @@ def security_identity_for_alpaca_assets(
         member_alpaca_asset_ids=members,
         member_tickers=member_tickers,
         basis=basis,
-    )
-
-
-def is_security_id(value: object) -> bool:
-    return isinstance(value, str) and SECURITY_ID_PATTERN.fullmatch(value) is not None
-
-
-def is_master_id(value: object) -> bool:
-    return is_security_id(value)
-
-
-def security_identity_report_is_valid(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    member_asset_ids = value.get("member_alpaca_asset_ids")
-    member_tickers = value.get("member_tickers")
-    if not isinstance(member_asset_ids, list) or not isinstance(member_tickers, list):
-        return False
-    if any(not isinstance(item, str) or not item for item in (*member_asset_ids, *member_tickers)):
-        return False
-    if member_asset_ids != sorted(set(member_asset_ids)) or member_tickers != sorted(set(member_tickers)):
-        return False
-    try:
-        expected_security_id = security_id_for_alpaca_asset_ids(member_asset_ids)
-    except (TypeError, ValueError):
-        return False
-    expected_scheme: dict[str, Any] = {
-        "kind": "sha256",
-        "version": SECURITY_ID_SCHEME_VERSION,
-        "canonical_input": "newline_joined_sorted_unique_alpaca_asset_ids",
-    }
-    return (
-        value.get("security_id") == expected_security_id
-        and value.get("security_id_scheme") == expected_scheme
-        and isinstance(value.get("basis"), str)
-        and bool(value["basis"])
     )

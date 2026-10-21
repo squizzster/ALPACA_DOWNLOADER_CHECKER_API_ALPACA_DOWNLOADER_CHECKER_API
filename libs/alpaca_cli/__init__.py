@@ -15,8 +15,9 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 7
+VERSION = 8
 REPOSITORY = Path(__file__).resolve().parents[2]
+# CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
 
 
@@ -175,30 +176,6 @@ def build_parser():
                 p.add_argument("--adjustment", choices=ADJUSTMENTS, default="raw")
             else:
                 p.add_argument("--output", required=True, help="CSV destination or '-' for stdout")
-    legacy = commands.add_parser("legacy", help="retained data/end_of_day operations").add_subparsers(
-        dest="operation", required=True, parser_class=Parser
-    )
-    for name in ("probe", "correlate", "audit"):
-        p = legacy.add_parser(name)
-        p.add_argument("--repository-root", type=Path, default=REPOSITORY)
-        if name != "audit":
-            p.add_argument("--symbol", required=True)
-    combined = legacy.add_parser("catalogue", help="retained combined monthly workflow")
-    combined.set_defaults(command="legacy-catalogue")
-    combined_commands = combined.add_subparsers(dest="operation", required=True, parser_class=Parser)
-    for name in ("update", "build", "resume", "audit", "activate", "pin-universe"):
-        p = combined_commands.add_parser(name)
-        _store(p, REPOSITORY / ("data_vtest" if name == "update" else "data_clean_room"))
-        if name in {"update", "build"}:
-            if name == "build":
-                group = p.add_mutually_exclusive_group(required=True)
-                group.add_argument("--symbols-file", type=Path)
-                group.add_argument("--recovery-universe", action="store_true")
-            else:
-                _selection(p, required=True)
-            _dates(p, start=name == "update", pricing=True)
-        if name == "pin-universe":
-            p.add_argument("--symbols-file", type=Path, default=DEFAULT_REGISTRY)
     return parser
 
 
@@ -419,23 +396,6 @@ def dispatch(args):
             return result
     if command == "catalogue":
         return catalogue_command(args)
-    if command == "legacy-catalogue":
-        return legacy_catalogue_command(args)
-    if command == "legacy":
-        args.ticker = getattr(args, "symbol", None)
-        if operation == "audit":
-            from libs.alpaca_end_of_day_security_correlation.catalog_audit import run_catalog_audit_command
-
-            run_catalog_audit_command(args)
-        elif operation == "probe":
-            from libs.alpaca_security_lineage.command_line import run_security_lineage_command
-
-            run_security_lineage_command(args, repository_root=args.repository_root)
-        else:
-            from libs.alpaca_end_of_day_security_correlation.command_line import run_security_correlation_command
-
-            run_security_correlation_command(args, repository_root=args.repository_root)
-        return 0
     raise AssertionError("unhandled command")
 
 
@@ -465,49 +425,6 @@ def catalogue_command(args):
     else:
         values = data.list_securities()
     return {"generation": data.catalog_generation(), "matches": [value.to_dict() for value in values]}
-
-
-def legacy_catalogue_command(args):
-    from libs.alpaca_end_of_day_clean_room.generation import (
-        UNIVERSE_SNAPSHOT,
-        activate_clean_room_generation,
-        audit_clean_room_generation,
-        load_universe,
-        pin_universe,
-        resume_clean_room_generation,
-        run_clean_room_generation,
-    )
-
-    operation = args.operation
-    if operation == "pin-universe":
-        return pin_universe(args.store, args.symbols_file)
-    if operation == "resume":
-        return resume_clean_room_generation(args.store, output=sys.stderr)
-    if operation == "audit":
-        return audit_clean_room_generation(
-            args.store, load_universe(args.store / "clean_room_run" / UNIVERSE_SNAPSHOT), output=sys.stderr
-        )
-    if operation == "activate":
-        return activate_clean_room_generation(REPOSITORY, args.store, output=sys.stderr)
-    end = _pricing_end(args) + "T00:00:00Z"
-    if operation == "build":
-        return run_clean_room_generation(
-            DEFAULT_REGISTRY if args.recovery_universe else args.symbols_file,
-            args.store,
-            request_end_timestamp=end,
-            output=sys.stderr,
-        )
-    from libs.alpaca_end_of_day_v6.pipeline import run_v6_pipeline
-
-    return run_v6_pipeline(
-        symbols(args),
-        store_root=args.store,
-        request_start_timestamp=None
-        if args.start is None
-        else parse_date(args.start).isoformat() + "T00:00:00Z",
-        request_end_timestamp=end,
-        output=sys.stderr,
-    )
 
 
 def main(argv=None):

@@ -1,7 +1,5 @@
-import re
-
-MANIFEST_VERSION = 1
-SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]*")
-
 CORRELATED_BRANCH = "correlated"
 UNCORRELATED_BRANCH = "uncorrelated"
+
+VERIFIED_SESSION_EXCLUSIONS_MANIFEST_TYPE = "verified_market_session_exclusions"
+VERIFIED_SESSION_EXCLUSIONS_VERSION = 1

@@ -35,10 +35,11 @@ class GroupSnapshot:
         *,
         shared_cache=False,
     ):
-        self._reader, self._symbol = reader, symbol
+        self._reader = reader
         self._assignments, self._sources = assignments, sources
         self._all_assignments = all_assignments
         self._receipts, self._generations = receipts, generations
+        # Keep the requested symbol: it selects the receipt's unavailable-input set.
         self._unavailable = tuple(sorted(unavailable_pricing(receipts[symbol])))
         self._cache = (
             reader._cache

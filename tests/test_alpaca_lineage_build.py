@@ -748,10 +748,18 @@ class LineageBuildTests(unittest.TestCase):
 
     def test_full_refresh_does_not_read_other_runtime_store(self):
         self.download()
-        with patch(
-            "libs.alpaca_security_lineage.local_downloads.inspect_local_downloads",
-            side_effect=AssertionError("legacy path"),
-        ):
+        from contextlib import ExitStack
+
+        def guard(method):
+            def selected_path(path, *args, **kwargs):
+                self.assertNotIn(("data", "end_of_day"), zip(path.parts, path.parts[1:]), "legacy path")
+                return method(path, *args, **kwargs)
+
+            return selected_path
+
+        with ExitStack() as stack:
+            for name in ("open", "stat", "iterdir", "glob"):
+                stack.enter_context(patch.object(Path, name, guard(getattr(Path, name))))
             self.run_build(["GOOG"], refresh=True)
 
     def test_lineage_handoff_trusts_assignments_and_rejects_changed_input_generation(self):

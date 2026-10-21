@@ -10,8 +10,8 @@ from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import
 )
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
 from libs.alpaca_end_of_day_security_correlation.terminal_episode import assess_terminal_traded_episode
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
-from libs.download_alpaca_end_of_day_bars import ALPACA_ADJUSTMENT_MODES
 from tests.test_alpaca_end_of_day_security_correlation import correlation_source
 
 

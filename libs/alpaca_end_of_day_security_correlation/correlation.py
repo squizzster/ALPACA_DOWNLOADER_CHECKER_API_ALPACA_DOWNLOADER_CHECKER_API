@@ -1,17 +1,16 @@
 from pathlib import Path
 from typing import Any, Callable
 
-from libs.alpaca_end_of_day_pipeline import PIPELINE_VERSION
+from libs.alpaca_end_of_day_pipeline.pipeline_version import PIPELINE_VERSION
 from libs.alpaca_security_lineage import (
     RECURRING_PIPELINE_RUN,
-    inspect_alpaca_security_lineage,
     recurring_pipeline_should_skip,
 )
 
 from .correlation_version import CORRELATION_VERSION, validate_correlation_change_log
 from .errors import SecurityCorrelationError
 from .evidence import ownership_interval_rule_order
-from .frozen_downloads import read_authenticated_frozen_download
+from .evidence_digest import lineage_evidence_sha256
 from .identity_partition import assess_one_session_distinct_uuid_transition
 from .predecessor_prefix import (
     assess_bridged_initial_prefix,
@@ -19,15 +18,13 @@ from .predecessor_prefix import (
     assess_independent_historical_intervals,
     assess_predecessor_prefixes,
 )
-from .publication import lineage_evidence_sha256, publish_security_correlation
 from .retired_continuation import assess_retired_continuation
 from .row_correlation import (
     CorrelationCache,
     correlate_download_rows,
     row_correlation_rule_order,
 )
-from .session_exclusions import read_verified_session_exclusions
-from .settings import CORRELATED_BRANCH, SYMBOL_PATTERN, UNCORRELATED_BRANCH
+from .settings import CORRELATED_BRANCH, UNCORRELATED_BRANCH
 from .source_continuity import retired_history_lower_bound
 from .terminal_episode import (
     assess_bridged_traded_episodes,
@@ -71,12 +68,11 @@ def build_security_correlation_report(
     lineage_report: dict[str, Any],
     repository_root: Path,
     *,
-    authenticated_download_reader: Callable[..., Any] = read_authenticated_frozen_download,
-    verified_session_exclusions_reader: Callable[..., dict[str, Any]] = (read_verified_session_exclusions),
-    authenticated_symbol_sessions: Callable[..., Any] | None = None,
+    authenticated_download_reader: Callable[..., Any],
+    verified_session_exclusions_reader: Callable[..., dict[str, Any]],
+    authenticated_symbol_sessions: Callable[..., Any],
     correlation_loader: Callable[[str], Any] | None = None,
     source_rows_loader: Callable[[str, str], tuple[list[dict], str]] | None = None,
-    assess_episode_partitions: bool = True,
     cache: CorrelationCache | None = None,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
@@ -176,7 +172,6 @@ def build_security_correlation_report(
         )
     )
     distinct_uuid_transition = assess_one_session_distinct_uuid_transition(
-        repository_root,
         lineage,
         evidence_issues=evidence_issues,
         authenticated_symbol_sessions=authenticated_symbol_sessions,
@@ -186,9 +181,7 @@ def build_security_correlation_report(
         distinct_uuid_transition.successor.symbol,
     }:
         distinct_uuid_transition = None
-    # Missing pricing sessions do not revoke an accepted identity edge. The old
-    # episode-partition pass read other sources solely to make those cuts; no
-    # membership decision consumes it now. Legacy adapter arguments remain valid.
+    # Missing pricing sessions do not revoke an accepted identity edge.
 
     # Incremental runs contain only the open boundary; they cannot establish a
     # whole-source prefix. Earlier published assignments remain trusted as-is.
@@ -392,28 +385,3 @@ def build_security_correlation_report(
             "Uncorrelated is a durable pipeline branch, not an inferred assignment or a repair result.",
         ],
     }
-
-
-def correlate_and_publish_alpaca_end_of_day_security_segments(
-    ticker: str,
-    api_key_id: str,
-    api_secret_key: str,
-    *,
-    repository_root: Path | None = None,
-    lineage_inspector: Callable[..., dict] = inspect_alpaca_security_lineage,
-) -> dict[str, Any]:
-    symbol = ticker.upper()
-    if not SYMBOL_PATTERN.fullmatch(symbol):
-        raise ValueError(f"invalid ticker: {ticker!r}")
-    correlation_repository_root = repository_root or Path.cwd()
-    lineage_report = lineage_inspector(
-        symbol,
-        api_key_id,
-        api_secret_key,
-        repository_root=correlation_repository_root,
-    )
-    correlation_report = build_security_correlation_report(
-        lineage_report,
-        correlation_repository_root,
-    )
-    return publish_security_correlation(correlation_repository_root, correlation_report)
