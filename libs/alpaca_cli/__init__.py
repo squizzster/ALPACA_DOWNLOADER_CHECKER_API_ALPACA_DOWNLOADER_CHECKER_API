@@ -15,7 +15,7 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 9
+VERSION = 10
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -117,6 +117,11 @@ def build_parser():
     p.add_argument("--output", type=Path, default=REPOSITORY / "exports" / "csv")
     p.add_argument("--public-id", action="append", help="online public identity; repeatable; default all")
     p.add_argument("--wait", action="store_true")
+    p.add_argument(
+        "--heartbeat-seconds",
+        type=bounded_integer(1, 86400),
+        help="fixed STDERR heartbeat interval; default intervals are 60,120,180,240,300 then 300 seconds",
+    )
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
     )
@@ -255,11 +260,20 @@ def dispatch(args):
         if operation == "csv":
             from alpaca_end_of_day import DataLibrary
 
+            from .csv_progress import hold_plan, progress_callback
+
+            reporter = getattr(args, "_lifecycle", None)
+            if reporter is not None:
+                reporter.update("CATALOGUE")
             data = DataLibrary(store=args.store, wait=args.wait)
             options = {"public_ids": args.public_id, "start": args.start, "end": args.end}
+            if reporter is not None:
+                reporter.update("PLAN")
             if args.plan:
-                return data.plan_csv_export(**options)
-            return data.write_csv_export(args.output, **options, progress=progress_reporter())
+                result = data.plan_csv_export(**options)
+                hold_plan(reporter, result)
+                return result
+            return data.write_csv_export(args.output, **options, progress=progress_callback(reporter))
         from libs.alpaca_bloodhound_export.command_line import run_arguments
 
         return run_arguments(args)
@@ -446,7 +460,17 @@ def catalogue_command(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    reporter = None
+    if args.command == "export" and args.operation == "csv":
+        from .csv_progress import PHASES
+        from .lifecycle import DEFAULT_HEARTBEAT_INTERVALS, LifecycleReporter
+
+        intervals = (args.heartbeat_seconds,) if args.heartbeat_seconds else DEFAULT_HEARTBEAT_INTERVALS
+        reporter = LifecycleReporter(PHASES, heartbeat_intervals=intervals)
+        args._lifecycle = reporter
     try:
+        if reporter is not None:
+            reporter.start()
         changelog = json.loads((REPOSITORY / "resources/alpaca_cli_change_log.json").read_bytes())
         if len(changelog) != VERSION or any(
             "version" in item or not item.get("modifications") for item in changelog
@@ -454,16 +478,47 @@ def main(argv=None):
             raise ValueError("CLI changelog/version mismatch")
         result = dispatch(args)
         if isinstance(result, int):
-            return result
-        if hasattr(args, "pricing_cutoff"):
-            result = {**result, "pricing_cutoff": args.pricing_cutoff}
-        print(json.dumps(result, separators=(",", ":"), allow_nan=False))
-        if args.command == "status":
-            return int(not result["processing_complete"])
-        return int(bool(result.get("failed") or result.get("blockers") or result.get("complete") is False))
+            code = result
+        else:
+            if hasattr(args, "pricing_cutoff"):
+                result = {**result, "pricing_cutoff": args.pricing_cutoff}
+            print(json.dumps(result, separators=(",", ":"), allow_nan=False))
+            code = (
+                int(not result["processing_complete"])
+                if args.command == "status"
+                else int(bool(result.get("failed") or result.get("blockers") or result.get("complete") is False))
+            )
+        if reporter is not None:
+            reporter.finish(
+                "success" if code == 0 else "error",
+                code,
+                error=RuntimeError("CSV export did not complete") if code else None,
+            )
+        return code
     except ReaderBusyError as error:
-        print(f"busy: {error}", file=sys.stderr)
+        if reporter is not None:
+            reporter.finish("error", 3, error=error)
+        else:
+            print(f"busy: {error}", file=sys.stderr)
         return 3
     except (RuntimeError, OSError, ValueError, csv.Error) as error:
-        print(f"error: {error}", file=sys.stderr)
+        if reporter is not None:
+            reporter.finish("error", 1, error=error)
+        else:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        if reporter is None:
+            raise
+        reporter.finish("aborted", 130)
+        return 130
+    except SystemExit as error:
+        if reporter is not None:
+            code = error.code if type(error.code) is int else 0 if error.code is None else 1
+            reporter.finish("success" if code == 0 else "aborted", code)
+        raise
+    except Exception as error:
+        if reporter is None:
+            raise
+        reporter.finish("error", 1, error=error)
         return 1

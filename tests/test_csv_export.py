@@ -41,6 +41,26 @@ PREFIXES = (
 
 
 class CsvExportTests(NativeCase):
+    def lifecycle_records(self, stderr, *, status="success", exit_code=0, last_phase=None):
+        records = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        self.assertGreaterEqual(len(records), 2)
+        self.assertEqual(records[0]["phase"], "INIT")
+        self.assertEqual(records[0]["schema"], "alpaca.lifecycle.progress")
+        self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
+        self.assertEqual(records[-1]["schema"], "alpaca.lifecycle.progress")
+        self.assertEqual(records[-1]["status"], status)
+        self.assertEqual(records[-1]["exit_code"], exit_code)
+        self.assertEqual(sum(record["phase"] == "FINAL_EXIT" for record in records), 1)
+        if last_phase is not None:
+            self.assertEqual(records[-1]["last_phase"], last_phase)
+        for record in records:
+            self.assertEqual(record["schema_version"], 1)
+            self.assertIs(type(record["elapsed_seconds"]), int)
+            self.assertGreaterEqual(record["elapsed_seconds"], 0)
+            self.assertIsInstance(record["message"], str)
+            self.assertTrue(record["message"])
+        return records
+
     def refresh(self, client):
         download_pricing(self.store, "TEST", "2026-10-14", client=client, refresh_all=True)
         result = run_lineage(
@@ -469,19 +489,137 @@ class CsvExportTests(NativeCase):
         self.assertEqual(plan["identities"], 1)
         self.assertEqual(plan["groups"], 1)
         self.assertFalse(destination.exists())
+        self.assertEqual(len(self.lifecycle_records(stderr, last_phase="PLAN")), 2)
 
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            self.assertEqual(main(arguments), 0, stderr.getvalue())
+            self.assertEqual(main([*arguments, "--heartbeat-seconds", "86400"]), 0, stderr.getvalue())
         result = json.loads(stdout.getvalue())
         self.assertEqual(result["identities"], 1)
         self.assertEqual(result["rows"], 2)
+        self.assertEqual(len(self.lifecycle_records(stderr, last_phase="PUBLISH")), 2)
         manifest = json.loads((destination / "final_manifest.json").read_text())
         self.assertEqual(set(manifest["identities"]), {public_id})
         entry = manifest["identities"][public_id]
         with (destination / entry["csv"]).open(newline="") as stream:
             rows = list(csv.DictReader(stream))
         self.assertEqual([row["date"] for row in rows], ["2026-10-02", "2026-10-05"])
+
+    def test_cli_source_failure_reports_latest_phase_and_preserves_completed_export(self):
+        data = self.bootstrap()
+        self.exported(data)
+        destination = self.directory / "exports/csv"
+        previous = (destination / "final_manifest.json").read_bytes()
+
+        def source_failure(*args, **kwargs):
+            try:
+                raise OSError("selected payload is unreadable")
+            except OSError as error:
+                raise RuntimeError("source read failed") from error
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch.object(StandaloneReader, "_snapshot", side_effect=source_failure),
+        ):
+            self.assertEqual(
+                main(["export", "csv", "--store", str(self.store), "--output", str(destination)]), 1
+            )
+        records = self.lifecycle_records(stderr, status="error", exit_code=1, last_phase="EXPORT")
+        self.assertEqual(len(records), 3)
+        error = records[1]
+        self.assertEqual(error["schema"], "alpaca.lifecycle.error")
+        self.assertEqual(error["phase"], "EXPORT")
+        self.assertEqual(error["error_type"], "RuntimeError")
+        self.assertIn("source read failed", error["message"])
+        self.assertIn("selected payload is unreadable", json.dumps(error))
+        self.assertIn("traceback", error)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual((destination / "final_manifest.json").read_bytes(), previous)
+
+    def test_cli_keyboard_interrupt_finishes_aborted_without_error_or_publication(self):
+        self.bootstrap()
+        destination = self.directory / "interrupted-csv"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch.object(StandaloneReader, "_snapshot", side_effect=KeyboardInterrupt),
+        ):
+            self.assertEqual(
+                main(["export", "csv", "--store", str(self.store), "--output", str(destination)]), 130
+            )
+        records = self.lifecycle_records(stderr, status="aborted", exit_code=130, last_phase="EXPORT")
+        self.assertEqual(len(records), 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertFalse((destination / "final_manifest.json").exists())
+
+    def test_cli_unexpected_catalogue_error_is_json_and_finishes_once(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch("alpaca_end_of_day.DataLibrary", side_effect=TypeError("unexpected catalogue error")),
+        ):
+            self.assertEqual(main(["export", "csv", "--store", str(self.store), "--plan"]), 1)
+        records = self.lifecycle_records(stderr, status="error", exit_code=1, last_phase="CATALOGUE")
+        self.assertEqual(len(records), 3)
+        self.assertEqual(records[1]["schema"], "alpaca.lifecycle.error")
+        self.assertEqual(records[1]["error_type"], "TypeError")
+        self.assertEqual(records[1]["phase"], "CATALOGUE")
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_cli_busy_output_reports_error_exit_three_without_replacing_selector(self):
+        data = self.bootstrap()
+        self.exported(data)
+        destination = self.directory / "exports/csv"
+        previous = (destination / "final_manifest.json").read_bytes()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (destination / ".export.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(
+                    main(["export", "csv", "--store", str(self.store), "--output", str(destination)]), 3
+                )
+        records = self.lifecycle_records(stderr, status="error", exit_code=3)
+        self.assertEqual(len(records), 3)
+        self.assertEqual(records[1]["error_type"], "ReaderBusyError")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual((destination / "final_manifest.json").read_bytes(), previous)
+
+    def test_cli_stderr_write_and_flush_failures_do_not_change_successful_export(self):
+        self.bootstrap()
+        for broken_method in ("write", "flush"):
+            with self.subTest(broken_method=broken_method):
+                destination = self.directory / f"broken-{broken_method}"
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    patch.object(stderr, broken_method, side_effect=OSError("stderr unavailable")) as broken,
+                ):
+                    self.assertEqual(
+                        main(["export", "csv", "--store", str(self.store), "--output", str(destination)]), 0
+                    )
+                self.assertGreater(broken.call_count, 0)
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(result["identities"], 1)
+                manifest = json.loads((destination / "final_manifest.json").read_text())
+                self.assertEqual(manifest["counts"]["identities"], 1)
+                entry = next(iter(manifest["identities"].values()))
+                self.assertTrue((destination / entry["csv"]).is_file())
+                self.assertTrue((destination / entry["digest"]).is_file())
+
+    def test_cli_invalid_heartbeat_override_is_rejected_before_lifecycle_starts(self):
+        for interval in ("0", "-1", "86401", "abc"):
+            with self.subTest(interval=interval):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
+                    main(["export", "csv", "--plan", "--heartbeat-seconds", interval])
+                self.assertEqual(caught.exception.code, 2)
+                self.assertNotIn("alpaca.lifecycle", stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
 
     def test_missing_required_payload_fails_without_recovery_or_replacing_previous_export(self):
         data = self.bootstrap()

@@ -43,5 +43,11 @@
     "modifications": [
       "Add offline CSV export by online public identity with an optional catalogue-only plan, explicit identity and date selection, per-identity digests and one final export manifest."
     ]
+  },
+  {
+    "modifications": [
+      "Report CSV operation lifecycles as bounded, versioned compact JSONL on STDERR with immediate INIT, sampled in-memory status, independent monotonic heartbeat intervals of 60/120/180/240/300 seconds then 300 seconds, and an optional fixed interval.",
+      "Emit immediate structured errors and exactly one FINAL_EXIT on controlled termination, isolate reporting failures from operation outcomes, and retain JSON results on STDOUT."
+    ]
   }
 ]

@@ -178,6 +178,44 @@ trial; `--output DIR` selects another export root. `--from`/`--through` are incl
 creating output. See the [per-identity CSV contract](public-api.md#per-identity-csv-export) for file layout,
 column mappings and publication guarantees.
 
+CSV execution and `--plan` emit compact, versioned JSONL on stderr; stdout remains the final JSON result.
+Reporting begins after argument parsing, before CLI contract checks and catalogue access. An `INIT` record
+is flushed immediately. Heartbeat intervals are 60, 120, 180, 240 and then 300 seconds repeatedly: records
+fall at elapsed **1, 3, 6, 10, 15, 20… minutes**. `--heartbeat-seconds N` selects a fixed interval instead
+(integer seconds, 1–86400). Whole `elapsed_seconds` use the monotonic clock from reporting activation.
+
+The reporter holds one status in memory. Work updates replace it without printing, queuing or resetting
+the timer; a separate timer samples it even while work is waiting. A heartbeat retains the status, so
+unchanged work repeats with a new elapsed time. Every update replaces its context as well, preventing
+values from an earlier phase or work scope from leaking into the next. Invalid or oversized updates leave
+the last valid status unchanged. Brief phases may occur between heartbeats and never appear in the output.
+
+Progress schema `alpaca.lifecycle.progress`, version 1, contains `schema`, `schema_version`,
+`elapsed_seconds`, `phase` and `message`. Optional `current` and `total` always occur together and satisfy
+`0 <= current <= total`; `context` contains only fields registered for the phase. CSV `current`/`total`
+count selected public identities. Phase messages and typed field registrations live in
+[csv_progress.py](../libs/alpaca_cli/csv_progress.py):
+
+| Phase | Work and permitted context |
+|---|---|
+| `INIT` | Reporting activation; no context. |
+| `CATALOGUE` | Open the published online catalogue; no context. |
+| `PLAN` | Select work; catalogue generation, identity/group/source counts and planned metadata/payload/output bounds. |
+| `EXPORT` | Write CSVs and digests; plan fields, completed counts, CSV bytes, column counts and estimated seconds remaining. |
+| `PUBLISH` | Publish the final manifest; completed identity/group/row counts, CSV bytes and column counts. |
+| `FINAL_EXIT` | Immediate termination record with `status`, `exit_code` and `last_phase`. |
+
+On success, reporting stops and flushes one `FINAL_EXIT` with `status: success`, exit code 0. A caught
+failure flushes a separate `alpaca.lifecycle.error` schema, version 1, with `error_type`, `message`, latest
+accepted `phase`, elapsed seconds and available causes/traceback, then `FINAL_EXIT` with `status: error`.
+Busy destinations exit 3; other CSV failures exit 1. Keyboard interruption emits `status: aborted` and
+exits 130. Finalization never waits for the next heartbeat, and no heartbeat follows the final record.
+Writes are serialized and flushed; progress/final records are limited to 4 KiB and errors to 16 KiB,
+including the newline. Oversized error diagnostics are shortened with `truncated: true`.
+Reporting failures do not change the export outcome; abrupt termination or failed stderr writes can
+prevent delivery. This lifecycle currently applies to `export csv`; other commands keep their existing
+progress formats. The reusable reporter is owned by [alpaca_cli](ARCHITECTURE.md#code-ownership).
+
 Parquet needs [PyArrow](../requirements-bloodhound.txt) and an existing output parent outside the source store.
 Default selection is all indexed lineage groups; any rejected identity aborts by default.
 `--include-all-passed` allows output despite rejected identities;
