@@ -15,7 +15,7 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 8
+VERSION = 9
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -111,6 +111,15 @@ def build_parser():
             _dates(p)
             p.add_argument("--format", choices=("json", "csv"), default="json")
     export = commands.add_parser("export").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    p = export.add_parser("csv", help="export online public identities with distinct adjustment columns")
+    _store(p)
+    _dates(p)
+    p.add_argument("--output", type=Path, default=REPOSITORY / "exports" / "csv")
+    p.add_argument("--public-id", action="append", help="online public identity; repeatable; default all")
+    p.add_argument("--wait", action="store_true")
+    p.add_argument(
+        "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
+    )
     p = export.add_parser("bloodhound", help="offline eight-view Parquet conversion")
     _store(p)
     _dates(p)
@@ -243,6 +252,14 @@ def dispatch(args):
 
         return run_arguments(args)
     if command == "export":
+        if operation == "csv":
+            from alpaca_end_of_day import DataLibrary
+
+            data = DataLibrary(store=args.store, wait=args.wait)
+            options = {"public_ids": args.public_id, "start": args.start, "end": args.end}
+            if args.plan:
+                return data.plan_csv_export(**options)
+            return data.write_csv_export(args.output, **options, progress=progress_reporter())
         from libs.alpaca_bloodhound_export.command_line import run_arguments
 
         return run_arguments(args)

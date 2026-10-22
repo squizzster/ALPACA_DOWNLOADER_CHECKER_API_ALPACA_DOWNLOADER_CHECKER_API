@@ -164,11 +164,19 @@ internal; there is no public append shortcut. [Lock/publication contract](techni
 ./alpaca-eod read --store data_pricing --symbol DELL --adjustment raw all
 ./alpaca-eod catalogue search --store data_pricing DELL
 ./alpaca-eod catalogue export --store data_pricing --output ./online.csv
+./alpaca-eod export csv --store data_pricing --plan
+./alpaca-eod export csv --store data_pricing
 ./alpaca-eod export bloodhound --output ./alpaca.parquet --symbol DELL
 ```
 
 [Public API](public-api.md) owns identity/date/output semantics. Exit codes: 0 success; 1 failure/incomplete
 work; 2 invalid arguments; standalone reader 3 busy (`--wait` waits).
+
+`export csv` defaults to `exports/csv/` and all online public IDs. Repeat `--public-id ID` for a selected
+trial; `--output DIR` selects another export root. `--from`/`--through` are inclusive date filters.
+`--plan` reads the opened catalogue only and reports selected work without opening pricing payloads or
+creating output. See the [per-identity CSV contract](public-api.md#per-identity-csv-export) for file layout,
+column mappings and publication guarantees.
 
 Parquet needs [PyArrow](../requirements-bloodhound.txt) and an existing output parent outside the source store.
 Default selection is all indexed lineage groups; any rejected identity aborts by default.

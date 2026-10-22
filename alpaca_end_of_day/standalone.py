@@ -237,7 +237,17 @@ def _rows(root, source, kind, adjustment, cache, retained=None):
 
 
 def _history(
-    assignments, sources, store, public_id, adjustment, cache, retained=None, *, prefix=None, coverage_out=None
+    assignments,
+    sources,
+    store,
+    public_id,
+    adjustment,
+    cache,
+    retained=None,
+    *,
+    prefix=None,
+    coverage_out=None,
+    io_cache=None,
 ):
     from ._history_coverage import SelectedCoverage, extend_coverage, preserves_selection
 
@@ -259,7 +269,8 @@ def _history(
                 if not segments:
                     continue
             root = _selected_path(cache, store, f"end_of_day/pricing/{symbol}")
-            rows = _rows(root, sources[symbol], kind, adjustment, cache, retained)
+            row_cache = io_cache.setdefault(symbol, {}) if io_cache is not None else cache
+            rows = _rows(root, sources[symbol], kind, adjustment, row_cache, retained)
             for segment in segments:
                 start, end = segment["row_start"], segment["row_end"]
                 if not 1 <= start <= end <= len(rows):
@@ -383,6 +394,7 @@ def _read_views(
     *,
     prefix=None,
     coverage_out=None,
+    io_cache=None,
 ):
     views, cache = {}, {}
     for adjustment in adjustments:
@@ -392,6 +404,8 @@ def _read_views(
             if prefix is not None or coverage_out is not None
             else {}
         )
+        if io_cache is not None:
+            incremental["io_cache"] = io_cache
         bars = _history(
             assignments,
             sources,

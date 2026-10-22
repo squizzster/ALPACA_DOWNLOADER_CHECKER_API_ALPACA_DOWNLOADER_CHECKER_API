@@ -46,7 +46,7 @@ adapters. Tests use synthetic fixtures/HTTP doubles; resources hold runtime cont
 
 | Owner | Responsibility |
 |---|---|
-| [alpaca_end_of_day](../alpaca_end_of_day/) | Public library, shared standalone reader and reader CLIs. |
+| [alpaca_end_of_day](../alpaca_end_of_day/) | Public library, shared standalone reader, per-identity CSV export and reader CLIs. |
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch. |
 | [alpaca_recovery_registry](../libs/alpaca_recovery_registry/) | Locked, atomic label union. |
 | [alpaca_pricing_download](../libs/alpaca_pricing_download/) | Acquisition, pricing publication, endpoint validation, summary storage. |

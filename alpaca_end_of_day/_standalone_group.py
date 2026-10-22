@@ -268,6 +268,53 @@ class GroupSnapshot:
             "evidence": self.summary,
         }
 
+    def _iter_export_histories(self, public_ids, *, start=None, end=None):
+        """Consume selected online IDs with one I/O memo under the group lock.
+
+        Membership and row ownership come from completed selectors. The memo
+        shares physical aliases across IDs, independently of the optional LRU.
+        Drop each source after its last selected identity; assembled histories
+        and their session scratch remain private to each identity.
+        """
+        if self._assignments is None:
+            raise StandaloneReaderError("group snapshot is closed")
+        positions = {public_id: position for position, public_id in enumerate(public_ids)}
+        release_at = {}
+        for symbol, assignments in self._assignments.items():
+            last = max(
+                (
+                    positions.get(segment["security_identity"]["security_id"], -1)
+                    for _, _, segment in assignments
+                ),
+                default=-1,
+            )
+            if last >= 0:
+                release_at.setdefault(last, []).append(symbol)
+        io_cache = {}
+        try:
+            for position, public_id in enumerate(public_ids):
+                try:
+                    views = _read_views(
+                        self._assignments,
+                        self._sources,
+                        self._reader.store,
+                        public_id,
+                        ADJUSTMENTS,
+                        start,
+                        end,
+                        io_cache=io_cache,
+                    )
+                except StandaloneReaderError:
+                    raise
+                except (OSError, RuntimeError, ValueError, KeyError, TypeError, StopIteration) as error:
+                    raise StandaloneReaderError(f"cannot read standalone publication: {error}") from error
+                yield public_id, views
+                del views
+                for symbol in release_at.get(position, ()):
+                    io_cache.pop(symbol, None)
+        finally:
+            io_cache.clear()
+
     def check_current(self):
         """Check current selections and prices without reopening approved lineage."""
 

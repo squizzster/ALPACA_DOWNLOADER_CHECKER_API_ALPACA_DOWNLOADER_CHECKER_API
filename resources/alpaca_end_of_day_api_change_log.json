@@ -83,5 +83,11 @@
     "modifications": [
       "Accept digit-leading historical labels in DataLibrary ticker resolution, independently of standalone source-locator syntax, while preserving dated matches, ambiguity, normalization and metadata-only lookup from the opened catalogue."
     ]
+  },
+  {
+    "modifications": [
+      "Add catalogue-only CSV export planning and per-public-ID CSV exports with stable logical pricing columns, per-identity column-alias digests, exact numeric values and a final manifest published atomically after all outputs complete.",
+      "Consume each selected serving group once, share manifest-selected physical payloads across its identities until their last use, and derive output column aliases in memory without source hashing, filesystem discovery or repeated upstream audits."
+    ]
   }
 ]

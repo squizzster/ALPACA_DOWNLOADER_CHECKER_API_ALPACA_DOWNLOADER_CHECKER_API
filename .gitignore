@@ -26,6 +26,7 @@ htmlcov/
 *.sqlite3-shm
 /experimental_temp/
 /alpaca_run_logs/
+/exports/
 /ticker_lists/
 /unique_ticker_codes.csv
 /resources/.ticker.csv.lock

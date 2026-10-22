@@ -38,5 +38,10 @@
     "modifications": [
       "Remove the legacy command family and unused monthly, clean-room and ticker workflows, retaining the current standalone commands and shared identity and source-selection rules."
     ]
+  },
+  {
+    "modifications": [
+      "Add offline CSV export by online public identity with an optional catalogue-only plan, explicit identity and date selection, per-identity digests and one final export manifest."
+    ]
   }
 ]

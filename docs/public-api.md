@@ -100,3 +100,52 @@ duplicates or ambiguous dated metadata fail; undated descriptions yield empty hi
 must be outside the source store. Paths use disk spool + atomic replacement; streams lack replacement guarantees.
 Exports declare one catalogue snapshot and match each consumed group's generations, not a store-wide guarantee
 that every group remains latest at installation.
+
+## Per-identity CSV export
+
+`DataLibrary.plan_csv_export(*, public_ids=None, start=None, end=None)` reports the selected work from
+the opened catalogue. `write_csv_export(destination, *, public_ids=None, start=None, end=None,
+progress=None)` writes the export and returns its report. Both select every online public ID by default;
+an explicit list selects only those online identities. Date bounds are inclusive. The destination must
+be outside the source store. [CLI usage](operations.md#read-and-export) defaults to `exports/csv/`.
+
+Each run creates a UTC timestamp directory with microsecond precision:
+
+```text
+exports/csv/
+  <UTC timestamp>/
+    <public_id>/
+      <public_id>_eod.csv
+      <public_id>_digest.json
+  final_manifest.json
+```
+
+Each CSV has one `date` column and fully populated pricing columns for its distinct numeric series.
+Each of the eight views defines `open`, `high`, `low`, `close`, `volume`, `trade_count`, `vwap`. Column names use
+the stable view prefixes `raw`, `split`, `dividend`, `spin_off`, `split_dividend`, `split_spin_off`,
+`dividend_spin_off`, `all`, followed by `_` and the field name, for example `raw_close` or
+`split_dividend_volume`. Identities may have different headers. Every logical column that matches an
+earlier column throughout the exported rows maps to that column in the digest. Canonical columns follow
+the listed view order, then field order. For example, `split_close` may map to `raw_close` while
+`split_volume` has its own column. Every included column is populated on every row. An unchanged value
+on an individual session is still written; rows are full session records.
+Equality is exact numeric equality, including differently spelled decimals; the canonical column retains
+its original numeric strings. Equal series may also share across fields, such as `raw_high` and `raw_open`.
+Identities without rows in the requested date range are omitted; an empty selection produces a complete
+manifest with no identity files.
+
+Each identity digest defines its CSV columns, all 56 logical column mappings, row count, actual first/last
+session and checksum. The final manifest defines all eight possible views and selects the completed
+run with its identity file references. It is replaced atomically only after every CSV and digest has
+been written; a failed run leaves the previous final manifest selected. Consumers follow this manifest
+and the referenced digests directly.
+The digest's `column_aliases` maps every logical price column directly to its actual CSV column;
+`views[adjustment].columns` provides the same map by field. Unfinished run directories remain unselected;
+export never discovers or resumes them by crawling the output directory. A stable destination lock
+serializes exporters. Earlier completed run directories remain available after the latest selector changes.
+
+Export trusts the opened serving catalogue and selected lineage/pricing manifests. It processes each
+selected identity group once, follows named payloads, and shares decoded payloads within that group.
+It does not discover directories, recalculate upstream digests or replay identity/eligibility decisions.
+Output checksums are calculated as CSV bytes are written. The export declares the opened catalogue
+snapshot and consumes compatible groups under their reader locks.
