@@ -62,12 +62,21 @@ class LiveCheckTests(unittest.TestCase):
                 "C": [bar(v=9007199254740994)],
             }
         }
+        calls = []
+
+        def get_page(parameters):
+            calls.append(parameters["symbols"])
+            if parameters["symbols"] == "D":
+                return {"bars": {}}
+            return response
+
         with (
             patch("builtins.open", side_effect=AssertionError("file access")),
             patch.object(Path, "open", side_effect=AssertionError("file access")),
             patch.object(Path, "iterdir", side_effect=AssertionError("directory scan")),
         ):
-            result = live_check.verify(value, lambda parameters: response)
+            result = live_check.verify(value, get_page)
+        self.assertEqual(calls, ["A,B,C,D", "D"])
         self.assertEqual(
             result["stats"],
             {

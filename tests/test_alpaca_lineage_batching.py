@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, unquote, urlparse
 
-from test_alpaca_lineage_build import asset
+from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar
 
 from libs.alpaca_data_api_solver import ACTION_URL, build_plan
@@ -249,6 +249,59 @@ class LineageBatchingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "repeated a page token"):
                 evidence.get_corporate_actions("A", START, END)
             self.assertEqual(evidence.get_corporate_actions("B", "2026-10-01", END), [])
+
+    def test_action_conflict_isolated_to_consumers_inside_and_outside_its_batch(self):
+        conflicting = event("A", action_type="reorganization", stock_movements=[{"symbol": "B"}], cash=1)
+        good = event("C", "independent")
+        provider = Provider(actions=[conflicting, {**conflicting, "cash": 2}, good])
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions([(s, START, END) for s in ("A", "B", "C", "D")])
+        for symbol in ("A", "B"):
+            with (
+                self.subTest(symbol=symbol),
+                self.assertRaisesRegex(LineageError, "conflicting corporate-action") as caught,
+            ):
+                client.get_corporate_actions(symbol, START, END)
+            self.assertEqual(caught.exception.request_identifiers, [symbol])
+        self.assertEqual(client.get_corporate_actions("C", START, END), [good])
+        self.assertEqual(client.get_corporate_actions("D", START, END), [])
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(client.get_corporate_actions("E", START, END), [])
+        self.assertEqual(len(provider.calls), 2)
+
+    def test_later_action_conflict_blocks_cached_consumers_but_preserves_other_evidence(self):
+        first, good = event("A", rate=1), event("OK", "independent")
+        provider = Provider(actions=[first, good])
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions([(s, START, END) for s in ("A", "OK")])
+        self.assertEqual(client.get_corporate_actions("A", START, END), [first])
+        self.assertEqual(client.get_corporate_actions("A", "2026-10-02", END), [])
+        provider.actions = [event("B", rate=2)]
+        with self.assertRaisesRegex(LineageError, "conflicting corporate-action"):
+            client.get_corporate_actions("B", START, END)
+        with self.assertRaisesRegex(LineageError, "conflicting corporate-action") as caught:
+            client.get_corporate_actions("A", START, END)
+        self.assertEqual(caught.exception.request_identifiers, ["A"])
+        self.assertEqual(client.get_corporate_actions("A", "2026-10-02", END), [])
+        self.assertEqual(client.get_corporate_actions("OK", START, END), [good])
+        self.assertEqual(len(provider.calls), 2)
+
+    def test_unbatched_action_conflict_preserves_cached_and_new_independent_queries(self):
+        provider = IdentityClient(actions=[event(rate=1), event(rate=2)])
+        client = EvidenceClient(provider)
+        self.assertEqual(client.get_corporate_actions("B", START, END), [])
+        with self.assertRaisesRegex(LineageError, "conflicting corporate-action"):
+            client.get_corporate_actions("A", START, END)
+        self.assertEqual(client.get_corporate_actions("B", START, END), [])
+        self.assertEqual(client.get_corporate_actions("C", START, END), [])
+        self.assertEqual(len(provider.calls), 3)
+
+    def test_identical_action_repeated_across_symbols_and_pages_remains_usable(self):
+        shared = event("A", action_type="reorganization", stock_movements=[{"symbol": "B"}])
+        provider = Provider(actions=[shared, shared], page_size=1)
+        client = EvidenceClient(provider.client)
+        self.assertEqual(client.get_corporate_actions("A", START, END), [shared])
+        self.assertEqual(client.get_corporate_actions("B", START, END), [shared])
 
     def test_oversized_request_splits_but_other_http_errors_do_not(self):
         plan = build_plan(

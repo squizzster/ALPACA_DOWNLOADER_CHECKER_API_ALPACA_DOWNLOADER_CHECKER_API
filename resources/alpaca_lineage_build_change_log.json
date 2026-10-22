@@ -159,5 +159,10 @@
       "Carry unchanged pricing groups and stable identity evidence through cutoff and partition changes without reading prices or rerunning decisions, including empty and unresolved histories; preserve accepted counts and assignments and report complete decision reuse explicitly.",
       "Consume completed positive CUSIP mappings for unchanged actions when the fresh catalogue supplies identical, unambiguous asset facts; preserve exact acquisition for new evidence, changed or unavailable facts, negatives and explicit refresh, and invalidate reused mappings when later traversal produces conflicting fresh evidence."
     ]
+  },
+  {
+    "modifications": [
+      "Scope conflicting corporate-action identities to evidence that contains them, including previously cached responses; preserve unrelated completed intervals, independent symbols in the same batch and later requests. Keep incomplete transport and routing responses blocked, preserve compatible completed lineage decisions, and retain ordinary retry and publication boundaries."
+    ]
   }
 ]

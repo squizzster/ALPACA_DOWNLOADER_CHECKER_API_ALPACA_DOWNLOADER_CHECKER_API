@@ -8,7 +8,7 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 26
+VERSION = 27
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3

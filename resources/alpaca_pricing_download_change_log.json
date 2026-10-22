@@ -145,5 +145,10 @@
       "Return completed source ranges and the producer's effective pending update in acquisition and append handoffs, including already-covered requests, so downstream planning consumes the selected result without reopening sources or notices. Covered acquisitions trust the source's accepted range without reopening its endpoint validator. Preserve compatible v1-v25 artifacts and existing publication recovery.",
       "Release completed bar-plan response bodies with their consumers, including request-size splitting and handled failures, so successive replacement cohorts do not retain earlier histories through executor cycles. Preserve exact request order, pagination, failure isolation and publication recovery."
     ]
+  },
+  {
+    "modifications": [
+      "Resolve symbols omitted from every page of a multi-symbol bars response through exact requests before completing their acquisition. Reuse delivered members without refetching, preserve explicit and exact empty responses, keep failures scoped to the undelivered symbol and retain ordered pagination and compatible completed publications."
+    ]
   }
 ]

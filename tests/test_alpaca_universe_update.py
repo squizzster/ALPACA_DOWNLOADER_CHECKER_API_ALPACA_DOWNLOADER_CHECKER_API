@@ -158,6 +158,54 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
 
+    def test_conflicting_action_leaves_only_affected_update_pending_and_other_histories_readable(self):
+        from test_alpaca_end_of_day_api import valid_bars
+        from test_alpaca_lineage_batching import Provider, event
+
+        from alpaca_end_of_day import DataLibrary
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        symbols = ("AAA", "BBB", "CCC")
+        old = valid_bars("2026-10-01", "2026-10-17")
+        for symbol in symbols:
+            download_pricing(self.store, symbol, "2026-10-17", client=FakeClient(old), refresh_all=True)
+            self.live[symbol] = [*old, *valid_bars("2026-10-19", "2026-10-20")]
+        initial = run_lineage(self.store, identity_client=IdentityClient({s: asset(s) for s in symbols}))
+        self.assertEqual(initial["failed"], 0, initial)
+        rebuild(self.store)
+        self.assertTrue(maintain(self.store)["complete"])
+        self.assertEqual(DataLibrary(store=self.store).online_count(), len(symbols))
+        provider = Provider(
+            symbols,
+            actions=[event("AAA", rate=1), event("AAA", rate=2)],
+        )
+        self.identity = provider.client
+        result = self.update("2026-10-20")
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["pending_work"], 1)
+        self.assertEqual({failure["symbol"] for failure in result["failures"]}, {"AAA"})
+        self.assertEqual(result["stages"]["maintenance"]["stages"]["append"]["failed"], 0)
+        work = universe_state.read_state(self.store)["work"]
+        data = DataLibrary(store=self.store)
+        for symbol in ("BBB", "CCC"):
+            self.assertEqual(work[symbol]["status"], "complete")
+            (match,) = data.resolve_ticker(symbol)
+            history = data.get_history(match.public_id)
+            self.assertEqual(len(history.bars), len(old) + 1)
+            self.assertEqual(
+                [day.session.isoformat() for day in history.bars[-3:]],
+                ["2026-10-15", "2026-10-16", "2026-10-19"],
+            )
+        self.assertEqual(work["AAA"]["status"], "retry")
+        # A fresh invocation may accept corrected provider evidence and finish the remaining group.
+        self.identity = Provider(symbols).client
+        retry = self.update("2026-10-20", retry_blocked=True)
+        self.assertTrue(retry["complete"], retry)
+        self.assertEqual(retry["pending_work"], 0)
+        data = DataLibrary(store=self.store)
+        (match,) = data.resolve_ticker("AAA")
+        self.assertEqual(data.get_history(match.public_id).bars[-1].session.isoformat(), "2026-10-19")
+
     def test_daily_update_recovers_catalogue_and_work_transactions_before_selection(self):
         from libs.alpaca_serving_catalogue.storage import path as catalogue_path
 

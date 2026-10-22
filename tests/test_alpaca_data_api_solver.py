@@ -280,6 +280,76 @@ class ApiSolverTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(errors, [0])
 
+    def test_omitted_batch_member_finishes_exact_acquisition_before_next_step(self):
+        result = build_plan(
+            {
+                "steps": [
+                    {"needs": [need(["A", "B", "C"], start="2026-10-14", end="2026-10-15")]},
+                    {"needs": [need(["X"], start="2026-10-14", end="2026-10-15")]},
+                ]
+            }
+        )
+        original = copy.deepcopy(result)
+        calls = []
+
+        def get_page(parameters):
+            symbols, token = parameters["symbols"], parameters.get("page_token")
+            calls.append((symbols, token))
+            if symbols == "A,B,C":
+                if token is None:
+                    return {"bars": {"A": [bar("2026-10-14")]}, "next_page_token": "batch"}
+                return {"bars": {"C": [bar("2026-10-14", "3")]}}
+            if symbols == "B" and token is None:
+                return {"bars": {}, "next_page_token": "exact"}
+            return {"bars": {symbols: [bar("2026-10-14", "2")]}}
+
+        rows = execute_bar_plan(result, get_page)
+        self.assertEqual(calls, [("A,B,C", None), ("A,B,C", "batch"), ("B", None), ("B", "exact"), ("X", None)])
+        self.assertEqual(rows[(0, 0, 0, "B", "all")].rows[0][1], "2")
+        self.assertEqual(rows[(0, 0, 0, "C", "all")].rows[0][1], "3")
+        self.assertEqual(result, original)
+
+    def test_exact_empty_and_explicit_empty_batch_members_remain_complete(self):
+        result = plan(need(["A", "B", "C"], start="2026-10-14", end="2026-10-15"))
+        calls = []
+
+        def get_page(parameters):
+            calls.append(parameters["symbols"])
+            if parameters["symbols"] == "A,B,C":
+                return {"bars": {"A": [bar("2026-10-14")], "C": []}}
+            return {"bars": {}}
+
+        rows = execute_bar_plan(result, get_page)
+        self.assertEqual(calls, ["A,B,C", "B"])
+        self.assertEqual(rows[(0, 0, 0, "B", "all")].rows, ())
+        self.assertEqual(rows[(0, 0, 0, "C", "all")].rows, ())
+
+    def test_failed_omitted_member_keeps_other_deliveries_and_blocks_next_step(self):
+        result = build_plan(
+            {
+                "steps": [
+                    {"needs": [need(["A", "B"])]},
+                    {"needs": [need(["X"])]},
+                ]
+            }
+        )
+        calls, errors = [], []
+
+        def get_page(parameters):
+            calls.append(parameters["symbols"])
+            if parameters["symbols"] == "A,B":
+                return {"bars": {"A": [bar("2026-10-10")]}}
+            raise DownloadError("exact acquisition failed")
+
+        rows = execute_bar_plan(
+            result,
+            get_page,
+            on_failure=lambda step, action, error: errors.append((step, action["request"]["params"]["symbols"])),
+        )
+        self.assertEqual(calls, ["A,B", "B"])
+        self.assertEqual(errors, [(0, "B")])
+        self.assertEqual({key[3] for key in rows}, {"A"})
+
     def test_uri_rejection_uses_solver_split_without_mutating_plan(self):
         result = plan(need(["A", "B"], start="2026-10-14", end="2026-10-15"))
         original = copy.deepcopy(result)
@@ -296,7 +366,7 @@ class ApiSolverTests(unittest.TestCase):
         self.assertEqual(metrics, {"page_requests": 3, "oversize_splits": 1})
 
     def test_completed_responses_are_released_with_their_consumer(self):
-        for mode in ("complete", "split", "partial_failure"):
+        for mode in ("complete", "split", "partial_failure", "omitted"):
             with self.subTest(mode=mode):
                 result = plan(
                     need(["A", "B"], start="2026-10-14", end="2026-10-15"),
@@ -309,6 +379,8 @@ class ApiSolverTests(unittest.TestCase):
                         raise urllib.error.HTTPError("test", 414, "too long", {}, None)
                     if mode == "partial_failure" and symbols == ["B"]:
                         raise DownloadError("unavailable")
+                    if mode == "omitted" and len(symbols) > 1:
+                        return {"bars": {"A": [bar("2026-10-14")]}}
                     return {"bars": {symbol: [bar("2026-10-14")] for symbol in symbols}}
 
                 enabled = gc.isenabled()

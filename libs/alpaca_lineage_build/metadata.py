@@ -66,7 +66,7 @@ class EvidenceClient:
         self.catalogue = None
         self.catalogue_assets = {}
         self.catalogue_attempted = False
-        self.action_error = None
+        self.action_conflicts = set()
         self.observation = observation
         self.work_policy = None
         self.restricted_identifiers = set()
@@ -223,17 +223,25 @@ class EvidenceClient:
             try:
                 completed = {}
                 self._acquire_action(action, completed)
-                for key, rows in completed.items():
-                    self._remember(key, rows)
             except (RuntimeError, OSError, ValueError) as error:
                 # Other independent date/symbol batches still get their own result.
                 error.request_identifiers = [key[0] for key in keys]
                 self.actions.update((key, error) for key in keys)
+                continue
+            for key, rows in completed.items():
+                try:
+                    self._remember(key, rows)
+                except (RuntimeError, OSError, ValueError) as error:
+                    error.request_identifiers = [key[0]]
+                    self.actions[key] = error
 
     def _acquire_action(self, action, completed):
         params = action["request"]["params"]
         symbols = params["symbols"].split(",")
-        rows = self._checked_actions(self._execute(action))
+        rows = self._execute(action)
+        # Route every version before rejecting a conflict: unrelated symbols in
+        # the same complete response still have usable evidence.
+        self._record_actions(rows)
         routed = defaultdict(list)
         ambiguous = False
         for row in rows:
@@ -277,17 +285,25 @@ class EvidenceClient:
                 return True
         return False
 
-    def _checked_actions(self, actions):
-        unique = {}
+    def _record_actions(self, actions):
         for action in actions:
             identity = action_identity_key(action)
             previous = self.by_id.get(identity)
             if previous is not None and previous != action:
-                self.action_error = LineageError(f"conflicting corporate-action identity: {identity}")
-                raise self.action_error
-            self.by_id[identity] = action
-            unique[identity] = action
-        return list(unique.values())
+                self.action_conflicts.add(identity)
+            else:
+                self.by_id[identity] = action
+
+    def _check_action_conflicts(self, actions):
+        for action in actions:
+            identity = action_identity_key(action)
+            if identity in self.action_conflicts:
+                raise LineageError(f"conflicting corporate-action identity: {identity}")
+
+    def _checked_actions(self, actions):
+        self._record_actions(actions)
+        self._check_action_conflicts(actions)
+        return list({action_identity_key(action): action for action in actions}.values())
 
     def get_corporate_actions(self, symbol, start, end):
         if self.work_policy is not None:
@@ -297,8 +313,6 @@ class EvidenceClient:
             from .work_contract import WorkDeferred
 
             raise WorkDeferred(f"{symbol}: metadata request is deferred")
-        if self.action_error is not None:
-            raise self.action_error
         key = (symbol, start, end)
         if not self._covered(key):
             if self.supports_plans:
@@ -309,7 +323,15 @@ class EvidenceClient:
                 except (RuntimeError, OSError, ValueError) as error:
                     error.request_identifiers = [symbol]
                     self.actions[key] = error
-        return self._value(self.actions[key])
+        actions = self._value(self.actions[key])
+        try:
+            # A later response may contradict an action in this cached interval.
+            # Check only the returned evidence, including any narrowed window.
+            self._check_action_conflicts(actions)
+        except LineageError as error:
+            error.request_identifiers = [symbol]
+            raise
+        return actions
 
 
 class _CompletedLookupChanged(RuntimeError):

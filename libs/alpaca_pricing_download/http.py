@@ -182,6 +182,20 @@ class BarsClient:
         return execute_bar_plan(plan, self._get, metrics=metrics, on_failure=on_failure)
 
 
+def _omitted_symbol_actions(action, omitted):
+    """Use solver splits to finish only undelivered members as exact requests."""
+    pending = [action]
+    while pending:
+        selected = pending.pop()
+        symbols = selected["request"]["params"]["symbols"].split(",")
+        if not omitted.intersection(symbols):
+            continue
+        if len(symbols) == 1:
+            yield selected
+        else:
+            pending.extend(reversed(split_action(selected)))
+
+
 def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
     """Execute the solver's ordered bar actions and route only requested slices."""
     if plan.get("schema_version") != PLAN_VERSION:
@@ -201,6 +215,7 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
         parameters = dict(action["request"]["params"])
         symbols = parameters["symbols"].split(",")
         bars = {symbol: [] for symbol in symbols}
+        received = set()
         tokens = set()
         pagination = action["pagination"]
         try:
@@ -219,6 +234,7 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                     if not isinstance(rows, list):
                         raise DownloadError("provider bars are not an array")
                     bars[symbol].extend(rows)
+                    received.add(symbol)
                 token = document.get(pagination["response_field"])
                 if token is None:
                     break
@@ -238,6 +254,7 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                     transform(rows, start, end),
                 )
                 for symbol, rows in bars.items()
+                if len(symbols) == 1 or symbol in received
             }
         except (DownloadError, OSError) as error:
             cause = error.__cause__ or error
@@ -256,9 +273,16 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
         for target in action["deliver"]:
             lower, upper = timestamp(target["start"]), timestamp(target["end_exclusive"])
             for symbol in target["symbols"]:
+                if symbol not in normalized:
+                    continue
                 output[(step_index, target["need"], target["range"], symbol, adjustment)] = normalized[
                     symbol
                 ].select(symbol, adjustment, lower, upper, parameters["asof"])
+        if len(symbols) > 1 and (omitted := set(symbols) - received):
+            # Exhausting a batch does not establish an omitted member's absence.
+            # Already delivered members remain complete; only omissions acquire
+            # an exact result, which may legitimately contain no bars.
+            return list(_omitted_symbol_actions(action, omitted))
 
     for step_index, step in enumerate(plan["steps"]):
         actions = deque(step["actions"])

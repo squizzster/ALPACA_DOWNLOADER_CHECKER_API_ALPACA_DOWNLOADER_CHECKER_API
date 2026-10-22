@@ -44,6 +44,8 @@ Replacement notices include removed sessions. [Download](../libs/alpaca_pricing_
 [HTTP/pagination](../libs/alpaca_pricing_download/http.py) and [completed responses](../libs/alpaca_pricing_download/responses.py)
 own endpoint/acquisition stages, row budgets, exact fallback, overlap checks and bounded retries.
 Completed normalized responses are sliced downstream without renormalization; fresh first-session probes remain independent.
+After full batch pagination, symbols omitted from every response page require exact acquisition before their
+handoffs complete. Returned members are reused; explicit empty arrays and successful exact empty responses remain valid.
 Completed request executors release response bodies with their consumer; request-size splits preserve ordered
 pagination without retaining earlier acquisition cohorts through recursive closures or handled tracebacks.
 
@@ -132,6 +134,9 @@ missing planning facts, one bounded cohort at a time; publication reselects gene
 Prefetch reads selected lineage receipt bodies for evidence queries;
 [EvidenceClient](../libs/alpaca_lineage_build/metadata.py#L56) reuses containing completed action intervals only within
 an invocation. Failed/incomplete responses establish no coverage; wider requests/new invocations acquire evidence.
+Conflicting action IDs block only evidence containing those IDs, including previously cached intervals.
+Unrelated symbols in a completely acquired and routed batch remain usable; transport or routing failure
+leaves the affected request incomplete. Conflicts remain blocking for that invocation without choosing a winner.
 Ordinary action continuation starts at the prior active month; older corrections require explicit refresh.
 An unchanged action's completed positive CUSIP-to-ID lookup is reusable when the fresh catalogue contains
 that exact asset ID with identical, unambiguous asset facts. This consumes the published mapping; it does

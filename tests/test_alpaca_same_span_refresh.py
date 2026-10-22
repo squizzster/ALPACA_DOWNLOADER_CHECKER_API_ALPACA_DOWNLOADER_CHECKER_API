@@ -19,7 +19,7 @@ from libs.alpaca_lineage_build import refresh
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download import check_summary as summary
 from libs.alpaca_pricing_download import storage
-from libs.alpaca_pricing_download.contract import DownloadError, timestamp
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS, DownloadError, timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_pricing_download.refresh import prepare_refresh, replace_prepared
@@ -122,6 +122,37 @@ class SameSpanRefreshTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(result["check"]["stats"]["matched"], 3)
         self.assertEqual(files_snapshot(self.store), before)
+
+    def test_omitted_batch_member_cannot_erase_a_nonempty_replacement(self):
+        unchanged = files_snapshot(self.root("CCC"))
+
+        def omitted(params):
+            response = self.page(params)
+            if (
+                "," in params["symbols"]
+                and params["start"][:10] <= "2026-10-03"
+                and params["end"][:19] == "2026-10-14T23:59:59"
+            ):
+                response["bars"].pop("BBB", None)
+            return response
+
+        with patch.object(self.client, "_get", side_effect=omitted):
+            result = self.run_refresh()
+        self.assertTrue(result["complete"], result)
+        self.assertTrue(all(item["has_data"] for item in result["pricing"]["results"]))
+        for rows in read_pricing_views(self.store, "BBB").values():
+            self.assertEqual([row[0][:10] for row in rows], ["2026-10-13"])
+            self.assertEqual(rows[0][5], "42")
+        exact_histories = [
+            call
+            for call in self.calls
+            if "," not in call["symbols"]
+            and call["start"][:10] <= "2026-10-03"
+            and call["end"][:19] == "2026-10-14T23:59:59"
+        ]
+        self.assertEqual({call["symbols"] for call in exact_histories}, {"BBB"})
+        self.assertEqual(len(exact_histories), len(ADJUSTMENTS))
+        self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
 
     def test_incomplete_live_check_publishes_nothing(self):
         self.live["BBB"] = []
