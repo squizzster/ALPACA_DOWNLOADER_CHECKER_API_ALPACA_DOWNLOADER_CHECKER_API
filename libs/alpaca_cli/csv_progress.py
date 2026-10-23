@@ -11,6 +11,8 @@ _PLAN = {
         "identities",
         "groups",
         "sources",
+        "workers",
+        "maximum_active_groups",
         "source_manifests",
         "lineage_receipts",
         "lineage_boundary_manifests",
@@ -62,6 +64,8 @@ def progress_callback(reporter):
             if stage not in {"csv_export", "csv_export_publish"}:
                 return False
             context = {name: value for name, value in values.items() if name in _COUNTS}
+            if stage == "csv_export" and "workers" in values:
+                context["workers"] = values["workers"]
             phase = "PUBLISH" if stage == "csv_export_publish" else "EXPORT"
             if phase == "EXPORT" and "estimated_remaining_seconds" in values:
                 context["estimated_remaining_seconds"] = int(values["estimated_remaining_seconds"])

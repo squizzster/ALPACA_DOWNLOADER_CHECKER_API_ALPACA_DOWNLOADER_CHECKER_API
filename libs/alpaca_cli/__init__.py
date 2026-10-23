@@ -15,7 +15,7 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 
-VERSION = 10
+VERSION = 11
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -116,7 +116,9 @@ def build_parser():
     _dates(p)
     p.add_argument("--output", type=Path, default=REPOSITORY / "exports" / "csv")
     p.add_argument("--public-id", action="append", help="online public identity; repeatable; default all")
-    p.add_argument("--wait", action="store_true")
+    p.add_argument(
+        "--workers", type=int, choices=(1, 2, 3, 4), default=2, help="concurrent complete groups; default 2"
+    )
     p.add_argument(
         "--heartbeat-seconds",
         type=bounded_integer(1, 86400),
@@ -265,8 +267,13 @@ def dispatch(args):
             reporter = getattr(args, "_lifecycle", None)
             if reporter is not None:
                 reporter.update("CATALOGUE")
-            data = DataLibrary(store=args.store, wait=args.wait)
-            options = {"public_ids": args.public_id, "start": args.start, "end": args.end}
+            data = DataLibrary(store=args.store)
+            options = {
+                "public_ids": args.public_id,
+                "start": args.start,
+                "end": args.end,
+                "workers": args.workers,
+            }
             if reporter is not None:
                 reporter.update("PLAN")
             if args.plan:

@@ -49,5 +49,12 @@
       "Report CSV operation lifecycles as bounded, versioned compact JSONL on STDERR with immediate INIT, sampled in-memory status, independent monotonic heartbeat intervals of 60/120/180/240/300 seconds then 300 seconds, and an optional fixed interval.",
       "Emit immediate structured errors and exactly one FINAL_EXIT on controlled termination, isolate reporting failures from operation outcomes, and retain JSON results on STDOUT."
     ]
+  },
+  {
+    "modifications": [
+      "Add CSV --workers with choices 1 through 4, defaulting to 2, and report configured concurrency in plans and progress while keeping one lifecycle per export.",
+      "Remove CSV --wait: busy source or destination locks fail immediately with the existing busy exit code.",
+      "Return each CSV run's self-contained final manifest inside its timestamp directory instead of maintaining a shared export-root selector."
+    ]
   }
 ]

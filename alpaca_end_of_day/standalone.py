@@ -462,6 +462,7 @@ class StandaloneReader:
         expected=None,
         include_unresolved=False,
         before_payloads=None,
+        wait=None,
     ):
         try:
             loader = self._cache.document if self._cache.maximum_bytes else None
@@ -494,7 +495,7 @@ class StandaloneReader:
             with reader_snapshot(
                 self.store,
                 select,
-                wait=self.wait,
+                wait=self.wait if wait is None else wait,
                 selected_loader=loader,
                 include_boundaries=False,
             ) as snap:
@@ -643,13 +644,22 @@ class StandaloneReader:
 
     @contextmanager
     def _open_group(
-        self, symbol, *, expected=None, include_unresolved=False, shared_cache=False, before_payloads=None
+        self,
+        symbol,
+        *,
+        expected=None,
+        include_unresolved=False,
+        shared_cache=False,
+        before_payloads=None,
+        wait=None,
     ):
         """Shared locked consumption for inspection, serving production and reads."""
         from ._standalone_group import GroupSnapshot
 
         symbol = _symbol(symbol)
         options = {"reuse_documents": True}
+        if wait is not None:
+            options["wait"] = wait
         if expected is not None:
             options["expected"] = expected
         if include_unresolved:

@@ -5,10 +5,12 @@ import fcntl
 import hashlib
 import json
 import os
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from queue import Empty, Full, Queue
+from threading import Event, Lock, Thread
 from time import monotonic
 
 from libs.alpaca_serving_catalogue import storage as catalogue_storage
@@ -67,7 +69,13 @@ def _range(start, end):
     }
 
 
-def _plan(data, selected, groups, start, end):
+def _workers(value):
+    if type(value) is not int or value not in (1, 2, 3, 4):
+        raise ValueError("workers must be between 1 and 4")
+    return value
+
+
+def _plan(data, selected, groups, start, end, workers):
     sources = {symbol for key in groups for symbol in data._groups[key]["references"]["pricing"]}
     lineage = {
         symbol
@@ -80,6 +88,8 @@ def _plan(data, selected, groups, start, end):
         "identities": len(selected),
         "groups": len(groups),
         "sources": len(sources),
+        "workers": workers,
+        "maximum_active_groups": min(workers, len(groups)),
         "requested_range": _range(start, end),
         "metadata_read_bounds": {
             "source_manifests": len(sources),
@@ -95,8 +105,9 @@ def _plan(data, selected, groups, start, end):
     }
 
 
-def plan_export(data, *, public_ids=None, start=None, end=None):
-    return _plan(data, *_selection(data, public_ids, start, end))
+def plan_export(data, *, public_ids=None, start=None, end=None, workers=2):
+    workers = _workers(workers)
+    return _plan(data, *_selection(data, public_ids, start, end), workers)
 
 
 def _columns(views):
@@ -150,13 +161,13 @@ def _write_json(path, document):
 
 
 @contextmanager
-def _publication_lock(output, wait):
+def _publication_lock(output):
     # One stable output lock, never a source inventory. Existence is not state.
     with (output / ".export.lock").open("a+b") as stream:
         try:
-            fcntl.flock(stream, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ReaderBusyError("CSV export destination is busy; retry or use --wait") from error
+            raise ReaderBusyError("CSV export destination is busy; retry later") from error
         try:
             yield
         finally:
@@ -200,8 +211,8 @@ def _write_identity(data, directory, security, views, start, end):
     }
     _write_json(identity_directory / digest_name, digest)
     return {
-        "csv": f"{directory.name}/{public_id}/{csv_name}",
-        "digest": f"{directory.name}/{public_id}/{digest_name}",
+        "csv": f"{public_id}/{csv_name}",
+        "digest": f"{public_id}/{digest_name}",
         "rows": len(raw),
         "start": raw[0]["session"],
         "end": raw[-1]["session"],
@@ -210,63 +221,172 @@ def _write_identity(data, directory, security, views, start, end):
     }
 
 
-def write_export(data, destination, *, public_ids=None, start=None, end=None, progress=None):
+def _export_group(data, directory, selected, groups, key, start, end, stopped):
+    """Keep one group's locks, decoded payloads and identity outputs together."""
+    if stopped.is_set():
+        return
+    expected = data._groups[key]
+    try:
+        with data._reader._open_group(
+            expected["locator"],
+            expected=expected["references"],
+            wait=False,
+            before_payloads=lambda: catalogue_storage.assert_group(
+                data.store, key, expected["decision_generation"]
+            ),
+        ) as group:
+            with closing(group._iter_export_histories(groups[key], start=start, end=end)) as histories:
+                while not stopped.is_set():
+                    try:
+                        public_id, views = next(histories)
+                    except StopIteration:
+                        break
+                    if stopped.is_set():
+                        return
+                    entry = _write_identity(data, directory, selected[public_id], views, start, end)
+                    del views
+                    yield "identity", public_id, entry
+    except ReaderBusyError as error:
+        raise ReaderBusyError("CSV export source is busy; retry later") from error
+    except (CatalogueError, StandaloneReaderError) as error:
+        raise CatalogChangedError(
+            "selected serving history is no longer compatible; finish maintenance and open a new DataLibrary"
+        ) from error
+    if not stopped.is_set():
+        yield "group", key, None
+
+
+def _group_events(data, directory, selected, groups, start, end, workers):
+    """Bound outstanding groups; only compact completion records cross threads."""
+    stopped = Event()
+    keys = iter(sorted(groups))
+    count = min(workers, len(groups))
+    if count < 2:
+        for key in keys:
+            yield from _export_group(data, directory, selected, groups, key, start, end, stopped)
+        return
+
+    jobs, completed = Queue(maxsize=count), Queue(maxsize=2 * count)
+    state_lock, failures = Lock(), []
+
+    def send(record):
+        while not stopped.is_set():
+            try:
+                completed.put(record, timeout=0.05)
+                return
+            except Full:
+                continue
+
+    def work():
+        try:
+            while not stopped.is_set():
+                try:
+                    key = jobs.get(timeout=0.05)
+                except Empty:
+                    continue
+                with closing(
+                    _export_group(data, directory, selected, groups, key, start, end, stopped)
+                ) as events:
+                    for record in events:
+                        send(record)
+                        if stopped.is_set():
+                            return
+        except BaseException as error:
+            # Latch the first failure before another group can be dispatched.
+            with state_lock:
+                if not failures:
+                    failures.append(error)
+                stopped.set()
+
+    def dispatch():
+        with state_lock:
+            if failures:
+                raise failures[0]
+            key = next(keys, None)
+            if key is None:
+                return False
+            jobs.put_nowait(key)
+            return True
+
+    threads = [Thread(target=work, name=f"alpaca-csv-{index + 1}") for index in range(count)]
+    try:
+        for thread in threads:
+            thread.start()
+        pending = sum(dispatch() for _ in range(count))
+        while pending:
+            with state_lock:
+                if failures:
+                    raise failures[0]
+            try:
+                record = completed.get(timeout=0.05)
+            except Empty:
+                continue
+            yield record
+            if record[0] == "group":
+                pending -= 1
+                pending += dispatch()
+    finally:
+        stopped.set()
+        # Drain while joining: a worker may still be delivering its last result.
+        # No output lock or final publication can outlive an active worker.
+        while any(thread.is_alive() for thread in threads):
+            try:
+                completed.get(timeout=0.05)
+            except Empty:
+                pass
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join()
+
+
+def write_export(data, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2):
+    workers = _workers(workers)
     selected, groups, start, end = _selection(data, public_ids, start, end)
-    plan = _plan(data, selected, groups, start, end)
+    plan = _plan(data, selected, groups, start, end, workers)
     output = Path(destination).absolute()
     if output.resolve().is_relative_to(data.store.resolve()):
         raise ValueError("CSV export destination must be outside the source store")
     if progress:
         progress("csv_export_plan", plan)
     output.mkdir(parents=True, exist_ok=True)
-    with _publication_lock(output, data._reader.wait):
+    with _publication_lock(output):
         started_at = datetime.now(timezone.utc)
         directory = output / started_at.strftime("%Y%m%dT%H%M%S.%fZ")
         directory.mkdir()
         identities = {}
         counts = {"identities": 0, "groups": 0, "rows": 0, "csv_bytes": 0, "physical_columns": 0}
         done, began = 0, monotonic()
-        for key in sorted(groups):
-            expected = data._groups[key]
-            try:
-                with data._reader._open_group(
-                    expected["locator"],
-                    expected=expected["references"],
-                    before_payloads=lambda: catalogue_storage.assert_group(
-                        data.store, key, expected["decision_generation"]
-                    ),
-                ) as group:
-                    for public_id, views in group._iter_export_histories(groups[key], start=start, end=end):
-                        entry = _write_identity(data, directory, selected[public_id], views, start, end)
-                        if entry is not None:
-                            identities[public_id] = entry
-                            counts["identities"] += 1
-                            counts["rows"] += entry["rows"]
-                            counts["csv_bytes"] += entry["csv_bytes"]
-                            counts["physical_columns"] += len(entry["columns"]) - 1
-                        done += 1
-                        if progress:
-                            elapsed = monotonic() - began
-                            progress(
-                                "csv_export",
-                                {
-                                    "done": done,
-                                    "total": len(selected),
-                                    **counts,
-                                    "elapsed_seconds": round(elapsed, 2),
-                                    "estimated_remaining_seconds": round(
-                                        elapsed * (len(selected) - done) / done, 2
-                                    ),
-                                },
-                            )
-                        del views
-            except ReaderBusyError:
-                raise
-            except (CatalogueError, StandaloneReaderError) as error:
-                raise CatalogChangedError(
-                    "selected serving history is no longer compatible; finish maintenance and open a new DataLibrary"
-                ) from error
-            counts["groups"] += 1
+        with closing(_group_events(data, directory, selected, groups, start, end, workers)) as events:
+            for kind, public_id, entry in events:
+                if kind == "group":
+                    counts["groups"] += 1
+                    continue
+                if entry is not None:
+                    identities[public_id] = entry
+                    counts["identities"] += 1
+                    counts["rows"] += entry["rows"]
+                    counts["csv_bytes"] += entry["csv_bytes"]
+                    counts["physical_columns"] += len(entry["columns"]) - 1
+                done += 1
+                if progress:
+                    elapsed = monotonic() - began
+                    progress(
+                        "csv_export",
+                        {
+                            "done": done,
+                            "total": len(selected),
+                            **counts,
+                            "workers": workers,
+                            "elapsed_seconds": round(elapsed, 2),
+                            "estimated_remaining_seconds": round(elapsed * (len(selected) - done) / done, 2),
+                        },
+                    )
+        identities = {
+            public_id: identities[public_id]
+            for key in sorted(groups)
+            for public_id in groups[key]
+            if public_id in identities
+        }
         counts["logical_columns"] = len(identities) * len(ADJUSTMENTS) * len(FIELDS)
         completed_at = datetime.now(timezone.utc)
         manifest = {
@@ -294,24 +414,26 @@ def write_export(data, destination, *, public_ids=None, start=None, end=None, pr
             "counts": counts,
             "identities": identities,
         }
-        # The manifest is the sole completion selector. Its previous version
-        # remains authoritative on any failure; incomplete run directories are
-        # unselected. No directory crawl, reread, fsync or payload audit follows.
-        temporary = output / f".final_manifest.{directory.name}.tmp"
+        # Each run's manifest is its sole completion selector. A failed run has
+        # no final manifest. No directory crawl, reread, fsync or payload audit
+        # follows publication.
+        temporary = directory / ".final_manifest.tmp"
+        final = directory / "final_manifest.json"
         if progress:
             # Consumer callbacks finish before the commit. A logging failure
             # cannot report an unsuccessful export after replacing its selector.
             progress("csv_export_publish", {"done": done, "total": len(selected), **counts})
         try:
             _write_json(temporary, manifest)
-            os.replace(temporary, output / "final_manifest.json")
+            os.replace(temporary, final)
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
         return {
             "output": str(directory),
-            "manifest": str(output / "final_manifest.json"),
+            "manifest": str(final),
             "catalogue_generation": data.catalog_generation(),
             "elapsed_seconds": round(monotonic() - began, 2),
+            "workers": workers,
             **counts,
         }

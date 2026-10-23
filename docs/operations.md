@@ -166,6 +166,8 @@ internal; there is no public append shortcut. [Lock/publication contract](techni
 ./alpaca-eod catalogue export --store data_pricing --output ./online.csv
 ./alpaca-eod export csv --store data_pricing --plan
 ./alpaca-eod export csv --store data_pricing
+./alpaca-eod export csv --store data_pricing --workers 2
+./alpaca-eod export csv --store data_pricing --workers 4
 ./alpaca-eod export bloodhound --output ./alpaca.parquet --symbol DELL
 ```
 
@@ -177,6 +179,10 @@ trial; `--output DIR` selects another export root. `--from`/`--through` are incl
 `--plan` reads the opened catalogue only and reports selected work without opening pricing payloads or
 creating output. See the [per-identity CSV contract](public-api.md#per-identity-csv-export) for file layout,
 column mappings and publication guarantees.
+
+`--workers` accepts 1 through 4 concurrent complete groups, defaulting to 2. CSV export has no `--wait` option;
+busy source or destination locks exit immediately with code 3. The library uses the same nonblocking
+CSV behavior. Planning reports the configured workers and maximum active groups without opening payloads.
 
 CSV execution and `--plan` emit compact, versioned JSONL on stderr; stdout remains the final JSON result.
 Reporting begins after argument parsing, before CLI contract checks and catalogue access. An `INIT` record
@@ -200,9 +206,9 @@ count selected public identities. Phase messages and typed field registrations l
 |---|---|
 | `INIT` | Reporting activation; no context. |
 | `CATALOGUE` | Open the published online catalogue; no context. |
-| `PLAN` | Select work; catalogue generation, identity/group/source counts and planned metadata/payload/output bounds. |
-| `EXPORT` | Write CSVs and digests; plan fields, completed counts, CSV bytes, column counts and estimated seconds remaining. |
-| `PUBLISH` | Publish the final manifest; completed identity/group/row counts, CSV bytes and column counts. |
+| `PLAN` | Select work; catalogue generation, identity/group/source counts, workers/maximum active groups and planned metadata/payload/output bounds. |
+| `EXPORT` | Write CSVs and digests; plan fields, configured workers, completed counts, CSV bytes, column counts and estimated seconds remaining. |
+| `PUBLISH` | Publish the final manifest inside the run directory; completed identity/group/row counts, CSV bytes and column counts. |
 | `FINAL_EXIT` | Immediate termination record with `status`, `exit_code` and `last_phase`. |
 
 On success, reporting stops and flushes one `FINAL_EXIT` with `status: success`, exit code 0. A caught

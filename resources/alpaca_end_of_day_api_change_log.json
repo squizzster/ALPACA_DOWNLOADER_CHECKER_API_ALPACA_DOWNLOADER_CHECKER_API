@@ -89,5 +89,12 @@
       "Add catalogue-only CSV export planning and per-public-ID CSV exports with stable logical pricing columns, per-identity column-alias digests, exact numeric values and a final manifest published atomically after all outputs complete.",
       "Consume each selected serving group once, share manifest-selected physical payloads across its identities until their last use, and derive output column aliases in memory without source hashing, filesystem discovery or repeated upstream audits."
     ]
+  },
+  {
+    "modifications": [
+      "Support one through four CSV export workers, defaulting to two, over intact selected groups, sharing one accepted catalogue with bounded dispatch and compact completion messages while preserving per-group source reuse and deterministic output ordering.",
+      "Make CSV destination and source locks nonblocking regardless of the reader wait setting; coordinate cancellation, progress and final publication after workers release their resources.",
+      "Publish each completed run's final manifest inside its timestamp directory with run-relative identity paths, so completed exports are self-contained and removable without a shared selector or directory discovery."
+    ]
   }
 ]

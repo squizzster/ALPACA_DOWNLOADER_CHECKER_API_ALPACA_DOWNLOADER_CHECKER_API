@@ -7,9 +7,12 @@ import io
 import json
 import os
 from collections import Counter
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from decimal import Decimal
 from pathlib import Path
+from queue import Queue
+from threading import Barrier, Event, Lock, get_ident
+from threading import enumerate as threads
 from unittest.mock import patch
 
 from test_alpaca_end_of_day_api import NativeCase, valid_bars
@@ -19,9 +22,11 @@ from test_alpaca_pricing_download import FakeClient
 from alpaca_end_of_day import (
     ADJUSTMENTS,
     CatalogChangedError,
+    DataLibrary,
     PublicIdUnavailableError,
     ReaderBusyError,
     StandaloneReader,
+    _csv_export,
 )
 from libs.alpaca_cli import main
 from libs.alpaca_lineage_build.pipeline import run_lineage
@@ -74,11 +79,15 @@ class CsvExportTests(NativeCase):
     def exported(self, data, **kwargs):
         destination = self.directory / "exports/csv"
         result = data.write_csv_export(destination, **kwargs)
-        manifest = json.loads((destination / "final_manifest.json").read_text())
+        manifest_path = Path(result["manifest"])
+        run_directory = Path(result["output"])
+        self.assertEqual(manifest_path, run_directory / "final_manifest.json")
+        self.assertFalse((destination / "final_manifest.json").exists())
+        manifest = json.loads(manifest_path.read_text())
         documents = {}
         for public_id, entry in manifest["identities"].items():
-            csv_path = destination / entry["csv"]
-            digest_path = destination / entry["digest"]
+            csv_path = run_directory / entry["csv"]
+            digest_path = run_directory / entry["digest"]
             encoded = csv_path.read_bytes()
             digest = json.loads(digest_path.read_text())
             reader = csv.DictReader(io.StringIO(encoded.decode()))
@@ -95,7 +104,7 @@ class CsvExportTests(NativeCase):
             self.assertEqual(csv_path.name, f"{public_id}_eod.csv")
             self.assertEqual(digest_path.name, f"{public_id}_digest.json")
             self.assertEqual(csv_path.parent.name, public_id)
-            self.assertEqual(csv_path.parent.parent.parent, destination)
+            self.assertEqual(csv_path.parent.parent, run_directory)
             self.assertEqual(digest_path.parent, csv_path.parent)
             self.assertTrue(all(value is not None and value != "" for row in rows for value in row.values()))
             documents[public_id] = (digest, rows)
@@ -300,8 +309,9 @@ class CsvExportTests(NativeCase):
                     segment["security_identity"]["security_id"] = "a" * 64
 
         self.publish_change(split_identity)
+        self.add_symbol("OTHER")
         data = self.bootstrap()
-        self.assertEqual(data.online_count(), 2)
+        self.assertEqual(data.online_count(), 3)
         reads = Counter()
         original_open = Path.open
         pricing = self.store / "end_of_day/pricing/TEST"
@@ -327,8 +337,8 @@ class CsvExportTests(NativeCase):
             ),
             patch.object(data._reader, "_snapshot", wraps=data._reader._snapshot) as selected,
         ):
-            _, manifest, documents = self.exported(data)
-        self.assertEqual(selected.call_count, 1)
+            _, manifest, documents = self.exported(data, workers=2)
+        self.assertEqual(selected.call_count, 2)
         self.assertEqual(
             reads,
             Counter(
@@ -341,8 +351,8 @@ class CsvExportTests(NativeCase):
                 }
             ),
         )
-        self.assertEqual(manifest["counts"]["groups"], 1)
-        self.assertEqual(sum(len(rows) for _, rows in documents.values()), 13)
+        self.assertEqual(manifest["counts"]["groups"], 2)
+        self.assertEqual(sum(len(rows) for _, rows in documents.values()), 13 + len(self.bars))
         self.assertEqual(
             {row["date"] for _, rows in documents.values() for row in rows},
             {bar["t"][:10] for bar in valid_bars(start="2026-09-25")},
@@ -351,30 +361,37 @@ class CsvExportTests(NativeCase):
     def test_final_manifest_selects_complete_outputs_and_failed_replacement_preserves_prior(self):
         data = self.bootstrap()
         destination = self.directory / "exports/csv"
-        final_path = destination / "final_manifest.json"
         replace = os.replace
-        selected_manifests = []
+        selected_manifests, selected_paths = [], []
 
         def inspect_commit(source, target):
-            if Path(target) == final_path:
+            if Path(target).name == "final_manifest.json":
                 manifest = json.loads(Path(source).read_text())
+                run_directory = Path(target).parent
                 for public_id, entry in manifest["identities"].items():
-                    csv_bytes = (destination / entry["csv"]).read_bytes()
-                    digest = json.loads((destination / entry["digest"]).read_text())
+                    csv_bytes = (run_directory / entry["csv"]).read_bytes()
+                    digest = json.loads((run_directory / entry["digest"]).read_text())
                     self.assertEqual(digest["public_id"], public_id)
                     self.assertEqual(hashlib.sha256(csv_bytes).hexdigest(), digest["csv"]["sha256"])
                 selected_manifests.append(manifest)
+                selected_paths.append(Path(target))
             return replace(source, target)
 
         with patch.object(os, "replace", side_effect=inspect_commit):
-            self.exported(data)
+            result, _, _ = self.exported(data)
         self.assertEqual(len(selected_manifests), 1)
+        final_path = Path(result["manifest"])
+        self.assertEqual(selected_paths, [final_path])
         original_manifest = final_path.read_bytes()
         original_entry = next(iter(selected_manifests[0]["identities"].values()))
-        original_csv = (destination / original_entry["csv"]).read_bytes()
+        original_csv_path = final_path.parent / original_entry["csv"]
+        original_csv = original_csv_path.read_bytes()
+        failed_path = None
 
         def fail_commit(source, target):
-            if Path(target) == final_path:
+            nonlocal failed_path
+            if Path(target).name == "final_manifest.json":
+                failed_path = Path(target)
                 raise OSError("publication interrupted")
             return replace(source, target)
 
@@ -384,13 +401,15 @@ class CsvExportTests(NativeCase):
         ):
             data.write_csv_export(destination)
         self.assertEqual(final_path.read_bytes(), original_manifest)
-        self.assertEqual((destination / original_entry["csv"]).read_bytes(), original_csv)
+        self.assertEqual(original_csv_path.read_bytes(), original_csv)
+        self.assertNotEqual(failed_path, final_path)
+        self.assertFalse(failed_path.exists())
 
     def test_locked_output_refuses_without_touching_previous_selector_or_sources(self):
         data = self.bootstrap()
-        self.exported(data)
+        result, _, _ = self.exported(data)
         destination = self.directory / "exports/csv"
-        final_path = destination / "final_manifest.json"
+        final_path = Path(result["manifest"])
         previous = final_path.read_bytes()
         with (destination / ".export.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -404,13 +423,14 @@ class CsvExportTests(NativeCase):
 
     def test_partial_csv_and_digest_writes_preserve_previous_completed_export(self):
         data = self.bootstrap()
-        _, manifest, _ = self.exported(data)
+        result, manifest, _ = self.exported(data)
         destination = self.directory / "exports/csv"
-        final_path = destination / "final_manifest.json"
+        final_path = Path(result["manifest"])
         previous = final_path.read_bytes()
         entry = next(iter(manifest["identities"].values()))
         completed = {
-            destination / entry[name]: (destination / entry[name]).read_bytes() for name in ("csv", "digest")
+            final_path.parent / entry[name]: (final_path.parent / entry[name]).read_bytes()
+            for name in ("csv", "digest")
         }
         original_open = Path.open
 
@@ -477,6 +497,8 @@ class CsvExportTests(NativeCase):
             "2026-10-02",
             "--through",
             "2026-10-05",
+            "--workers",
+            "2",
         ]
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
@@ -488,6 +510,8 @@ class CsvExportTests(NativeCase):
         plan = json.loads(stdout.getvalue())
         self.assertEqual(plan["identities"], 1)
         self.assertEqual(plan["groups"], 1)
+        self.assertEqual(plan["workers"], 2)
+        self.assertEqual(plan["maximum_active_groups"], 1)
         self.assertFalse(destination.exists())
         self.assertEqual(len(self.lifecycle_records(stderr, last_phase="PLAN")), 2)
 
@@ -497,19 +521,23 @@ class CsvExportTests(NativeCase):
         result = json.loads(stdout.getvalue())
         self.assertEqual(result["identities"], 1)
         self.assertEqual(result["rows"], 2)
+        self.assertEqual(result["workers"], 2)
         self.assertEqual(len(self.lifecycle_records(stderr, last_phase="PUBLISH")), 2)
-        manifest = json.loads((destination / "final_manifest.json").read_text())
+        manifest_path = Path(result["manifest"])
+        self.assertEqual(manifest_path, Path(result["output"]) / "final_manifest.json")
+        manifest = json.loads(manifest_path.read_text())
         self.assertEqual(set(manifest["identities"]), {public_id})
         entry = manifest["identities"][public_id]
-        with (destination / entry["csv"]).open(newline="") as stream:
+        with (manifest_path.parent / entry["csv"]).open(newline="") as stream:
             rows = list(csv.DictReader(stream))
         self.assertEqual([row["date"] for row in rows], ["2026-10-02", "2026-10-05"])
 
     def test_cli_source_failure_reports_latest_phase_and_preserves_completed_export(self):
         data = self.bootstrap()
-        self.exported(data)
+        result, _, _ = self.exported(data)
         destination = self.directory / "exports/csv"
-        previous = (destination / "final_manifest.json").read_bytes()
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
 
         def source_failure(*args, **kwargs):
             try:
@@ -536,9 +564,10 @@ class CsvExportTests(NativeCase):
         self.assertIn("selected payload is unreadable", json.dumps(error))
         self.assertIn("traceback", error)
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual((destination / "final_manifest.json").read_bytes(), previous)
+        self.assertEqual(final_path.read_bytes(), previous)
 
     def test_cli_keyboard_interrupt_finishes_aborted_without_error_or_publication(self):
+        self.add_symbol("OTHER")
         self.bootstrap()
         destination = self.directory / "interrupted-csv"
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -546,13 +575,18 @@ class CsvExportTests(NativeCase):
             redirect_stdout(stdout),
             redirect_stderr(stderr),
             patch.object(StandaloneReader, "_snapshot", side_effect=KeyboardInterrupt),
+            patch.object(os, "replace", wraps=os.replace) as replaced,
         ):
             self.assertEqual(
-                main(["export", "csv", "--store", str(self.store), "--output", str(destination)]), 130
+                main(
+                    ["export", "csv", "--store", str(self.store), "--output", str(destination), "--workers", "2"]
+                ),
+                130,
             )
         records = self.lifecycle_records(stderr, status="aborted", exit_code=130, last_phase="EXPORT")
         self.assertEqual(len(records), 2)
         self.assertEqual(stdout.getvalue(), "")
+        replaced.assert_not_called()
         self.assertFalse((destination / "final_manifest.json").exists())
 
     def test_cli_unexpected_catalogue_error_is_json_and_finishes_once(self):
@@ -572,9 +606,10 @@ class CsvExportTests(NativeCase):
 
     def test_cli_busy_output_reports_error_exit_three_without_replacing_selector(self):
         data = self.bootstrap()
-        self.exported(data)
+        result, _, _ = self.exported(data)
         destination = self.directory / "exports/csv"
-        previous = (destination / "final_manifest.json").read_bytes()
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
         stdout, stderr = io.StringIO(), io.StringIO()
         with (destination / ".export.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -586,7 +621,7 @@ class CsvExportTests(NativeCase):
         self.assertEqual(len(records), 3)
         self.assertEqual(records[1]["error_type"], "ReaderBusyError")
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual((destination / "final_manifest.json").read_bytes(), previous)
+        self.assertEqual(final_path.read_bytes(), previous)
 
     def test_cli_stderr_write_and_flush_failures_do_not_change_successful_export(self):
         self.bootstrap()
@@ -605,11 +640,12 @@ class CsvExportTests(NativeCase):
                 self.assertGreater(broken.call_count, 0)
                 result = json.loads(stdout.getvalue())
                 self.assertEqual(result["identities"], 1)
-                manifest = json.loads((destination / "final_manifest.json").read_text())
+                manifest_path = Path(result["manifest"])
+                manifest = json.loads(manifest_path.read_text())
                 self.assertEqual(manifest["counts"]["identities"], 1)
                 entry = next(iter(manifest["identities"].values()))
-                self.assertTrue((destination / entry["csv"]).is_file())
-                self.assertTrue((destination / entry["digest"]).is_file())
+                self.assertTrue((manifest_path.parent / entry["csv"]).is_file())
+                self.assertTrue((manifest_path.parent / entry["digest"]).is_file())
 
     def test_cli_invalid_heartbeat_override_is_rejected_before_lifecycle_starts(self):
         for interval in ("0", "-1", "86401", "abc"):
@@ -623,9 +659,10 @@ class CsvExportTests(NativeCase):
 
     def test_missing_required_payload_fails_without_recovery_or_replacing_previous_export(self):
         data = self.bootstrap()
-        self.exported(data)
+        result, _, _ = self.exported(data)
         destination = self.directory / "exports/csv"
-        previous = (destination / "final_manifest.json").read_bytes()
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
         payload = self.store / "end_of_day/pricing/TEST/2026/Oct/raw.csv.gz"
         payload.unlink()
         with (
@@ -633,17 +670,248 @@ class CsvExportTests(NativeCase):
             self.assertRaises(CatalogChangedError),
         ):
             data.write_csv_export(destination)
-        self.assertEqual((destination / "final_manifest.json").read_bytes(), previous)
+        self.assertEqual(final_path.read_bytes(), previous)
         self.assertFalse(payload.exists())
 
     def test_stale_group_cannot_replace_previous_export_and_source_destination_is_rejected(self):
         data = self.bootstrap()
-        self.exported(data)
+        result, _, _ = self.exported(data)
         destination = self.directory / "exports/csv"
-        previous = (destination / "final_manifest.json").read_bytes()
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
         self.publish_change(lambda receipt, _: receipt["evidence"].update(warnings=["changed"]))
         with self.assertRaises(CatalogChangedError):
             data.write_csv_export(destination)
-        self.assertEqual((destination / "final_manifest.json").read_bytes(), previous)
+        self.assertEqual(final_path.read_bytes(), previous)
         with self.assertRaises(ValueError):
             data.write_csv_export(self.store / "exports")
+
+    def test_two_workers_overlap_groups_and_preserve_bytes_order_and_callback_ownership(self):
+        self.check_concurrent_export(2)
+
+    def test_four_workers_overlap_groups_and_preserve_bytes_order_and_callback_ownership(self):
+        self.check_concurrent_export(4)
+
+    def test_three_workers_overlap_groups_and_preserve_bytes_order_and_callback_ownership(self):
+        self.check_concurrent_export(3)
+
+    def check_concurrent_export(self, workers):
+        self.add_symbol("OTHER")
+        self.add_symbol("THIRD")
+        for symbol in ("FOURTH", "FIFTH")[: workers - 2]:
+            self.add_symbol(symbol)
+        data = self.bootstrap()
+        serial_result, serial, documents = self.exported(data, workers=1)
+        serial_directory = Path(serial_result["manifest"]).parent
+        serial_bytes = {
+            public_id: {field: (serial_directory / entry[field]).read_bytes() for field in ("csv", "digest")}
+            for public_id, entry in serial["identities"].items()
+        }
+        first, second = list(serial["identities"])[:2]
+        together, second_finished = Barrier(workers), Event()
+        lock, active, opened, finished, callbacks = Lock(), set(), [], [], []
+        open_group, write_identity, replace = data._reader._open_group, _csv_export._write_identity, os.replace
+
+        @contextmanager
+        def observe_group(symbol, **kwargs):
+            with open_group(symbol, **kwargs) as group:
+                with lock:
+                    active.add(symbol)
+                    opened.append(symbol)
+                    ordinal = len(opened)
+                    self.assertLessEqual(len(active), workers)
+                try:
+                    if ordinal <= workers:
+                        together.wait(timeout=5)
+                    yield group
+                finally:
+                    with lock:
+                        active.remove(symbol)
+
+        def reverse_completion(data, directory, security, *args):
+            if security.public_id == first:
+                self.assertTrue(second_finished.wait(5))
+            result = write_identity(data, directory, security, *args)
+            finished.append(security.public_id)
+            if security.public_id == second:
+                second_finished.set()
+            return result
+
+        def publish(source, target):
+            self.assertFalse(active)
+            self.assertFalse(any(thread.name.startswith("alpaca-csv-") for thread in threads()))
+            return replace(source, target)
+
+        def progress(stage, values):
+            callbacks.append((get_ident(), stage, values.copy()))
+
+        with (
+            patch.object(data._reader, "_open_group", side_effect=observe_group),
+            patch.object(_csv_export, "_write_identity", side_effect=reverse_completion),
+            patch.object(os, "replace", side_effect=publish),
+            patch(
+                "alpaca_end_of_day.catalogue_storage.snapshot", side_effect=AssertionError("catalogue reread")
+            ),
+        ):
+            result, parallel, parallel_documents = self.exported(data, workers=workers, progress=progress)
+        self.assertEqual(result["workers"], workers)
+        self.assertEqual(len(opened), workers + 1)
+        self.assertLess(finished.index(second), finished.index(first))
+        self.assertEqual(list(parallel["identities"]), list(serial["identities"]))
+        self.assertEqual(parallel_documents, documents)
+        self.assertEqual(parallel["counts"], serial["counts"])
+        parallel_directory = Path(result["manifest"]).parent
+        for public_id, entry in parallel["identities"].items():
+            for field in ("csv", "digest"):
+                self.assertEqual(
+                    (parallel_directory / entry[field]).read_bytes(), serial_bytes[public_id][field]
+                )
+        for manifest in (serial, parallel):
+            for field in ("export_directory", "started_at", "completed_at"):
+                manifest.pop(field)
+        self.assertEqual(serial, parallel)
+        self.assertEqual({ident for ident, _, _ in callbacks}, {get_ident()})
+        self.assertEqual([v["done"] for _, s, v in callbacks if s == "csv_export"], list(range(1, workers + 2)))
+        self.assertEqual(callbacks[-1][1], "csv_export_publish")
+
+    def test_parallel_failures_stop_dispatch_release_workers_and_preserve_selector(self):
+        self.add_symbol("OTHER")
+        self.add_symbol("THIRD")
+        data = self.bootstrap()
+        result, manifest, _ = self.exported(data)
+        destination = self.directory / "exports/csv"
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
+        first = next(iter(manifest["identities"]))
+        original_group, original_write, original_json = (
+            _csv_export._export_group,
+            _csv_export._write_identity,
+            _csv_export._write_json,
+        )
+        for failure in ("csv", "digest", "source"):
+            with self.subTest(failure=failure):
+                together, opened, stop = Barrier(2), [], []
+
+                def group(*args):
+                    opened.append(args[4])
+                    stop.append(args[-1])
+                    together.wait(timeout=5)
+                    yield from original_group(*args)
+
+                def write(data, directory, security, *args):
+                    if security.public_id != first:
+                        self.assertTrue(stop[0].wait(5))
+                        return original_write(data, directory, security, *args)
+                    if failure == "csv":
+                        raise OSError("CSV write failed")
+                    if failure == "source":
+                        raise CatalogChangedError("selected source changed")
+                    return original_write(data, directory, security, *args)
+
+                def write_json(path, document):
+                    if failure == "digest" and path.name == f"{first}_digest.json":
+                        raise OSError("digest write failed")
+                    return original_json(path, document)
+
+                with (
+                    patch.object(_csv_export, "_export_group", side_effect=group),
+                    patch.object(_csv_export, "_write_identity", side_effect=write),
+                    patch.object(_csv_export, "_write_json", side_effect=write_json),
+                    self.assertRaises((OSError, CatalogChangedError)),
+                ):
+                    data.write_csv_export(destination, workers=2)
+                self.assertEqual(len(opened), 2)
+                self.assertEqual(final_path.read_bytes(), previous)
+                self.assertFalse(any(thread.name.startswith("alpaca-csv-") for thread in threads()))
+        self.exported(data, workers=2)
+
+    def test_full_result_queue_cancels_on_callback_error_or_keyboard_interrupt(self):
+        self.add_symbol("OTHER")
+        self.add_symbol("THIRD")
+        data = self.bootstrap()
+        result, _, _ = self.exported(data)
+        destination = self.directory / "exports/csv"
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
+        for error_type in (RuntimeError, KeyboardInterrupt):
+            with self.subTest(error_type=error_type):
+                full, together, opened, closed = Event(), Barrier(2), [], []
+
+                class ObservedQueue(Queue):
+                    def put(self, item, *args, **kwargs):
+                        if self.maxsize == 4 and self.full():
+                            full.set()
+                        return super().put(item, *args, **kwargs)
+
+                def group(data, directory, selected, groups, key, start, end, stopped):
+                    opened.append(key)
+                    try:
+                        together.wait(timeout=5)
+                        for _ in range(20):
+                            if stopped.is_set():
+                                return
+                            yield "identity", groups[key][0], None
+                    finally:
+                        closed.append(key)
+
+                def interrupt(stage, values):
+                    if stage == "csv_export":
+                        self.assertTrue(full.wait(5))
+                        raise error_type("interrupted consumer")
+
+                with (
+                    patch.object(_csv_export, "Queue", ObservedQueue),
+                    patch.object(_csv_export, "_export_group", side_effect=group),
+                    self.assertRaisesRegex(error_type, "interrupted consumer"),
+                ):
+                    data.write_csv_export(destination, workers=2, progress=interrupt)
+                self.assertEqual(len(opened), 2)
+                self.assertCountEqual(closed, opened)
+                self.assertFalse(any(thread.name.startswith("alpaca-csv-") for thread in threads()))
+                self.assertEqual(final_path.read_bytes(), previous)
+
+    def test_csv_busy_locks_fail_even_when_library_waits(self):
+        self.add_symbol("OTHER")
+        self.bootstrap()
+        data = DataLibrary(store=self.store, wait=True)
+        result, _, _ = self.exported(data)
+        destination = self.directory / "exports/csv"
+        final_path = Path(result["manifest"])
+        previous = final_path.read_bytes()
+        original_flock = fcntl.flock
+
+        def nonblocking(descriptor, operation):
+            if operation != fcntl.LOCK_UN:
+                self.assertTrue(operation & fcntl.LOCK_NB, "CSV attempted a blocking lock")
+            return original_flock(descriptor, operation)
+
+        for path in (destination / ".export.lock", self.store / "end_of_day/pricing/TEST/.download.lock"):
+            with self.subTest(path=path), path.open("rb") as lock:
+                original_flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch.object(fcntl, "flock", side_effect=nonblocking), self.assertRaises(ReaderBusyError):
+                    data.write_csv_export(destination, workers=2)
+                self.assertEqual(final_path.read_bytes(), previous)
+                self.assertTrue(data._reader.wait)
+        self.exported(data, workers=2)
+
+    def test_worker_arguments_validate_before_selection_and_csv_rejects_wait(self):
+        data = self.bootstrap()
+        destination = self.directory / "invalid-csv"
+        for workers in (True, False, 0, 5, 1.0, "2", None):
+            with (
+                self.subTest(workers=workers),
+                patch.object(
+                    _csv_export, "_selection", side_effect=AssertionError("invalid workers reached selection")
+                ),
+            ):
+                with self.assertRaises(ValueError):
+                    data.plan_csv_export(workers=workers)
+                with self.assertRaises(ValueError):
+                    data.write_csv_export(destination, workers=workers)
+        self.assertFalse(destination.exists())
+        for arguments in (("--wait",), ("--workers", "0"), ("--workers", "5")):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
+                main(["export", "csv", "--plan", *arguments])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertNotIn("alpaca.lifecycle", stderr.getvalue())

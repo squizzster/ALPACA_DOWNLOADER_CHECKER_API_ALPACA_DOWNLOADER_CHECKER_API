@@ -103,9 +103,9 @@ that every group remains latest at installation.
 
 ## Per-identity CSV export
 
-`DataLibrary.plan_csv_export(*, public_ids=None, start=None, end=None)` reports the selected work from
+`DataLibrary.plan_csv_export(*, public_ids=None, start=None, end=None, workers=2)` reports the selected work from
 the opened catalogue. `write_csv_export(destination, *, public_ids=None, start=None, end=None,
-progress=None)` writes the export and returns its report. Both select every online public ID by default;
+progress=None, workers=2)` writes the export and returns its report. Both select every online public ID by default;
 an explicit list selects only those online identities. Date bounds are inclusive. The destination must
 be outside the source store. [CLI usage](operations.md#read-and-export) defaults to `exports/csv/`.
 
@@ -114,10 +114,10 @@ Each run creates a UTC timestamp directory with microsecond precision:
 ```text
 exports/csv/
   <UTC timestamp>/
+    final_manifest.json
     <public_id>/
       <public_id>_eod.csv
       <public_id>_digest.json
-  final_manifest.json
 ```
 
 Each CSV has one `date` column and fully populated pricing columns for its distinct numeric series.
@@ -136,16 +136,31 @@ manifest with no identity files.
 
 Each identity digest defines its CSV columns, all 56 logical column mappings, row count, actual first/last
 session and checksum. The final manifest defines all eight possible views and selects the completed
-run with its identity file references. It is replaced atomically only after every CSV and digest has
-been written; a failed run leaves the previous final manifest selected. Consumers follow this manifest
-and the referenced digests directly.
+run with identity file references relative to its own timestamp directory. It is published atomically
+inside that directory only after every CSV and digest has been written. Consumers follow the manifest
+returned by `write_csv_export` and its referenced digests directly.
 The digest's `column_aliases` maps every logical price column directly to its actual CSV column;
-`views[adjustment].columns` provides the same map by field. Unfinished run directories remain unselected;
-export never discovers or resumes them by crawling the output directory. A stable destination lock
-serializes exporters. Earlier completed run directories remain available after the latest selector changes.
+`views[adjustment].columns` provides the same map by field. An unfinished run directory has no
+`final_manifest.json`; export never discovers or resumes runs by crawling the output directory. A stable
+destination lock serializes exporters. Completed runs are self-contained and may be retained or removed
+independently.
 
 Export trusts the opened serving catalogue and selected lineage/pricing manifests. It processes each
 selected identity group once, follows named payloads, and shares decoded payloads within that group.
 It does not discover directories, recalculate upstream digests or replay identity/eligibility decisions.
 Output checksums are calculated as CSV bytes are written. The export declares the opened catalogue
 snapshot and consumes compatible groups under their reader locks.
+
+`workers` accepts integers from 1 through 4, defaulting to 2. Parallel workers process complete groups from the same
+accepted catalogue. Each group's identities stay together with their decoded payload reuse; outstanding groups
+are bounded by the worker count and only bounded, compact completion messages cross threads. No payload prefetch or
+additional catalogue read occurs. The coordinator invokes progress callbacks serially on the calling thread
+and orders manifest entries by the original sorted group/identity selection, independently of completion order.
+It publishes only after every group succeeds and all workers release their resources. Progress counts completed
+CSV/digest pairs; selected identities with no rows advance the processed count without creating files.
+
+CSV source and destination locks always fail immediately with `ReaderBusyError` when busy, including when
+the library was opened with `wait=True`. Other library reads retain their configured wait behavior. On failure
+or interruption, dispatch stops and workers close their active work before the error reaches the caller.
+Cancellation takes effect between group/identity operations; an operating-system read or write already in
+progress must return. Previous completed exports remain selected and incomplete directories remain unselected.
