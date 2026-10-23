@@ -10,6 +10,7 @@ from tests import test_alpaca_predecessor_prefix as prefix_fixtures
 from tests.test_alpaca_end_of_day_security_correlation import (
     add_name_change_edge,
     asset,
+    certified_edges,
     correlation_source,
     occupancy,
 )
@@ -87,6 +88,7 @@ class TargetLabelAdoptionTests(unittest.TestCase):
             self.lineage,
             self.intervals,
             independent_history=proofs,
+            uuid_lineage_edges=certified_edges(self.lineage)[0],
         )
 
     def certificate(self, owner):
@@ -94,7 +96,7 @@ class TargetLabelAdoptionTests(unittest.TestCase):
         return IndependentHistoricalInterval(date(2024, 8, 14), date(2024, 8, 15), interval)
 
     def test_target_terminal_interval_survives_without_joining_surviving_component(self):
-        edges, issues = build_uuid_lineage_edges(self.lineage)
+        edges, issues = certified_edges(self.lineage)
         self.assertEqual(
             [("survivor", "continuing")],
             [(edge.predecessor_asset_id, edge.successor_asset_id) for edge in edges],

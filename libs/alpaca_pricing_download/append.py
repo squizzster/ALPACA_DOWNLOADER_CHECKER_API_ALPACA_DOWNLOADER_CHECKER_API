@@ -30,7 +30,11 @@ from .handoff import load_published_boundary
 from .responses import completed_bars
 from .storage import load_source, read_validator, recover, regular_path, ticker_lock
 
-MAX_SYMBOLS = 8000  # Verified live with all eight views and full pagination.
+# Bound provider work, not just URL length. A valid but oversized request can
+# exhaust gateway retries before publishing anything; fewer requests can take
+# much longer. Adjustment views have different costs: verify all eight before
+# increasing this limit, not just the all-adjusted view or a small response limit.
+MAX_SYMBOLS = 2000
 MAX_ROWS = 200000  # Bound acquired rows across eight views per publication cohort.
 
 

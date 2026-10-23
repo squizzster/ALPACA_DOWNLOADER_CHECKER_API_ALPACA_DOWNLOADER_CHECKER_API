@@ -44,8 +44,11 @@ Replacement notices include removed sessions. [Download](../libs/alpaca_pricing_
 [HTTP/pagination](../libs/alpaca_pricing_download/http.py) and [completed responses](../libs/alpaca_pricing_download/responses.py)
 own endpoint/acquisition stages, row budgets, exact fallback, overlap checks and bounded retries.
 Completed normalized responses are sliced downstream without renormalization; fresh first-session probes remain independent.
-After full batch pagination, symbols omitted from every response page require exact acquisition before their
-handoffs complete. Returned members are reused; explicit empty arrays and successful exact empty responses remain valid.
+After successful full batch pagination, [omitted symbols](https://docs.alpaca.markets/us/reference/stockbars)
+have no bars in the requested range; they complete
+as empty without individual rechecks. Transport, response-shape and pagination errors leave the action incomplete.
+A full replacement that empties a previously nonempty view needs a bounded fresh confirmation at the pricing
+producer. Ordinary empty appends and initial empty histories retain batched acquisition.
 Completed request executors release response bodies with their consumer; request-size splits preserve ordered
 pagination without retaining earlier acquisition cohorts through recursive closures or handled tracebacks.
 
@@ -70,6 +73,10 @@ Pricing owns baselines; lineage owns membership. Missing/incomplete/pending cove
 tokens guard comparisons without ticker enumeration. Authorities: [storage](../libs/alpaca_pricing_download/check_summary.py),
 [eligibility/rebuild](../libs/alpaca_lineage_build/check_summary.py).
 
+Daily recovery finishes only the summary's named pending inputs and their complete lineage groups before
+ordinary selection. If recovery leaves inputs pending, selection stays blocked. A pending summary is never
+empty membership and never authorizes retained-history checks for unaffected active sources.
+
 ## Universe observation and work state
 
 An observation retains duplicate labels. Unique symbol records may supply metadata; missing/duplicate
@@ -88,6 +95,8 @@ retain stable obligation IDs, accepted endpoints, evidence fingerprints, complet
 requirements and retry state. Persist dependency/correction requirements before requests. Lineage stamps only
 satisfied locked inputs: coverage alone cannot erase an unperformed refresh, correction or failed check.
 Completed replacements/extensions survive interrupted acknowledgement; a matching last row alone proves neither.
+The acquisition route is reselected from these requirements and the completed summary. A saved `acquire` flag
+cannot force a summarized maintained source away from live check → approved append after recovery.
 
 Every lineage entry point reconciles used lookup facts before acquisition. Identity changes require complete-group
 replacement, including evidence discovered for new dependencies. Pricing binds the evidence fingerprint and source
@@ -163,6 +172,16 @@ supported histories, without inventing an empty source. This exception cannot co
 or retained series. The [absence owner](../libs/alpaca_lineage_build/acquisition.py) records rejected request,
 evidence and obligation before acknowledgement; auxiliary-only reselection preserves its group.
 
+Name changes establish dated endpoints, not unlimited predecessor history. Conflicting effective/process
+dates or component-arrival evidence leave the disputed window unresolved. A different UUID joins only with
+independent continuity proof: an already accepted identity-preserving event or an exact, informative raw
+predecessor prefix through the boundary, with complete matching session grids in all eight views. The proof
+uses selected group inputs, never decisions derived from the disputed edge. Independent divergent concurrent
+sources retain their own histories. A shared UUID still needs bounded historical-label evidence: its own
+source and an informative exact matching suffix, an existing independent-history proof, or an accepted bounded
+round trip. Exact matching historical spans can establish row ownership without certifying a UUID join;
+unmatched spans remain unresolved. No source can extend that evidence into an earlier unobserved prefix.
+
 ## Publication and recovery
 
 Stable `.download.lock` inodes provide exclusive producer/shared reader `flock`; one lineage `.worker.lock`
@@ -209,6 +228,10 @@ identity history:
 Inactivity, nontradability or missing descriptive metadata alone does not disqualify. Coverage means approved
 stored history, not lifetime completeness or current freshness. Policy version/calendar digest select both
 positive and negative completed decisions.
+
+Names, exchanges and asset classes come only from own-symbol observations of the identity's observed UUIDs.
+Current CUSIP lookups do not supply historical descriptions. Observation timestamps remain observation times;
+historical effective dates require dated provenance. Missing descriptions are omitted.
 
 [History checkpoints](../libs/alpaca_serving_catalogue/reuse.py) record selected generations, ownership runs,
 source-coverage ordering, numeric outcomes, labels and gap evidence, never copied prices. Reuse is per identity

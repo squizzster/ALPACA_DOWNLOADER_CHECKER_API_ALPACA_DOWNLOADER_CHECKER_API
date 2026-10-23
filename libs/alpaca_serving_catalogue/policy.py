@@ -60,11 +60,18 @@ def _metadata(group, public_id):
             observed = lookup.get("observed_at_utc")
             if observed is None and lookup.get("source") == "asset_catalogue":
                 observed = evidence.get("catalogue_observed_at_utc")
-            fields = {
-                "name": asset.get("name"),
-                "exchange": asset.get("exchange"),
-                "asset_class": asset.get("class"),
-            }
+            # A retired CUSIP lookup can carry today's reused-ticker description.
+            # Only a positive own-label observation supplies descriptive metadata;
+            # its observation time is never promoted to a historical effective date.
+            fields = (
+                {
+                    "name": asset.get("name"),
+                    "exchange": asset.get("exchange"),
+                    "asset_class": asset.get("class"),
+                }
+                if lookup.get("lookup_kind") == "symbol" and lookup.get("lookup") == asset.get("symbol")
+                else {}
+            )
             if lookup.get("lookup_kind") == "cusip":
                 fields["cusip"] = lookup.get("lookup")
             for field, value in fields.items():

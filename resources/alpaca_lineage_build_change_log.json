@@ -164,5 +164,10 @@
     "modifications": [
       "Scope conflicting corporate-action identities to evidence that contains them, including previously cached responses; preserve unrelated completed intervals, independent symbols in the same batch and later requests. Keep incomplete transport and routing responses blocked, preserve compatible completed lineage decisions, and retain ordinary retry and publication boundaries."
     ]
+  },
+  {
+    "modifications": [
+      "Recover only named pending summary inputs and their complete lineage groups before daily selection; never treat an unavailable summary as empty membership. Recompute the acquisition route from accepted coverage and current summary eligibility while preserving required ranges, identity replacements, corrections and retry restrictions. Preserve compatible completed lineage decisions."
+    ]
   }
 ]

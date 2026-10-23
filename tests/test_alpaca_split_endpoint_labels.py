@@ -8,6 +8,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import correlat
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
 from tests.test_alpaca_end_of_day_security_correlation import (
     add_name_change_edge,
+    certified_row_inputs,
     correlation_source,
     same_symbol_split_lineage,
 )
@@ -109,6 +110,12 @@ class SplitEndpointLabelTests(unittest.TestCase):
             correlation_source("LATER", asof="2026-10-06"),
             lineage,
             intervals,
+            **certified_row_inputs(
+                [{"t": "2026-09-30T04:00:00Z"}, {"t": "2026-10-02T04:00:00Z"}],
+                correlation_source("LATER", asof="2026-10-06"),
+                lineage,
+                intervals,
+            ),
         )
         self.assertEqual([], result["uncorrelated"])
         self.assertEqual(["SPLT", "LATER"], [row["historical_symbol"] for row in result["correlated"]])

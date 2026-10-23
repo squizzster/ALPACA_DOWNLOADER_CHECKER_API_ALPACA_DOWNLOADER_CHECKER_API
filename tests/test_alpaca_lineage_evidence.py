@@ -257,7 +257,7 @@ class LineageEvidenceTests(unittest.TestCase):
         selection = {"name": TERMINAL_FALLBACK_RULE_NAME, "order": 8}
         path = rule_path({"correlation_rule": selection}, row_correlation_rule_order(), fresh=False)
         self.assertEqual(path["recorded_selection"], selection)
-        self.assertEqual(path["steps"][-1]["order"], 15)
+        self.assertEqual(path["steps"][-1]["order"], 16)
         self.assertEqual(path["steps"][-1]["outcome"], "selected")
         self.assertEqual(path["steps"][-2]["outcome"], "selected_before_terminal_promotion")
         self.assertTrue(all(step["outcome"] == "fell_through" for step in path["steps"][:-2]))

@@ -16,6 +16,7 @@ from .contract import LineageError
 from .metadata import EvidenceClient
 from .pipeline import run_lineage
 from .refresh import refresh_required_history
+from .registration import command_policy
 from .update import update_everything
 from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target, satisfying_entry
 
@@ -121,7 +122,48 @@ def run_update(
         if recovered["failed"]:
             result["failed"] = recovered["failed"]
             return result
-        accepted = universe_plan.boundaries(store, registry, allow_pending=True, context=context)
+        pending = pending_symbols(store)
+        if pending:
+            # Recovery selects the summary's named inputs and their complete groups.
+            # Pass an explicit selection: the default lineage command also selects
+            # every durable obligation, including ordinary next-session appends.
+            # Never plan a universe against a missing/temporarily pending summary.
+            recovery_policy = command_policy(store, end, context=context, retry_blocked=retry_blocked)
+            callback = (lambda stage, values: progress("recovery_" + stage, values)) if progress else None
+            recoverable = [symbol for symbol in pending if recovery_policy.allowed({symbol})]
+            value = (
+                run_lineage(
+                    store,
+                    recoverable,
+                    identity_client=identity_client,
+                    pricing_client=pricing_client,
+                    end_date=end,
+                    work_policy=recovery_policy,
+                    register_discoveries=register,
+                    context=context,
+                    progress=callback,
+                    on_pricing=callback,
+                )
+                if recoverable
+                else {"failed": 0, "results": []}
+            )
+            recovery_policy.acknowledge()
+            result["stages"]["recovery_lineage"] = value
+            remaining = pending_symbols(store)
+            if remaining:
+                return {
+                    **result,
+                    "failed": value["failed"],
+                    "pending_work": universe_state.pending_count(universe_state.read_state(store)),
+                    "blockers": ["pending lineage must finish before selecting daily update work"],
+                    "pending_lineage_symbols": remaining,
+                    "deferred": [
+                        {"symbol": symbol, "reason": "affected_group_restricted"}
+                        for symbol in remaining
+                        if not recovery_policy.allowed({symbol})
+                    ],
+                }
+        accepted = universe_plan.boundaries(store, registry, context=context)
         metadata_before = identity_client.request_count
         if progress:
             progress("catalogue", {"state": "started"})
@@ -218,7 +260,7 @@ def run_update(
         result["stages"]["acquisition"] = pricing
         policy.record_results(pricing, stage="acquisition")
         failed_symbols = {s for s in work if not policy.allowed({s})}
-        summarized = {entry["symbol"] for entry in (accepted["summary"] or {"entries": []})["entries"]}
+        summarized = {entry["symbol"] for entry in accepted["summary"]["entries"]}
         # Ordinary summary advancement owns its check -> append -> lineage
         # handoff below. Do not republish its old span before appending it.
         selected = {

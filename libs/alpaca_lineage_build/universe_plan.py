@@ -30,7 +30,7 @@ from .work_contract import (
 )
 
 
-def boundaries(store, registry, *, allow_pending=False, context=None):
+def boundaries(store, registry, *, context=None):
     from libs.alpaca_serving_catalogue.producer import status as serving_status
     from libs.alpaca_serving_catalogue.storage import controls as serving_controls
 
@@ -42,19 +42,17 @@ def boundaries(store, registry, *, allow_pending=False, context=None):
             raise LineageError("pending lineage publication; recover it before planning")
         index = storage.read_index(root) if context is None else context.select_index(root)
         require_complete(index)
-        summary_pending = check_summary.pending_symbols(store) if allow_pending else []
-        summary = (
-            None
-            if summary_pending
-            else (check_summary.read_snapshot(store) if context is None else context.select_summary())
-        )
+        # An unavailable summary is not an empty universe. Its owner must finish
+        # the named pending inputs before ordinary selection can use this boundary.
+        # Substituting None would send every active source through historical
+        # endpoint checks, current-month acquisition and producer checks again.
+        summary = check_summary.read_snapshot(store) if context is None else context.select_summary()
     checks = read_checks(store, readonly=True)
     if not checks["complete"]:
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
     return {
         "index": index,
         "summary": summary,
-        "summary_pending": summary_pending,
         "checks": checks,
         "registry": set(load_labels(registry)),
         "state": universe_state.read_state(store),
@@ -108,6 +106,8 @@ def changed_evidence(index, observation, evidence_client, *, excluded=(), work=N
 
 
 def select_work(accepted, observation, evidence_client, end_date, *, retry_blocked=False):
+    if accepted.get("summary") is None:
+        raise LineageError("complete pricing check summary required before selecting update work")
     index = accepted["index"]
     entries, state = index["symbols"], accepted["state"]
     catalogue = by_symbol(observation)
@@ -139,7 +139,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     def add(symbol, why):
         reasons.setdefault(symbol, set()).add(why)
 
-    for symbol in set(accepted["checks"]["checks"]) | set(accepted.get("summary_pending", [])):
+    for symbol in accepted["checks"]["checks"]:
         add(symbol, "pending_lineage")
     for symbol, entry in entries.items():
         if not reusable_versions(entry.get("versions")):
@@ -164,7 +164,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     maintained = (
         discovered | (stored_active - (catalogue.keys() - current_active)) | (current_active & entries.keys())
     )
-    summarized = {e["symbol"] for e in (accepted["summary"] or {"entries": []})["entries"]}
+    summarized = {e["symbol"] for e in accepted["summary"]["entries"]}
     for symbol in maintained:
         entry = entries.get(symbol)
         if entry is None:
@@ -252,6 +252,10 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             deferred.append({"symbol": symbol, "reason": "required_replacement_exceeds_requested_cutoff"})
         if extend_history and covered > end_date:
             deferred.append({"symbol": symbol, "reason": "required_history_extension_exceeds_requested_cutoff"})
+        # Preserve the required coverage, mapping and correction, not yesterday's
+        # route to them. A summarized maintained source reaches its accepted target
+        # through live check -> approved append. Carrying prior.acquire forward
+        # would make a temporary recovery detour survive every later restart.
         item = {
             "reasons": sorted(why | (set(prior.get("reasons", [])) if unfinished else set())),
             "end_exclusive": end_date,
@@ -273,8 +277,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
                 covered is not None
                 and covered < required_end
                 and (symbol not in summarized or symbol not in maintained)
-            )
-            or (unfinished and prior.get("acquire", False)),
+            ),
             "invalidate_pricing": invalidate,
             "refresh_metadata": symbol in reconciled
             or symbol in failures
@@ -304,7 +307,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
 
 
 def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
-    summary = accepted["summary"] or {"entries": []}
+    summary = accepted["summary"]
     deferred = {item["symbol"] for item in selection["deferred"]} | set(selection.get("selection_failures", {}))
     eligible = [
         entry for entry in summary["entries"] if entry["asof"] <= end_date and entry["symbol"] not in deferred
@@ -376,7 +379,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         "discovery_exchanges": DISCOVERY_EXCHANGES,
         "catalogue_observed_at_utc": observation["catalogue_observed_at_utc"],
         "catalogue_records": len(observation["records"]),
-        "summary_symbols": len(summary["entries"]) if accepted["summary"] is not None else None,
+        "summary_symbols": len(summary["entries"]),
         "already_beyond_target": [e["symbol"] for e in summary["entries"] if e["asof"] > end_date],
         **selection,
         "expected_io": {
@@ -424,7 +427,5 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "serving_history_reads": "published append scopes reuse completed history checks; suffix payloads supply all eight views; replacement or changed historical selection reevaluates affected histories",
             "serving_publications": "one transaction per affected complete component, including previous contributions; zero extra provider requests or pricing writes",
         },
-        "blockers": ["pending lineage must finish before live history selection"]
-        if accepted.get("summary_pending")
-        else [],
+        "blockers": [],
     }

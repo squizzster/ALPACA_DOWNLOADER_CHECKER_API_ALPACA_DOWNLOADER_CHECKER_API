@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from sqlite_crash_fixture import leave_hot_journal
 from test_alpaca_end_of_day_api import NativeCase, valid_bars
-from test_alpaca_lineage_build import IdentityClient, asset
+from test_alpaca_lineage_build import IdentityClient, asset, informative_bars
 from test_alpaca_pricing_download import FakeClient, snapshot
 
 from alpaca_end_of_day import CatalogChangedError, DataLibrary, DataLibraryError, StandaloneReader
@@ -440,7 +440,7 @@ class ServingCatalogueTests(NativeCase):
         self.assertEqual(views["all"].bars[0].volume, Decimal(0))
 
     def test_short_rename_gap_requires_complete_unconflicted_evidence(self):
-        self.add_symbol("OLD", valid_bars("2023-12-01", "2023-12-13"))
+        self.add_symbol("OLD", informative_bars("2023-12-01", "2023-12-13"))
         self.add_symbol("NEW", valid_bars("2023-12-18", "2023-12-22"))
         current = asset("NEW")
         action = {
@@ -652,8 +652,8 @@ class ServingCatalogueTests(NativeCase):
 
     def test_rename_group_merges_and_splits_replace_complete_previous_contributions(self):
         # Two independent groups become one published identity and later split.
-        self.add_symbol("OLD", valid_bars("2023-12-01", "2023-12-13"))
-        self.add_symbol("NEW", valid_bars("2023-12-13", "2023-12-22"))
+        self.add_symbol("OLD", informative_bars("2023-12-01", "2023-12-13"))
+        self.add_symbol("NEW", informative_bars("2023-12-01", "2023-12-22"))
         old_ids = {s.public_id for s in self.bootstrap().list_securities() if set(s.tickers) & {"OLD", "NEW"}}
         old, new = asset("OLD"), asset("NEW")
         action = {

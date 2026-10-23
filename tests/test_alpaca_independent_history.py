@@ -50,6 +50,7 @@ class IndependentHistoryTests(unittest.TestCase):
             self.fixture.lineage,
             [*self.fixture.intervals, phantom],
             independent_history=proofs,
+            uuid_lineage_edges=self.fixture.edges,
         )
 
     def test_independent_bounded_interval_resolves_only_competing_historical_span(self):
@@ -145,10 +146,11 @@ class IndependentHistoryTests(unittest.TestCase):
             self.fixture.lineage,
             intervals,
             independent_history=proofs,
+            uuid_lineage_edges=self.fixture.edges,
         )
         first = result["correlated"][0]
         self.assertEqual(2, first["row_count"])
-        self.assertEqual(9, first["correlation_rule"]["order"])
+        self.assertEqual(10, first["correlation_rule"]["order"])
         self.assertEqual("old1", first["canonical_security"]["alpaca_asset_id"])
         self.assertIn(INDEPENDENT_HISTORY_WARNING, first["warnings"])
         self.assertEqual("new1", result["correlated"][-1]["canonical_security"]["alpaca_asset_id"])

@@ -18,6 +18,7 @@ from .evidence import (
     identity_candidates_for_symbol,
 )
 from .identity_partition import OneSessionDistinctUuidTransition
+from .name_change import NameChangeAssessment, assess_name_change_history, name_change_dates
 from .occupancy_anchor import dated_occupancy_anchors
 from .predecessor_prefix import (
     INDEPENDENT_HISTORY_WARNING,
@@ -50,6 +51,7 @@ from .uuid_lineage import (
     IDENTITY_PRESERVING_SPLIT_EDGE_TYPES,
     UuidLineageEdge,
     build_uuid_lineage_edges,
+    certify_name_change_edges,
     predecessor_uuid_branch,
 )
 
@@ -133,6 +135,8 @@ class _RowRuleContext:
     retired_source_selection: bool = False
     retired_lower_bound: date | None = None
     retired_continuation: RetiredContinuation | None = None
+    bounded_aliases: frozenset[tuple] = frozenset()
+    name_change_date_conflicts: tuple[tuple[date, date], ...] = ()
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -206,6 +210,19 @@ class CorrelationCache:
         self._downloads = {}
         self._decisions = {}
         self._lineage = {}
+        self._name_change_sources = {}
+        self._name_changes = {}
+
+    def register_name_change_source(self, symbol, downloads, *, complete):
+        if not complete:
+            return
+        self._name_change_sources[symbol] = tuple(
+            (download, download.manifest, self.session_dates(download.rows)) for download in downloads
+        )
+
+    def name_change_assessment(self, lineage):
+        self.lineage_analysis(lineage)
+        return self._name_changes[id(lineage)]
 
     def lineage_analysis(self, lineage):
         """Build immutable evidence structure once for the complete rule group."""
@@ -213,7 +230,30 @@ class CorrelationCache:
         cached = self._lineage.get(key)
         if cached is None:
             intervals, interval_issues = build_ticker_ownership_intervals(lineage)
-            edges, edge_issues = build_uuid_lineage_edges(lineage)
+            candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
+            assessment = assess_name_change_history(lineage, intervals, candidates, self._name_change_sources)
+            self._name_changes[key] = assessment
+            edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)
+            edge_issues.extend(continuity_issues)
+            independent = {
+                edge.action_id: edge
+                for edge in candidates
+                if edge.action_id in assessment.independent_successors
+            }
+            intervals = [
+                replace(
+                    interval,
+                    start_date_inclusive=self._name_change_sources[interval.historical_symbol][0][2][0],
+                )
+                if any(
+                    interval.identity_key()
+                    == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+                    and interval.start_date_inclusive == edge.effective_date
+                    for edge in independent.values()
+                )
+                else interval
+                for interval in intervals
+            ]
             cached = (lineage, intervals, tuple(interval_issues), edges, tuple(edge_issues))
             self._lineage[key] = cached
         _, intervals, interval_issues, edges, edge_issues = cached
@@ -313,6 +353,15 @@ def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | N
     )
 
 
+def _apply_name_change_boundary_conflict_rule(context: _RowRuleContext) -> _RowDecision | None:
+    if any(first <= context.session_date < last for first, last in context.name_change_date_conflicts):
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("conflicting_name_change_boundary_dates",),
+        )
+    return None
+
+
 def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision | None:
     if context.selected_asof_interval is not None:
         if (
@@ -370,6 +419,19 @@ def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision
                 independent = True
         selected_interval = _unique_interval_or_none(selected_matches)
         if selected_interval is not None:
+            if (
+                selected_interval.historical_symbol != context.requested_symbol
+                and selected_interval.interval_key() not in context.bounded_aliases
+                and not any(
+                    item.historical_symbol == context.requested_symbol
+                    and item.asset_id in selected_asset_ids
+                    and item.end_date_exclusive is not None
+                    and item.end_date_exclusive <= context.session_date
+                    for item in context.intervals
+                )
+                and selected_interval not in _certified_predecessor_intervals(context)
+            ):
+                return None
             contested_adoption = selected_interval.historical_symbol != context.requested_symbol and any(
                 acquirer == context.selected_asof_interval.asset_id
                 and any(
@@ -548,6 +610,14 @@ def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecis
 
 
 def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision | None:
+    own_intervals = [item for item in context.intervals if item.historical_symbol == context.requested_symbol]
+    if any(
+        rule.name == "name_change_ticker_transition" for item in own_intervals for rule in item.applied_rules
+    ) and not any(item.contains(context.session_date) for item in own_intervals):
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("outside_supported_name_change_history",),
+        )
     candidate_objects = identity_candidates_for_symbol(
         context.lineage,
         context.requested_symbol,
@@ -880,6 +950,10 @@ ROW_CORRELATION_RULES = (
         apply=_apply_exchange_test_symbol_exclusion_rule,
     ),
     RowCorrelationRule(
+        name="name_change_boundary_conflict",
+        apply=_apply_name_change_boundary_conflict_rule,
+    ),
+    RowCorrelationRule(
         name=COMPLETE_CURRENT_SUFFIX_RULE_NAME,
         apply=_apply_complete_current_suffix_rule,
     ),
@@ -1048,8 +1122,17 @@ def correlate_download_rows(
     cache: CorrelationCache | None = None,
     uuid_lineage_edges: list[UuidLineageEdge] | None = None,
     adopted_target_pairs: frozenset[tuple[str, str]] | None = None,
+    name_change_assessment: NameChangeAssessment = NameChangeAssessment(),
 ) -> dict[str, list[dict[str, Any]]]:
     requested_symbol = source["requested_symbol"]
+    independent_history = (
+        *independent_history,
+        *(
+            IndependentHistoricalInterval(item.first, item.last, item.interval)
+            for item in name_change_assessment.histories
+            if item.symbol == requested_symbol
+        ),
+    )
     selected_interval = _selected_asof_interval(requested_symbol, source["asof"], intervals)
     if uuid_lineage_edges is None or adopted_target_pairs is None:
         calculated_edges, uuid_lineage_issues = build_uuid_lineage_edges(lineage)
@@ -1091,6 +1174,29 @@ def correlate_download_rows(
         selected_identity_chain_asset_ids,
     )
     parsed_rows = cache.parsed_rows(rows) if cache is not None else _parse_download_rows(rows)
+    bounded_aliases = frozenset(
+        interval.interval_key()
+        for interval in intervals
+        if interval.historical_symbol != requested_symbol
+        and interval.start_date_inclusive is not None
+        and interval.end_date_exclusive is not None
+        and any(
+            edge.edge_type == "name_change"
+            and edge.predecessor_symbol == requested_symbol
+            and edge.successor_symbol == interval.historical_symbol
+            and edge.successor_asset_id == interval.asset_id
+            and edge.effective_date == interval.start_date_inclusive
+            for edge in uuid_lineage_edges
+        )
+        and any(
+            edge.edge_type == "name_change"
+            and edge.successor_symbol == requested_symbol
+            and edge.predecessor_symbol == interval.historical_symbol
+            and edge.predecessor_asset_id == edge.successor_asset_id == interval.asset_id
+            and edge.effective_date == interval.end_date_exclusive
+            for edge in uuid_lineage_edges
+        )
+    )
 
     ticker_reuse_gap = assess_ticker_reuse_gap(
         tuple(session_date for _, _, session_date in parsed_rows),
@@ -1132,6 +1238,15 @@ def correlate_download_rows(
         retired_source_selection=retired_selection,
         retired_lower_bound=retired_lower_bound,
         retired_continuation=retired_continuation,
+        bounded_aliases=bounded_aliases,
+        name_change_date_conflicts=tuple(
+            (dates[0], dates[-1]) if dates else (date.min, date.max)
+            for action in lineage.get("corporate_actions", [])
+            if action.get("action_type") == "name_change"
+            and requested_symbol in (action.get("old_symbol"), action.get("new_symbol"))
+            for dates, issue in (name_change_dates(action, lineage.get("corporate_actions", [])),)
+            if issue
+        ),
     )
     decisions = cache.decisions_for(context) if cache is not None else {}
     correlated_rows = []
@@ -1216,7 +1331,18 @@ def correlate_download_rows(
                     "correlation_method": decision.rule_name,
                     "ticker_ownership_interval": (
                         {
-                            **decision.interval.as_report_object(),
+                            **replace(
+                                decision.interval,
+                                start_date_inclusive=(
+                                    first_row.session_date
+                                    if decision.interval.start_date_inclusive is None
+                                    and any(
+                                        rule.name == "name_change_ticker_transition"
+                                        for rule in decision.interval.applied_rules
+                                    )
+                                    else decision.interval.start_date_inclusive
+                                ),
+                            ).as_report_object(),
                             "cusip": decision.interval.cusip,
                             "asset_id": decision.interval.asset_id,
                         }

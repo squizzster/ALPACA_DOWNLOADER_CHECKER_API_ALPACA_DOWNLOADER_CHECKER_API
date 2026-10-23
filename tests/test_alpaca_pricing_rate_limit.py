@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email.utils import formatdate
 from urllib.error import HTTPError
 
-from libs.alpaca_pricing_download.contract import DownloadError, timestamp
+from libs.alpaca_pricing_download.contract import DownloadError, failure_outcome, timestamp
 from libs.alpaca_pricing_download.http import BarsClient, RequestLimiter, retry_after_seconds
 
 
@@ -164,6 +164,24 @@ class PricingRateLimitTests(unittest.TestCase):
             client._get({"symbols": "FIRST"})
         client._get({"symbols": "SECOND"})
         self.assertEqual(starts, [0, 10, 20, 30, 40, 50, 60])
+
+    def test_exhausted_batch_errors_stay_compact_and_keep_http_status(self):
+        for count in (1, 2000, 8000):
+            with self.subTest(symbols=count):
+                clock = FakeClock()
+
+                def opener(*_args, **_kwargs):
+                    raise HTTPError("https://example.invalid", 504, "timeout", {"Retry-After": "0"}, None)
+
+                client = clock.client(opener=opener)
+                with self.assertRaises(DownloadError) as raised:
+                    client._get({"symbols": ",".join(f"S{i}" for i in range(count)), "adjustment": "raw"})
+                outcome = failure_outcome(raised.exception)
+                self.assertEqual(outcome["http_status"], 504)
+                self.assertEqual(outcome["outcome"], "request_failed")
+                self.assertIn("S0/raw" if count == 1 else f"{count} symbols/raw", outcome["error"])
+                self.assertLess(len(outcome["error"]), 200)
+                self.assertEqual(client.request_count, 6)
 
     def test_zero_retry_after_cannot_bypass_shared_minute_budget(self):
         clock = FakeClock()

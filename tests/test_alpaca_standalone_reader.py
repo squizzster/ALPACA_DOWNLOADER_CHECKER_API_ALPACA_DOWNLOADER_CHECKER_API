@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cli_support import reader_main as main
-from test_alpaca_lineage_build import IdentityClient, asset, calendar_bars
+from test_alpaca_lineage_build import IdentityClient, asset, calendar_bars, informative_bars
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 from test_alpaca_security_lineage import FakeIdentityClient
 
@@ -132,12 +132,16 @@ class StandaloneReaderTests(unittest.TestCase):
 
     def renamed_pair(self, *, differing=False):
         old_rows = calendar_bars("2023-12-01", "2023-12-13")
+        old_rows[-1] = bar("2023-12-12", "125")
         new_rows = old_rows + calendar_bars("2023-12-13", "2023-12-22")
         self.download("OLD", old_rows)
         if differing:
             new_rows = [bar(row["t"][:10], "200.0000000000000000001") for row in new_rows]
+            new_rows[len(old_rows) - 2 : len(old_rows)] = old_rows[-2:]
         self.download("NEW", new_rows)
         old, new = asset("OLD"), asset("NEW")
+        if differing:
+            new["id"] = old["id"]
         self.build(
             ["NEW"],
             IdentityClient(
@@ -666,9 +670,9 @@ class StandaloneReaderTests(unittest.TestCase):
 
     def test_fb_meta_and_unrelated_reused_fb_use_real_pipeline(self):
         prices = {
-            "META": calendar_bars("2021-07-01", "2026-10-14"),
-            "FB": calendar_bars("2021-07-01", "2022-06-09") + calendar_bars("2025-06-26", "2026-10-14"),
-            "METV": calendar_bars("2021-07-01", "2026-10-14"),
+            "META": informative_bars("2021-07-01", "2026-10-14"),
+            "FB": informative_bars("2021-07-01", "2022-06-09") + informative_bars("2025-06-26", "2026-10-14"),
+            "METV": informative_bars("2021-07-01", "2026-10-14"),
         }
         for symbol, rows in prices.items():
             self.download(symbol, rows)

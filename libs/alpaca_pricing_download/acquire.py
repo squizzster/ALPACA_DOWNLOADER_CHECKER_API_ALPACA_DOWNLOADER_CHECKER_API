@@ -72,6 +72,9 @@ def acquire_selected(
     context=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
+    # This route checks historical endpoints in all views before acquisition.
+    # A daily summary member belongs to approved append instead. Callers must not
+    # select the whole store here because a compact boundary is temporarily pending.
     store = Path(store).absolute()
     evidence_fingerprints = evidence_fingerprints or {}
     from_dates = from_dates or {}

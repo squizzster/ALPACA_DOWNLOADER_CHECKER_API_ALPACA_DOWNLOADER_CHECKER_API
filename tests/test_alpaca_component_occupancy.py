@@ -137,9 +137,10 @@ class ComponentOccupancyTests(unittest.TestCase):
             {}, dated_occupancy_anchors("REUS", self.lineage, [replace(target, end_date_exclusive=None)])
         )
 
-    def test_earlier_asof_ownership_and_gap_guard_retain_precedence(self):
+    def test_asof_alone_cannot_project_component_history_backwards(self):
         result = self.correlate(symbol="NEXT")
-        self.assertEqual([], result["uncorrelated"])
+        self.assertEqual([3], [s["row_count"] for s in result["uncorrelated"]])
+        self.assertEqual([1], [s["row_count"] for s in result["correlated"]])
         self.assertTrue(
             all(
                 s["correlation_rule"]["name"] == "asof_selected_uuid_lineage_interval"

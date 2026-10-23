@@ -260,7 +260,7 @@ class TerminalEpisodeTests(unittest.TestCase):
             [["terminal"], ["current-lookup"]],
             [item["security_identity"]["member_alpaca_asset_ids"] for item in result["correlated"]],
         )
-        self.assertEqual(4, result["correlated"][0]["correlation_rule"]["order"])
+        self.assertEqual(5, result["correlated"][0]["correlation_rule"]["order"])
         self.assertNotIn("terminal_action_inside_later_reuse_gap", result["correlated"][0]["warnings"])
 
     def test_cash_terminal_flat_but_traded_final_session_is_not_synthetic(self):

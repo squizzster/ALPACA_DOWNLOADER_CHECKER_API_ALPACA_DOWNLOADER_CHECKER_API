@@ -76,7 +76,7 @@ class LiveCheckTests(unittest.TestCase):
             patch.object(Path, "iterdir", side_effect=AssertionError("directory scan")),
         ):
             result = live_check.verify(value, get_page)
-        self.assertEqual(calls, ["A,B,C,D", "D"])
+        self.assertEqual(calls, ["A,B,C,D"])
         self.assertEqual(
             result["stats"],
             {

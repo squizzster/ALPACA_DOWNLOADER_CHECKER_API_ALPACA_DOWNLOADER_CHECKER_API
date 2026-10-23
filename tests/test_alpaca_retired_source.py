@@ -98,7 +98,7 @@ class RetiredSourceTests(unittest.TestCase):
         ]
         return rows, sessions, work
 
-    def test_retired_backward_inference_keeps_informative_suffix_not_pad_or_earlier_episode(self):
+    def test_retired_source_cannot_infer_history_before_its_dated_label(self):
         for first in (0, 2):
             with self.subTest(first_inert=first):
                 rows, sessions, work = self.history(first, first + 99)
@@ -111,9 +111,9 @@ class RetiredSourceTests(unittest.TestCase):
                     self.intervals,
                     retired_lower_bound=lower,
                 )
-                self.assertEqual(first + 100, result["uncorrelated"][0]["row_count"])
-                self.assertEqual(first + 101, result["correlated"][0]["row_start"])
-                self.assertIn("retired_source_same_uuid_continuity", result["correlated"][0]["warnings"])
+                start = sessions.index(date(2024, 8, 16))
+                self.assertEqual(start, result["uncorrelated"][0]["row_count"])
+                self.assertEqual(start + 1, result["correlated"][0]["row_start"])
 
     def test_later_halt_does_not_erase_supported_predecessor_history(self):
         _, _, work = self.history(175, 300)
@@ -142,10 +142,10 @@ class RetiredSourceTests(unittest.TestCase):
             independent_history=(IndependentHistoricalInterval(sessions[0], sessions[1], owner),),
         )
         self.assertEqual(2, result["correlated"][0]["row_count"])
-        self.assertEqual(9, result["correlated"][0]["correlation_rule"]["order"])
-        self.assertEqual(100, result["uncorrelated"][0]["row_count"])
+        self.assertEqual(10, result["correlated"][0]["correlation_rule"]["order"])
+        self.assertEqual(sessions.index(date(2024, 8, 16)) - 2, result["uncorrelated"][0]["row_count"])
 
-    def test_retired_missing_label_can_infer_unique_same_uuid_chain_to_current_exact_endpoint(self):
+    def test_retired_endpoint_selection_does_not_certify_an_earlier_foreign_label(self):
         selected = self.assess()
         self.assertEqual(("LIVE", "one-cusip", "one"), selected.identity_key())
         source = correlation_source("OLD", asof="2026-10-06")
@@ -156,9 +156,8 @@ class RetiredSourceTests(unittest.TestCase):
             before = correlate_download_rows(prefix_fixtures.rows(), source, self.lineage, self.intervals)
         after = correlate_download_rows(prefix_fixtures.rows(), source, self.lineage, self.intervals)
         self.assertEqual(2, before["uncorrelated"][0]["row_count"])
-        self.assertEqual([], after["uncorrelated"])
-        self.assertEqual(2, after["correlated"][0]["row_count"])
-        self.assertIn("retired_source_same_uuid_continuity", after["correlated"][0]["warnings"])
+        self.assertEqual(before, after)
+        self.assertEqual(2, after["uncorrelated"][0]["row_count"])
         self.assertEqual(
             before["correlated"][-1]["correlation_rule"], after["correlated"][-1]["correlation_rule"]
         )

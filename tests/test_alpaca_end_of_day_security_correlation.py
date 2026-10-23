@@ -27,6 +27,7 @@ from libs.alpaca_end_of_day_security_correlation.identity_partition import (
     _assess_candidate,
     _transition_candidates,
 )
+from libs.alpaca_end_of_day_security_correlation.name_change import NameChangeAssessment, NameChangeHistory
 from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import (
     AppliedOwnershipIntervalRule,
     TickerOwnershipInterval,
@@ -59,6 +60,34 @@ from libs.alpaca_security_lineage import (
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 TEST_FIXTURES_DIRECTORY = Path(__file__).with_name("fixtures")
+
+
+def certified_edges(lineage):
+    """Supply accepted certificates to unit tests downstream of the evidence gate."""
+    return build_uuid_lineage_edges(
+        lineage,
+        certified_name_changes=frozenset(
+            a["id"] for a in lineage["corporate_actions"] if a.get("action_type") == "name_change"
+        ),
+    )
+
+
+def certified_row_inputs(rows, source, lineage, intervals):
+    """Bound synthetic history proofs to the rows in a row-rule precedence test.
+
+    Full group tests in test_alpaca_name_change_evidence exercise the producer
+    of these proofs, including missing, divergent and circular evidence.
+    """
+    sessions = [date.fromisoformat(row["t"][:10]) for row in rows]
+    return {
+        "uuid_lineage_edges": certified_edges(lineage)[0],
+        "name_change_assessment": NameChangeAssessment(
+            histories=tuple(
+                NameChangeHistory(source["requested_symbol"], min(sessions), max(sessions), interval, "fixture")
+                for interval in intervals
+            )
+        ),
+    }
 
 
 def load_bars(name: str) -> list[dict]:
@@ -1022,6 +1051,12 @@ class DistinctUuidTransitionTests(unittest.TestCase):
                     lineage,
                     intervals,
                     distinct_uuid_transition=self._assessment(),
+                    **certified_row_inputs(
+                        [{"t": "2024-01-02T05:00:00Z"}, {"t": "2024-01-04T05:00:00Z"}],
+                        {**correlation_source("NEW", asof="2024-01-05"), "adjustment": adjustment},
+                        lineage,
+                        intervals,
+                    ),
                 )
                 self.assertEqual([], branches["uncorrelated"])
                 segments = branches["correlated"]
@@ -1059,7 +1094,7 @@ class CertifiedUuidEdgeTests(unittest.TestCase):
                 role="new",
             ),
         ]
-        edges, edge_issues = build_uuid_lineage_edges(lineage)
+        edges, edge_issues = certified_edges(lineage)
         intervals, interval_issues = build_ticker_ownership_intervals(lineage)
 
         self.assertEqual([], edge_issues)
@@ -1069,6 +1104,9 @@ class CertifiedUuidEdgeTests(unittest.TestCase):
             correlation_source("OLD", asof="2024-01-02"),
             lineage,
             intervals,
+            **certified_row_inputs(
+                [{"t": "2024-01-02T05:00:00Z"}], correlation_source("OLD", asof="2024-01-02"), lineage, intervals
+            ),
         )
 
         self.assertEqual([], branches["uncorrelated"])
@@ -1088,7 +1126,7 @@ class CertifiedUuidEdgeTests(unittest.TestCase):
             predecessor=("spac-asset-id", "SPAC", "333333333", "Predecessor SPAC"),
             successor=("old-split-asset-id", "SPLT", "111111111", "Split Test Security"),
         )
-        edges, edge_issues = build_uuid_lineage_edges(lineage)
+        edges, edge_issues = certified_edges(lineage)
         intervals, interval_issues = build_ticker_ownership_intervals(lineage)
 
         self.assertEqual([], edge_issues)
@@ -1104,6 +1142,9 @@ class CertifiedUuidEdgeTests(unittest.TestCase):
                     correlation_source("SPLT", asof="2026-10-06"),
                     lineage,
                     intervals,
+                    **certified_row_inputs(
+                        [{"t": timestamp}], correlation_source("SPLT", asof="2026-10-06"), lineage, intervals
+                    ),
                 )
                 segment = branches["correlated"][0]
                 self.assertEqual(expected_asset_id, segment["canonical_security"]["alpaca_asset_id"])
@@ -1211,7 +1252,13 @@ class DatedSameSymbolHandoffTests(unittest.TestCase):
                     with self.subTest(symbol=symbol, count=count, adjustment=adjustment):
                         source = {**correlation_source(symbol, asof="2024-01-08"), "adjustment": adjustment}
                         rows = complete_market_session_rows("2024-01-02", "2024-01-05")
-                        branches = correlate_download_rows(rows, source, lineage, intervals)
+                        branches = correlate_download_rows(
+                            rows,
+                            source,
+                            lineage,
+                            intervals,
+                            **certified_row_inputs(rows, source, lineage, intervals),
+                        )
                         self.assertEqual([], branches["uncorrelated"])
                         expected = [f"stage-{min(index, count - 1)}" for index in range(len(rows))]
                         actual = [
@@ -1222,7 +1269,7 @@ class DatedSameSymbolHandoffTests(unittest.TestCase):
                         self.assertEqual(expected, actual)
                         first = branches["correlated"][0]
                         self.assertEqual(
-                            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+                            {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
                             first["correlation_rule"],
                         )
                         self.assertIn("inferred_lower_ownership_boundary", first["warnings"])
@@ -1232,7 +1279,13 @@ class DatedSameSymbolHandoffTests(unittest.TestCase):
                         )
                         self.assertEqual(
                             branches,
-                            correlate_download_rows(rows, source, lineage, list(reversed(intervals))),
+                            correlate_download_rows(
+                                rows,
+                                source,
+                                lineage,
+                                list(reversed(intervals)),
+                                **certified_row_inputs(rows, source, lineage, list(reversed(intervals))),
+                            ),
                         )
 
     def test_same_symbol_stock_merger_can_establish_the_same_dated_handoff(self):
@@ -1338,7 +1391,7 @@ class DatedSameSymbolHandoffTests(unittest.TestCase):
                 successor=("joined-id", "JOINED", "333333333", "Successor"),
             )
         intervals, _ = build_ticker_ownership_intervals(lineage)
-        edges, _ = build_uuid_lineage_edges(lineage)
+        edges, _ = certified_edges(lineage)
         self.assertEqual(2, len(edges))
         self.assertEqual(frozenset(), _dated_same_symbol_predecessors("REUSED", lineage, intervals, edges))
         branches = correlate_download_rows(
@@ -1346,6 +1399,12 @@ class DatedSameSymbolHandoffTests(unittest.TestCase):
             correlation_source("REUSED", asof="2024-01-08"),
             lineage,
             intervals,
+            **certified_row_inputs(
+                [{"t": "2024-01-04T12:00:00Z"}],
+                correlation_source("REUSED", asof="2024-01-08"),
+                lineage,
+                intervals,
+            ),
         )
         self.assertEqual([], branches["correlated"])
         self.assertEqual(
@@ -1384,6 +1443,12 @@ class DatedSameSymbolHandoffTests(unittest.TestCase):
             correlation_source("HOLD", asof="2024-01-04"),
             lineage,
             intervals,
+            **certified_row_inputs(
+                [{"t": "2024-01-02T12:00:00Z"}],
+                correlation_source("HOLD", asof="2024-01-04"),
+                lineage,
+                intervals,
+            ),
         )
         self.assertEqual([], branches["correlated"])
         self.assertEqual(["ambiguous_asof_uuid_lineage_intervals"], branches["uncorrelated"][0]["reason_codes"])
@@ -1470,7 +1535,7 @@ class OmittedStockMergerEndpointTests(unittest.TestCase):
         )
         for segment in branches["correlated"]:
             self.assertEqual(
-                {"order": 8, "name": "asof_selected_uuid_lineage_interval"}, segment["correlation_rule"]
+                {"order": 9, "name": "asof_selected_uuid_lineage_interval"}, segment["correlation_rule"]
             )
             self.assertEqual(["new-id", "old-id"], segment["security_identity"]["member_alpaca_asset_ids"])
         self.assertEqual(original, lineage)
@@ -1618,7 +1683,9 @@ class RowCorrelationTests(unittest.TestCase):
         for adjustment in ALPACA_ADJUSTMENT_MODES:
             with self.subTest(adjustment=adjustment):
                 source = {**correlation_source("CURRENT", asof="2026-10-15"), "adjustment": adjustment}
-                branches = correlate_download_rows(rows, source, lineage, intervals)
+                branches = correlate_download_rows(
+                    rows, source, lineage, intervals, **certified_row_inputs(rows, source, lineage, intervals)
+                )
                 self.assertEqual([], branches["uncorrelated"])
                 self.assertEqual(
                     [("PRIOR", 1086), ("CURRENT", 479)],
@@ -1627,10 +1694,17 @@ class RowCorrelationTests(unittest.TestCase):
                 for segment in branches["correlated"]:
                     self.assertEqual("selected-id", segment["canonical_security"]["alpaca_asset_id"])
                     self.assertEqual(
-                        {"order": 8, "name": "asof_selected_uuid_lineage_interval"}, segment["correlation_rule"]
+                        {"order": 9, "name": "asof_selected_uuid_lineage_interval"}, segment["correlation_rule"]
                     )
                 self.assertEqual(
-                    branches, correlate_download_rows(rows, source, lineage, list(reversed(intervals)))
+                    branches,
+                    correlate_download_rows(
+                        rows,
+                        source,
+                        lineage,
+                        list(reversed(intervals)),
+                        **certified_row_inputs(rows, source, lineage, list(reversed(intervals))),
+                    ),
                 )
 
     def test_historical_asof_can_select_the_other_entity(self):
@@ -1670,6 +1744,12 @@ class RowCorrelationTests(unittest.TestCase):
                 {**correlation_source("CURRENT", asof="2026-10-15"), "adjustment": adjustment},
                 lineage,
                 intervals,
+                **certified_row_inputs(
+                    complete_market_session_rows("2024-05-30", "2024-06-04"),
+                    {**correlation_source("CURRENT", asof="2026-10-15"), "adjustment": adjustment},
+                    lineage,
+                    intervals,
+                ),
             )
             self.assertEqual([], branches["uncorrelated"])
             self.assertEqual(
@@ -1744,6 +1824,12 @@ class RowCorrelationTests(unittest.TestCase):
                 {**correlation_source("FINAL", asof="2026-10-15"), "adjustment": adjustment},
                 lineage,
                 intervals,
+                **certified_row_inputs(
+                    rows,
+                    {**correlation_source("FINAL", asof="2026-10-15"), "adjustment": adjustment},
+                    lineage,
+                    intervals,
+                ),
             )
             self.assertEqual([], branches["correlated"])
             self.assertEqual(405, branches["uncorrelated"][0]["row_count"])
@@ -1841,7 +1927,7 @@ class RowCorrelationTests(unittest.TestCase):
                     role="new",
                 )
             )
-            edges, issues = build_uuid_lineage_edges(lineage)
+            edges, issues = certified_edges(lineage)
             self.assertEqual([], issues)
             self.assertEqual(1, len(edges))
             expected_members = sorted((current_id, previous_id)) if linked else [current_id]
@@ -1858,6 +1944,16 @@ class RowCorrelationTests(unittest.TestCase):
                         [superseded_reused_symbol_interval()],
                         adjustment_consensus=consensus,
                         evidence_issues=[],
+                        **certified_row_inputs(
+                            [{"t": f"{session}T12:00:00Z"} for session in sessions],
+                            {
+                                **correlation_source("REUS", asof="2024-07-07"),
+                                "request_to": "2024-07-08T00:00:00Z",
+                                "adjustment": adjustment,
+                            },
+                            lineage,
+                            [superseded_reused_symbol_interval()],
+                        ),
                     )
                     self.assertEqual([], branches["uncorrelated"])
                     segment = branches["correlated"][0]
@@ -1894,7 +1990,7 @@ class RowCorrelationTests(unittest.TestCase):
         )
         self.assertEqual("24703L202", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
-            {"order": 12, "name": "unique_uuid_candidate_with_warnings"},
+            {"order": 13, "name": "unique_uuid_candidate_with_warnings"},
             branches["correlated"][0]["correlation_rule"],
         )
         self.assertIn("missing_dated_ticker_ownership_interval", branches["correlated"][0]["warnings"])
@@ -1938,12 +2034,12 @@ class RowCorrelationTests(unittest.TestCase):
         older, newer = branches["correlated"]
         self.assertEqual("older-dell-asset-id", older["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
             older["correlation_rule"],
         )
         self.assertEqual("newer-dell-asset-id", newer["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
+            {"order": 11, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
             newer["correlation_rule"],
         )
         self.assertEqual(
@@ -1990,7 +2086,7 @@ class RowCorrelationTests(unittest.TestCase):
                     self.assertEqual(original, segment["historical_symbol"])
                     self.assertEqual("left-id", segment["canonical_security"]["alpaca_asset_id"])
                     self.assertEqual(
-                        {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+                        {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
                         segment["correlation_rule"],
                     )
                     self.assertEqual(
@@ -2052,7 +2148,7 @@ class RowCorrelationTests(unittest.TestCase):
             ["undated_requested_ticker_reuse_boundary"], branches["uncorrelated"][0]["reason_codes"]
         )
         self.assertEqual(
-            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
             branches["uncorrelated"][0]["correlation_rule"],
         )
 
@@ -2097,13 +2193,19 @@ class RowCorrelationTests(unittest.TestCase):
             correlation_source("JOINED", asof="2024-01-05"),
             lineage,
             intervals,
+            **certified_row_inputs(
+                [{"t": "2024-01-03T12:00:00Z"}, {"t": "2024-01-04T12:00:00Z"}],
+                correlation_source("JOINED", asof="2024-01-05"),
+                lineage,
+                intervals,
+            ),
         )
         self.assertEqual(1, branches["uncorrelated"][0]["row_count"])
         self.assertEqual(["ambiguous_asof_uuid_lineage_intervals"], branches["uncorrelated"][0]["reason_codes"])
         self.assertEqual(1, branches["correlated"][0]["row_count"])
         self.assertEqual("successor-id", branches["correlated"][0]["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 8, "name": "asof_selected_uuid_lineage_interval"},
+            {"order": 9, "name": "asof_selected_uuid_lineage_interval"},
             branches["uncorrelated"][0]["correlation_rule"],
         )
 
@@ -2142,7 +2244,7 @@ class RowCorrelationTests(unittest.TestCase):
                 self.assertEqual(1, len(branches["uncorrelated"]))
                 unresolved = branches["uncorrelated"][0]
                 self.assertEqual(
-                    {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
+                    {"order": 11, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
                     unresolved["correlation_rule"],
                 )
                 self.assertEqual(
@@ -2178,7 +2280,7 @@ class RowCorrelationTests(unittest.TestCase):
         correlated = branches["correlated"][0]
         self.assertEqual("dell-asset-id", correlated["canonical_security"]["alpaca_asset_id"])
         self.assertEqual(
-            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
             correlated["correlation_rule"],
         )
 
@@ -2206,7 +2308,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(1, len(branches["uncorrelated"]))
         unresolved = branches["uncorrelated"][0]
         self.assertEqual(
-            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
             unresolved["correlation_rule"],
         )
         self.assertEqual(["conflicting_requested_ticker_intervals"], unresolved["reason_codes"])
@@ -2298,7 +2400,9 @@ class RowCorrelationTests(unittest.TestCase):
                 source = correlation_source("DELL", asof="2024-12-30")
                 source["request_to"] = "2024-12-31T00:00:00Z"
 
-                branches = correlate_download_rows(rows, source, lineage, [])
+                branches = correlate_download_rows(
+                    rows, source, lineage, [], **certified_row_inputs(rows, source, lineage, [])
+                )
 
                 self.assertEqual(1, len(branches["correlated"]))
                 suffix = branches["correlated"][0]
@@ -2578,7 +2682,9 @@ class RowCorrelationTests(unittest.TestCase):
         source = correlation_source("TERM", asof="2024-12-30")
         source["request_to"] = "2024-12-31T00:00:00Z"
 
-        branches = correlate_download_rows(rows, source, lineage, intervals)
+        branches = correlate_download_rows(
+            rows, source, lineage, intervals, **certified_row_inputs(rows, source, lineage, intervals)
+        )
 
         self.assertEqual([], evidence_issues)
         self.assertEqual(1, len(branches["correlated"]))
@@ -2675,7 +2781,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(2, branches["correlated"][0]["row_count"])
         self.assertEqual("90184L102", branches["correlated"][0]["canonical_security"]["cusip"])
         self.assertEqual(
-            {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
+            {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
             branches["correlated"][0]["correlation_rule"],
         )
 
@@ -2804,7 +2910,7 @@ class RowCorrelationTests(unittest.TestCase):
             successor=("predecessor-id", "FINAL", "111111111", "Predecessor"),
         )
 
-        edges, issues = build_uuid_lineage_edges(lineage)
+        edges, issues = certified_edges(lineage)
 
         self.assertEqual([], issues)
         self.assertEqual(2, len(edges))
@@ -2827,7 +2933,7 @@ class RowCorrelationTests(unittest.TestCase):
             successor=("successor-id", "NEWW", "222222222", "Successor"),
         )
 
-        edges, issues = build_uuid_lineage_edges(lineage)
+        edges, issues = certified_edges(lineage)
 
         self.assertEqual([], issues)
         self.assertEqual(2, len(edges))
@@ -2918,8 +3024,20 @@ class RowCorrelationTests(unittest.TestCase):
         for adjustment in ALPACA_ADJUSTMENT_MODES:
             with self.subTest(adjustment=adjustment):
                 source = {**correlation_source("ASCA", asof="2026-10-15"), "adjustment": adjustment}
-                before = correlate_download_rows(rows, source, prior, prior_intervals)
-                after = correlate_download_rows(rows, source, extended, extended_intervals)
+                before = correlate_download_rows(
+                    rows,
+                    source,
+                    prior,
+                    prior_intervals,
+                    **certified_row_inputs(rows, source, prior, prior_intervals),
+                )
+                after = correlate_download_rows(
+                    rows,
+                    source,
+                    extended,
+                    extended_intervals,
+                    **certified_row_inputs(rows, source, extended, extended_intervals),
+                )
                 self.assertEqual([], before["uncorrelated"])
                 self.assertEqual([], after["uncorrelated"])
                 self.assertEqual(1, len(before["correlated"]))
@@ -2976,29 +3094,30 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(
             [
                 {"order": 1, "name": "exchange_test_symbol_exclusion"},
+                {"order": 2, "name": "name_change_boundary_conflict"},
                 {
-                    "order": 2,
+                    "order": 3,
                     "name": "complete_current_identity_suffix_after_ticker_reuse_gap",
                 },
                 {
-                    "order": 3,
+                    "order": 4,
                     "name": "inactive_current_identity_suffix_after_ticker_reuse_gap",
                 },
                 {
-                    "order": 4,
+                    "order": 5,
                     "name": "dated_terminal_identity_suffix_after_ticker_reuse_gap",
                 },
-                {"order": 5, "name": "ticker_reuse_gap_guard"},
-                {"order": 6, "name": "one_session_distinct_uuid_transition"},
-                {"order": 7, "name": CURRENT_SYMBOL_REUSE_RULE_NAME},
-                {"order": 8, "name": "asof_selected_uuid_lineage_interval"},
-                {"order": 9, "name": "exact_independently_resolved_predecessor_prefix"},
-                {"order": 10, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
-                {"order": 11, "name": "requested_symbol_dated_uuid_interval"},
-                {"order": 12, "name": "unique_uuid_candidate_with_warnings"},
-                {"order": 13, "name": "bounded_retired_name_change_continuation"},
-                {"order": 14, "name": "unresolved_uuid_candidates"},
-                {"order": 15, "name": "stable_continuous_ticker_identity_set"},
+                {"order": 6, "name": "ticker_reuse_gap_guard"},
+                {"order": 7, "name": "one_session_distinct_uuid_transition"},
+                {"order": 8, "name": CURRENT_SYMBOL_REUSE_RULE_NAME},
+                {"order": 9, "name": "asof_selected_uuid_lineage_interval"},
+                {"order": 10, "name": "exact_independently_resolved_predecessor_prefix"},
+                {"order": 11, "name": LATEST_DATED_OWNERSHIP_INTERVAL_RULE_NAME},
+                {"order": 12, "name": "requested_symbol_dated_uuid_interval"},
+                {"order": 13, "name": "unique_uuid_candidate_with_warnings"},
+                {"order": 14, "name": "bounded_retired_name_change_continuation"},
+                {"order": 15, "name": "unresolved_uuid_candidates"},
+                {"order": 16, "name": "stable_continuous_ticker_identity_set"},
             ],
             row_correlation_rule_order(),
         )
@@ -3038,7 +3157,7 @@ class RowCorrelationTests(unittest.TestCase):
     def test_asof_uuid_branch_routes_reused_b_ticker_to_exact_barrick_uuids(self) -> None:
         lineage = b_lineage()
         intervals, evidence_issues = build_ticker_ownership_intervals(lineage)
-        uuid_edges, edge_issues = build_uuid_lineage_edges(lineage)
+        uuid_edges, edge_issues = certified_edges(lineage)
 
         self.assertEqual([], edge_issues)
         self.assertEqual(1, len(uuid_edges))
@@ -3055,6 +3174,7 @@ class RowCorrelationTests(unittest.TestCase):
             correlation_source("B", asof="2026-10-06"),
             lineage,
             intervals,
+            **certified_row_inputs(rows, correlation_source("B", asof="2026-10-06"), lineage, intervals),
         )
 
         self.assertEqual([], branches["uncorrelated"])
@@ -3135,6 +3255,7 @@ class RowCorrelationTests(unittest.TestCase):
             correlation_source("META", asof="2026-10-06"),
             lineage,
             intervals,
+            **certified_row_inputs(rows, correlation_source("META", asof="2026-10-06"), lineage, intervals),
         )
 
         self.assertEqual([], branches["uncorrelated"])
@@ -3451,8 +3572,8 @@ class CorrelationReportTests(unittest.TestCase):
         self.assertEqual(first["verified_session_exclusions"], exclusions)
         self.assertTrue(first["row_partition_complete"])
         self.assertEqual(first["source_row_count"], 10)
-        self.assertEqual(first["correlated"]["row_count"], 10)
-        self.assertEqual(first["uncorrelated"]["row_count"], 0)
+        self.assertEqual(first["correlated"]["row_count"], 6)
+        self.assertEqual(first["uncorrelated"]["row_count"], 4)
         self.assertEqual(first["correlation_version"], CORRELATION_VERSION)
         self.assertEqual(first["symbol_disposition"]["classification"], "alpaca_asset_identity_available")
         self.assertEqual(len(first["uuid_lineage_edges"]), 1)

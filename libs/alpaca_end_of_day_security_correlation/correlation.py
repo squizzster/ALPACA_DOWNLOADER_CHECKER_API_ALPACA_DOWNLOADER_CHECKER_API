@@ -295,6 +295,7 @@ def build_security_correlation_report(
             cache=cache,
             uuid_lineage_edges=uuid_lineage_edges,
             adopted_target_pairs=adopted_target_pairs,
+            name_change_assessment=cache.name_change_assessment(lineage),
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]

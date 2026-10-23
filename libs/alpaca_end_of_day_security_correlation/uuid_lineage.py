@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .action_identity import complete_stock_merger_endpoints, exact_cusip_lookup_asset
+from .name_change import name_change_date
 
 IDENTITY_PRESERVING_SPLIT_EDGE_TYPES = frozenset(("forward_split", "reverse_split"))
 
@@ -179,11 +180,14 @@ def _identity_preserving_split_edge(
 def _name_change_edge_candidate(action: dict[str, Any]) -> _UuidLineageEdgeCandidate | None:
     if action.get("action_type") != "name_change":
         return None
+    boundary, issue = name_change_date(action)
+    if issue:
+        return None
     candidate = _UuidLineageEdgeCandidate(
         edge_type="name_change",
         unresolved_reason_code="unresolved_name_change_uuid_edge",
         action_id=action.get("id"),
-        effective_date=action.get("process_date"),
+        effective_date=boundary.isoformat(),
         predecessor_symbol=action.get("old_symbol"),
         predecessor_cusip=action.get("old_cusip"),
         successor_symbol=action.get("new_symbol"),
@@ -354,8 +358,40 @@ def _exclude_adopted_target_joins(edges, lineage):
     return retained, issues
 
 
+def certify_name_change_edges(edges, certified_name_changes):
+    """Accept only independently certified cross-UUID rename candidates."""
+    evidence_issues = []
+    retained = []
+    for edge in edges:
+        independent = any(
+            other.edge_type != "name_change"
+            and (other.predecessor_asset_id, other.successor_asset_id)
+            == (edge.predecessor_asset_id, edge.successor_asset_id)
+            for other in edges
+        )
+        if (
+            edge.edge_type == "name_change"
+            and edge.predecessor_asset_id != edge.successor_asset_id
+            and edge.action_id not in certified_name_changes
+            and not independent
+        ):
+            evidence_issues.append(
+                {
+                    "reason_code": "name_change_requires_independent_continuity",
+                    "corporate_action_id": edge.action_id,
+                }
+            )
+            continue
+        retained.append(edge)
+    edges = retained
+    return edges, evidence_issues
+
+
 def build_uuid_lineage_edges(
     lineage: dict[str, Any],
+    *,
+    certified_name_changes: frozenset[str] = frozenset(),
+    candidates_only: bool = False,
 ) -> tuple[list[UuidLineageEdge], list[dict[str, Any]]]:
     corporate_actions = lineage.get("corporate_actions")
     if not isinstance(corporate_actions, list):
@@ -370,6 +406,11 @@ def build_uuid_lineage_edges(
     for action in corporate_actions:
         if not isinstance(action, dict):
             continue
+        if action.get("action_type") == "name_change":
+            _, issue = name_change_date(action, corporate_actions)
+            if issue:
+                evidence_issues.append({"reason_code": issue, "corporate_action_id": action.get("id")})
+                continue
         edge_candidate = _name_change_edge_candidate(action)
         completed = complete_stock_merger_endpoints(action, lineage)
         if edge_candidate is None:
@@ -446,6 +487,9 @@ def build_uuid_lineage_edges(
                 edges.append(split_edge)
     edges, adoption_issues = _exclude_adopted_target_joins(edges, lineage)
     evidence_issues.extend(adoption_issues)
+    if not candidates_only:
+        edges, continuity_issues = certify_name_change_edges(edges, certified_name_changes)
+        evidence_issues.extend(continuity_issues)
     edges.sort(key=lambda edge: (edge.effective_date, edge.edge_type, edge.action_id))
     return edges, evidence_issues
 

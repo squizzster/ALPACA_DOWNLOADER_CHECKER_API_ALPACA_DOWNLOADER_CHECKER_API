@@ -10,7 +10,7 @@ from .context import accept_context
 from .work_contract import RegistrationIncomplete, WorkPolicy, restriction, satisfying_entry
 
 
-def command_policy(store, end_date, *, state=None, context=None):
+def command_policy(store, end_date, *, state=None, context=None, retry_blocked=False):
     """Read compact authorities only; command choice does not override restrictions."""
     from libs.alpaca_pricing_download.update_checks import read_checks
 
@@ -27,7 +27,8 @@ def command_policy(store, end_date, *, state=None, context=None):
     deferred = [
         {"symbol": s, "reason": reason}
         for s, item in work.items()
-        if not satisfying_entry(s, item, index["symbols"], pending) and (reason := restriction(item, end_date))
+        if not satisfying_entry(s, item, index["symbols"], pending)
+        and (reason := restriction(item, end_date, retry_blocked=retry_blocked))
     ]
     return WorkPolicy(store, index, work, deferred, end_date, context=context)
 

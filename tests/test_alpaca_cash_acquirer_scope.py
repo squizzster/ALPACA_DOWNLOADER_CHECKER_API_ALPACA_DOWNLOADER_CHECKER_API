@@ -6,6 +6,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import correlat
 from tests.test_alpaca_end_of_day_security_correlation import (
     add_name_change_edge,
     asset,
+    certified_row_inputs,
     correlation_source,
     occupancy,
 )
@@ -64,7 +65,13 @@ def evidence():
 def resolve(lineage):
     intervals, _ = build_ticker_ownership_intervals(lineage)
     return correlate_download_rows(
-        [{"t": "2024-01-02T12:00:00Z"}], correlation_source("BUYER", asof="2024-02-01"), lineage, intervals
+        [{"t": "2024-01-02T12:00:00Z"}],
+        correlation_source("BUYER", asof="2024-02-01"),
+        lineage,
+        intervals,
+        **certified_row_inputs(
+            [{"t": "2024-01-02T12:00:00Z"}], correlation_source("BUYER", asof="2024-02-01"), lineage, intervals
+        ),
     )
 
 

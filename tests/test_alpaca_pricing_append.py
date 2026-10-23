@@ -355,9 +355,9 @@ with patch.object(storage, 'write_file', side_effect=interrupted):
 
 
 class AppendPlanTests(unittest.TestCase):
-    def test_large_ready_rosters_use_eight_existing_actions_without_history_or_io(self):
+    def test_large_ready_rosters_bound_requests_without_history_or_io(self):
         row = ("2026-10-14T04:00:00Z", "1", "1", "1", "1", "1", "1", "1")
-        for count in (5000, 8000):
+        for count, actions in ((2000, 8), (2001, 16), (4000, 16), (8000, 32), (8001, 40)):
             symbols = (
                 "S" + "".join(letters)
                 for letters in islice(product("ABCDEFGHIJKLMNOPQRSTUVWXYZ", repeat=3), count)
@@ -369,9 +369,18 @@ class AppendPlanTests(unittest.TestCase):
                     {"steps": [{"needs": needs}]}, max_symbols=append.MAX_SYMBOLS, merge_ranges=False
                 )
             self.assertEqual(unchanged, [])
-            self.assertEqual(len(plan["steps"][0]["actions"]), 8)
+            self.assertEqual(len(plan["steps"][0]["actions"]), actions)
             self.assertTrue(
-                all(action["strategy"] == "bars_multi_range" for action in plan["steps"][0]["actions"])
+                all(
+                    len(action["request"]["params"]["symbols"].split(",")) <= 2000
+                    for action in plan["steps"][0]["actions"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    action["strategy"] in {"bars_multi_range", "bars_single_range"}
+                    for action in plan["steps"][0]["actions"]
+                )
             )
             self.assertTrue(
                 all(

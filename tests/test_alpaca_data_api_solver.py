@@ -280,7 +280,7 @@ class ApiSolverTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(errors, [0])
 
-    def test_omitted_batch_member_finishes_exact_acquisition_before_next_step(self):
+    def test_omitted_member_completes_empty_only_after_all_pages_before_next_step(self):
         result = build_plan(
             {
                 "steps": [
@@ -299,17 +299,15 @@ class ApiSolverTests(unittest.TestCase):
                 if token is None:
                     return {"bars": {"A": [bar("2026-10-14")]}, "next_page_token": "batch"}
                 return {"bars": {"C": [bar("2026-10-14", "3")]}}
-            if symbols == "B" and token is None:
-                return {"bars": {}, "next_page_token": "exact"}
             return {"bars": {symbols: [bar("2026-10-14", "2")]}}
 
         rows = execute_bar_plan(result, get_page)
-        self.assertEqual(calls, [("A,B,C", None), ("A,B,C", "batch"), ("B", None), ("B", "exact"), ("X", None)])
-        self.assertEqual(rows[(0, 0, 0, "B", "all")].rows[0][1], "2")
+        self.assertEqual(calls, [("A,B,C", None), ("A,B,C", "batch"), ("X", None)])
+        self.assertEqual(rows[(0, 0, 0, "B", "all")].rows, ())
         self.assertEqual(rows[(0, 0, 0, "C", "all")].rows[0][1], "3")
         self.assertEqual(result, original)
 
-    def test_exact_empty_and_explicit_empty_batch_members_remain_complete(self):
+    def test_omitted_and_explicit_empty_batch_members_remain_complete(self):
         result = plan(need(["A", "B", "C"], start="2026-10-14", end="2026-10-15"))
         calls = []
 
@@ -320,11 +318,26 @@ class ApiSolverTests(unittest.TestCase):
             return {"bars": {}}
 
         rows = execute_bar_plan(result, get_page)
-        self.assertEqual(calls, ["A,B,C", "B"])
+        self.assertEqual(calls, ["A,B,C"])
         self.assertEqual(rows[(0, 0, 0, "B", "all")].rows, ())
         self.assertEqual(rows[(0, 0, 0, "C", "all")].rows, ())
 
-    def test_failed_omitted_member_keeps_other_deliveries_and_blocks_next_step(self):
+    def test_empty_batch_remains_eight_requests_for_hundreds_of_symbols(self):
+        symbols = [f"S{index:04}" for index in range(835)]
+        result = plan(need(symbols, adjustments=list(ADJUSTMENTS)))
+        calls, metrics = [], {}
+
+        def get_page(parameters):
+            calls.append(parameters)
+            return {"bars": {}, "next_page_token": None}
+
+        rows = execute_bar_plan(result, get_page, metrics=metrics)
+        self.assertEqual(len(calls), len(ADJUSTMENTS))
+        self.assertEqual(metrics["page_requests"], len(ADJUSTMENTS))
+        self.assertEqual(len(rows), len(symbols) * len(ADJUSTMENTS))
+        self.assertTrue(all(not value.rows for value in rows.values()))
+
+    def test_failed_later_page_leaves_batch_incomplete_and_blocks_next_step(self):
         result = build_plan(
             {
                 "steps": [
@@ -337,18 +350,18 @@ class ApiSolverTests(unittest.TestCase):
 
         def get_page(parameters):
             calls.append(parameters["symbols"])
-            if parameters["symbols"] == "A,B":
-                return {"bars": {"A": [bar("2026-10-10")]}}
-            raise DownloadError("exact acquisition failed")
+            if "page_token" not in parameters:
+                return {"bars": {"A": [bar("2026-10-10")]}, "next_page_token": "next"}
+            raise DownloadError("later page failed")
 
         rows = execute_bar_plan(
             result,
             get_page,
             on_failure=lambda step, action, error: errors.append((step, action["request"]["params"]["symbols"])),
         )
-        self.assertEqual(calls, ["A,B", "B"])
-        self.assertEqual(errors, [(0, "B")])
-        self.assertEqual({key[3] for key in rows}, {"A"})
+        self.assertEqual(calls, ["A,B", "A,B"])
+        self.assertEqual(errors, [(0, "A,B")])
+        self.assertEqual(rows, {})
 
     def test_uri_rejection_uses_solver_split_without_mutating_plan(self):
         result = plan(need(["A", "B"], start="2026-10-14", end="2026-10-15"))

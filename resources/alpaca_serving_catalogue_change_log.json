@@ -18,5 +18,10 @@
     "modifications": [
       "Bind reused eligibility facts to all validated adjustment coverage and retain exact raw continuity boundaries; reject rename gaps with observations in any selected published view. Changed coverage reevaluates the affected identity while independent completed checks remain reusable."
     ]
+  },
+  {
+    "modifications": [
+      "Keep descriptive metadata with own-symbol observations of the observed member UUID. Exclude historical descriptions inferred from current CUSIP lookups, retain independently published CUSIP provenance, and never turn observation times into historical effective dates."
+    ]
   }
 ]

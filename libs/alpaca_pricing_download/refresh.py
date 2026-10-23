@@ -217,6 +217,9 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
 
 def acquire_retained(selected, end, *, client, metrics, progress=None):
     """Batch the ordinary downloader's three request stages for selected sources."""
+    # These first/last checks and possible history replacements are for explicitly
+    # selected retained dependencies. They are not a substitute for the daily
+    # summary's single last-all check or permission to revalidate its other views.
     failures, probes = {}, []
     asof = end.date().isoformat()
 

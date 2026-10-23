@@ -3,6 +3,7 @@ from datetime import date
 from typing import Any, Callable
 
 from .action_identity import complete_stock_merger_endpoints
+from .name_change import name_change_dates
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,8 @@ class OwnershipIntervalRule:
 @dataclass(frozen=True)
 class _NameChange:
     action_id: str
-    process_date: date
+    departure_date: date
+    arrival_date: date
     old_symbol: str
     old_cusip: str
     new_symbol: str
@@ -169,7 +171,6 @@ def _parse_name_changes(
             field_name: action.get(field_name)
             for field_name in (
                 "id",
-                "process_date",
                 "old_symbol",
                 "old_cusip",
                 "new_symbol",
@@ -185,29 +186,30 @@ def _parse_name_changes(
                 }
             )
             continue
-        try:
-            process_date = date.fromisoformat(required_values["process_date"])
-        except ValueError:
+        dates, issue = name_change_dates(action, context.corporate_actions)
+        if issue:
             evidence_issues.append(
                 {
-                    "reason_code": "invalid_name_change_process_date",
+                    "reason_code": issue,
                     "ownership_interval_rule": _rule_reference(rule_order, rule_name),
                     "action_id": required_values["id"],
-                    "process_date": required_values["process_date"],
+                    "process_date": action.get("process_date"),
                 }
             )
-            continue
+            if not dates:
+                continue
         name_changes.append(
             _NameChange(
                 action_id=required_values["id"],
-                process_date=process_date,
+                departure_date=dates[0],
+                arrival_date=dates[-1],
                 old_symbol=required_values["old_symbol"],
                 old_cusip=required_values["old_cusip"],
                 new_symbol=required_values["new_symbol"],
                 new_cusip=required_values["new_cusip"],
             )
         )
-    name_changes.sort(key=lambda item: (item.process_date, item.action_id))
+    name_changes.sort(key=lambda item: (item.departure_date, item.action_id))
     return name_changes, evidence_issues
 
 
@@ -293,11 +295,11 @@ def _apply_name_change_rule(
             prior_changes = [
                 candidate
                 for candidate in name_changes
-                if candidate.process_date < name_change.process_date
+                if candidate.arrival_date < name_change.departure_date
                 and candidate.new_symbol == name_change.old_symbol
                 and candidate.new_cusip == name_change.old_cusip
             ]
-            prior_change = max(prior_changes, key=lambda item: item.process_date, default=None)
+            prior_change = max(prior_changes, key=lambda item: item.arrival_date, default=None)
             supporting_action_ids = (
                 (prior_change.action_id, name_change.action_id)
                 if prior_change is not None
@@ -307,8 +309,11 @@ def _apply_name_change_rule(
                 historical_symbol=name_change.old_symbol,
                 cusip=name_change.old_cusip,
                 asset_id=old_asset_id,
-                start_date_inclusive=(prior_change.process_date if prior_change is not None else None),
-                end_date_exclusive=name_change.process_date,
+                # None is an unknown lower constraint, never permission to copy
+                # a successor's prefix. Row ownership binds it to own-label
+                # observations or independently certified source history.
+                start_date_inclusive=(prior_change.arrival_date if prior_change is not None else None),
+                end_date_exclusive=name_change.departure_date,
                 applied_rules=(
                     AppliedOwnershipIntervalRule(
                         order=rule_order,
@@ -343,11 +348,11 @@ def _apply_name_change_rule(
             later_changes = [
                 candidate
                 for candidate in name_changes
-                if candidate.process_date > name_change.process_date
+                if candidate.departure_date > name_change.arrival_date
                 and candidate.old_symbol == name_change.new_symbol
                 and candidate.old_cusip == name_change.new_cusip
             ]
-            later_change = min(later_changes, key=lambda item: item.process_date, default=None)
+            later_change = min(later_changes, key=lambda item: item.departure_date, default=None)
             supporting_action_ids = (
                 (name_change.action_id, later_change.action_id)
                 if later_change is not None
@@ -357,8 +362,8 @@ def _apply_name_change_rule(
                 historical_symbol=name_change.new_symbol,
                 cusip=name_change.new_cusip,
                 asset_id=new_asset_id,
-                start_date_inclusive=name_change.process_date,
-                end_date_exclusive=(later_change.process_date if later_change is not None else None),
+                start_date_inclusive=name_change.arrival_date,
+                end_date_exclusive=(later_change.departure_date if later_change is not None else None),
                 applied_rules=(
                     AppliedOwnershipIntervalRule(
                         order=rule_order,

@@ -59,7 +59,9 @@ class PredecessorPrefixTests(unittest.TestCase):
     def setUp(self):
         self.lineage = lineage()
         self.intervals, _ = build_ticker_ownership_intervals(self.lineage)
-        self.edges, _ = build_uuid_lineage_edges(self.lineage)
+        # These unit tests assess candidates against an independently supplied
+        # donor report; candidate resolution itself no longer accepts an edge.
+        self.edges, _ = build_uuid_lineage_edges(self.lineage, candidates_only=True)
         self.work = []
         self.donor_rows = {}
         self.descriptors = {}
@@ -132,9 +134,7 @@ class PredecessorPrefixTests(unittest.TestCase):
         self.assertEqual(2, after["correlated"][0]["row_count"])
         self.assertEqual(PREDECESSOR_PREFIX_RULE_NAME, after["correlated"][0]["correlation_rule"]["name"])
         self.assertEqual("old1", after["correlated"][0]["canonical_security"]["alpaca_asset_id"])
-        self.assertEqual(
-            ["new1", "old1"], after["correlated"][0]["security_identity"]["member_alpaca_asset_ids"]
-        )
+        self.assertEqual(["old1"], after["correlated"][0]["security_identity"]["member_alpaca_asset_ids"])
         self.assertEqual(1, after["uncorrelated"][0]["row_count"])
         for field in ("row_start", "row_end", "first_session_date", "last_session_date", "reason_codes"):
             self.assertEqual(before["uncorrelated"][-1][field], after["uncorrelated"][-1][field])
@@ -222,9 +222,14 @@ class PredecessorPrefixTests(unittest.TestCase):
     def test_earlier_asof_selection_retains_precedence(self):
         source = {**self.work[0][1], "requested_symbol": "NEXT"}
         result = correlate_download_rows(
-            rows(), source, self.lineage, self.intervals, predecessor_prefixes=self.assess()
+            rows(),
+            source,
+            self.lineage,
+            self.intervals,
+            predecessor_prefixes=self.assess(),
+            uuid_lineage_edges=self.edges,
         )
-        self.assertTrue(all(segment["correlation_rule"]["order"] == 8 for segment in result["correlated"]))
+        self.assertTrue(all(segment["correlation_rule"]["order"] == 9 for segment in result["correlated"]))
 
     def test_matching_donors_with_different_owners_do_not_choose_by_order(self):
         edges = tuple(replace(edge, effective_date=date(2024, 8, 16)) for edge in self.edges)
@@ -256,7 +261,7 @@ class PredecessorPrefixTests(unittest.TestCase):
                 ),
             )
 
-    def test_real_shared_three_pass_cascade_reaches_fixed_point(self):
+    def test_shared_cascade_cannot_bootstrap_a_certificate_from_its_own_action(self):
         inputs = {}
         for symbol in ("OLD", "NEXT", "OTHER"):
             downloads, descriptors = {}, []
@@ -287,18 +292,10 @@ class PredecessorPrefixTests(unittest.TestCase):
                 reader=lambda _root, _directory, descriptor, items=downloads: items[descriptor["file"]],
             )
         reports = correlate(Path("."), inputs, {symbol: self.lineage for symbol in inputs})
-        self.assertEqual(16, reports["OLD"]["correlated"]["row_count"])
-        self.assertEqual(8, reports["OLD"]["uncorrelated"]["row_count"])
-        proof = reports["OLD"]["predecessor_prefix_assessments"][0]
-        self.assertEqual("NEXT", proof["donor_symbol"])
-        self.assertEqual("rename1", proof["corporate_action_id"])
-        self.assertEqual(2, proof["rows"])
-        self.assertEqual("2024-08-15", proof["last_session"])
-        self.assertTrue(proof["exact_raw_prices_and_timestamps"])
-        self.assertTrue(proof["all_adjustment_session_grids_match"])
-        self.assertEqual(
-            PREDECESSOR_PREFIX_RULE_NAME, reports["OLD"]["correlated"]["segments"][0]["correlation_rule"]["name"]
-        )
+        self.assertEqual(0, reports["OLD"]["correlated"]["row_count"])
+        self.assertEqual(24, reports["OLD"]["uncorrelated"]["row_count"])
+        self.assertEqual([], reports["OLD"]["predecessor_prefix_assessments"])
+        self.assertEqual([], reports["NEXT"]["uuid_lineage_edges"])
         # An incremental open-month input is not the complete on-disk prefix.
         for descriptor in inputs["OLD"].local["downloads"]:
             descriptor["rows"] = 100

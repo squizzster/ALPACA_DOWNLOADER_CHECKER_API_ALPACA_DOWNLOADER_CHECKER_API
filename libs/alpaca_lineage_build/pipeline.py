@@ -880,6 +880,9 @@ def run_lineage(
             prefetch.update(stale_metadata)
         selected = list(dict.fromkeys([*selected, *known_pending]))
         if work_policy is not None and symbols is None:
+            # Default standalone work includes every accepted obligation. Bounded
+            # recovery callers must pass their explicit pending symbols; otherwise
+            # ordinary next-session obligations become premature lineage work.
             selected = list(dict.fromkeys([*selected, *work_policy.work]))
             prefetch.update(work_policy.work)
         if work_policy is not None:

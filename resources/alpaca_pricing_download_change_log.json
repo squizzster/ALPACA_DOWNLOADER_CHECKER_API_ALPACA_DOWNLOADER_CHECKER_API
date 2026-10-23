@@ -150,5 +150,10 @@
     "modifications": [
       "Resolve symbols omitted from every page of a multi-symbol bars response through exact requests before completing their acquisition. Reuse delivered members without refetching, preserve explicit and exact empty responses, keep failures scoped to the undelivered symbol and retain ordered pagination and compatible completed publications."
     ]
+  },
+  {
+    "modifications": [
+      "Complete normally omitted symbols as empty only after successful exhaustive batch pagination, without per-symbol requests. Preserve transport, schema, pagination and request-size failure handling. Require a bounded fresh confirmation at the pricing producer when a full replacement would empty a previously nonempty view; ordinary empty appends and new empty histories remain batched. Bound append cohorts to 2,000 symbols across all eight views to avoid oversized requests exhausting gateway retries. Keep batched HTTP failure messages compact so per-symbol failures do not repeat the full roster in reports and durable work state."
+    ]
   }
 ]

@@ -183,7 +183,9 @@ def _dividend_backed_current_reuse(
     It does not establish inception. The shared inert separator and unrelated
     former departure distinguish this episode from a continuing stock's halt.
     """
-    edges, issues = build_uuid_lineage_edges(lineage)
+    # Even an uncertified continuation vetoes a claim that two episodes are
+    # unrelated. This screen does not publish or accept UUID membership.
+    edges, issues = build_uuid_lineage_edges(lineage, candidates_only=True)
     rejected = {issue["rejected_action_id"] for issue in issues if "rejected_action_id" in issue}
     actions = {action.get("id"): action for action in lineage.get("corporate_actions", [])}
     departures = set()

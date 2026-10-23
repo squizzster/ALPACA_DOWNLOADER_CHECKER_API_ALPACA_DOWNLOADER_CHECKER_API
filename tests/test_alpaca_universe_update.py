@@ -14,10 +14,11 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from libs.alpaca_data_api_solver import build_plan
-from libs.alpaca_lineage_build import storage, universe_state
+from libs.alpaca_lineage_build import storage, universe_plan, universe_state
 from libs.alpaca_lineage_build.catalogue import discovery_labels, observe_catalogue
 from libs.alpaca_lineage_build.check_summary import rebuild
 from libs.alpaca_lineage_build.contract import LineageError
+from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.projection import migrate_index, require_complete
 from libs.alpaca_lineage_build.universe_update import (
@@ -26,6 +27,7 @@ from libs.alpaca_lineage_build.universe_update import (
     recover_publications,
     run_update,
 )
+from libs.alpaca_pricing_download import check_summary
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
@@ -157,6 +159,82 @@ class UniverseUpdateTests(unittest.TestCase):
         entry = storage.read_index(self.store / "end_of_day/lineage")["symbols"]["AAA"]
         self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
+
+    def test_pending_summary_recovers_only_named_group_before_ordinary_append(self):
+        self.records[:] = [asset("AAA"), asset("BBB")]
+        download_pricing(self.store, "BBB", "2026-10-17", client=FakeClient(self.old))
+        run_lineage(self.store, ["BBB"], identity_client=IdentityClient({"BBB": asset("BBB")}))
+        check_summary.invalidate(self.store, ["BBB"], owner="lineage")
+        self.live.update({s: [*self.old, bar("2026-10-19")] for s in ("AAA", "BBB")})
+        reads_before_selection = []
+
+        def progress(stage, _values):
+            if stage == "selected":
+                reads_before_selection.extend(call.args[1] for call in receipts.call_args_list)
+                self.assertEqual(self.pages, [], "recovery must trust the completed pricing generation")
+
+        with (
+            patch.object(storage, "read_receipt", wraps=storage.read_receipt) as receipts,
+            patch(
+                "libs.alpaca_lineage_build.universe_update.acquire_selected",
+                side_effect=AssertionError("summary members entered historical acquisition"),
+            ),
+        ):
+            result = self.update("2026-10-20", progress=progress)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(set(reads_before_selection), {"BBB"})
+        self.assertEqual([row["symbol"] for row in result["stages"]["recovery_lineage"]["results"]], ["BBB"])
+        self.assertFalse(any(item["acquire"] for item in result["plan"]["work"].values()))
+        self.assertEqual(len(self.pages), 9)  # One last-all batch, then eight one-session append views.
+        self.assertTrue(all(page["start"][:10] >= "2026-10-16" for page in self.pages))
+
+    def test_unfinished_summary_recovery_cannot_select_or_persist_universe_acquisition(self):
+        check_summary.invalidate(self.store, ["AAA"], owner="lineage")
+        previous = universe_state.read_state(self.store)["work"]
+        with (
+            patch("libs.alpaca_lineage_build.universe_update.run_lineage", return_value={"failed": 1}),
+            patch.object(universe_plan, "select_work", side_effect=AssertionError("incomplete boundary used")),
+            patch(
+                "libs.alpaca_lineage_build.universe_update.observe_catalogue",
+                side_effect=AssertionError("universe discovery before recovery completed"),
+            ),
+        ):
+            result = self.update("2026-10-20")
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["pending_lineage_symbols"], ["AAA"])
+        self.assertTrue(result["blockers"])
+        self.assertEqual(universe_state.read_state(self.store)["work"], previous)
+        self.assertEqual(self.pages, [])
+
+    def test_selection_rejects_unavailable_summary_before_metadata_or_acquisition(self):
+        accepted = universe_plan.boundaries(self.store, self.registry)
+        accepted["summary"] = None
+        with self.assertRaisesRegex(LineageError, "complete pricing check summary"):
+            universe_plan.select_work(accepted, {}, None, "2026-10-20")
+
+    def test_reselection_preserves_requirements_without_sticky_acquisition_route(self):
+        self.records[:] = [asset("AAA")]
+        accepted = universe_plan.boundaries(self.store, self.registry)
+        observation = observe_catalogue(self.identity)
+
+        def select():
+            return universe_plan.select_work(
+                accepted, observation, EvidenceClient(self.identity, observation=observation), "2026-10-20"
+            )["work"]["AAA"]
+
+        normal = select()
+        self.assertFalse(normal["acquire"])
+        prior = {**normal, "acquire": True, "reasons": ["advance_retained_coverage"]}
+        accepted["state"]["work"]["AAA"] = prior
+        routed = select()
+        self.assertFalse(routed["acquire"])
+        for key in ("pricing_end_exclusive", "pricing_start", "evidence_fingerprint"):
+            self.assertEqual(routed[key], prior[key])
+        prior["invalidate_pricing"] = True
+        self.assertTrue(select()["acquire"], "an actual identity replacement still requires acquisition")
+        prior["invalidate_pricing"] = False
+        accepted["summary"]["entries"] = []
+        self.assertTrue(select()["acquire"], "retained histories outside the summary still need their owner")
 
     def test_conflicting_action_leaves_only_affected_update_pending_and_other_histories_readable(self):
         from test_alpaca_end_of_day_api import valid_bars
@@ -458,7 +536,8 @@ class UniverseUpdateTests(unittest.TestCase):
         ):
             result = self.update()
         self.assertFalse(result["complete"])
-        self.assertEqual(len(result["plan"]["deferred"]), 2)
+        self.assertEqual(len(result["deferred"]), 2)
+        self.assertTrue(result["blockers"])
         self.assertTrue(self.update(retry_blocked=True)["complete"])
 
     def test_interrupted_identity_replacement_reuses_published_evidence_contract(self):

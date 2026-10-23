@@ -3,7 +3,11 @@ import unittest
 
 from libs.alpaca_end_of_day_security_correlation.evidence import build_ticker_ownership_intervals
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
-from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge, correlation_source
+from tests.test_alpaca_end_of_day_security_correlation import (
+    add_name_change_edge,
+    certified_edges,
+    correlation_source,
+)
 
 
 def evidence(sibling_date="2024-01-04"):
@@ -35,6 +39,7 @@ def resolve(lineage):
         correlation_source("HOLD", asof="2024-02-01"),
         lineage,
         intervals,
+        uuid_lineage_edges=certified_edges(lineage)[0],
     )
 
 
@@ -99,8 +104,11 @@ class SourceContinuityTests(unittest.TestCase):
             successor=("current", "FOREIGN", "222222222", "Continuing Corporation Class A"),
         )
         result = resolve(lineage)
-        self.assertEqual("FOREIGN", result["correlated"][0]["historical_symbol"])
-        self.assertEqual("current", result["correlated"][0]["canonical_security"]["alpaca_asset_id"])
+        self.assertEqual([], result["uncorrelated"])
+        self.assertEqual(["HOLD", "HOLD"], [s["historical_symbol"] for s in result["correlated"]])
+        self.assertEqual(
+            ["prior", "current"], [s["canonical_security"]["alpaca_asset_id"] for s in result["correlated"]]
+        )
 
     def test_undated_extra_source_occupant_keeps_ambiguity(self):
         lineage = evidence()

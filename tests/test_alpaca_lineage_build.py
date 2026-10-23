@@ -19,7 +19,7 @@ from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.contract import validate_version
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.reader import read_lineage
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS, timestamp
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_pricing_download.storage import initialize_store, ticker_lock
@@ -67,6 +67,20 @@ class IdentityClient:
 
 def calendar_bars(start, end):
     return [bar(day) for day in expected_market_session_coverage(start, end).session_dates]
+
+
+def informative_bars(start, end):
+    return [
+        {
+            **bar(day, str(10 + int(day[-2:]))),
+            "t": datetime.fromisoformat(day)
+            .replace(tzinfo=NEW_YORK)
+            .astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        for day in expected_market_session_coverage(start, end).session_dates
+    ]
 
 
 def lineage_worker(store, ready, entered, release):
@@ -218,8 +232,8 @@ class LineageBuildTests(unittest.TestCase):
     def test_repeated_arrival_does_not_create_false_cross_source_identity_partition(self):
         # A later duplicate transition must not manufacture an unresolved gap
         # and then let the next cascade pass split the accepted UUID membership.
-        before = calendar_bars("2022-12-08", "2023-12-13")
-        after = calendar_bars("2023-12-13", "2023-12-22")
+        before = informative_bars("2022-12-08", "2023-12-13")
+        after = informative_bars("2023-12-13", "2023-12-22")
         self.download("OLD", end="2024-01-01", bars=before)
         self.download("NEW", end="2024-01-01", bars=before + after)
         old, new = asset("OLD"), asset("NEW")
@@ -530,9 +544,9 @@ class LineageBuildTests(unittest.TestCase):
 
         initialize_command_registration(self)
         prices = {
-            "META": calendar_bars("2021-07-01", "2026-10-14"),
-            "FB": calendar_bars("2021-07-01", "2022-06-09") + calendar_bars("2025-06-26", "2026-10-14"),
-            "METV": calendar_bars("2021-07-01", "2026-10-14"),
+            "META": informative_bars("2021-07-01", "2026-10-14"),
+            "FB": informative_bars("2021-07-01", "2022-06-09") + informative_bars("2025-06-26", "2026-10-14"),
+            "METV": informative_bars("2021-07-01", "2026-10-14"),
         }
         clients = {symbol: FakeClient(rows) for symbol, rows in prices.items()}
         requested = []
@@ -659,9 +673,9 @@ class LineageBuildTests(unittest.TestCase):
 
     def test_fb_meta_rename_and_reused_fb_remain_distinct(self):
         prices = {
-            "META": calendar_bars("2021-07-01", "2026-10-14"),
-            "FB": calendar_bars("2021-07-01", "2022-06-09") + calendar_bars("2025-06-26", "2026-10-14"),
-            "METV": calendar_bars("2021-07-01", "2026-10-14"),
+            "META": informative_bars("2021-07-01", "2026-10-14"),
+            "FB": informative_bars("2021-07-01", "2022-06-09") + informative_bars("2025-06-26", "2026-10-14"),
+            "METV": informative_bars("2021-07-01", "2026-10-14"),
         }
         for symbol, bars in prices.items():
             self.download(symbol, bars=bars)
@@ -676,9 +690,11 @@ class LineageBuildTests(unittest.TestCase):
         )
         self.assertEqual(
             {item["security_identity"]["security_id"] for item in fb},
-            {security_id_for_alpaca_asset_ids(["fb-etf-id"])},
+            {security_id_for_alpaca_asset_ids(["fb-etf-id"]), security_id_for_alpaca_asset_ids(["meta-id"])},
         )
-        self.assertTrue(all(item["from"] >= "2025-06-26" for item in fb))
+        for item in fb:
+            expected = "meta-id" if item["to"] < "2022-06-09" else "fb-etf-id"
+            self.assertEqual([expected], item["security_identity"]["member_alpaca_asset_ids"])
 
     def test_only_one_lineage_worker_and_ticker_lock_blocks_provider_calls(self):
         self.download()

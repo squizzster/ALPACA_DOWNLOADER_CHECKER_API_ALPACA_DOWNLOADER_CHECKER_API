@@ -16,6 +16,19 @@ from .pricing import empty_exclusions, rule_loaders
 def correlate(store, inputs, evidence):
     previous = {}
     cache = CorrelationCache()
+    # Identity rules consume only this selected group's already-loaded rows.
+    # Missing complete evidence withholds a certificate; never open more histories
+    # or fetch provider bars here to make a downstream rule succeed.
+    for symbol, view in inputs.items():
+        cache.register_name_change_source(
+            symbol,
+            view.downloads.values(),
+            complete=all(
+                descriptor.get("rows", len(view.downloads[descriptor["file"]].rows))
+                == len(view.downloads[descriptor["file"]].rows)
+                for descriptor in view.local["downloads"]
+            ),
+        )
     for iteration in range(3):
         sessions, correlation, rows = rule_loaders(inputs, previous, cache)
         reports = {

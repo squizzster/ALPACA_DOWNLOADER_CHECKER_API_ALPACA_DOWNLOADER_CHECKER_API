@@ -346,5 +346,11 @@
       "Allow an otherwise qualified initial terminal episode before unrelated ticker reuse to include its cash-merger date when that final observed session has positive volume and trades in every view. Require the exact departing issue and supporting cash-only terminal action; retain exclusive ownership intervals, existing occupant/conflict guards and rule precedence, and do not extend to later observations or same-day stock/name transitions.",
       "When the cash-event-day observation lacks trading evidence, retain the independently supported earlier episode and leave that boundary row to the remaining cascade instead of rejecting the whole history. Preserve both identities and all existing membership relationships."
     ]
+  },
+  {
+    "modifications": [
+      "Treat name changes as dated endpoint constraints. Reject conflicting boundary dates, require independent exact source continuity for cross-UUID joins, and bound successor-source historical labels to independently observed history. Preserve independently established concurrent successor history and accepted bounded round trips; do not bootstrap proof from decisions produced by the disputed action.",
+      "Assess rename evidence once from the complete selected group's in-memory pricing inputs, preserving frozen payloads and existing handoff trust. Keep shared-UUID aliases with an informative exact suffix despite earlier price revisions; leave unsupported prefixes unresolved. Preserve exact independently matched historical spans without promoting partial evidence into UUID membership."
+    ]
   }
 ]

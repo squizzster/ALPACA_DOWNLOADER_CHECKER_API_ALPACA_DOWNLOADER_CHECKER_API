@@ -16,7 +16,7 @@ from threading import enumerate as threads
 from unittest.mock import patch
 
 from test_alpaca_end_of_day_api import NativeCase, valid_bars
-from test_alpaca_lineage_build import IdentityClient, asset
+from test_alpaca_lineage_build import IdentityClient, asset, informative_bars
 from test_alpaca_pricing_download import FakeClient
 
 from alpaca_end_of_day import (
@@ -271,8 +271,8 @@ class CsvExportTests(NativeCase):
             data.write_csv_export(self.directory / "exports/csv", public_ids=[bad_id])
 
     def test_renamed_lineage_exports_one_continuous_public_identity(self):
-        bars = valid_bars(start="2026-09-25")
-        for symbol, rows in (("OLD", valid_bars("2026-09-25", "2026-10-01")), ("NEW", bars)):
+        bars = informative_bars("2026-09-25", "2026-10-14")
+        for symbol, rows in (("OLD", informative_bars("2026-09-25", "2026-10-01")), ("NEW", bars)):
             download_pricing(self.store, symbol, "2026-10-14", client=FakeClient(rows))
         old, new = asset("OLD"), asset("NEW")
         result = run_lineage(

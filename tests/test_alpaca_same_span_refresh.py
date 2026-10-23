@@ -124,6 +124,12 @@ class SameSpanRefreshTests(unittest.TestCase):
         self.assertEqual(files_snapshot(self.store), before)
 
     def test_omitted_batch_member_cannot_erase_a_nonempty_replacement(self):
+        self.check_omitted_replacement()
+
+    def test_one_omitted_view_cannot_erase_previously_published_prices(self):
+        self.check_omitted_replacement(adjustment="all")
+
+    def check_omitted_replacement(self, adjustment=None):
         unchanged = files_snapshot(self.root("CCC"))
 
         def omitted(params):
@@ -132,6 +138,7 @@ class SameSpanRefreshTests(unittest.TestCase):
                 "," in params["symbols"]
                 and params["start"][:10] <= "2026-10-03"
                 and params["end"][:19] == "2026-10-14T23:59:59"
+                and (adjustment is None or params["adjustment"] == adjustment)
             ):
                 response["bars"].pop("BBB", None)
             return response
@@ -153,6 +160,19 @@ class SameSpanRefreshTests(unittest.TestCase):
         self.assertEqual({call["symbols"] for call in exact_histories}, {"BBB"})
         self.assertEqual(len(exact_histories), len(ADJUSTMENTS))
         self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
+
+    def test_confirmed_empty_full_replacement_is_bounded_and_can_remove_old_rows(self):
+        self.live["BBB"] = []
+        result = replace_prepared(self.store, prepare_refresh(self.store, ["BBB"]), client=self.client)
+        self.assertEqual(result["failed"], 0, result)
+        self.assertFalse(result["results"][0]["has_data"])
+        self.assertTrue(all(not rows for rows in read_pricing_views(self.store, "BBB").values()))
+        full = [
+            call
+            for call in self.calls
+            if call["start"][:10] == "2026-10-03" and call["end"][:19] == "2026-10-14T23:59:59"
+        ]
+        self.assertEqual(len(full), 2 * len(ADJUSTMENTS))
 
     def test_incomplete_live_check_publishes_nothing(self):
         self.live["BBB"] = []

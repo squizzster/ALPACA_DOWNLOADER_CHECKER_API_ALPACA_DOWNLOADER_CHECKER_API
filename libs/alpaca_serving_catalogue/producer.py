@@ -187,6 +187,9 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                     retained = set()
                     for key in sorted(previous):
                         prior = controls["groups"][key]
+                        # This completed selector already proves the published
+                        # decision. Matching references need no receipt/payload
+                        # audit, and a policy rebuild never reacquires pricing.
                         if _matches(prior, entries):
                             retained.add(key)
                             covered.update(prior["references"]["lineage"])

@@ -14,6 +14,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import Correlat
 from libs.alpaca_lineage_build import transform
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from tests.test_alpaca_end_of_day_security_correlation import certified_row_inputs
 
 
 class CorrelationCacheTests(unittest.TestCase):
@@ -31,7 +32,14 @@ class CorrelationCacheTests(unittest.TestCase):
 
     def correlate(self, rows, source, cache=None):
         intervals, _ = build_ticker_ownership_intervals(self.lineage)
-        return correlate_download_rows(rows, source, self.lineage, intervals, cache=cache)
+        return correlate_download_rows(
+            rows,
+            source,
+            self.lineage,
+            intervals,
+            cache=cache,
+            **certified_row_inputs(rows, source, self.lineage, intervals),
+        )
 
     def test_reuses_decisions_without_reusing_view_rows_or_provenance(self):
         cache = CorrelationCache()

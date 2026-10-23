@@ -435,6 +435,9 @@ def download_pricing(
             if previous is not None and refresh_all and not previous.get("validator")
             else session_extent(endpoints)
         )
+        prior_nonempty = {name for name, rows in endpoints.items() if rows}
+        if not prior_nonempty and old_extent:
+            prior_nonempty = set(ADJUSTMENTS)  # Legacy receipts establish data without per-view endpoints.
         if requested_start is not None and old_extent and from_date > old_extent["from"]:
             raise DownloadError(
                 f"from date {from_date} would exclude previously stored sessions from {old_extent['from']}"
@@ -491,7 +494,13 @@ def download_pricing(
             )
             first_only = {name: rows[:1] for name, rows in selected_endpoints.items()}
             first_ok = _endpoints_match(client, symbol, first_only, end.date().isoformat())
-            if overlap_ok and first_ok:
+            empties_history = full_history and any(
+                name in prior_nonempty and not rows for name, rows in views.items()
+            )
+            # Removing published history requires a fresh confirmation. The planned
+            # response is consumed once, so the bounded retry makes exact requests.
+            # Ordinary empty appends must never enter this replacement-only guard.
+            if overlap_ok and first_ok and not (empties_history and not attempt):
                 break
             if attempt:
                 raise DownloadError("provider pricing changed during acquisition twice; publication unchanged")
