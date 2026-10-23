@@ -169,6 +169,13 @@ Stable `.download.lock` inodes provide exclusive producer/shared reader `flock`;
 serializes writers. Sorted pricing locks and a brief publication gate protect selected groups, allowing
 unrelated reads/publications. Readers select → lock → recheck before consuming. Lock-file existence is not ownership.
 
+One stable `.<store-name>.operation.lock` beside the store is the outer operation gate. CSV export holds a
+nonblocking shared `flock` from catalogue selection through its run manifest; every store-writing CLI command
+holds a nonblocking exclusive `flock` for its complete operation. The order is store gate before existing owner
+locks. This excludes writer/writer and writer/export overlap while allowing read-only exports together. Process
+exit, including `SIGKILL`, closes the descriptor and releases the kernel lock; the path remains because its
+existence is not lock state, and there is no PID or stale-lock recovery.
+
 Owners close temporary files and atomically replace outputs under journals: payloads before receipts/index,
 summary before acknowledgement, journal cleared last. Acknowledgement cannot consume newer notices/hints.
 Pricing hands accepted source/endpoints directly downstream, reuses cold references and inventories replaced

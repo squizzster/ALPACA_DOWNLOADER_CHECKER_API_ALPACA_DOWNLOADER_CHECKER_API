@@ -30,3 +30,4 @@ htmlcov/
 /ticker_lists/
 /unique_ticker_codes.csv
 /resources/.ticker.csv.lock
+.*.operation.lock

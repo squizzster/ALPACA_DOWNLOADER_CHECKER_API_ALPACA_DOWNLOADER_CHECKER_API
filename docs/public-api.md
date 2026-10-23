@@ -149,12 +149,15 @@ Export trusts the opened serving catalogue and selected lineage/pricing manifest
 selected identity group once, follows named payloads, and shares decoded payloads within that group.
 It does not discover directories, recalculate upstream digests or replay identity/eligibility decisions.
 Output checksums are calculated as CSV bytes are written. The export declares the opened catalogue
-snapshot and consumes compatible groups under their reader locks.
+snapshot and consumes compatible groups under their reader locks. A store-wide shared operation lock spans
+the catalogue-generation check through final-manifest publication. Store writers take the exclusive side,
+so neither an update nor another writer can overlap an export. A `DataLibrary` opened before the export must
+still match the current compact catalogue generation; this checks only the selector token.
 
 `workers` accepts integers from 1 through 4, defaulting to 2. Parallel workers process complete groups from the same
 accepted catalogue. Each group's identities stay together with their decoded payload reuse; outstanding groups
 are bounded by the worker count and only bounded, compact completion messages cross threads. No payload prefetch or
-additional catalogue read occurs. The coordinator invokes progress callbacks serially on the calling thread
+full catalogue reread occurs. The coordinator invokes progress callbacks serially on the calling thread
 and orders manifest entries by the original sorted group/identity selection, independently of completion order.
 It publishes only after every group succeeds and all workers release their resources. Progress counts completed
 CSV/digest pairs; selected identities with no rows advance the processed count without creating files.
@@ -163,4 +166,4 @@ CSV source and destination locks always fail immediately with `ReaderBusyError` 
 the library was opened with `wait=True`. Other library reads retain their configured wait behavior. On failure
 or interruption, dispatch stops and workers close their active work before the error reaches the caller.
 Cancellation takes effect between group/identity operations; an operating-system read or write already in
-progress must return. Previous completed exports remain selected and incomplete directories remain unselected.
+progress must return. Previous completed exports remain intact and incomplete directories remain unselected.

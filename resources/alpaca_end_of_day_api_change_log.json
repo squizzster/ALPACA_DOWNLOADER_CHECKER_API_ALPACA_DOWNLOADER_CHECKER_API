@@ -96,5 +96,10 @@
       "Make CSV destination and source locks nonblocking regardless of the reader wait setting; coordinate cancellation, progress and final publication after workers release their resources.",
       "Publish each completed run's final manifest inside its timestamp directory with run-relative identity paths, so completed exports are self-contained and removable without a shared selector or directory discovery."
     ]
+  },
+  {
+    "modifications": [
+      "Hold a store-wide shared operation lock from accepted catalogue generation through CSV final-manifest publication, rejecting a stale DataLibrary or a concurrent store writer without re-auditing upstream data."
+    ]
   }
 ]

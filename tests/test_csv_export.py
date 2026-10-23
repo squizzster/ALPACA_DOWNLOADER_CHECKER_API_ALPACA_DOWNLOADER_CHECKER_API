@@ -31,6 +31,7 @@ from alpaca_end_of_day import (
 from libs.alpaca_cli import main
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download.download import download_pricing
+from libs.common.store_lock import StoreBusyError, operation_lock
 
 FIELDS = ("open", "high", "low", "close", "volume", "trade_count", "vwap")
 PREFIXES = (
@@ -241,10 +242,14 @@ class CsvExportTests(NativeCase):
             self.assertEqual(plan["identities"], 1)
             self.assertEqual(plan["groups"], 1)
             self.assertEqual(plan["sources"], 1)
-            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
-                data.write_csv_export(self.directory / "exports/csv", public_ids=["0" * 64])
             with self.assertRaises(ValueError):
                 data.plan_csv_export(start="2026-10-12", end="2026-10-01")
+        with (
+            patch.object(os, "scandir", side_effect=AssertionError("directory discovery")),
+            patch.object(data._reader, "_snapshot", side_effect=AssertionError("source selected")),
+        ):
+            with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
+                data.write_csv_export(self.directory / "exports/csv", public_ids=["0" * 64])
 
     def test_all_online_selection_excludes_unavailable_identity(self):
         self.add_symbol("BAD", [{**bar, "v": -1} for bar in self.bars])
@@ -893,6 +898,68 @@ class CsvExportTests(NativeCase):
                 self.assertEqual(final_path.read_bytes(), previous)
                 self.assertTrue(data._reader.wait)
         self.exported(data, workers=2)
+
+    def test_store_writer_blocks_export_before_selection_or_output(self):
+        data = self.bootstrap()
+        destination = self.directory / "writer-blocked-csv"
+        with (
+            operation_lock(self.store, exclusive=True),
+            patch.object(_csv_export, "_selection", side_effect=AssertionError("busy export selected work")),
+            self.assertRaisesRegex(ReaderBusyError, "source store is busy"),
+        ):
+            data.write_csv_export(destination)
+        self.assertFalse(destination.exists())
+
+    def test_export_holds_store_lock_through_manifest_and_rejects_stale_catalogue(self):
+        data = self.bootstrap()
+        destination = self.directory / "store-locked-csv"
+        replace = os.replace
+        observed = []
+
+        def publish(source, target):
+            if Path(target).name == "final_manifest.json":
+                with self.assertRaises(StoreBusyError):
+                    with operation_lock(self.store, exclusive=True):
+                        pass
+                observed.append(Path(target))
+            return replace(source, target)
+
+        with patch.object(os, "replace", side_effect=publish):
+            result = data.write_csv_export(destination)
+        self.assertEqual(observed, [Path(result["manifest"])])
+        with operation_lock(self.store, exclusive=True):
+            pass
+
+        stale_destination = self.directory / "stale-csv"
+        with (
+            patch.object(
+                _csv_export.catalogue_storage,
+                "selector_state",
+                return_value={"generation": "changed"},
+            ),
+            patch.object(_csv_export, "_selection", side_effect=AssertionError("stale export selected work")),
+            self.assertRaisesRegex(CatalogChangedError, "open a new DataLibrary"),
+        ):
+            data.write_csv_export(stale_destination)
+        self.assertFalse(stale_destination.exists())
+
+    def test_cli_store_writer_blocks_before_catalogue_selection(self):
+        self.bootstrap()
+        destination = self.directory / "cli-writer-blocked-csv"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            operation_lock(self.store, exclusive=True),
+            patch("alpaca_end_of_day.DataLibrary", side_effect=AssertionError("busy CLI opened catalogue")),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(
+                main(["export", "csv", "--store", str(self.store), "--output", str(destination)]), 3
+            )
+        records = self.lifecycle_records(stderr, status="error", exit_code=3, last_phase="INIT")
+        self.assertEqual(records[1]["error_type"], "StoreBusyError")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertFalse(destination.exists())
 
     def test_worker_arguments_validate_before_selection_and_csv_rejects_wait(self):
         data = self.bootstrap()

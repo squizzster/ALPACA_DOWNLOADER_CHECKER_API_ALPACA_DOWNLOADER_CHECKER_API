@@ -181,8 +181,11 @@ creating output. See the [per-identity CSV contract](public-api.md#per-identity-
 column mappings and publication guarantees.
 
 `--workers` accepts 1 through 4 concurrent complete groups, defaulting to 2. CSV export has no `--wait` option;
-busy source or destination locks exit immediately with code 3. The library uses the same nonblocking
-CSV behavior. Planning reports the configured workers and maximum active groups without opening payloads.
+busy source, destination or store operation locks exit immediately with code 3. An export holds the shared
+store operation lock for its whole snapshot; every store-writing CLI command holds the exclusive side for
+its whole operation, so updates exclude exports and other updates. Kernel process exit releases the lock.
+The library uses the same nonblocking CSV behavior. Planning reports the configured workers and maximum
+active groups without opening payloads.
 
 CSV execution and `--plan` emit compact, versioned JSONL on stderr; stdout remains the final JSON result.
 Reporting begins after argument parsing, before CLI contract checks and catalogue access. An `INIT` record

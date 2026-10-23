@@ -56,5 +56,10 @@
       "Remove CSV --wait: busy source or destination locks fail immediately with the existing busy exit code.",
       "Return each CSV run's self-contained final manifest inside its timestamp directory instead of maintaining a shared export-root selector."
     ]
+  },
+  {
+    "modifications": [
+      "Serialize every store-writing command with one nonblocking exclusive store operation lock, and hold the matching shared lock across each CSV export so updates, other writers and exports cannot overlap incompatibly."
+    ]
   }
 ]

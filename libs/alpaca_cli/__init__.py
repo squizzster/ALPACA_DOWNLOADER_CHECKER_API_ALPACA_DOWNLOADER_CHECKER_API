@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 
@@ -14,8 +15,9 @@ from libs.alpaca_pricing_download.download import parse_date, pricing_session_en
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
+from libs.common.store_lock import StoreBusyError, operation_lock
 
-VERSION = 11
+VERSION = 12
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -252,6 +254,32 @@ def progress_reporter():
     return progress
 
 
+def _store_operation_mode(args):
+    """Classify the complete command before any store or provider work begins."""
+    command, operation = args.command, getattr(args, "operation", None)
+    if command == "export" and operation == "csv" and not args.plan:
+        return "shared"
+    writes = (
+        (command == "update" and not args.plan)
+        or (command == "pricing" and operation in {"acquire", "refresh"})
+        or (command == "lineage" and operation in {"update", "refresh", "migrate-index"})
+        or (command == "universe" and operation in {"reconcile", "rebuild"})
+        or (command == "summary" and operation == "rebuild")
+        or (command == "catalogue" and operation in {"bootstrap", "rebuild", "update"} and not args.plan)
+    )
+    if not writes:
+        return None
+    return "exclusive"
+
+
+def _store_operation(args):
+    """Take the one outer store gate for commands that export or write."""
+    mode = _store_operation_mode(args)
+    if mode is None:
+        return nullcontext()
+    return operation_lock(args.store, exclusive=mode == "exclusive")
+
+
 def dispatch(args):
     command, operation = args.command, getattr(args, "operation", None)
     if command in {"read", "resolve"}:
@@ -483,7 +511,8 @@ def main(argv=None):
             "version" in item or not item.get("modifications") for item in changelog
         ):
             raise ValueError("CLI changelog/version mismatch")
-        result = dispatch(args)
+        with _store_operation(args):
+            result = dispatch(args)
         if isinstance(result, int):
             code = result
         else:
@@ -502,7 +531,7 @@ def main(argv=None):
                 error=RuntimeError("CSV export did not complete") if code else None,
             )
         return code
-    except ReaderBusyError as error:
+    except (ReaderBusyError, StoreBusyError) as error:
         if reporter is not None:
             reporter.finish("error", 3, error=error)
         else:

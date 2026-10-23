@@ -58,4 +58,4 @@ adapters. Tests use synthetic fixtures/HTTP doubles; resources hold runtime cont
 | [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
 | [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Shared history source selection. |
 | [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |
-| [common](../libs/common/) | Calendar and SQLite connections. |
+| [common](../libs/common/) | Calendar, SQLite connections and the cross-package store operation lock. |

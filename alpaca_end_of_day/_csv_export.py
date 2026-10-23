@@ -15,6 +15,7 @@ from time import monotonic
 
 from libs.alpaca_serving_catalogue import storage as catalogue_storage
 from libs.alpaca_serving_catalogue.contract import CatalogueError
+from libs.common.store_lock import StoreBusyError, operation_lock
 
 from . import (
     ADJUSTMENTS,
@@ -341,6 +342,30 @@ def _group_events(data, directory, selected, groups, start, end, workers):
 
 def write_export(data, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2):
     workers = _workers(workers)
+    try:
+        with operation_lock(data.store, exclusive=False):
+            try:
+                current = catalogue_storage.selector_state(data.store)["generation"]
+            except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
+                raise CatalogChangedError("selected serving catalogue is no longer available") from error
+            if current != data.catalog_generation():
+                raise CatalogChangedError(
+                    "selected serving catalogue changed; open a new DataLibrary before exporting"
+                )
+            return _write_export(
+                data,
+                destination,
+                public_ids=public_ids,
+                start=start,
+                end=end,
+                progress=progress,
+                workers=workers,
+            )
+    except StoreBusyError as error:
+        raise ReaderBusyError("CSV export source store is busy; retry later") from error
+
+
+def _write_export(data, destination, *, public_ids, start, end, progress, workers):
     selected, groups, start, end = _selection(data, public_ids, start, end)
     plan = _plan(data, selected, groups, start, end, workers)
     output = Path(destination).absolute()
