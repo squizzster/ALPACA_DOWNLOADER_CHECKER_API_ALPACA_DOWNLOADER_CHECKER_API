@@ -25,6 +25,7 @@ htmlcov/
 *.sqlite3-wal
 *.sqlite3-shm
 /experimental_temp/
+/experiment_id/
 /alpaca_run_logs/
 /exports/
 /ticker_lists/
