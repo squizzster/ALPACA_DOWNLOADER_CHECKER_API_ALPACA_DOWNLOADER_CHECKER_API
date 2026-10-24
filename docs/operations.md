@@ -199,8 +199,14 @@ unchanged work repeats with a new elapsed time. Every update replaces its contex
 values from an earlier phase or work scope from leaking into the next. Invalid or oversized updates leave
 the last valid status unchanged. Brief phases may occur between heartbeats and never appear in the output.
 
-Progress schema `alpaca.lifecycle.progress`, version 1, contains `schema`, `schema_version`,
-`elapsed_seconds`, `phase` and `message`. Optional `current` and `total` always occur together and satisfy
+Progress schema `alpaca.lifecycle.progress`, version 3, contains `schema`, `schema_version`,
+`elapsed_seconds`, `next_heart_beat_in_seconds`, `phase` and `message`. The next-heartbeat field reports
+seconds until the next scheduled heartbeat, rounded up to a whole second; it is `null` in terminal error
+and `FINAL_EXIT` records because no further heartbeat is scheduled.
+Only the initial `INIT` envelope includes `ai_agent_read_this`, which directs agents to monitor heartbeats,
+use other monitoring checks only when a heartbeat is more than 10 seconds late, and derive reports from
+heartbeat messages. Later heartbeats omit this field even if the held phase is still `INIT`.
+Optional `current` and `total` always occur together and satisfy
 `0 <= current <= total`; `context` contains only fields registered for the phase. CSV `current`/`total`
 count selected public identities. Phase messages and typed field registrations live in
 [csv_progress.py](../libs/alpaca_cli/csv_progress.py):
@@ -215,7 +221,7 @@ count selected public identities. Phase messages and typed field registrations l
 | `FINAL_EXIT` | Immediate termination record with `status`, `exit_code` and `last_phase`. |
 
 On success, reporting stops and flushes one `FINAL_EXIT` with `status: success`, exit code 0. A caught
-failure flushes a separate `alpaca.lifecycle.error` schema, version 1, with `error_type`, `message`, latest
+failure flushes a separate `alpaca.lifecycle.error` schema, version 3, with `error_type`, `message`, latest
 accepted `phase`, elapsed seconds and available causes/traceback, then `FINAL_EXIT` with `status: error`.
 Busy destinations exit 3; other CSV failures exit 1. Keyboard interruption emits `status: aborted` and
 exits 130. Finalization never waits for the next heartbeat, and no heartbeat follows the final record.

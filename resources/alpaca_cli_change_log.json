@@ -61,5 +61,20 @@
     "modifications": [
       "Serialize every store-writing command with one nonblocking exclusive store operation lock, and hold the matching shared lock across each CSV export so updates, other writers and exports cannot overlap incompatibly."
     ]
+  },
+  {
+    "modifications": [
+      "Advance lifecycle progress and error schemas to version 2, adding next_heart_beat_in_seconds to every envelope: seconds until the next scheduled heartbeat rounded up, or null for terminal error and FINAL_EXIT records."
+    ]
+  },
+  {
+    "modifications": [
+      "Advance lifecycle schemas to version 3 and include ai_agent_read_this monitoring guidance only in the initial INIT envelope, never in subsequent heartbeats or terminal records."
+    ]
+  },
+  {
+    "modifications": [
+      "Update the INIT message to announce that the CSV Exporter system has successfully started and suggest reporting this to the user where relevant."
+    ]
   }
 ]

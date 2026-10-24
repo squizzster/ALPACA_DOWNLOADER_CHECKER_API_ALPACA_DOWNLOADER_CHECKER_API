@@ -70,18 +70,46 @@ class LifecycleTests(unittest.TestCase):
         records = self.stream.records()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["schema"], "alpaca.lifecycle.progress")
-        self.assertEqual(records[0]["schema_version"], 1)
+        self.assertEqual(records[0]["schema_version"], 3)
+        self.assertEqual(records[0]["next_heart_beat_in_seconds"], 60)
         self.assertEqual(records[0]["phase"], "INIT")
         self.assertEqual(records[0]["elapsed_seconds"], 0)
-        self.assertIsInstance(records[0]["message"], str)
+        self.assertEqual(
+            records[0]["message"],
+            "The CSV Exporter system has successfully started, typically report this back to the user "
+            "where relevant to do so.",
+        )
         self.assertNotIn("current", records[0])
         self.assertNotIn("total", records[0])
         self.assertNotIn(": ", self.stream.getvalue())
 
+    def test_monitoring_guidance_appears_only_in_initial_record(self) -> None:
+        reporter = self.reporter(heartbeat_intervals=(1,))
+        guidance = self.stream.records()[0]["ai_agent_read_this"]
+        self.assertIn("more than 10 seconds late", guidance)
+        self.assertIn("autonomously", guidance)
+        self.clock.advance(1)
+        reporter._emit_due()
+        self.assertEqual(self.stream.records()[-1]["phase"], "INIT")
+        reporter.update("EXPORT", current=0, total=1)
+        self.clock.advance(1)
+        reporter._emit_due()
+        reporter.finish("error", 1, error=ValueError("export failed"))
+        for record in self.stream.records()[1:]:
+            self.assertNotIn("ai_agent_read_this", record)
+
     def test_ramped_deadlines_are_anchored_and_plateau(self) -> None:
         reporter = self.reporter()
         initial = self.clock.now
-        for deadline in (60, 180, 360, 600, 900, 1200, 1500):
+        for deadline, next_interval in (
+            (60, 120),
+            (180, 180),
+            (360, 240),
+            (600, 300),
+            (900, 300),
+            (1200, 300),
+            (1500, 300),
+        ):
             self.clock.now = initial + deadline - 0.25
             count = len(self.stream.records())
             self.assertTrue(reporter.update("EXPORT", current=0, total=10))
@@ -91,6 +119,7 @@ class LifecycleTests(unittest.TestCase):
             reporter._emit_due()
             self.assertEqual(len(self.stream.records()), count + 1)
             self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], deadline)
+            self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], next_interval)
         self.assertEqual(self.stream.flush_count, 8)
 
     def test_updates_hold_only_latest_status_and_heartbeats_repeat_it(self) -> None:
@@ -108,6 +137,8 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(second["current"], 2)
         self.assertEqual(first["elapsed_seconds"], 10)
         self.assertEqual(second["elapsed_seconds"], 20)
+        self.assertEqual(first["next_heart_beat_in_seconds"], 10)
+        self.assertEqual(second["next_heart_beat_in_seconds"], 10)
         self.assertEqual(first["message"], "Writing CSVs")
         self.assertEqual(
             {k: v for k, v in first.items() if k != "elapsed_seconds"},
@@ -121,12 +152,20 @@ class LifecycleTests(unittest.TestCase):
         reporter._emit_due()
         self.assertEqual(len(self.stream.records()), 2)
         self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], 1000)
+        self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], 200)
         self.clock.advance(199)
         reporter._emit_due()
         self.assertEqual(len(self.stream.records()), 2)
         self.clock.advance(1)
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], 1200)
+
+    def test_next_heartbeat_rounds_up_remaining_seconds(self) -> None:
+        reporter = self.reporter(heartbeat_intervals=(10,))
+        self.assertEqual(self.stream.records()[0]["next_heart_beat_in_seconds"], 10)
+        self.clock.advance(12.25)
+        reporter._emit_due()
+        self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], 8)
 
     def test_context_is_copied_and_never_carried_to_other_work(self) -> None:
         reporter = self.reporter(heartbeat_intervals=(1,))
@@ -178,14 +217,14 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(held["context"], {"public_id": "accepted"})
 
     def test_size_limit_counts_utf8_bytes_not_characters(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(1,), progress_limit=512)
+        reporter = self.reporter(heartbeat_intervals=(1,), progress_limit=1024)
         self.assertTrue(reporter.update("EXPORT", message="x" * 180))
         self.assertFalse(reporter.update("EXPORT", message="\U0001f434" * 180))
         self.clock.advance(1)
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["message"], "x" * 180)
         for line in self.stream.getvalue().splitlines():
-            self.assertLessEqual(len(line.encode("utf-8")), 512)
+            self.assertLessEqual(len(line.encode("utf-8")), 1024)
 
     def test_success_and_aborted_finish_immediately_once(self) -> None:
         for status, exit_code in (("success", 0), ("aborted", None)):
@@ -204,6 +243,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(records[-1]["last_phase"], "EXPORT")
                 self.assertEqual(records[-1]["status"], status)
                 self.assertEqual(records[-1]["exit_code"], exit_code)
+                self.assertIsNone(records[-1]["next_heart_beat_in_seconds"])
                 self.assertNotIn("current", records[-1])
                 self.assertEqual(self.stream.flush_count, 2)
 
@@ -220,7 +260,9 @@ class LifecycleTests(unittest.TestCase):
         records = self.stream.records()
         self.assertEqual(len(records), 3)
         self.assertEqual(records[1]["schema"], "alpaca.lifecycle.error")
-        self.assertEqual(records[1]["schema_version"], 1)
+        self.assertEqual(records[1]["schema_version"], 3)
+        self.assertIsNone(records[1]["next_heart_beat_in_seconds"])
+        self.assertIsNone(records[2]["next_heart_beat_in_seconds"])
         self.assertEqual(records[1]["phase"], "EXPORT")
         self.assertEqual(records[1]["error_type"], "RuntimeError")
         self.assertEqual(records[1]["message"], "export failed")
@@ -232,7 +274,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.stream.flush_count, 3)
 
     def test_error_has_separate_bounded_valid_json_size_policy(self) -> None:
-        reporter = self.reporter(progress_limit=512, error_limit=2048)
+        reporter = self.reporter(progress_limit=1024, error_limit=2048)
         reporter.update("EXPORT")
         reporter.finish("error", 1, error=ValueError("\U0001f434" * 10000))
         records = self.stream.records()
@@ -241,7 +283,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(error["truncated"])
         self.assertEqual(error["phase"], "EXPORT")
         for line, record in zip(self.stream.getvalue().splitlines(), records):
-            limit = 2048 if record["schema"] == "alpaca.lifecycle.error" else 512
+            limit = 2048 if record["schema"] == "alpaca.lifecycle.error" else 1024
             self.assertLessEqual(len(line.encode("utf-8")), limit)
 
     def test_real_timer_reports_while_application_work_is_idle(self) -> None:
@@ -336,6 +378,7 @@ class LifecycleTests(unittest.TestCase):
             {"heartbeat_intervals": (float("nan"),)},
             {"heartbeat_intervals": (True,)},
             {"progress_limit": 1},
+            {"progress_limit": 512},
             {"error_limit": 1},
         ):
             with self.subTest(kwargs=kwargs):

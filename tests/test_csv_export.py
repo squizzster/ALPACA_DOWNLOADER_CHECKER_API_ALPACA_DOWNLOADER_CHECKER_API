@@ -52,6 +52,9 @@ class CsvExportTests(NativeCase):
         self.assertGreaterEqual(len(records), 2)
         self.assertEqual(records[0]["phase"], "INIT")
         self.assertEqual(records[0]["schema"], "alpaca.lifecycle.progress")
+        self.assertIn("ai_agent_read_this", records[0])
+        for record in records[1:]:
+            self.assertNotIn("ai_agent_read_this", record)
         self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
         self.assertEqual(records[-1]["schema"], "alpaca.lifecycle.progress")
         self.assertEqual(records[-1]["status"], status)
@@ -60,7 +63,12 @@ class CsvExportTests(NativeCase):
         if last_phase is not None:
             self.assertEqual(records[-1]["last_phase"], last_phase)
         for record in records:
-            self.assertEqual(record["schema_version"], 1)
+            self.assertEqual(record["schema_version"], 3)
+            if record["phase"] == "FINAL_EXIT" or record["schema"] == "alpaca.lifecycle.error":
+                self.assertIsNone(record["next_heart_beat_in_seconds"])
+            else:
+                self.assertIs(type(record["next_heart_beat_in_seconds"]), int)
+                self.assertGreater(record["next_heart_beat_in_seconds"], 0)
             self.assertIs(type(record["elapsed_seconds"]), int)
             self.assertGreaterEqual(record["elapsed_seconds"], 0)
             self.assertIsInstance(record["message"], str)
