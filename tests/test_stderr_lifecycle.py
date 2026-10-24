@@ -6,6 +6,7 @@ import threading
 import unittest
 from unittest import mock
 
+from libs.alpaca_cli.csv_progress import PHASES, progress_callback
 from libs.alpaca_cli.lifecycle import LifecycleReporter, Phase
 
 
@@ -70,8 +71,8 @@ class LifecycleTests(unittest.TestCase):
         records = self.stream.records()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["schema"], "alpaca.lifecycle.progress")
-        self.assertEqual(records[0]["schema_version"], 3)
-        self.assertEqual(records[0]["next_heart_beat_in_seconds"], 60)
+        self.assertEqual(records[0]["schema_version"], 4)
+        self.assertEqual(records[0]["next_heart_beat_in_seconds"], 10)
         self.assertEqual(records[0]["phase"], "INIT")
         self.assertEqual(records[0]["elapsed_seconds"], 0)
         self.assertEqual(
@@ -88,6 +89,10 @@ class LifecycleTests(unittest.TestCase):
         guidance = self.stream.records()[0]["ai_agent_read_this"]
         self.assertIn("more than 10 seconds late", guidance)
         self.assertIn("autonomously", guidance)
+        self.assertIn(
+            "You should update the user **only** at each heartbeat unless the user has directed you otherwise.",
+            guidance,
+        )
         self.clock.advance(1)
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["phase"], "INIT")
@@ -102,13 +107,14 @@ class LifecycleTests(unittest.TestCase):
         reporter = self.reporter()
         initial = self.clock.now
         for deadline, next_interval in (
-            (60, 120),
-            (180, 180),
-            (360, 240),
-            (600, 300),
-            (900, 300),
-            (1200, 300),
-            (1500, 300),
+            (10, 60),
+            (70, 120),
+            (190, 180),
+            (370, 240),
+            (610, 300),
+            (910, 300),
+            (1210, 300),
+            (1510, 300),
         ):
             self.clock.now = initial + deadline - 0.25
             count = len(self.stream.records())
@@ -120,7 +126,47 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(len(self.stream.records()), count + 1)
             self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], deadline)
             self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], next_interval)
-        self.assertEqual(self.stream.flush_count, 8)
+        self.assertEqual(self.stream.flush_count, 9)
+
+    def test_csv_export_estimate_is_tbd_until_progress_supplies_seconds(self) -> None:
+        self.phases = PHASES
+        reporter = self.reporter()
+        progress = progress_callback(reporter)
+        self.assertTrue(progress("csv_export_plan", {"identities": 2}))
+        self.clock.advance(10)
+        reporter._emit_due()
+        first = self.stream.records()[-1]
+        self.assertEqual(first["elapsed_seconds"], 10)
+        self.assertEqual(first["context"]["estimated_remaining_seconds"], "TBD")
+        self.assertTrue(progress("csv_export", {"done": 1, "total": 2, "estimated_remaining_seconds": 42.5}))
+        self.clock.advance(60)
+        reporter._emit_due()
+        self.assertEqual(self.stream.records()[-1]["context"]["estimated_remaining_seconds"], 42)
+
+    def test_first_heartbeat_overrides_estimate_without_changing_held_status(self) -> None:
+        self.phases = PHASES
+        for phase in ("INIT", "CATALOGUE", "PLAN", "EXPORT", "PUBLISH"):
+            with self.subTest(phase=phase):
+                self.stream = RecordingStream()
+                reporter = self.reporter(first_heartbeat_context={"estimated_remaining_seconds": "TBD"})
+                if phase == "EXPORT":
+                    reporter.update(phase, context={"estimated_remaining_seconds": 42, "rows": 100})
+                elif phase != "INIT":
+                    reporter.update(phase)
+                self.assertNotIn("context", self.stream.records()[0])
+                self.clock.advance(10)
+                reporter._emit_due()
+                self.assertEqual(self.stream.records()[-1]["context"]["estimated_remaining_seconds"], "TBD")
+                self.clock.advance(60)
+                reporter._emit_due()
+                if phase == "EXPORT":
+                    self.assertEqual(
+                        self.stream.records()[-1]["context"], {"estimated_remaining_seconds": 42, "rows": 100}
+                    )
+                else:
+                    self.assertNotIn("context", self.stream.records()[-1])
+                reporter.finish("success", 0)
+                self.assertNotIn("context", self.stream.records()[-1])
 
     def test_updates_hold_only_latest_status_and_heartbeats_repeat_it(self) -> None:
         reporter = self.reporter(heartbeat_intervals=(10,))
@@ -152,13 +198,13 @@ class LifecycleTests(unittest.TestCase):
         reporter._emit_due()
         self.assertEqual(len(self.stream.records()), 2)
         self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], 1000)
-        self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], 200)
-        self.clock.advance(199)
+        self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], 210)
+        self.clock.advance(209)
         reporter._emit_due()
         self.assertEqual(len(self.stream.records()), 2)
         self.clock.advance(1)
         reporter._emit_due()
-        self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], 1200)
+        self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], 1210)
 
     def test_next_heartbeat_rounds_up_remaining_seconds(self) -> None:
         reporter = self.reporter(heartbeat_intervals=(10,))
@@ -260,7 +306,7 @@ class LifecycleTests(unittest.TestCase):
         records = self.stream.records()
         self.assertEqual(len(records), 3)
         self.assertEqual(records[1]["schema"], "alpaca.lifecycle.error")
-        self.assertEqual(records[1]["schema_version"], 3)
+        self.assertEqual(records[1]["schema_version"], 4)
         self.assertIsNone(records[1]["next_heart_beat_in_seconds"])
         self.assertIsNone(records[2]["next_heart_beat_in_seconds"])
         self.assertEqual(records[1]["phase"], "EXPORT")

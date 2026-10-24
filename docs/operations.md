@@ -189,8 +189,8 @@ active groups without opening payloads.
 
 CSV execution and `--plan` emit compact, versioned JSONL on stderr; stdout remains the final JSON result.
 Reporting begins after argument parsing, before CLI contract checks and catalogue access. An `INIT` record
-is flushed immediately. Heartbeat intervals are 60, 120, 180, 240 and then 300 seconds repeatedly: records
-fall at elapsed **1, 3, 6, 10, 15, 20… minutes**. `--heartbeat-seconds N` selects a fixed interval instead
+is flushed immediately. Heartbeat intervals are 10, 60, 120, 180, 240 and then 300 seconds repeatedly: records
+fall at elapsed **10, 70, 190, 370, 610, 910, 1210… seconds**. `--heartbeat-seconds N` selects a fixed interval instead
 (integer seconds, 1–86400). Whole `elapsed_seconds` use the monotonic clock from reporting activation.
 
 The reporter holds one status in memory. Work updates replace it without printing, queuing or resetting
@@ -199,13 +199,18 @@ unchanged work repeats with a new elapsed time. Every update replaces its contex
 values from an earlier phase or work scope from leaking into the next. Invalid or oversized updates leave
 the last valid status unchanged. Brief phases may occur between heartbeats and never appear in the output.
 
-Progress schema `alpaca.lifecycle.progress`, version 3, contains `schema`, `schema_version`,
+Progress schema `alpaca.lifecycle.progress`, version 4, contains `schema`, `schema_version`,
 `elapsed_seconds`, `next_heart_beat_in_seconds`, `phase` and `message`. The next-heartbeat field reports
 seconds until the next scheduled heartbeat, rounded up to a whole second; it is `null` in terminal error
 and `FINAL_EXIT` records because no further heartbeat is scheduled.
 Only the initial `INIT` envelope includes `ai_agent_read_this`, which directs agents to monitor heartbeats,
 use other monitoring checks only when a heartbeat is more than 10 seconds late, and derive reports from
-heartbeat messages. Later heartbeats omit this field even if the held phase is still `INIT`.
+heartbeat messages. It also directs agents to update the user only at each heartbeat unless the user
+directs otherwise. Later heartbeats omit this field even if the held phase is still `INIT`.
+During `EXPORT`, `context.estimated_remaining_seconds` is `"TBD"` until completion progress supplies a
+numeric estimate; subsequent estimates remain whole seconds. The initial 10-second heartbeat always
+displays `"TBD"`, regardless of phase or an already available estimate. This display override does not
+replace the held estimate for subsequent heartbeats. Fixed intervals other than 10 seconds are unchanged.
 Optional `current` and `total` always occur together and satisfy
 `0 <= current <= total`; `context` contains only fields registered for the phase. CSV `current`/`total`
 count selected public identities. Phase messages and typed field registrations live in
@@ -221,7 +226,7 @@ count selected public identities. Phase messages and typed field registrations l
 | `FINAL_EXIT` | Immediate termination record with `status`, `exit_code` and `last_phase`. |
 
 On success, reporting stops and flushes one `FINAL_EXIT` with `status: success`, exit code 0. A caught
-failure flushes a separate `alpaca.lifecycle.error` schema, version 3, with `error_type`, `message`, latest
+failure flushes a separate `alpaca.lifecycle.error` schema, version 4, with `error_type`, `message`, latest
 accepted `phase`, elapsed seconds and available causes/traceback, then `FINAL_EXIT` with `status: error`.
 Busy destinations exit 3; other CSV failures exit 1. Keyboard interruption emits `status: aborted` and
 exits 130. Finalization never waits for the next heartbeat, and no heartbeat follows the final record.

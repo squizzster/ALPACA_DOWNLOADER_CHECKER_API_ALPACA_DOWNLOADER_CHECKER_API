@@ -76,5 +76,20 @@
     "modifications": [
       "Update the INIT message to announce that the CSV Exporter system has successfully started and suggest reporting this to the user where relevant."
     ]
+  },
+  {
+    "modifications": [
+      "Advance lifecycle schemas to version 4, add an initial 10-second heartbeat interval before the existing 60/120/180/240/300-second intervals while retaining fixed overrides, and report CSV estimated_remaining_seconds as TBD until an estimate is available."
+    ]
+  },
+  {
+    "modifications": [
+      "Always display estimated_remaining_seconds as TBD in the initial 10-second heartbeat, regardless of phase or an already available estimate; preserve the held estimate for subsequent heartbeats."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend INIT-only ai_agent_read_this guidance to update the user only at each heartbeat unless the user directs otherwise."
+    ]
   }
 ]

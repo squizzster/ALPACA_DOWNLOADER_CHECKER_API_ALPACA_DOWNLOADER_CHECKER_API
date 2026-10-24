@@ -63,7 +63,7 @@ class CsvExportTests(NativeCase):
         if last_phase is not None:
             self.assertEqual(records[-1]["last_phase"], last_phase)
         for record in records:
-            self.assertEqual(record["schema_version"], 3)
+            self.assertEqual(record["schema_version"], 4)
             if record["phase"] == "FINAL_EXIT" or record["schema"] == "alpaca.lifecycle.error":
                 self.assertIsNone(record["next_heart_beat_in_seconds"])
             else:

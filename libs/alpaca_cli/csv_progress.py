@@ -32,7 +32,7 @@ PHASES = {
         {
             **_PLAN,
             **_COUNTS,
-            "estimated_remaining_seconds": int,
+            "estimated_remaining_seconds": (int, str),
         },
     ),
     "PUBLISH": Phase("Publishing the completed export manifest.", _COUNTS),
@@ -48,6 +48,8 @@ def hold_plan(reporter, values, *, phase="PLAN"):
             {name: value for name, value in values.get("metadata_read_bounds", {}).items() if name in _PLAN}
         )
         total = values["identities"]
+        if phase == "EXPORT":
+            context["estimated_remaining_seconds"] = "TBD"
         return reporter.update(phase, current=total if phase == "PLAN" else 0, total=total, context=context)
     except Exception:
         return False
@@ -67,6 +69,8 @@ def progress_callback(reporter):
             if stage == "csv_export" and "workers" in values:
                 context["workers"] = values["workers"]
             phase = "PUBLISH" if stage == "csv_export_publish" else "EXPORT"
+            if phase == "EXPORT":
+                context["estimated_remaining_seconds"] = "TBD"
             if phase == "EXPORT" and "estimated_remaining_seconds" in values:
                 context["estimated_remaining_seconds"] = int(values["estimated_remaining_seconds"])
             return reporter.update(phase, current=values["done"], total=values["total"], context=context)

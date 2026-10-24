@@ -10,16 +10,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-DEFAULT_HEARTBEAT_INTERVALS = (60, 120, 180, 240, 300)
+DEFAULT_HEARTBEAT_INTERVALS = (10, 60, 120, 180, 240, 300)
 PROGRESS_SCHEMA = "alpaca.lifecycle.progress"
 ERROR_SCHEMA = "alpaca.lifecycle.error"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 AI_AGENT_READ_THIS = (
     "This process reports via heartbeats; you are therefore not required to use other snooping controls, "
     "mechanisms, or intrusive checks to assist with monitoring unless the heartbeat is more than 10 seconds "
     "late, in which case authorization is granted only then. You may, if the user requests or as standard "
     "practice, derive a report from the heartbeat messages to inform your human or yourself if operating "
-    "autonomously."
+    "autonomously. You should update the user **only** at each heartbeat unless the user has directed "
+    "you otherwise."
 )
 _SCALAR_TYPES = (str, int, float, bool, type(None))
 _MAX_ELAPSED = 2**63 - 1
@@ -35,13 +36,16 @@ class Phase:
     """A registered phase and its optional, scalar context fields."""
 
     message: str
-    fields: Mapping[str, type] = field(default_factory=dict)
+    fields: Mapping[str, type | tuple[type, ...]] = field(default_factory=dict)
 
     def __post_init__(self):
         if not isinstance(self.message, str) or not self.message:
             raise ValueError("phase message must be a nonempty string")
         if not isinstance(self.fields, Mapping) or any(
-            not isinstance(name, str) or not name or kind not in _SCALAR_TYPES
+            not isinstance(name, str)
+            or not name
+            or not (kind if isinstance(kind, tuple) else (kind,))
+            or any(value not in _SCALAR_TYPES for value in (kind if isinstance(kind, tuple) else (kind,)))
             for name, kind in self.fields.items()
         ):
             raise ValueError("phase fields must declare named scalar types")
@@ -63,6 +67,7 @@ class LifecycleReporter:
         *,
         stream=None,
         heartbeat_intervals=DEFAULT_HEARTBEAT_INTERVALS,
+        first_heartbeat_context=None,
         progress_limit=4096,
         error_limit=16384,
         clock=time.monotonic,
@@ -92,6 +97,16 @@ class LifecycleReporter:
         )
         self._stream = sys.stderr if stream is None else stream
         self._intervals = intervals
+        self._first_heartbeat_context = dict(first_heartbeat_context or {})
+        if any(
+            not isinstance(name, str)
+            or not name
+            or type(value) not in _SCALAR_TYPES
+            or (type(value) is float and not math.isfinite(value))
+            for name, value in self._first_heartbeat_context.items()
+        ):
+            raise ValueError("first heartbeat context must contain named finite scalar values")
+        self._first_heartbeat_pending = True
         self._progress_limit = progress_limit
         self._error_limit = error_limit
         self._clock = clock
@@ -149,6 +164,10 @@ class LifecycleReporter:
         record = self._progress_record(status, _MAX_ELAPSED, math.ceil(max(self._intervals)))
         if status["phase"] == "INIT":
             record["ai_agent_read_this"] = AI_AGENT_READ_THIS
+        if self._encode(record, self._progress_limit) is None:
+            return False
+        if self._first_heartbeat_context:
+            record["context"] = {**record.get("context", {}), **self._first_heartbeat_context}
         return self._encode(record, self._progress_limit) is not None
 
     def _write(self, record, limit):
@@ -208,7 +227,8 @@ class LifecycleReporter:
                     return False
                 copied = dict(context)
                 for name, value in copied.items():
-                    if name not in definition.fields or type(value) is not definition.fields[name]:
+                    kind = definition.fields.get(name)
+                    if type(value) not in (kind if isinstance(kind, tuple) else (kind,)):
                         return False
                     if type(value) is float and not math.isfinite(value):
                         return False
@@ -248,6 +268,9 @@ class LifecycleReporter:
                     record = self._progress_record(
                         self._held, self._elapsed(now), math.ceil(self._next_deadline - now)
                     )
+                    if self._first_heartbeat_pending and self._first_heartbeat_context:
+                        record["context"] = {**record.get("context", {}), **self._first_heartbeat_context}
+                    self._first_heartbeat_pending = False
                 self._write(record, self._progress_limit)
         except Exception:
             self._stop.set()

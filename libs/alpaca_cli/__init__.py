@@ -17,7 +17,7 @@ from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 from libs.common.store_lock import StoreBusyError, operation_lock
 
-VERSION = 15
+VERSION = 18
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -501,7 +501,11 @@ def main(argv=None):
         from .lifecycle import DEFAULT_HEARTBEAT_INTERVALS, LifecycleReporter
 
         intervals = (args.heartbeat_seconds,) if args.heartbeat_seconds else DEFAULT_HEARTBEAT_INTERVALS
-        reporter = LifecycleReporter(PHASES, heartbeat_intervals=intervals)
+        reporter = LifecycleReporter(
+            PHASES,
+            heartbeat_intervals=intervals,
+            first_heartbeat_context={"estimated_remaining_seconds": "TBD"} if intervals[0] == 10 else None,
+        )
         args._lifecycle = reporter
     try:
         if reporter is not None:
