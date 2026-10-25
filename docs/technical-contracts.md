@@ -76,7 +76,8 @@ affected histories must be reevaluated. This recovery cost never authorizes a st
 
 Each entry contains only `symbol`, saved `asof` and the exact eight-field `last_all`. Eligibility requires a
 unique stored same-symbol active US-equity lookup and nonempty `all` endpoint; stored activity is not online
-availability. Date/asof pairs group checks. Epoch/revision/coverage and separate owner-pending markers control
+availability. Date/asof pairs group checks: the exact last row supplies its session window while saved `asof`
+remains the independent provider identity selector. Epoch/revision/coverage and separate owner-pending markers control
 publication; the summary contains no identities, other views, first rows or saved comparison outcomes.
 Pricing owns baselines; lineage owns membership. Missing/incomplete/pending coverage fails closed; snapshot
 tokens guard comparisons without ticker enumeration. Authorities: [storage](../libs/alpaca_pricing_download/check_summary.py),

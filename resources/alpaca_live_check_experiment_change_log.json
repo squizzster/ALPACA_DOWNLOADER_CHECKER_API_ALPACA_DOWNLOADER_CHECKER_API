@@ -20,5 +20,10 @@
     "modifications": [
       "Preserve per-request failure classification in live history-check results so orchestration can retain access denials and delayed retries."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve a saved historical as-of value solely as the provider identity selector while deriving the last-row check window from that retained observation's New York session. Do not reinterpret an entity mapping date as an observation cutoff."
+    ]
   }
 ]
