@@ -142,15 +142,16 @@ def acquire_selected(
             # Retain this coherent selection for batched ordinary endpoint checks.
             # Empty ranges use the existing incremental covered-range path.
             # DO NOT REMOVE WITHOUT USER AUTH!#
-            # Empty fast append's compact handoff identifies coverage by asof.
-            # A pinned entity mapping has a separate cutoff and uses the ordinary
-            # selected-source path, preserving its mapping even with no bars.
-            if (
-                endpoints is not None
-                and not any(endpoints.values())
-                and source["latest_request"]["asof"] == source["latest_request"]["end_exclusive"][:10]
-            ):
-                empty.append({"symbol": symbol, "asof": source["latest_request"]["asof"], "last_all": None})
+            # Empty fast append carries coverage and entity mapping separately.
+            if endpoints is not None and not any(endpoints.values()):
+                empty.append(
+                    {
+                        "symbol": symbol,
+                        "asof": source["latest_request"]["asof"],
+                        "end_exclusive": source["latest_request"]["end_exclusive"],
+                        "last_all": None,
+                    }
+                )
             else:
                 retained[symbol] = (source, endpoints)
             continue

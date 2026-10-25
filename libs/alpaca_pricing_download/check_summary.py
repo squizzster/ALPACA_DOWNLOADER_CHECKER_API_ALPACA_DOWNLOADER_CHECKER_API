@@ -1,4 +1,4 @@
-"""Minimal last-session projection; producers invalidate before changing its inputs."""
+"""Minimal pricing projection; producers invalidate before changing its inputs."""
 
 import json
 import sqlite3
@@ -14,7 +14,7 @@ from .contract import COLUMNS, NEW_YORK, DownloadError, digest, json_bytes, symb
 from .storage import regular_path
 
 SUMMARY_FILE = "pricing_check_summary.sqlite3"
-FORMAT = 1  # Introduced by pricing v9 / lineage v7.
+FORMAT = 2
 
 
 def summary_path(store):
@@ -38,15 +38,29 @@ def _connection(store, *, create=False, readonly=False):
                         db.execute("INSERT INTO state VALUES (1, ?, 0, 0)", (uuid.uuid4().hex,))
                         db.execute(
                             "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, "
-                            "last_all TEXT NOT NULL)"
+                            "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL)"
                         )
                         db.execute(
                             "CREATE TABLE pending (symbol TEXT NOT NULL, owner TEXT NOT NULL, "
                             "PRIMARY KEY(symbol, owner))"
                         )
                         db.execute(f"PRAGMA user_version={FORMAT}")
+                    elif db.execute("PRAGMA user_version").fetchone()[0] == 1:
+                        columns = [row[1] for row in db.execute("PRAGMA table_info(entries)")]
+                        if columns != ["symbol", "asof", "last_all"]:
+                            raise DownloadError("unsupported pricing check summary")
+                        # Only the explicit rebuild command opens with create=True.
+                        # Its selected pricing receipts repopulate the new fact;
+                        # an ordinary reader must never infer coverage from old rows.
+                        db.execute("DROP TABLE entries")
+                        db.execute(
+                            "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, "
+                            "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL)"
+                        )
+                        db.execute("UPDATE state SET complete=0, revision=revision+1 WHERE singleton=1")
+                        db.execute(f"PRAGMA user_version={FORMAT}")
             if db.execute("PRAGMA user_version").fetchone()[0] != FORMAT:
-                raise DownloadError("unsupported pricing check summary")
+                raise DownloadError("unsupported pricing check summary; run alpaca-eod summary rebuild")
             with db:
                 db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
                 yield db
@@ -59,20 +73,25 @@ def _token(db):
 
 
 def validate_entry(entry):
-    if set(entry) != {"symbol", "asof", "last_all"} or symbol_label(entry["symbol"]) != entry["symbol"]:
+    if (
+        set(entry) != {"symbol", "asof", "end_exclusive", "last_all"}
+        or symbol_label(entry["symbol"]) != entry["symbol"]
+    ):
         raise DownloadError("invalid pricing check summary entry")
     if date.fromisoformat(entry["asof"]).isoformat() != entry["asof"]:
         raise DownloadError("invalid pricing check asof")
     row = entry["last_all"]
     if not isinstance(row, (list, tuple)) or len(row) != len(COLUMNS) or any(type(v) is not str for v in row):
         raise DownloadError("invalid pricing check row")
-    timestamp(row[0])
+    end = timestamp(entry["end_exclusive"])
+    if timestamp(row[0]) >= end:
+        raise DownloadError("pricing check row is outside completed coverage")
     try:
         if any(not Decimal(value).is_finite() for value in row[1:]):
             raise DownloadError("non-finite pricing check value")
     except InvalidOperation as error:
         raise DownloadError("invalid pricing check value") from error
-    return entry["symbol"], entry["asof"], json_bytes(list(row)).decode()
+    return entry["symbol"], entry["asof"], entry["end_exclusive"], json_bytes(list(row)).decode()
 
 
 def invalidate(store, symbols, *, owner="pricing"):
@@ -103,9 +122,10 @@ def replace_entries(store, entries, *, pricing_only=False):
                 db.execute("DELETE FROM entries WHERE symbol=?", (symbol,))
             else:
                 db.execute(
-                    "INSERT INTO entries VALUES (?, ?, ?) ON CONFLICT(symbol) DO UPDATE SET "
-                    "asof=excluded.asof, last_all=excluded.last_all "
-                    "WHERE asof!=excluded.asof OR last_all!=excluded.last_all",
+                    "INSERT INTO entries VALUES (?, ?, ?, ?) ON CONFLICT(symbol) DO UPDATE SET "
+                    "asof=excluded.asof, end_exclusive=excluded.end_exclusive, last_all=excluded.last_all "
+                    "WHERE asof!=excluded.asof OR end_exclusive!=excluded.end_exclusive "
+                    "OR last_all!=excluded.last_all",
                     value,
                 )
             db.execute("DELETE FROM pending WHERE symbol=?", (symbol,))
@@ -126,7 +146,12 @@ def price_entry(root, source, *, published=True, endpoints=None):
     rows = endpoints["all"]
     if not rows:
         return None
-    return {"symbol": source["symbol"], "asof": request["asof"], "last_all": list(rows[-1])}
+    return {
+        "symbol": source["symbol"],
+        "asof": request["asof"],
+        "end_exclusive": request["end_exclusive"],
+        "last_all": list(rows[-1]),
+    }
 
 
 def refresh_prices(root, *, source=None, endpoints=None):
@@ -157,7 +182,7 @@ def finish_rebuild(store, token, entries):
         if _token(db) != token:
             raise DownloadError("pricing changed during summary rebuild; rerun the rebuild")
         db.execute("DELETE FROM entries")
-        db.executemany("INSERT INTO entries VALUES (?, ?, ?)", values)
+        db.executemany("INSERT INTO entries VALUES (?, ?, ?, ?)", values)
         db.execute("DELETE FROM pending")
         db.execute("UPDATE state SET complete=1, revision=revision+1 WHERE singleton=1")
 
@@ -185,8 +210,10 @@ def read_snapshot(store):
         _require_ready(db)
         token = _token(db)
         entries = [
-            {"symbol": symbol, "asof": asof, "last_all": json.loads(row)}
-            for symbol, asof, row in db.execute("SELECT symbol, asof, last_all FROM entries ORDER BY symbol")
+            {"symbol": symbol, "asof": asof, "end_exclusive": end, "last_all": json.loads(row)}
+            for symbol, asof, end, row in db.execute(
+                "SELECT symbol, asof, end_exclusive, last_all FROM entries ORDER BY symbol"
+            )
         ]
         for entry in entries:
             validate_entry(entry)
@@ -211,8 +238,10 @@ def read_status(store):
         complete = bool(db.execute("SELECT complete FROM state WHERE singleton=1").fetchone()[0])
         token = _token(db)
         entries = [
-            {"symbol": symbol, "asof": asof, "last_all": json.loads(row)}
-            for symbol, asof, row in db.execute("SELECT symbol, asof, last_all FROM entries ORDER BY symbol")
+            {"symbol": symbol, "asof": asof, "end_exclusive": end, "last_all": json.loads(row)}
+            for symbol, asof, end, row in db.execute(
+                "SELECT symbol, asof, end_exclusive, last_all FROM entries ORDER BY symbol"
+            )
         ]
         for entry in entries:
             validate_entry(entry)
@@ -227,8 +256,8 @@ def read_status(store):
         "coverage_complete": complete,
         "pending_inputs": pending,
         "coverage_end_exclusive": {
-            "earliest": min((entry["asof"] for entry in entries), default=None),
-            "latest": max((entry["asof"] for entry in entries), default=None),
+            "earliest": min((entry["end_exclusive"] for entry in entries), default=None),
+            "latest": max((entry["end_exclusive"] for entry in entries), default=None),
         },
     }
 

@@ -157,7 +157,7 @@ def _correlation_58_decision_may_change(receipt):
 
 
 def can_promote_observation_decision(receipt):
-    """Prove only the completed 30/56 or 31/57 transition to 31/58.
+    """Prove only the completed 30/56 or 31/57 transition to 32/58.
 
     The caller already owns a coherent selected group with unchanged inputs.
     This function performs no I/O and never makes an old handoff reader-compatible;
@@ -166,7 +166,7 @@ def can_promote_observation_decision(receipt):
     current = versions()
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # These are exact migration proofs, not a rolling compatibility exemption.
-    if (current["lineage"], current["correlation"]) != (31, 58):
+    if (current["lineage"], current["correlation"]) != (32, 58):
         return False
     published = receipt.get("versions")
     legacy = receipt.get("schema_version") == 30 and published == {
@@ -176,6 +176,7 @@ def can_promote_observation_decision(receipt):
     }
     prior = receipt.get("schema_version") == 31 and published == {
         **current,
+        "lineage": 31,
         "correlation": 57,
     }
     if not legacy and not prior:

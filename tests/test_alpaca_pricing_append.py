@@ -137,7 +137,14 @@ class AppendTests(unittest.TestCase):
         self.calls.clear()
         result = append.append_entries(
             self.store,
-            [{"symbol": "EMPTY", "asof": "2026-10-15", "last_all": None}],
+            [
+                {
+                    "symbol": "EMPTY",
+                    "asof": "2026-10-15",
+                    "end_exclusive": "2026-10-15T00:00:00Z",
+                    "last_all": None,
+                }
+            ],
             client=self.client,
             end_by_symbol={"EMPTY": timestamp("2026-10-17T00:00:00Z")},
         )
@@ -147,6 +154,36 @@ class AppendTests(unittest.TestCase):
         source = storage.load_source(self.store / "end_of_day/pricing/EMPTY", "EMPTY")
         self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
         self.assertTrue(all(not rows for rows in read_pricing_views(self.store, "EMPTY").values()))
+
+    def test_historical_mapping_is_independent_of_append_coverage(self):
+        mapping = "2025-09-04"
+        download_pricing(
+            self.store,
+            "AAA",
+            "2026-10-15",
+            client=FakeClient(self.old),
+            refresh_all=True,
+            mapping_asof=mapping,
+        )
+        ready = read_snapshot(self.store)
+        entry = next(item for item in ready["entries"] if item["symbol"] == "AAA")
+        self.assertEqual(entry["asof"], mapping)
+        self.assertEqual(entry["end_exclusive"], "2026-10-15T00:00:00Z")
+
+        needs, unchanged = append.append_needs([entry], timestamp("2026-10-15T00:00:00Z"))
+        self.assertEqual(needs, [])
+        self.assertEqual([item["symbol"] for item in unchanged], ["AAA"])
+
+        ready["entries"] = [entry]
+        ready["approved_generations"] = append.select_append_sources(self.store, ready["entries"], "2026-10-17")
+        result = append.append_ready(self.store, ready, "2026-10-17", client=self.client)
+        self.assertEqual(result["failed"], 0, result)
+        request = result["results"][0]["request"]
+        self.assertEqual(request["start"], "2026-10-15T00:00:00Z")
+        self.assertEqual(request["asof"], mapping)
+        source = storage.load_source(self.store / "end_of_day/pricing/AAA", "AAA")
+        self.assertEqual(source["latest_request"]["asof"], mapping)
+        self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
 
     def test_request_failure_publishes_no_partial_adjustments(self):
         before = file_snapshot(self.store)
@@ -362,7 +399,15 @@ class AppendPlanTests(unittest.TestCase):
                 "S" + "".join(letters)
                 for letters in islice(product("ABCDEFGHIJKLMNOPQRSTUVWXYZ", repeat=3), count)
             )
-            entries = [{"symbol": symbol, "asof": "2026-10-15", "last_all": list(row)} for symbol in symbols]
+            entries = [
+                {
+                    "symbol": symbol,
+                    "asof": "2026-10-15",
+                    "end_exclusive": "2026-10-15T00:00:00Z",
+                    "last_all": list(row),
+                }
+                for symbol in symbols
+            ]
             with patch.object(Path, "open", side_effect=AssertionError("file access")):
                 needs, unchanged = append.append_needs(entries, timestamp("2026-10-17T00:00:00Z"))
                 plan = build_plan(
@@ -392,8 +437,18 @@ class AppendPlanTests(unittest.TestCase):
     def test_mixed_ranges_remain_exact_and_memory_cohorts_are_bounded(self):
         row = ["2026-10-13T04:00:00Z", "1", "1", "1", "1", "1", "1", "1"]
         entries = [
-            {"symbol": "AAA", "asof": "2026-10-14", "last_all": row},
-            {"symbol": "BBB", "asof": "2026-10-15", "last_all": row},
+            {
+                "symbol": "AAA",
+                "asof": "2026-10-14",
+                "end_exclusive": "2026-10-14T00:00:00Z",
+                "last_all": row,
+            },
+            {
+                "symbol": "BBB",
+                "asof": "2026-10-15",
+                "end_exclusive": "2026-10-15T00:00:00Z",
+                "last_all": row,
+            },
         ]
         needs, _ = append.append_needs(entries, timestamp("2026-10-17T00:00:00Z"))
         plan = build_plan({"steps": [{"needs": needs}]}, max_symbols=append.MAX_SYMBOLS, merge_ranges=False)

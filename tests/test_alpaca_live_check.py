@@ -29,7 +29,12 @@ def bar(day="2026-10-14", **changes):
 
 def entry(symbol, day="2026-10-14", asof="2026-10-15"):
     values = bar(day)
-    return {"symbol": symbol, "asof": asof, "last_all": [str(values[key]) for key in FIELDS]}
+    return {
+        "symbol": symbol,
+        "asof": asof,
+        "end_exclusive": "2026-10-15T00:00:00Z",
+        "last_all": [str(values[key]) for key in FIELDS],
+    }
 
 
 def snapshot(*entries):

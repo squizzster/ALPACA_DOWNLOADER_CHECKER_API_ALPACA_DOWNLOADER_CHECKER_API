@@ -234,7 +234,7 @@ def update_everything(
                 e["symbol"]
                 for e in latest["entries"]
                 if e["symbol"] not in maintained_symbols
-                and e["asof"] <= end
+                and e["end_exclusive"][:10] <= end
                 and (work_policy is None or work_policy.allowed({e["symbol"]}))
             }
             if not remaining or result["failed"]:

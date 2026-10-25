@@ -74,8 +74,9 @@ class CheckSummaryTests(unittest.TestCase):
         self.assertEqual(result["tickers"], 1)
         self.assertEqual(result["sha256"], digest(json_bytes(current["entries"])))
         entry = current["entries"][0]
-        self.assertEqual(set(entry), {"symbol", "asof", "last_all"})
+        self.assertEqual(set(entry), {"symbol", "asof", "end_exclusive", "last_all"})
         self.assertEqual(entry["asof"], "2026-10-14")
+        self.assertEqual(entry["end_exclusive"], "2026-10-14T00:00:00Z")
         self.assertEqual(entry["last_all"][0], "2026-10-02T05:00:00Z")
         self.assertEqual(entry["last_all"][1], "123.123456789012345678901234567890")
         self.assertEqual(entry["last_all"][5:], ["9007199254740993", "7", entry["last_all"][1]])
@@ -185,6 +186,31 @@ class CheckSummaryTests(unittest.TestCase):
         projection.rebuild(self.store)
         self.assertEqual(self.read()["entries"][0]["asof"], "2026-10-15")
 
+    def test_v1_summary_fails_closed_until_explicit_rebuild_supplies_coverage(self):
+        path = summary.summary_path(self.store)
+        path.unlink()
+        with sqlite3.connect(path) as db:
+            db.execute(
+                "CREATE TABLE state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
+                "epoch TEXT NOT NULL, revision INTEGER NOT NULL, complete INTEGER NOT NULL)"
+            )
+            db.execute("INSERT INTO state VALUES (1, 'old', 4, 1)")
+            db.execute(
+                "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, last_all TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE pending (symbol TEXT NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(symbol, owner))"
+            )
+            db.execute("PRAGMA user_version=1")
+        with self.assertRaisesRegex(DownloadError, "summary rebuild"):
+            self.read()
+        summary.begin_rebuild(self.store)
+        with self.assertRaisesRegex(DownloadError, "complete rebuild"):
+            self.read()
+        projection.rebuild(self.store)
+        entry = self.read()["entries"][0]
+        self.assertEqual(entry["end_exclusive"], "2026-10-14T00:00:00Z")
+
     def test_failed_rebuild_cannot_publish_partial_coverage(self):
         with patch.object(projection, "project", side_effect=OSError("unreadable receipt")):
             with self.assertRaises(OSError):
@@ -243,10 +269,11 @@ class CheckSummaryTests(unittest.TestCase):
         result = summary.describe(self.read())
         self.assertEqual((result["tickers"], result["last_session_dates"], result["query_groups"]), (2, 1, 2))
 
-    def test_invalid_summary_rows_fail_closed_and_have_no_extra_fact_columns(self):
+    def test_invalid_summary_rows_fail_closed_and_have_only_owned_fact_columns(self):
         with sqlite3.connect(summary.summary_path(self.store)) as db:
             self.assertEqual(
-                [row[1] for row in db.execute("PRAGMA table_info(entries)")], ["symbol", "asof", "last_all"]
+                [row[1] for row in db.execute("PRAGMA table_info(entries)")],
+                ["symbol", "asof", "end_exclusive", "last_all"],
             )
             db.execute("UPDATE entries SET last_all='[\"bad\"]'")
         with self.assertRaisesRegex(DownloadError, "invalid pricing check row"):

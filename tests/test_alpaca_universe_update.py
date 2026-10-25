@@ -17,7 +17,7 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_lineage_build import storage, universe_plan, universe_state
 from libs.alpaca_lineage_build.catalogue import discovery_labels, observe_catalogue
 from libs.alpaca_lineage_build.check_summary import rebuild
-from libs.alpaca_lineage_build.contract import LineageError
+from libs.alpaca_lineage_build.contract import LineageError, versions
 from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.projection import migrate_index, require_complete
@@ -159,6 +159,38 @@ class UniverseUpdateTests(unittest.TestCase):
         entry = storage.read_index(self.store / "end_of_day/lineage")["symbols"]["AAA"]
         self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
+
+    def test_summarized_rule_change_reaches_lineage_without_pricing_or_metadata_reacquisition(self):
+        self.records[:] = [asset("AAA")]
+        root = self.store / "end_of_day/lineage"
+        index = storage.read_index(root)
+        receipt = storage.read_receipt(root, "AAA", index)
+        boundaries = storage.read_boundaries(root, receipt)
+        receipt.update(schema_version=31, versions={**versions(), "lineage": 31, "correlation": 57})
+        with storage.pricing_locks(self.store, receipt["input_sources"]):
+            storage.publish(self.store, root, index, {"AAA": receipt}, {"AAA": boundaries}, {})
+        pricing_before = snapshot(self.store / "end_of_day/pricing/AAA")
+        requests_before = self.identity.request_count
+
+        with (
+            patch("libs.alpaca_lineage_build.pipeline.acquire", side_effect=AssertionError("metadata request")),
+            patch("libs.alpaca_lineage_build.pipeline.load_pricing", side_effect=AssertionError("price decode")),
+            patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=AssertionError("rule replay")),
+        ):
+            result = self.update()
+
+        self.assertTrue(result["complete"], result)
+        self.assertIn("changed_rules", result["plan"]["work"]["AAA"]["reasons"])
+        rows = result["stages"]["discovery_lineage"][0]["results"]
+        self.assertEqual(rows[0]["processed"], ["AAA"])
+        self.assertTrue(rows[0]["reused_decision"])
+        current = storage.read_receipt(root, "AAA", storage.read_index(root))
+        self.assertEqual(current["versions"], versions())
+        self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
+        self.assertEqual(snapshot(self.store / "end_of_day/pricing/AAA"), pricing_before)
+        self.assertEqual(
+            self.identity.request_count - requests_before, 1, "only the catalogue request is required"
+        )
 
     def test_pending_summary_recovers_only_named_group_before_ordinary_append(self):
         self.records[:] = [asset("AAA"), asset("BBB")]

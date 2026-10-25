@@ -342,7 +342,9 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     summary = accepted["summary"]
     deferred = {item["symbol"] for item in selection["deferred"]} | set(selection.get("selection_failures", {}))
     eligible = [
-        entry for entry in summary["entries"] if entry["asof"] <= end_date and entry["symbol"] not in deferred
+        entry
+        for entry in summary["entries"]
+        if entry["end_exclusive"][:10] <= end_date and entry["symbol"] not in deferred
     ]
     history = check_plan({**summary, "entries": eligible})
     append, _ = append_needs(eligible, timestamp(end_date + "T00:00:00Z"))
@@ -412,7 +414,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         "catalogue_observed_at_utc": observation["catalogue_observed_at_utc"],
         "catalogue_records": len(observation["records"]),
         "summary_symbols": len(summary["entries"]),
-        "already_beyond_target": [e["symbol"] for e in summary["entries"] if e["asof"] > end_date],
+        "already_beyond_target": [e["symbol"] for e in summary["entries"] if e["end_exclusive"][:10] > end_date],
         **selection,
         "expected_io": {
             "boundary_reads": [

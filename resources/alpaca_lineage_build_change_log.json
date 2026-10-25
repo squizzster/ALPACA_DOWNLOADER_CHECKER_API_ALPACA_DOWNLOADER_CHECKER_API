@@ -184,5 +184,10 @@
     "modifications": [
       "Restrict source-wide mapping correction to the latest independently observed own-label occupant; preserve per-identity observation choices across older closed occupancies. Promote completed observation decisions only when the exact correlation-version migration is proven unaffected from selected receipt metadata, without decoding or rewriting retained price payloads."
     ]
+  },
+  {
+    "modifications": [
+      "Route accepted rule-version obligations through the lineage producer even when their pricing rows are already summarized. Preserve exact lineage-31/correlation-58 decisions as compatible because this change affects orchestration only; publish selected outstanding obligations through the existing complete-group migration or recalculation path."
+    ]
   }
 ]

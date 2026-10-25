@@ -160,5 +160,10 @@
     "modifications": [
       "Preserve explicit historical entity mapping independently of observation cutoffs and endpoint windows, consume mapped buffered acquisitions once, and validate adjustment-invariant activity before publishing newly produced pricing."
     ]
+  },
+  {
+    "modifications": [
+      "Publish completed observation coverage separately from entity mapping dates in the compact pricing summary. Plan and validate appends from the covered exclusive end while retaining explicitly historical mappings and continuing ordinary current-label mappings with the new cutoff."
+    ]
   }
 ]

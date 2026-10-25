@@ -124,9 +124,7 @@ class RuleMigrationProofTests(TestCase):
         receipt = self.receipt()
         receipt["schema_version"] = 29
         self.assertFalse(can_promote_observation_decision(receipt))
-        with patch(
-            "libs.alpaca_lineage_build.migration.versions", return_value={**versions(), "correlation": 58}
-        ):
+        with patch("libs.alpaca_lineage_build.migration.versions", return_value={**versions(), "lineage": 31}):
             self.assertFalse(can_promote_observation_decision(self.receipt()))
 
 

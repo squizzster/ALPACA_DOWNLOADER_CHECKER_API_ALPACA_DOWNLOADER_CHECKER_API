@@ -260,7 +260,7 @@ class WorkPolicy:
 
     def require_maintenance(self, entries, target):
         for entry in entries:
-            if target and entry["asof"] < target:
+            if target and entry["end_exclusive"][:10] < target:
                 self.require(entry["symbol"], target, reason="advance_summary_coverage", history_check=True)
 
     def acknowledge(self):
