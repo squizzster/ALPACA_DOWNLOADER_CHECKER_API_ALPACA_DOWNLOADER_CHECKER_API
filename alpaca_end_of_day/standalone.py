@@ -256,6 +256,15 @@ def _history(
         by_boundary = defaultdict(list)
         for view, kind, segment in items:
             if view == adjustment and _identity(segment) == public_id:
+                # DO NOT REMOVE WITHOUT USER AUTH!#
+                # Numerical source choice belongs to the lineage producer. Read
+                # its completed choice; never reselect a winner from windowed
+                # coverage, current labels, price magnitudes or filesystem state.
+                selection = segment.get("observation_selection")
+                if selection == "superseded":
+                    continue
+                if selection == "conflict":
+                    raise UnservableHistoryError("producer could not establish an observation source")
                 by_boundary[kind].append(segment)
         for kind, segments in by_boundary.items():
             if prefix is not None:
@@ -275,7 +284,11 @@ def _history(
                 start, end = segment["row_start"], segment["row_end"]
                 if not 1 <= start <= end <= len(rows):
                     raise StandaloneReaderError("lineage row selection exceeds its pricing boundary")
-                selected.append((symbol, kind, rows, start, end, segment["historical_symbol"]))
+                # DO NOT REMOVE WITHOUT USER AUTH!#
+                # Numerical selection and dated labels are independent producer
+                # decisions. Preserve every accepted label, including ambiguity.
+                labels = tuple(segment.get("observation_tickers", [segment["historical_symbol"]]))
+                selected.append((symbol, kind, rows, start, end, labels))
     # Exact physical aliases with identical row selections and overlap policy
     # need only one assembly. Keep raw's different source policy in the key.
     # Decoded rows remain alive in this call's cache, so their object IDs are stable.
@@ -320,13 +333,13 @@ def _history(
         # There is no ownership/price competition to resolve. Preserve exact
         # approved values and their sole label without building comparison keys
         # or temporary resolution/provenance records for every observation.
-        chosen = ((row, [label]) for _, (row, _, label) in sorted(observations.items()))
+        chosen = ((row, list(label)) for _, (row, _, label) in sorted(observations.items()))
     else:
         candidates = {
             instant: [
                 {
                     "values": dict(zip(COLUMNS, row)),
-                    "provenance": {"source_id": symbol, "symbol": symbol, "historical_symbol": label},
+                    "provenance": {"source_id": symbol, "symbol": symbol, "historical_symbol": label[0]},
                     "integrity_error_ids": [],
                 }
                 for row, symbol, label in items
@@ -352,7 +365,7 @@ def _history(
                         sorted({p["historical_symbol"] for p in bar["provenance"]}),
                     )
                 else:
-                    yield row, [label]
+                    yield row, list(label)
 
         chosen = selected_rows()
     if retained is not None:

@@ -22,6 +22,7 @@ from .download import (
     _endpoint_window,
     _endpoints_match,
     _incremental_endpoints,
+    acquisition_asof,
     download_pricing,
     established_pricing_rejection,
 )
@@ -45,7 +46,9 @@ def check_retained_source(store, symbol, end_date, *, client):
         endpoints = read_validator(root, source, published=True)
         if endpoints is None:
             raise DownloadError(f"{symbol}: retained-history checking requires published endpoints")
-        matched = not any(endpoints.values()) or _endpoints_match(client, symbol, endpoints, request["asof"])
+        matched = not any(endpoints.values()) or _endpoints_match(
+            client, symbol, endpoints, request["asof"], cutoff=timestamp(request["end_exclusive"])
+        )
         return {**request, "matched": matched}
 
 
@@ -53,11 +56,9 @@ def _refresh_request(symbol, source):
     start = timestamp(source.get("history_start", HISTORY_START))
     end = timestamp(source["latest_request"]["end_exclusive"])
     asof = source["latest_request"]["asof"]
-    if (
-        start != datetime.combine(start.date(), datetime.min.time(), tzinfo=timezone.utc)
-        or end != datetime.combine(end.date(), datetime.min.time(), tzinfo=timezone.utc)
-        or asof != end.date().isoformat()
-    ):
+    if start != datetime.combine(
+        start.date(), datetime.min.time(), tzinfo=timezone.utc
+    ) or end != datetime.combine(end.date(), datetime.min.time(), tzinfo=timezone.utc):
         raise DownloadError(f"{symbol}: stored range/asof is incompatible with exact-span replacement")
     return {
         "symbol": symbol,
@@ -97,8 +98,18 @@ class PlannedClient:
             return self.cache.pop(key)
         return self.client.fetch(symbol, adjustment, start, end, asof=asof)
 
+    def fetch_acquired(self, symbol, adjustment, start, end, *, asof=None):
+        # DO NOT REMOVE WITHOUT USER AUTH!#
+        # Consume the completed acquisition exactly once. Endpoint probes retain
+        # their separate cache entry even for a one-session acquisition.
+        key = (False, symbol, adjustment, start, end, asof or end.date().isoformat())
+        if key in self.cache:
+            return self.cache.pop(key)
+        fetch = getattr(self.client, "fetch_acquired", self.client.fetch)
+        return fetch(symbol, adjustment, start, end, asof=asof)
 
-def _endpoint_needs(symbol, endpoints, asof, why):
+
+def _endpoint_needs(symbol, endpoints, asof, why, *, cutoff=None):
     return [
         {
             "kind": "bars",
@@ -110,7 +121,7 @@ def _endpoint_needs(symbol, endpoints, asof, why):
         }
         for adjustment, rows in endpoints.items()
         for row in rows
-        for start, end in [_endpoint_window(row, asof)]
+        for start, end in [_endpoint_window(row, asof, cutoff=cutoff)]
     ]
 
 
@@ -202,7 +213,11 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
         endpoints = _incremental_endpoints(prior, views, start) if prior is not None else endpoints_of(views)
         probes.extend(
             _endpoint_needs(
-                symbol, {name: rows[:1] for name, rows in endpoints.items()}, need["asof"], "acquisition_check"
+                symbol,
+                {name: rows[:1] for name, rows in endpoints.items()},
+                need["asof"],
+                "acquisition_check",
+                cutoff=end,
             )
         )
     checked, checks = _prefetch(
@@ -221,7 +236,6 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
     # selected retained dependencies. They are not a substitute for the daily
     # summary's single last-all check or permission to revalidate its other views.
     failures, probes = {}, []
-    asof = end.date().isoformat()
 
     def failed(_step, action, error):
         outcome = failure_outcome(error)
@@ -241,7 +255,8 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
                     failures[symbol] = (failure, exact_fallback)
 
     for symbol, (source, endpoints) in selected.items():
-        probes.extend(_endpoint_needs(symbol, endpoints, asof, "boundary_check"))
+        asof = acquisition_asof(source, end)
+        probes.extend(_endpoint_needs(symbol, endpoints, asof, "boundary_check", cutoff=end))
     cache, _ = _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed)
     comparison = PlannedClient(client, dict(cache))
     needs, retained = [], {}
@@ -249,7 +264,8 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
         if symbol in failures:
             continue
         start = timestamp(source.get("history_start", HISTORY_START))
-        if _endpoints_match(comparison, symbol, endpoints, asof):
+        asof = acquisition_asof(source, end)
+        if _endpoints_match(comparison, symbol, endpoints, asof, cutoff=end):
             start = max(start, timestamp(source["anchor_month"] + "-01T00:00:00Z"))
             retained[symbol] = endpoints
         needs.append(

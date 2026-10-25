@@ -303,7 +303,7 @@ class LineageIOTests(unittest.TestCase):
         self.assertEqual(queries[0]["start"], "2016-01-01")
         self.assertEqual(snapshot(self.store / "end_of_day/pricing"), pricing)
 
-    def test_execution_version_twenty_keeps_its_publication_and_reader_handoff(self):
+    def test_execution_version_twenty_migrates_once_without_reacquiring_evidence_or_prices(self):
         self.download()
         provider = Provider(["GOOG"])
         self.run_build(["GOOG"], client=provider.client)
@@ -334,8 +334,12 @@ class LineageIOTests(unittest.TestCase):
         before = snapshot(self.store / "end_of_day/pricing")
         provider.calls.clear()
         result = self.run_build(["GOOG"], client=provider.client)
+        self.assertEqual(result["results"][0]["status"], "processed")
+        migrated = self.receipt()
+        self.assertGreater(migrated["versions"]["lineage"], receipt["versions"]["lineage"])
+        result = self.run_build(["GOOG"], client=provider.client)
         self.assertEqual(result["results"][0]["status"], "unchanged")
-        self.assertEqual(self.receipt(), receipt)
+        self.assertEqual(self.receipt(), migrated)
         self.assertEqual(provider.calls, [])
         self.assertEqual(snapshot(self.store / "end_of_day/pricing"), before)
 

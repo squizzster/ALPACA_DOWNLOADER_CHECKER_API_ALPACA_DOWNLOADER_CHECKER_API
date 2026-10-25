@@ -6,7 +6,7 @@ from pathlib import Path
 
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 5
+VERSION = 6
 SCHEMA_VERSION = 2
 
 

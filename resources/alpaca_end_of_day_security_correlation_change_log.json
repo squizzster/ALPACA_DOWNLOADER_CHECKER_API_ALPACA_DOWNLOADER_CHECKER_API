@@ -352,5 +352,18 @@
       "Treat name changes as dated endpoint constraints. Reject conflicting boundary dates, require independent exact source continuity for cross-UUID joins, and bound successor-source historical labels to independently observed history. Preserve independently established concurrent successor history and accepted bounded round trips; do not bootstrap proof from decisions produced by the disputed action.",
       "Assess rename evidence once from the complete selected group's in-memory pricing inputs, preserving frozen payloads and existing handoff trust. Keep shared-UUID aliases with an informative exact suffix despite earlier price revisions; leave unsupported prefixes unresolved. Preserve exact independently matched historical spans without promoting partial evidence into UUID membership."
     ]
+  },
+  {
+    "modifications": [
+      "Withhold only new unbounded cash-terminal ownership inferences contradicted by a distinct independently resolved occupant with positive dated evidence before and on or after the terminal boundary. Preserve existing intervals, provider records and accepted identity-preserving split membership; consume the UUID authority once per group."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve a complete-through-observed active suffix when only its selected request horizon extends, and let an independently supported terminal episode survive that bounded later occupant. Retain interior-gap, conflicting-occupant, status and publication gates; a new or contradictory suffix still requires fresh proof.",
+      "Before terminal fallback creates a new UUID union, require either an existing accepted component or a bounded two-component history with complete informative non-carry pricing and provider structural continuity. Preserve established closed-history departure proofs and ordinary inactivity within one identity; matching labels or inert carry-forward rows cannot join separate occupants.",
+      "Correlate a mapped predecessor continuation only after an accepted cross-UUID provider edge, predecessor-date selection, independent successor ownership and exact equality across every selected view establish each session. Publish the redundant source as an ordinary correlated duplicate for numerical selection to supersede; keep reused labels, competing branches, incomplete views and unequal rows unresolved. Preserve provider date semantics and never infer, import or override a boundary from research.",
+      "Bound an inactive predecessor's as-of inference when all eight views have a complete informative prefix ending exactly at the selected historical mapping date, an immediate market-session gap, and complete provider evidence for one later distinct-symbol, distinct-CUSIP and distinct-UUID successor. Preserve the prefix, leave post-gap rows before the provider endpoint unresolved unless independent mapped-continuation evidence owns them, and do not infer an effective transition date from the gap, returned bars or external research."
+    ]
   }
 ]

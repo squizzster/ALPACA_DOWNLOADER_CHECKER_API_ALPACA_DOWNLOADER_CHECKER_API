@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
+from libs.alpaca_pricing_download.contract import (
+    ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES,
+)
+from libs.alpaca_pricing_download.contract import (
+    FIELDS,
+)
 from libs.common.us_equity_market_session_calendar import (
     MarketCalendarError,
     expected_market_session_coverage,
@@ -23,6 +28,8 @@ from .terminal_episode import (
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, UuidLineageEdge
 
 PREDECESSOR_PREFIX_RULE_NAME = "exact_independently_resolved_predecessor_prefix"
+MAPPED_CONTINUATION_RULE_NAME = "accepted_name_change_mapped_continuation"
+MAPPED_CONTINUATION_WARNING = "mapped_predecessor_duplicate"
 _INDEPENDENT_RULE = "asof_selected_uuid_lineage_interval"
 _FIELDS = ("t", "o", "h", "l", "c", "v", "n", "vw")
 # Ownership follows the original transaction fingerprint. Later corporate actions
@@ -36,6 +43,190 @@ class IndependentHistoricalInterval:
     first: date
     last: date
     interval: TickerOwnershipInterval
+
+
+@dataclass(frozen=True)
+class MappedContinuation:
+    sessions: frozenset[date]
+    interval: TickerOwnershipInterval
+    donor_symbol: str
+    action_id: str
+
+    def contains(self, session: date) -> bool:
+        return session in self.sessions
+
+
+def _known_label_asset_ids(lineage, symbol):
+    known = {
+        item.get("id")
+        for item in lineage.get("identities", [])
+        if item.get("symbol") == symbol and item.get("id")
+    }
+    for field in ("symbol_occupancy_evidence", "input_symbol_occupants"):
+        known.update(
+            item.get("asset_id")
+            for item in lineage.get(field, [])
+            if item.get("symbol") == symbol and item.get("asset_id")
+        )
+    known.update(
+        item["asset"].get("id")
+        for item in lineage.get("asset_lookups", [])
+        if isinstance(item.get("asset"), dict)
+        and item["asset"].get("id")
+        and item.get("lookup_kind") == "symbol"
+        and item.get("lookup") == symbol
+    )
+    return known
+
+
+def _mapped_donor_positions(report, descriptor, edge, source):
+    positions = set()
+    for segment in report.correlated["segments"]:
+        if segment.get("data_file") != descriptor["data_file"]:
+            continue
+        interval = segment.get("ticker_ownership_interval") or {}
+        security = segment.get("canonical_security") or {}
+        if (
+            segment.get("historical_symbol") != edge.successor_symbol
+            or security.get("alpaca_asset_id") != edge.successor_asset_id
+            or security.get("cusip") != edge.successor_cusip
+            or interval.get("historical_symbol") != edge.successor_symbol
+            or interval.get("asset_id") != edge.successor_asset_id
+            or interval.get("cusip") != edge.successor_cusip
+            or interval.get("start_date_inclusive") != edge.effective_date.isoformat()
+            or edge.action_id not in interval.get("supporting_corporate_action_ids", ())
+            or segment.get("correlation_method") == MAPPED_CONTINUATION_RULE_NAME
+            or segment.get("feed") != source["feed"]
+            or segment.get("timeframe") != source["timeframe"]
+            or segment.get("download_sha256") != descriptor["download_sha256"]
+        ):
+            continue
+        covered = set(range(segment["row_start"], segment["row_end"] + 1))
+        if positions.intersection(covered):
+            return set()
+        positions.update(covered)
+    return positions
+
+
+def assess_mapped_continuations(
+    symbol, lineage, intervals, edges, work_items, *, correlation_loader, source_rows_loader
+):
+    """Bind mapped predecessor rows only after the successor independently owns them."""
+    if correlation_loader is None or source_rows_loader is None:
+        return ()
+    sources = {
+        source["adjustment"]: (download.rows, source, sessions) for download, source, sessions in work_items
+    }
+    if len(sources) != len(work_items) or set(sources) != set(ALPACA_ADJUSTMENT_MODES):
+        return ()
+    grids = {sessions for _, _, sessions in sources.values()}
+    if len(grids) != 1:
+        return ()
+    qualified = []
+    for edge in edges:
+        if (
+            edge.edge_type != "name_change"
+            or edge.predecessor_symbol != symbol
+            or edge.successor_symbol == symbol
+            or edge.predecessor_asset_id == edge.successor_asset_id
+            or _known_label_asset_ids(lineage, symbol) != {edge.predecessor_asset_id}
+        ):
+            continue
+        predecessors = [
+            interval
+            for interval in intervals
+            if interval.identity_key()
+            == (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+            and interval.end_date_exclusive == edge.effective_date
+        ]
+        successors = [
+            interval
+            for interval in intervals
+            if interval.identity_key() == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+            and interval.start_date_inclusive == edge.effective_date
+        ]
+        if len(predecessors) != 1 or len(successors) != 1:
+            continue
+        try:
+            asof = date.fromisoformat(sources["raw"][1]["asof"][:10])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not predecessors[0].contains(asof):
+            continue
+        outgoing = [
+            candidate
+            for candidate in edges
+            if candidate.edge_type == "name_change"
+            and (
+                candidate.predecessor_symbol,
+                candidate.predecessor_cusip,
+                candidate.predecessor_asset_id,
+            )
+            == (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+        ]
+        incoming = [
+            candidate
+            for candidate in edges
+            if candidate.edge_type == "name_change"
+            and (
+                candidate.successor_symbol,
+                candidate.successor_cusip,
+                candidate.successor_asset_id,
+            )
+            == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+        ]
+        if outgoing != [edge] or incoming != [edge]:
+            continue
+        try:
+            report = correlation_loader(edge.successor_symbol)
+        except SecurityCorrelationError:
+            continue
+        descriptors = {}
+        for descriptor in report.sources_by_filename.values():
+            adjustment = descriptor["adjustment"]
+            if adjustment in descriptors:
+                descriptors = {}
+                break
+            descriptors[adjustment] = descriptor
+        if set(descriptors) != set(sources):
+            continue
+        successor = successors[0]
+        sessions = next(iter(grids))
+        matching = {session for session in sessions if successor.contains(session)}
+        for adjustment, (rows, source, _) in sources.items():
+            descriptor = descriptors[adjustment]
+            try:
+                donor_rows, generation = source_rows_loader(edge.successor_symbol, descriptor["data_file"])
+            except SecurityCorrelationError:
+                matching.clear()
+                break
+            if generation != descriptor["download_sha256"]:
+                matching.clear()
+                break
+            donor = {_session_date(row.get("t")): (position, row) for position, row in enumerate(donor_rows, 1)}
+            if len(donor) != len(donor_rows):
+                matching.clear()
+                break
+            owned = _mapped_donor_positions(report, descriptor, edge, source)
+            source_by_session = dict(zip(sessions, rows, strict=True))
+            matching = {
+                session
+                for session in matching
+                if session in donor
+                and donor[session][0] in owned
+                and all(
+                    source_by_session[session].get(field) is not None
+                    and source_by_session[session].get(field) == donor[session][1].get(field)
+                    for field in FIELDS
+                )
+            }
+            if not matching:
+                break
+        if matching:
+            qualified.append(
+                MappedContinuation(frozenset(matching), successor, edge.successor_symbol, edge.action_id)
+            )
+    return tuple(dict.fromkeys(qualified))
 
 
 def _same_label_split_chain(lineage, edges, handoff):

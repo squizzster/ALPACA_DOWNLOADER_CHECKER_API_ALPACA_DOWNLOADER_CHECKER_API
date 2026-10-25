@@ -6,8 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
+from libs.alpaca_lineage_build.observations import select_observations
 from libs.alpaca_lineage_build.transform import correlate
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS, FIELDS
 from libs.alpaca_serving_catalogue.policy import _metadata
 from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge
 
@@ -47,41 +48,64 @@ def rename(*, same_uuid=False, old="OLD", new="NEW", when="2024-01-05"):
     return evidence
 
 
-def inputs_for(histories):
+def inputs_for(histories, *, asofs=None, view_histories=None):
+    asofs = asofs or {}
+    view_histories = view_histories or {}
     inputs = {}
     for symbol, rows in histories.items():
         downloads, descriptors = {}, []
         for adjustment in ADJUSTMENTS:
+            selected_rows = view_histories.get(symbol, {}).get(adjustment, rows)
             filename = adjustment.replace(",", "_") + ".csv.gz"
             manifest = {
                 "symbol": symbol,
                 "adjustment": adjustment,
                 "sha256": symbol + adjustment,
-                "asof": "2024-02-01",
+                "asof": asofs.get(symbol, "2024-02-01"),
                 "request_from": "2024-01-01",
                 "request_to": "2024-01-09",
                 "feed": "sip",
                 "timeframe": "1Day",
-                "rows": len(rows),
+                "rows": len(selected_rows),
             }
             downloads[filename] = SimpleNamespace(
-                rows=copy.deepcopy(rows),
+                rows=copy.deepcopy(selected_rows),
                 manifest=manifest,
                 path=Path(filename),
                 pipeline_state="source_published",
                 integrity_failure=None,
             )
-            descriptors.append({"file": filename, "rows": len(rows)})
+            descriptors.append({"file": filename, "rows": len(selected_rows)})
         inputs[symbol] = SimpleNamespace(
             downloads=downloads,
             local={"directory": symbol, "downloads": descriptors, "present": True},
             reader=lambda _root, _directory, descriptor, items=downloads: items[descriptor["file"]],
+            views={
+                adjustment: tuple(
+                    tuple(str(row[field]) for field in FIELDS)
+                    for row in downloads[adjustment.replace(",", "_") + ".csv.gz"].rows
+                )
+                for adjustment in ADJUSTMENTS
+            },
+            source_sha256=symbol.lower() * 16,
+            source={
+                "history_start": "2024-01-01",
+                "latest_request": {
+                    "asof": asofs.get(symbol, "2024-02-01"),
+                    "end_exclusive": "2024-01-09",
+                },
+                "activity_consistent": True,
+            },
         )
     return inputs
 
 
-def run(evidence, histories):
-    return correlate(Path("."), inputs_for(histories), {symbol: evidence for symbol in histories})
+def run(evidence, histories, **input_options):
+    return correlate(
+        Path("."),
+        inputs_for(histories, **input_options),
+        {symbol: evidence for symbol in histories},
+    )
 
 
 def raw_segments(report, branch="correlated"):
@@ -97,6 +121,44 @@ class NameChangeEvidenceTests(unittest.TestCase):
         self.assertEqual([], edges)
         self.assertEqual("name_change_requires_independent_continuity", issues[0]["reason_code"])
 
+    def test_historical_mapping_gap_preserves_only_the_complete_predecessor_prefix(self):
+        evidence = rename(when="2024-01-09")
+        evidence["query"] = {
+            "input_symbol": "OLD",
+            "corporate_actions_start": "2024-01-01",
+            "corporate_actions_end": "2024-01-31",
+            "corporate_actions_data_quality": "complete",
+        }
+        evidence["identities"][0]["status"] = "inactive"
+        by_id = {identity["id"]: identity for identity in evidence["identities"]}
+        evidence["asset_lookups"].extend(
+            {
+                "lookup_kind": "cusip",
+                "lookup": cusip,
+                "asset": by_id[asset_id],
+                "found": True,
+                "outcome": "found",
+                "http_status": 200,
+            }
+            for cusip, asset_id in (("old-cusip", "old-id"), ("new-cusip", "new-id"))
+        )
+        days = ("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-08")
+        reports = run(evidence, {"OLD": bars(days)}, asofs={"OLD": "2024-01-04"})
+        self.assertEqual(
+            [("2024-01-02", "2024-01-04", 3)],
+            [
+                (segment["first_session_date"], segment["last_session_date"], segment["row_count"])
+                for segment in raw_segments(reports["OLD"])
+            ],
+        )
+        self.assertEqual(
+            [("2024-01-08", ["post_mapping_asof_gap_requires_dated_owner"])],
+            [
+                (segment["first_session_date"], segment["reason_codes"])
+                for segment in raw_segments(reports["OLD"], "uncorrelated")
+            ],
+        )
+
     def test_exact_independent_sources_certify_a_rename_and_bound_its_history(self):
         evidence = rename()
         reports = run(evidence, {"OLD": bars(self.days[:3]), "NEW": bars(self.days)})
@@ -106,6 +168,125 @@ class NameChangeEvidenceTests(unittest.TestCase):
         self.assertEqual([3, 2], [segment["row_count"] for segment in segments])
         self.assertEqual(["new-id", "old-id"], segments[0]["security_identity"]["member_alpaca_asset_ids"])
         self.assertEqual("2024-01-02", segments[0]["ticker_ownership_interval"]["start_date_inclusive"])
+
+    def test_mapped_predecessor_tail_uses_independently_owned_successor_rows(self):
+        evidence = rename()
+        histories = {"OLD": bars(self.days), "NEW": bars(self.days)}
+        inputs = inputs_for(histories, asofs={"OLD": "2024-01-04"})
+        reports = correlate(
+            Path("."),
+            inputs,
+            {symbol: evidence for symbol in histories},
+        )
+
+        self.assertEqual([], raw_segments(reports["OLD"], "uncorrelated"))
+        segments = raw_segments(reports["OLD"])
+        self.assertEqual(["OLD", "NEW"], [segment["historical_symbol"] for segment in segments])
+        self.assertEqual([3, 2], [segment["row_count"] for segment in segments])
+        self.assertEqual("accepted_name_change_mapped_continuation", segments[1]["correlation_method"])
+        self.assertIn("mapped_predecessor_duplicate", segments[1]["warnings"])
+        selected, corrections = select_observations(inputs, reports)
+        self.assertEqual({}, corrections)
+        mapped = [
+            segment
+            for segment in raw_segments(selected["OLD"])
+            if segment["correlation_method"] == "accepted_name_change_mapped_continuation"
+        ]
+        self.assertEqual({"superseded"}, {segment["observation_selection"] for segment in mapped})
+
+    def test_mapped_predecessor_tail_requires_equality_in_every_view(self):
+        evidence = rename()
+        changed = bars(self.days)
+        changed[3]["c"] = "99"
+        reports = run(
+            evidence,
+            {"OLD": bars(self.days), "NEW": bars(self.days)},
+            asofs={"OLD": "2024-01-04"},
+            view_histories={"OLD": {"split": changed}},
+        )
+
+        mapped = [
+            segment
+            for segment in raw_segments(reports["OLD"])
+            if segment["correlation_method"] == "accepted_name_change_mapped_continuation"
+        ]
+        self.assertEqual(
+            [("2024-01-08", 1)], [(segment["first_session_date"], segment["row_count"]) for segment in mapped]
+        )
+        self.assertEqual(
+            [("2024-01-05", 1)],
+            [
+                (segment["first_session_date"], segment["row_count"])
+                for segment in raw_segments(reports["OLD"], "uncorrelated")
+            ],
+        )
+
+    def test_mapped_predecessor_tail_stops_at_successor_source_coverage(self):
+        evidence = rename()
+        reports = run(
+            evidence,
+            {"OLD": bars(self.days), "NEW": bars(self.days[:-1])},
+            asofs={"OLD": "2024-01-04"},
+        )
+
+        mapped = [
+            segment
+            for segment in raw_segments(reports["OLD"])
+            if segment["correlation_method"] == "accepted_name_change_mapped_continuation"
+        ]
+        self.assertEqual(
+            [("2024-01-05", 1)],
+            [(segment["first_session_date"], segment["row_count"]) for segment in mapped],
+        )
+        self.assertEqual(
+            [("2024-01-08", 1)],
+            [
+                (segment["first_session_date"], segment["row_count"])
+                for segment in raw_segments(reports["OLD"], "uncorrelated")
+            ],
+        )
+
+    def test_competing_predecessor_branch_vetoes_mapped_continuation(self):
+        evidence = rename()
+        add_name_change_edge(
+            evidence,
+            action_id="competing-transition",
+            process_date="2024-01-05",
+            predecessor=("other-id", "OTHER", "other-cusip", "Other predecessor"),
+            successor=("new-id", "NEW", "new-cusip", "Continuing security"),
+        )
+        reports = run(
+            evidence,
+            {
+                "OLD": bars(self.days),
+                "OTHER": bars(self.days[:3]),
+                "NEW": bars(self.days),
+            },
+            asofs={"OLD": "2024-01-04", "OTHER": "2024-01-04"},
+        )
+
+        self.assertFalse(
+            any(
+                segment["correlation_method"] == "accepted_name_change_mapped_continuation"
+                for segment in raw_segments(reports["OLD"])
+            )
+        )
+        self.assertEqual([2], [segment["row_count"] for segment in raw_segments(reports["OLD"], "uncorrelated")])
+
+    def test_equal_rows_without_accepted_continuity_do_not_establish_identity(self):
+        evidence = rename()
+        evidence["corporate_actions"] = []
+        reports = run(
+            evidence,
+            {"OLD": bars(self.days), "NEW": bars(self.days)},
+            asofs={"OLD": "2024-01-04"},
+        )
+        self.assertFalse(
+            any(
+                segment["correlation_method"] == "accepted_name_change_mapped_continuation"
+                for segment in raw_segments(reports["OLD"])
+            )
+        )
 
     def test_concurrent_instruments_keep_both_own_histories_and_do_not_merge(self):
         # Conversions, acquisitions and temporary lines have the same evidence
@@ -225,7 +406,11 @@ class NameChangeEvidenceTests(unittest.TestCase):
         evidence["asset_lookups"] = [item for item in evidence["asset_lookups"] if item["lookup"] != "OLD"] + [
             {"lookup_kind": "symbol", "lookup": "OLD", "asset": later}
         ]
-        reports = run(evidence, {"OLD": bars(self.days), "NEW": bars(self.days)})
+        reports = run(
+            evidence,
+            {"OLD": bars(self.days), "NEW": bars(self.days)},
+            asofs={"OLD": "2024-01-04"},
+        )
         self.assertEqual([3], [s["row_count"] for s in raw_segments(reports["OLD"])])
         self.assertEqual([2], [s["row_count"] for s in raw_segments(reports["OLD"], "uncorrelated")])
         self.assertEqual(

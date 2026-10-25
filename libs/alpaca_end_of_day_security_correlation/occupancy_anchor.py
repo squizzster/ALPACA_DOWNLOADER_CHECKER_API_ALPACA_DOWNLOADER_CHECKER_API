@@ -32,6 +32,44 @@ def _action_anchor(action, symbol, cusip):
     return effective if all(rate.is_finite() and rate > 0 for rate in rates) else None
 
 
+def competing_terminal_anchors(symbol, members, terminal, lineage, resolved_pairs):
+    """A distinct occupant observed on both sides of a proposed terminal date."""
+    anchors = {}
+    for (label, cusip), rival_id in resolved_pairs.items():
+        if label != symbol or rival_id in members:
+            continue
+        asset = exact_cusip_lookup_asset(lineage, cusip)
+        if asset is None or asset["id"] != rival_id:
+            continue
+        for action in lineage.get("corporate_actions", []):
+            try:
+                effective = _action_anchor(action, symbol, cusip)
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                continue
+            if effective is not None:
+                anchors.setdefault(rival_id, []).append(
+                    {
+                        "action_id": action["id"],
+                        "asset_id": rival_id,
+                        "cusip": cusip,
+                        "session_date": effective.isoformat(),
+                    }
+                )
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # Earlier dividends alone can belong to an ordinary predecessor. They do not
+    # contradict a later terminal episode. Require the same independently resolved
+    # occupant on both sides of this exclusive boundary; never turn the first
+    # dividend into a listing or handoff date, or compare unrelated UUIDs' dates.
+    boundary = terminal.isoformat()
+    return [
+        anchor
+        for values in anchors.values()
+        if any(a["session_date"] < boundary for a in values)
+        and any(a["session_date"] >= boundary for a in values)
+        for anchor in values
+    ]
+
+
 def dated_occupancy_anchors(symbol, lineage, intervals):
     """Anchor a bounded episode after a dividend or component-separation event.
 

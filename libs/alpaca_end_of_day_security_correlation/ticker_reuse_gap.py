@@ -15,6 +15,7 @@ TICKER_REUSE_GAP_MINIMUM_SESSIONS = 60
 COMPLETE_CURRENT_SUFFIX_MINIMUM_GAP_SESSIONS = 100
 TICKER_REUSE_GAP_RULE_NAME = "ticker_reuse_gap_candidate_detector"
 COMPLETE_CURRENT_SUFFIX_RULE_NAME = "complete_current_identity_suffix_after_ticker_reuse_gap"
+ACTIVE_CURRENT_SUFFIX_RULE_NAME = "bounded_active_identity_suffix_after_ticker_reuse_gap"
 INACTIVE_CURRENT_SUFFIX_RULE_NAME = "inactive_current_identity_suffix_after_ticker_reuse_gap"
 DATED_TERMINAL_SUFFIX_RULE_NAME = "dated_terminal_identity_suffix_after_ticker_reuse_gap"
 TERMINAL_OWNERSHIP_INTERVAL_RULE_NAMES = frozenset(
@@ -146,7 +147,7 @@ class TickerReuseGapAssessment:
         )
 
     @property
-    def active_current_suffix_flagged(self) -> bool:
+    def active_current_suffix_eligible(self) -> bool:
         return (
             self.other_publication_gates_pass
             and not self.rightmost_run_complete
@@ -169,6 +170,7 @@ class TickerReuseGapAssessment:
     def eligible(self) -> bool:
         return (
             self.complete_current_suffix_eligible
+            or self.active_current_suffix_eligible
             or self.inactive_current_suffix_eligible
             or self.dated_terminal_suffix_eligible
         )
@@ -187,7 +189,12 @@ class TickerReuseGapAssessment:
                 "rule_name": INACTIVE_CURRENT_SUFFIX_RULE_NAME,
                 "requires_exact_status": "inactive",
                 "eligible": self.inactive_current_suffix_eligible,
-                "active_asset_flagged": self.active_current_suffix_flagged,
+            },
+            "active_current_suffix_rule": {
+                "rule_name": ACTIVE_CURRENT_SUFFIX_RULE_NAME,
+                "requires_exact_status": "active",
+                "requires_complete_grid_through_last_observed": True,
+                "eligible": self.active_current_suffix_eligible,
             },
             "dated_terminal_suffix_rule": {
                 "rule_name": DATED_TERMINAL_SUFFIX_RULE_NAME,

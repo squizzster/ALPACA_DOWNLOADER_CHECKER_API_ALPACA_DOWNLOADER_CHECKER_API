@@ -123,8 +123,12 @@ class GroupSnapshot:
                             continue
                         identity = segment.get("security_identity") or {}
                         owner = (
-                            [identity.get("security_id"), segment.get("historical_symbol")]
+                            [
+                                identity.get("security_id"),
+                                segment.get("observation_tickers", [segment.get("historical_symbol")]),
+                            ]
                             if segment["branch"] == "correlated"
+                            and segment.get("observation_selection") != "superseded"
                             else [None, None]
                         )
                         size = segment["row_count"]

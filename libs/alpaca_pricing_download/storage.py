@@ -227,6 +227,8 @@ def load_source(root: Path, symbol: str) -> dict | None:
         from .changes import validate_history_changes
 
         validate_history_changes(source.get("history_changes"))
+    if source["schema_version"] >= 29 and type(source.get("activity_consistent")) is not bool:
+        raise DownloadError("invalid pricing activity guarantee")
     return source
 
 

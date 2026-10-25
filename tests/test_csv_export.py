@@ -206,7 +206,7 @@ class CsvExportTests(NativeCase):
         self.assertEqual(rows[-1]["all_volume"], rows[-1]["raw_volume"])
         self.assertEqual(next(row for row in rows if row["date"] == "2026-10-06")["all_volume"], "123.5")
 
-    def test_all_eight_views_retain_their_specific_column_names_when_each_series_differs(self):
+    def test_eight_price_views_keep_specific_names_while_invariant_activity_aliases(self):
         class DistinctClient(FakeClient):
             def fetch(self, symbol, adjustment, start, end, **kwargs):
                 index = ADJUSTMENTS.index(adjustment)
@@ -218,8 +218,8 @@ class CsvExportTests(NativeCase):
                         "h": Decimal(1000 * index + 103),
                         "l": Decimal(1000 * index + 100),
                         "c": Decimal(1000 * index + 102),
-                        "v": Decimal(100000 + index),
-                        "n": 2000000 + index,
+                        "v": Decimal(100000),
+                        "n": 2000000,
                         "vw": Decimal(1000 * index) + Decimal("101.5"),
                     }
                     for row in rows
@@ -230,12 +230,12 @@ class CsvExportTests(NativeCase):
         public_id = data.list_securities()[0].public_id
         _, manifest, documents = self.exported(data)
         digest, rows = documents[public_id]
-        self.assertEqual(digest["columns"], manifest["columns"])
-        self.assertEqual(len(digest["columns"]), 57)
-        self.assertTrue(all(logical == canonical for logical, canonical in digest["column_aliases"].items()))
+        self.assertEqual(len(digest["columns"]), 43)
+        self.assertEqual(set(digest["column_aliases"]), set(manifest["columns"]) - {"date"})
         for index, prefix in enumerate(PREFIXES):
             self.assertEqual(rows[0][f"{prefix}_open"], str(1000 * index + 101))
-            self.assertEqual(rows[0][f"{prefix}_trade_count"], str(2000000 + index))
+            self.assertEqual(digest["column_aliases"][f"{prefix}_trade_count"], "raw_trade_count")
+        self.assertEqual(rows[0]["raw_trade_count"], "2000000")
 
     def test_plan_uses_only_opened_catalogue_and_unknown_ids_touch_no_source(self):
         data = self.bootstrap()

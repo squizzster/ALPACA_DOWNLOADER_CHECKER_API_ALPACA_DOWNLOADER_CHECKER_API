@@ -33,7 +33,7 @@ for match in reader.resolve_ticker("DELL")["matches"]:
 ```
 
 Symbol locates the source group and remains required with `public_id`; multiple matches without an ID raise
-`AmbiguousTickerError`. [StandaloneReader](../alpaca_end_of_day/standalone.py#L418) defines signatures and dictionary
+`AmbiguousTickerError`. [StandaloneReader](../alpaca_end_of_day/standalone.py#L445) defines signatures and dictionary
 schemas: `get_history` returns one view with exact numeric strings; `get_histories` returns `views[adjustment]`
 (default eight) from one snapshot, all succeeding or failing. `include_evidence=True` includes its evidence.
 
@@ -53,9 +53,10 @@ stale/incomplete/incompatible publications raise `StandaloneReaderError`. `cache
 `cache_info()` reports bounded RAM retention, and group `set_cache_limit` stays within that cap, not a total-process
 memory limit. Caching preserves locks/current selection/pending checks and trusts published digests.
 
-Equal overlaps collapse. Conflicting adjusted bars prefer strictly broader correlated coverage, then a unique
-source matching the historical ticker; raw uses only the latter. Unsettled conflicts fail. Assembly precedes
-filtering, so narrow queries may read older payloads. Authority: [_history](../alpaca_end_of_day/standalone.py#L239).
+Readers consume the producer's numerical source selection and preserve every accepted dated label. Unsettled
+source authority fails explicitly. The [selection contract](technical-contracts.md#lineage-reuse) defines the
+producer's policy and correction scope. Assembly precedes filtering, so narrow queries may read older payloads.
+Authority: [_history](../alpaca_end_of_day/standalone.py#L239).
 
 Reader CLI defaults to `raw`; `--all-adjustments` selects eight. Ambiguity needs symbol plus `--public-id`.
 Compound names are single arguments; `raw,all` is invalid. Multiple-view CSV adds `adjustment`; output is
@@ -72,7 +73,7 @@ for security in data.search_securities("DELL", limit=5):
     print(security.public_id, len(history.bars))
 ```
 
-[DataLibrary](../alpaca_end_of_day/__init__.py#L477) defines catalogue/list/get/search/dated-resolution methods,
+[DataLibrary](../alpaca_end_of_day/__init__.py#L484) defines catalogue/list/get/search/dated-resolution methods,
 history signatures and CSV export; [public types](../alpaca_end_of_day/__init__.py#L73) define all fields.
 `get_histories` locks once and returns adjustment → typed `History`, default eight views. OHLC/VWAP/volume
 are `Decimal`, trade count is integral; `to_dict()` emits exact decimal strings. `wait`/`cache_bytes` match

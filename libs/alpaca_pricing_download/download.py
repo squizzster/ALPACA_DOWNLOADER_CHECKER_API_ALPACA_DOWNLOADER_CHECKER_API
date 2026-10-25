@@ -49,6 +49,18 @@ from .storage import (
 _SOURCE_NOT_SELECTED = object()
 
 
+def acquisition_asof(source, end):
+    """Continue the producer's accepted mapping independently of request coverage."""
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # Ordinary current-label requests continue moving with their cutoff. Only a
+    # deliberately historical mapping is pinned; its completed receipt owns it.
+    if source is not None:
+        request = source["latest_request"]
+        if request["asof"] != request["end_exclusive"][:10]:
+            return request["asof"]
+    return end.date().isoformat()
+
+
 def established_pricing_rejection(symbol, error):
     failure = DownloadError(f"symbol rejected during an established pricing acquisition: {symbol}")
     failure.__cause__ = error
@@ -167,18 +179,25 @@ def _stored_endpoints(root: Path, source: dict) -> dict:
     return endpoints
 
 
-def _endpoint_window(row, asof):
+def _endpoint_window(row, asof, *, cutoff=None):
     day = timestamp(row[0]).astimezone(NEW_YORK).date()
     start = datetime(day.year, day.month, day.day, tzinfo=NEW_YORK)
-    end = min((start + timedelta(days=1)).astimezone(timezone.utc), timestamp(asof + "T00:00:00Z"))
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # Mapping asof chooses an entity, not the end of its observations. A retired
+    # label can map a request containing sessions later than that mapping date.
+    end = (start + timedelta(days=1)).astimezone(timezone.utc)
+    # The accepted observation cutoff still bounds every request, including a
+    # truncated final New York session. It is independent of entity mapping.
+    if cutoff is not None:
+        end = min(end, cutoff)
     return start.astimezone(timezone.utc), end
 
 
-def _endpoints_match(client, symbol: str, endpoints: dict, asof: str) -> bool:
+def _endpoints_match(client, symbol: str, endpoints: dict, asof: str, *, cutoff=None) -> bool:
     matched = True
     for adjustment, stored in endpoints.items():
         for expected in stored:
-            start, end = _endpoint_window(expected, asof)
+            start, end = _endpoint_window(expected, asof, cutoff=cutoff)
             actual = fetch_rows(client, symbol, adjustment, start, end, asof=asof)
             # Compare exact values, not incidental JSON number or timezone spelling.
             same = len(actual) == 1 and same_row(actual[0], expected)
@@ -278,6 +297,7 @@ def publish_acquired(
     old_documents=None,
 ):
     """Publish through the original recovery, notice and summary transaction."""
+    from .activity import validate_activity
     from .changes import change_history
 
     paths = boundary_paths(anchor)
@@ -285,6 +305,7 @@ def publish_acquired(
     documents = {}
     payloads = {}
     for kind, content in changed_views.items():
+        validate_activity(content)
         document, files = build_boundary(symbol, kind, anchor, content, request)
         relative = paths[kind]
         documents[relative] = document
@@ -303,6 +324,12 @@ def publish_acquired(
         "validator": {"file": VALIDATOR_FILE, "sha256": digest(json_bytes(validator))},
         "boundaries": references,
         "history_changes": change_history(previous, update),
+        # DO NOT REMOVE WITHOUT USER AUTH!#
+        # Changed partitions have just passed the producer's activity contract.
+        # An append cannot certify untouched legacy partitions. Carry this
+        # guarantee only from a completed guarantee or a complete replacement.
+        "activity_consistent": bool((previous or {}).get("activity_consistent"))
+        or set(changed_views) == set(references),
     }
     evidence = acquisition_evidence_sha256 or (previous or {}).get("acquisition_evidence_sha256")
     if evidence is not None:
@@ -354,6 +381,7 @@ def download_pricing(
     selected_source_sha256=_SOURCE_NOT_SELECTED,
     acquisition_evidence_sha256: str | None = None,
     history_correction_id: str | None = None,
+    mapping_asof: str | None = None,
     context=None,
 ) -> dict:
     """Acquire under the ticker lock, optionally bound to a prefetch selection.
@@ -381,6 +409,14 @@ def download_pricing(
             locks.enter_context(ticker_lock(root, exclusive=True, create=True))
         recovered = recover(root, on_check=on_check)
         previous = load_source(root, symbol)
+        # DO NOT REMOVE WITHOUT USER AUTH!#
+        # Preserve an explicitly established entity mapping across retries and
+        # cutoff extensions. Advancing time must not silently turn a retired
+        # mapped request back into Alpaca's symbol-only fallback.
+        asof = mapping_asof or acquisition_asof(previous, end)
+        parse_date(asof)
+        if mapping_asof is not None and not refresh_all:
+            raise DownloadError("changing a pricing mapping requires complete replacement")
         if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
             current_sha256 = digest(json_bytes(previous)) if previous is not None else None
             if current_sha256 != selected_source_sha256:
@@ -402,7 +438,7 @@ def download_pricing(
                 not refresh_all
                 or history_start != stored_start
                 or end != previous_end
-                or previous["latest_request"]["asof"] != end.date().isoformat()
+                or previous["latest_request"]["asof"] != asof
             ):
                 raise DownloadError("planned replacement must preserve the stored start, end and asof")
         if previous is not None and end == previous_end and history_start == stored_start and not refresh_all:
@@ -449,9 +485,7 @@ def download_pricing(
                 check = "no_stored_sessions"
             else:
                 check = (
-                    "matched"
-                    if _endpoints_match(client, symbol, endpoints, end.date().isoformat())
-                    else "mismatch"
+                    "matched" if _endpoints_match(client, symbol, endpoints, asof, cutoff=end) else "mismatch"
                 )
         full_history = previous is None or refresh_all or extending or check == "mismatch"
         restarted = False
@@ -467,7 +501,7 @@ def download_pricing(
                 "symbol": symbol,
                 "start": start.isoformat().replace("+00:00", "Z"),
                 "end_exclusive": end_text,
-                "asof": end.date().isoformat(),
+                "asof": asof,
                 "feed": "sip",
                 "currency": "USD",
                 "timeframe": "1Day",
@@ -475,7 +509,15 @@ def download_pricing(
             views = {}
             for adjustment in ADJUSTMENTS:
                 try:
-                    views[adjustment] = fetch_rows(client, symbol, adjustment, start, end)
+                    views[adjustment] = fetch_rows(
+                        client,
+                        symbol,
+                        adjustment,
+                        start,
+                        end,
+                        asof=asof if asof != end.date().isoformat() else None,
+                        acquisition=True,
+                    )
                 except BarsSymbolUnavailable as error:
                     if previous is None and attempt == 0 and not views and error.symbol == symbol:
                         raise InitialPricingUnavailable(request, error) from error
@@ -493,7 +535,7 @@ def download_pricing(
                 endpoints_of(views) if full_history else _incremental_endpoints(endpoints, views, start)
             )
             first_only = {name: rows[:1] for name, rows in selected_endpoints.items()}
-            first_ok = _endpoints_match(client, symbol, first_only, end.date().isoformat())
+            first_ok = _endpoints_match(client, symbol, first_only, asof, cutoff=end)
             empties_history = full_history and any(
                 name in prior_nonempty and not rows for name, rows in views.items()
             )

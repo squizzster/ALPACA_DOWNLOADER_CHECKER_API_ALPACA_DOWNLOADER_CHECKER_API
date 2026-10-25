@@ -4,6 +4,9 @@ from typing import Any, Callable
 
 from .action_identity import complete_stock_merger_endpoints
 from .name_change import name_change_dates
+from .occupancy_anchor import competing_terminal_anchors
+from .security_identity import security_identity_for_alpaca_assets
+from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class _OwnershipIntervalRuleContext:
     corporate_actions: tuple[dict[str, Any], ...]
     asset_ids_by_symbol_and_cusip: dict[tuple[str, str], str]
     lineage: dict[str, Any]
+    uuid_lineage_edges: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -540,6 +544,46 @@ def _apply_cash_merger_terminal_rule(
             )
             continue
 
+        # DO NOT REMOVE WITHOUT USER AUTH!#
+        # A terminal payment can close an independently established episode (the
+        # branches above); it cannot establish an unlimited past for this label
+        # across a distinct occupant observed on both sides of that date. A payment date can lag
+        # trading or a label's reuse. Keep the action and candidate relation as
+        # evidence, but do not manufacture that interval. The first rival event
+        # is not an inferred handoff date. Existing row rules decide whether the
+        # unchanged complete group supports ownership or must remain ambiguous.
+        # This producer-only inference uses already loaded evidence. Readers do
+        # not repeat it. Earlier-only occupancy can be a predecessor; same-UUID
+        # CUSIP changes and already accepted split continuity are not rivals.
+        # Consume the UUID producer's accepted split edges, never reauthenticate
+        # them or borrow a dependency/merger edge as proof of identity continuity.
+        members = security_identity_for_alpaca_assets(
+            (asset_id,),
+            [
+                edge
+                for edge in context.uuid_lineage_edges
+                if edge.edge_type in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+            ],
+            tickers=(symbol,),
+            basis=rule_name,
+        ).member_alpaca_asset_ids
+        conflicts = competing_terminal_anchors(
+            symbol, members, merger_date, context.lineage, context.asset_ids_by_symbol_and_cusip
+        )
+        if conflicts:
+            evidence_issues.append(
+                {
+                    "reason_code": "cash_merger_unbounded_ownership_conflicts_with_dated_occupancy",
+                    "ownership_interval_rule": _rule_reference(rule_order, rule_name),
+                    "action_ids": list(supporting_action_ids),
+                    "symbol": symbol,
+                    "cusip": cusip,
+                    "asset_id": asset_id,
+                    "competing_occupancy": conflicts,
+                }
+            )
+            continue
+
         intervals.append(
             TickerOwnershipInterval(
                 historical_symbol=symbol,
@@ -859,6 +903,8 @@ def _asset_ids_by_symbol_and_cusip(
 
 def build_ticker_ownership_intervals(
     lineage: dict[str, Any],
+    *,
+    uuid_lineage_edges=None,
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
     corporate_actions = lineage.get("corporate_actions")
     if not isinstance(corporate_actions, list):
@@ -875,6 +921,9 @@ def build_ticker_ownership_intervals(
         corporate_actions=normalized_actions,
         asset_ids_by_symbol_and_cusip=asset_ids,
         lineage=lineage,
+        uuid_lineage_edges=tuple(
+            build_uuid_lineage_edges(lineage)[0] if uuid_lineage_edges is None else uuid_lineage_edges
+        ),
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
 

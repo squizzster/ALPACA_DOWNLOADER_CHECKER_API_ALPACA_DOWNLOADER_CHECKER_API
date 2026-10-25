@@ -35,6 +35,23 @@ def acquisition_fingerprint(item):
     return item.get("acquisition_evidence_fingerprint", item.get("evidence_fingerprint"))
 
 
+def replacement_fingerprint(lookups):
+    """Bind a group's replacement to mappings, independently of mutable metadata."""
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # A replacement is caused by the accepted label-to-identity mapping of the
+    # complete group. Status/name edits and retry timing cannot renew that work;
+    # a later mapping change must renew it even for an unchanged sibling source.
+    # Bind this at handoff creation so consumers only compare the accepted token.
+    return document_digest(
+        {
+            "identity_mappings": {
+                label: [(value.get("asset") or {}).get(key) for key in ("id", "symbol")]
+                for label, value in lookups.items()
+            }
+        }
+    )
+
+
 def evidence_requirement(item):
     """Approval/coverage changes do not renew an accepted evidence requirement."""
     return item.get("evidence_fingerprint") or item["obligation_id"]
@@ -365,14 +382,20 @@ class WorkPolicy:
                 before, after = old[label].get("asset") or {}, current.get("asset") or {}
                 mapping |= (before.get("id"), before.get("symbol")) != (after.get("id"), after.get("symbol"))
         updates = {}
-        group_fingerprint = document_digest({"lookups": observed})
+        group_fingerprint = replacement_fingerprint(observed)
         for symbol in sorted(group):
             source = sources.get(symbol)
             prior = self.work.get(symbol, {})
+            # DO NOT REMOVE WITHOUT USER AUTH!#
+            # Older pending work can lack a replacement token. Bind that existing
+            # obligation to the accepted group once, without replacing siblings
+            # whose completed receipts already satisfy their own requirements.
+            unbound_replacement = prior.get("invalidate_pricing") and acquisition_fingerprint(prior) is None
             if symbol not in lookups:
                 continue
             if not (
                 mapping
+                or unbound_replacement
                 or symbol in changed
                 or prior
                 and lookups[symbol].keys() - prior.get("required_lookups", {}).keys()
@@ -394,7 +417,7 @@ class WorkPolicy:
                     "required_lookups": lookups[symbol],
                     "evidence_fingerprint": fingerprint,
                     "acquisition_evidence_fingerprint": group_fingerprint
-                    if mapping
+                    if mapping or unbound_replacement
                     else acquisition_fingerprint(prior) or (fingerprint if source is None else None),
                     "acquire": mapping or prior.get("acquire", False),
                     "invalidate_pricing": mapping or prior.get("invalidate_pricing", False),

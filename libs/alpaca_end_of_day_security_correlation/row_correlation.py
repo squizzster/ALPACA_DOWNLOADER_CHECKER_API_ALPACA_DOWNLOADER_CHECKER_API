@@ -22,8 +22,11 @@ from .name_change import NameChangeAssessment, assess_name_change_history, name_
 from .occupancy_anchor import dated_occupancy_anchors
 from .predecessor_prefix import (
     INDEPENDENT_HISTORY_WARNING,
+    MAPPED_CONTINUATION_RULE_NAME,
+    MAPPED_CONTINUATION_WARNING,
     PREDECESSOR_PREFIX_RULE_NAME,
     IndependentHistoricalInterval,
+    MappedContinuation,
     PredecessorPrefix,
 )
 from .retired_continuation import RETIRED_CONTINUATION_RULE, RetiredContinuation
@@ -34,7 +37,7 @@ from .source_continuity import (
     retired_source_identity,
     same_symbol_continuation_ids,
 )
-from .terminal_episode import DatedDeparturePrefix, TerminalTradedEpisode
+from .terminal_episode import DatedDeparturePrefix, HistoricalAsOfGap, TerminalTradedEpisode
 from .terminal_fallback import (
     TERMINAL_FALLBACK_RULE_NAME,
     apply_terminal_continuous_ticker_fallback,
@@ -77,6 +80,7 @@ class _RowDecision:
     historical_symbol: str | None = None
     use_rule_identity_basis: bool = False
     component_only: bool = False
+    correlation_method: str | None = None
 
     def grouping_key(self) -> tuple:
         if self.branch == CORRELATED_BRANCH:
@@ -95,6 +99,7 @@ class _RowDecision:
                 self.historical_symbol,
                 self.use_rule_identity_basis,
                 self.component_only,
+                self.correlation_method,
             )
         return (
             self.branch,
@@ -124,12 +129,14 @@ class _RowRuleContext:
     current_symbol_reuse: CurrentSymbolReuseAssessment | None = None
     dated_same_symbol_predecessors: frozenset[tuple] = frozenset()
     predecessor_prefixes: tuple[PredecessorPrefix, ...] = ()
+    mapped_continuations: tuple[MappedContinuation, ...] = ()
     occupancy_anchors: tuple[tuple[tuple, date], ...] = ()
     same_symbol_continuation_ids: frozenset[str] = frozenset()
     terminal_episode: TerminalTradedEpisode | None = None
     bridged_episodes: tuple[TerminalTradedEpisode, ...] = ()
     unrelated_cash_acquiree_intervals: frozenset[tuple] = frozenset()
     departure_prefix: DatedDeparturePrefix | None = None
+    historical_asof_gap: HistoricalAsOfGap | None = None
     independent_history: tuple[IndependentHistoricalInterval, ...] = ()
     adopted_target_pairs: frozenset[tuple[str, str]] = frozenset()
     retired_source_selection: bool = False
@@ -229,8 +236,12 @@ class CorrelationCache:
         key = id(lineage)
         cached = self._lineage.get(key)
         if cached is None:
-            intervals, interval_issues = build_ticker_ownership_intervals(lineage)
             candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
+            # DO NOT REMOVE WITHOUT USER AUTH!#
+            # Build each evidence authority once. Interval construction consumes
+            # accepted split edges; cross-UUID name candidates still require the
+            # subsequent full-group history certificate before membership use.
+            intervals, interval_issues = build_ticker_ownership_intervals(lineage, uuid_lineage_edges=candidates)
             assessment = assess_name_change_history(lineage, intervals, candidates, self._name_change_sources)
             self._name_changes[key] = assessment
             edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)
@@ -337,19 +348,27 @@ def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | N
         item.interval for item in context.independent_history if item.first <= context.session_date <= item.last
     }
     matches.update(independent)
+    mapped = [item for item in context.mapped_continuations if item.contains(context.session_date)]
+    matches.update(item.interval for item in mapped)
     if len(matches) != 1:
         return None
     interval = next(iter(matches))
+    mapped_match = bool(mapped)
     return _RowDecision(
         branch=CORRELATED_BRANCH,
         asset_id=interval.asset_id,
         cusip=interval.cusip,
         interval=interval,
-        identity_confidence="action_supported",
+        historical_symbol=interval.historical_symbol if mapped_match else None,
+        identity_confidence=(
+            "accepted_continuity_and_independent_source" if mapped_match else "action_supported"
+        ),
         warning_codes=(
             *(("inferred_lower_ownership_boundary",) if interval.start_date_inclusive is None else ()),
             *((INDEPENDENT_HISTORY_WARNING,) if independent else ()),
+            *((MAPPED_CONTINUATION_WARNING,) if mapped_match else ()),
         ),
+        correlation_method=MAPPED_CONTINUATION_RULE_NAME if mapped_match else None,
     )
 
 
@@ -363,6 +382,24 @@ def _apply_name_change_boundary_conflict_rule(context: _RowRuleContext) -> _RowD
 
 
 def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision | None:
+    historical_gap = context.historical_asof_gap
+    if historical_gap is not None and historical_gap.contains_unresolved_tail(context.session_date):
+        mapped = [item for item in context.mapped_continuations if item.contains(context.session_date)]
+        if mapped:
+            mapped_decision = _apply_predecessor_prefix_rule(context)
+            if (
+                mapped_decision is not None
+                and mapped_decision.correlation_method == MAPPED_CONTINUATION_RULE_NAME
+            ):
+                return mapped_decision
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("post_mapping_asof_gap_requires_dated_owner",),
+            candidates=(
+                (historical_gap.interval.asset_id, historical_gap.interval.cusip),
+                (historical_gap.successor_asset_id, historical_gap.successor_cusip),
+            ),
+        )
     if context.selected_asof_interval is not None:
         if (
             context.retired_source_selection
@@ -645,7 +682,7 @@ def _apply_complete_current_suffix_rule(
     assessment = context.ticker_reuse_gap
     if (
         assessment is None
-        or not assessment.complete_current_suffix_eligible
+        or not (assessment.complete_current_suffix_eligible or assessment.active_current_suffix_eligible)
         or context.session_date < assessment.right_observed_session
     ):
         return None
@@ -653,7 +690,11 @@ def _apply_complete_current_suffix_rule(
         branch=CORRELATED_BRANCH,
         asset_id=assessment.current_asset_id,
         cusip=assessment.current_asset_cusip,
-        identity_confidence="complete_current_identity_suffix",
+        identity_confidence=(
+            "complete_current_identity_suffix"
+            if assessment.complete_current_suffix_eligible
+            else "bounded_active_current_identity_suffix"
+        ),
         ticker_reuse_gap=assessment,
         use_rule_identity_basis=True,
     )
@@ -775,11 +816,7 @@ def _apply_ticker_reuse_gap_guard(
             (
                 "prior_pricing_run_before_ticker_reuse_gap"
                 if context.session_date < assessment.right_observed_session
-                else (
-                    "active_asset_with_incomplete_right_boundary"
-                    if assessment.active_current_suffix_flagged
-                    else "post_gap_pricing_run_requires_dated_identity"
-                )
+                else ("post_gap_pricing_run_requires_dated_identity")
             ),
         ),
         candidates=candidates,
@@ -1112,10 +1149,12 @@ def correlate_download_rows(
     evidence_issues: list[dict[str, Any]] | None = None,
     distinct_uuid_transition: OneSessionDistinctUuidTransition | None = None,
     predecessor_prefixes: tuple[PredecessorPrefix, ...] = (),
+    mapped_continuations: tuple[MappedContinuation, ...] = (),
     terminal_episode: TerminalTradedEpisode | None = None,
     bridged_episodes: tuple[TerminalTradedEpisode, ...] = (),
     closed_history_evidence: bool | None = None,
     departure_prefix: DatedDeparturePrefix | None = None,
+    historical_asof_gap: HistoricalAsOfGap | None = None,
     independent_history: tuple[IndependentHistoricalInterval, ...] = (),
     retired_lower_bound: date | None = None,
     retired_continuation: RetiredContinuation | None = None,
@@ -1227,12 +1266,14 @@ def correlate_download_rows(
         current_symbol_reuse=current_symbol_reuse,
         dated_same_symbol_predecessors=dated_same_symbol_predecessors,
         predecessor_prefixes=predecessor_prefixes,
+        mapped_continuations=mapped_continuations,
         occupancy_anchors=occupancy_anchors,
         same_symbol_continuation_ids=continuation_ids,
         terminal_episode=terminal_episode,
         bridged_episodes=bridged_episodes,
         unrelated_cash_acquiree_intervals=unrelated_cash_acquiree_intervals,
         departure_prefix=departure_prefix,
+        historical_asof_gap=historical_asof_gap,
         independent_history=independent_history,
         adopted_target_pairs=adopted_target_pairs,
         retired_source_selection=retired_selection,
@@ -1328,7 +1369,7 @@ def correlate_download_rows(
                     ),
                     "security_identity": security_identity.as_report_object(),
                     "identity_confidence": decision.identity_confidence,
-                    "correlation_method": decision.rule_name,
+                    "correlation_method": decision.correlation_method or decision.rule_name,
                     "ticker_ownership_interval": (
                         {
                             **replace(

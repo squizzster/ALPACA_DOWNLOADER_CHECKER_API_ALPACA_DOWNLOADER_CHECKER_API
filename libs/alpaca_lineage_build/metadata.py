@@ -412,7 +412,19 @@ def acquire(view, client, previous=None, *, refresh=False):
     for _ in range(MAX_NAME_CHANGE_SYMBOLS + 1):
         window = WindowClient(client, view.symbol, previous, refresh)
         try:
-            evidence = build_identity_report(view.symbol, view.local, window)
+            # DO NOT REMOVE WITHOUT USER AUTH!#
+            # The bar mapping date can be historical. Corporate-action discovery
+            # still covers the complete accepted observation cutoff, including
+            # the retirement that required that mapping in the first place.
+            evidence = build_identity_report(
+                view.symbol,
+                view.local,
+                window,
+                query_dates=(
+                    view.source["history_start"][:10],
+                    view.source["latest_request"]["end_exclusive"][:10],
+                ),
+            )
         except _CompletedLookupChanged:
             continue  # The fresh lookup is now authoritative in this operation's cache.
         return _finish_evidence(evidence, window)

@@ -8,11 +8,212 @@ from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import
     AppliedOwnershipIntervalRule,
     TickerOwnershipInterval,
 )
+from libs.alpaca_end_of_day_security_correlation.predecessor_prefix import MappedContinuation
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
-from libs.alpaca_end_of_day_security_correlation.terminal_episode import assess_terminal_traded_episode
+from libs.alpaca_end_of_day_security_correlation.terminal_episode import (
+    assess_historical_asof_gap,
+    assess_terminal_traded_episode,
+)
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 from tests.test_alpaca_end_of_day_security_correlation import correlation_source
+
+
+class HistoricalAsOfGapTests(unittest.TestCase):
+    def setUp(self):
+        prefix = tuple(
+            date.fromisoformat(value)
+            for value in expected_market_session_coverage("2022-06-01", "2022-12-24").session_dates
+        )
+        tail = tuple(
+            date.fromisoformat(value)
+            for value in expected_market_session_coverage("2022-12-30", "2023-01-25").session_dates
+        )
+        self.sessions = prefix + tail
+        self.asof = prefix[-1]
+        self.rows = [
+            {
+                "t": session.isoformat() + "T12:00:00Z",
+                "o": str(10 + index % 17),
+                "h": str(11 + index % 17),
+                "l": str(9 + index % 17),
+                "c": str(10 + index % 17),
+                "vw": str(10 + index % 17),
+                "v": "100",
+                "n": "10",
+            }
+            for index, session in enumerate(self.sessions)
+        ]
+        old = {
+            "id": "old-id",
+            "class": "us_equity",
+            "exchange": "NASDAQ",
+            "symbol": "OLD",
+            "name": "Old issue",
+            "status": "inactive",
+        }
+        new = {
+            "id": "new-id",
+            "class": "us_equity",
+            "exchange": "NASDAQ",
+            "symbol": "NEW",
+            "name": "New issue",
+            "status": "active",
+        }
+        self.lineage = {
+            "query": {
+                "input_symbol": "OLD",
+                "corporate_actions_start": "2022-01-01",
+                "corporate_actions_end": "2023-12-31",
+                "corporate_actions_data_quality": "complete",
+            },
+            "identities": [old, new],
+            "asset_lookups": [
+                {
+                    "lookup": key,
+                    "lookup_kind": kind,
+                    "found": True,
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": asset,
+                }
+                for kind, key, asset in (
+                    ("symbol", "OLD", old),
+                    ("symbol", "NEW", new),
+                    ("cusip", "old-cusip", old),
+                    ("cusip", "new-cusip", new),
+                )
+            ],
+            "corporate_actions": [
+                {
+                    "id": "rename",
+                    "action_type": "name_change",
+                    "old_symbol": "OLD",
+                    "old_cusip": "old-cusip",
+                    "new_symbol": "NEW",
+                    "new_cusip": "new-cusip",
+                    "process_date": "2023-01-25",
+                }
+            ],
+        }
+        applied = (AppliedOwnershipIntervalRule(1, "name_change_ticker_transition", ("rename",)),)
+        self.old = TickerOwnershipInterval("OLD", "old-cusip", "old-id", None, date(2023, 1, 25), applied)
+        self.new = TickerOwnershipInterval("NEW", "new-cusip", "new-id", date(2023, 1, 25), None, applied)
+        self.intervals = [self.old, self.new]
+        self.work = self.make_work()
+
+    def make_work(self):
+        return [
+            (
+                SimpleNamespace(rows=copy.deepcopy(self.rows)),
+                {
+                    **correlation_source("OLD", asof=self.asof.isoformat()),
+                    "adjustment": adjustment,
+                    "request_to": "2023-02-01T00:00:00Z",
+                },
+                self.sessions,
+            )
+            for adjustment in ALPACA_ADJUSTMENT_MODES
+        ]
+
+    def assess(self):
+        return assess_historical_asof_gap("OLD", self.lineage, self.intervals, self.work)
+
+    def test_complete_mapped_prefix_survives_but_post_gap_rows_stay_unresolved(self):
+        assessment = self.assess()
+        self.assertEqual(
+            (self.sessions[0], self.asof, date(2022, 12, 30), date(2023, 1, 25)),
+            (assessment.first, assessment.asof, assessment.next_observed, assessment.end_exclusive),
+        )
+        result = correlate_download_rows(
+            self.rows,
+            self.work[0][1],
+            self.lineage,
+            self.intervals,
+            historical_asof_gap=assessment,
+        )
+        self.assertEqual([self.sessions.index(self.asof) + 1], [s["row_count"] for s in result["correlated"]])
+        self.assertEqual(
+            [len(self.sessions) - self.sessions.index(self.asof) - 1],
+            [s["row_count"] for s in result["uncorrelated"]],
+        )
+        self.assertEqual(
+            ["post_mapping_asof_gap_requires_dated_owner"],
+            result["uncorrelated"][0]["reason_codes"],
+        )
+
+    def test_independently_proved_mapped_continuation_can_resolve_the_tail(self):
+        assessment = self.assess()
+        tail = frozenset(session for session in self.sessions if session > self.asof)
+        result = correlate_download_rows(
+            self.rows,
+            self.work[0][1],
+            self.lineage,
+            self.intervals,
+            historical_asof_gap=assessment,
+            mapped_continuations=(MappedContinuation(tail, self.new, "NEW", "rename"),),
+        )
+        self.assertEqual([], result["uncorrelated"])
+        self.assertEqual(
+            ["old-id", "new-id"],
+            [segment["canonical_security"]["alpaca_asset_id"] for segment in result["correlated"]],
+        )
+        self.assertEqual(
+            "accepted_name_change_mapped_continuation",
+            result["correlated"][1]["correlation_method"],
+        )
+
+    def test_nearest_counterexamples_cannot_create_the_boundary(self):
+        cases = {}
+
+        contiguous = copy.deepcopy(self.work)
+        next_session = date.fromisoformat(
+            expected_market_session_coverage(
+                (self.asof + timedelta(days=1)).isoformat(), "2022-12-31"
+            ).session_dates[0]
+        )
+        for download, _, _ in contiguous:
+            download.rows[self.sessions.index(self.asof) + 1]["t"] = next_session.isoformat() + "T12:00:00Z"
+        contiguous_sessions = (
+            *self.sessions[: self.sessions.index(self.asof) + 1],
+            next_session,
+            *self.sessions[self.sessions.index(self.asof) + 2 :],
+        )
+        contiguous = [(download, source, contiguous_sessions) for download, source, _ in contiguous]
+        cases["no immediate session gap"] = (self.lineage, self.intervals, contiguous)
+
+        mismatched = copy.deepcopy(self.work)
+        download, source, sessions = mismatched[-1]
+        download.rows.pop(0)
+        mismatched[-1] = (download, source, sessions[1:])
+        cases["one view differs"] = (self.lineage, self.intervals, mismatched)
+
+        active = copy.deepcopy(self.lineage)
+        active["asset_lookups"][2]["asset"]["status"] = "active"
+        cases["predecessor remains active"] = (active, self.intervals, self.work)
+
+        same_uuid = copy.deepcopy(self.lineage)
+        same_uuid["asset_lookups"][3]["asset"]["id"] = "old-id"
+        cases["successor is not distinct"] = (same_uuid, self.intervals, self.work)
+
+        incomplete = copy.deepcopy(self.lineage)
+        incomplete["query"]["corporate_actions_data_quality"] = "partial"
+        cases["action coverage is incomplete"] = (incomplete, self.intervals, self.work)
+
+        competing = TickerOwnershipInterval(
+            "OLD", "other-cusip", "other-id", None, self.asof + timedelta(days=1), ()
+        )
+        cases["prefix has a competing owner"] = (self.lineage, [*self.intervals, competing], self.work)
+
+        inert = copy.deepcopy(self.work)
+        for download, _, _ in inert:
+            for row in download.rows[10:110]:
+                row.update(o="20", h="20", l="20", c="20", vw="20", v="0", n="0")
+        cases["prefix contains a prolonged carry forward"] = (self.lineage, self.intervals, inert)
+
+        for case, (lineage, intervals, work) in cases.items():
+            with self.subTest(case=case):
+                self.assertIsNone(assess_historical_asof_gap("OLD", lineage, intervals, work))
 
 
 class TerminalEpisodeTests(unittest.TestCase):
@@ -218,6 +419,19 @@ class TerminalEpisodeTests(unittest.TestCase):
         self.assertEqual([], result["uncorrelated"])
         self.assertIn("complete_initial_terminal_episode", result["correlated"][0]["warnings"])
         self.assertNotIn("synthetic_carry_forward_boundary", result["correlated"][0]["warnings"])
+
+    def test_initial_terminal_run_survives_later_request_horizon(self):
+        owner, later = self.initial_run_before_reuse()
+        for _, source, _ in self.work:
+            source["request_to"] = "2024-01-11T00:00:00Z"
+        episode = self.assess([owner])
+        self.assertIsNotNone(episode)
+        self.assertEqual((self.sessions[0], self.sessions[-1]), (episode.first, episode.last))
+        result = correlate_download_rows(
+            self.work[0][0].rows, self.work[0][1], self.lineage, [owner], terminal_episode=episode
+        )
+        self.assertEqual([5, len(later)], [item["row_count"] for item in result["correlated"]])
+        self.assertEqual([], result["uncorrelated"])
 
     def test_initial_run_requires_nearby_terminal_not_merely_event_inside_gap(self):
         owner, _ = self.initial_run_before_reuse()

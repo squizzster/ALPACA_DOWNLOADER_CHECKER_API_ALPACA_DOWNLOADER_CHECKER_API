@@ -623,6 +623,7 @@ class ServingCatalogueTests(NativeCase):
                     if entry["adjustment"] == "all":
                         for segment in entry["segments"]:
                             segment["historical_symbol"] = "ALIAS"
+                            segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(change)
         data = self.bootstrap()
@@ -689,6 +690,8 @@ class ServingCatalogueTests(NativeCase):
                     for entry in boundary["adjustments"]:
                         for segment in entry["segments"]:
                             segment["security_identity"]["security_id"] = identity
+                            segment["observation_selection"] = "selected"
+                            segment["observation_tickers"] = [symbol]
 
             self.publish_change(split, symbol)
         self.assertTrue(maintain(self.store)["complete"])

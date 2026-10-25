@@ -657,7 +657,8 @@ class DurableMaintenanceTests(unittest.TestCase):
                 entry = storage.read_index(case.store / "end_of_day/lineage")["symbols"]["AAA"]
                 self.assertEqual(entry["projection"]["update_obligation_id"], pending["obligation_id"])
                 self.assertEqual(
-                    entry["projection"]["acquisition_evidence_sha256"], pending["evidence_fingerprint"]
+                    entry["projection"]["acquisition_evidence_sha256"],
+                    pending["acquisition_evidence_fingerprint"],
                 )
                 if boundary != "before_acquisition":
                     self.assertTrue(

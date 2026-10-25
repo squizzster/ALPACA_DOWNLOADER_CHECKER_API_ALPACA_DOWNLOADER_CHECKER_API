@@ -169,5 +169,20 @@
     "modifications": [
       "Recover only named pending summary inputs and their complete lineage groups before daily selection; never treat an unavailable summary as empty membership. Recompute the acquisition route from accepted coverage and current summary eligibility while preserving required ranges, identity replacements, corrections and retry restrictions. Preserve compatible completed lineage decisions."
     ]
+  },
+  {
+    "modifications": [
+      "Bind complete-group pricing replacements to accepted identity mappings, including members with absent or unchanged catalogue lookups. Preserve replacement fingerprints across retries and metadata-only changes, and bind previously unbound pending replacements from accepted evidence at their producer without additional storage reads or consumer checks. Preserve compatible completed lineage decisions."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish one producer-owned numerical source choice across all adjustment views while preserving complete identity assignments. Correct a conflicting retired source through a retained-span pricing replacement bound to its last observed own-label mapping date; reuse accepted choices without consumer replay."
+    ]
+  },
+  {
+    "modifications": [
+      "Restrict source-wide mapping correction to the latest independently observed own-label occupant; preserve per-identity observation choices across older closed occupancies. Promote completed observation decisions only when the exact correlation-version migration is proven unaffected from selected receipt metadata, without decoding or rewriting retained price payloads."
+    ]
   }
 ]

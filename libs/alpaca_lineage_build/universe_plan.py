@@ -24,6 +24,7 @@ from .work_contract import (
     lookup_fact,
     obligation,
     pricing_target,
+    replacement_fingerprint,
     restriction,
     satisfying_entry,
     work_graph,
@@ -283,11 +284,42 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             or symbol in failures
             or (unfinished and prior.get("refresh_metadata", False)),
         }
-        work[symbol] = obligation(item, prior if unfinished else None)
+        work[symbol] = item
         # A missing fresh record cannot erase previously accepted positive evidence.
         for label, lookup in lookups.items():
             if label not in catalogue:
                 evidence_client.assets.setdefault(label, lookup)
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # The cause belongs to the complete affected group, even when a member's
+    # own lookup is unchanged or absent from the catalogue. Use only accepted
+    # in-memory evidence; retries retain their already bound requirements.
+    replacements = {
+        symbol
+        for symbol, item in work.items()
+        if symbol in mapping_groups or item["invalidate_pricing"] and acquisition_fingerprint(item) is None
+    }
+    while replacements:
+        group = graph.closure({min(replacements)})
+        lookups = {
+            lookup["lookup"]: lookup
+            for symbol in sorted(group)
+            for lookup in entries.get(symbol, {}).get("projection", {}).get("symbol_lookups", [])
+        }
+        for symbol in sorted(group):
+            prior = state["work"].get(symbol, {})
+            if prior.get("status") not in (None, "complete"):
+                lookups.update(prior.get("required_lookups", {}))
+        for symbol in sorted(group):
+            lookups.update(work.get(symbol, {}).get("required_lookups", {}))
+        fingerprint = replacement_fingerprint(lookups)
+        for symbol in group & replacements:
+            work[symbol]["acquisition_evidence_fingerprint"] = fingerprint
+            work[symbol]["required_group"] = sorted(group)
+        replacements.difference_update(group)
+    for symbol, item in work.items():
+        prior = state["work"].get(symbol, {})
+        unfinished = prior.get("status") not in (None, "complete") and symbol not in satisfied_labels
+        work[symbol] = obligation(item, prior if unfinished else None)
     registered = set(entries)
     deferred_labels = {item["symbol"] for item in deferred}
     restricted_groups = set().union(*(graph.closure({s}) for s in deferred_labels)) if deferred_labels else set()

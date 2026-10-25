@@ -40,7 +40,7 @@ Recovery retains accepted exclusive bounds; initial/dependency acquisitions shar
 are preserved and reported separately without checking/rewinding; reconciliation needing a later target stays
 incomplete. Coverage is not a historical knowledge snapshot: observation time, request coverage, last bar
 and mapping `asof` differ, and a final-session bar need not exist. Reader/export dates remain inclusive
-calendar filters. Authority: [pricing_session_end](../libs/alpaca_pricing_download/download.py#L107).
+calendar filters. Authority: [pricing_session_end](../libs/alpaca_pricing_download/download.py#L120).
 
 ## Inspect local progress
 

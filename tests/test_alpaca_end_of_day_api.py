@@ -169,6 +169,7 @@ class AlpacaEndOfDayPublicApiTests(NativeCase):
                         for entry in boundary["adjustments"]:
                             for segment in entry["segments"]:
                                 segment["historical_symbol"] = label
+                                segment["observation_tickers"] = [segment["historical_symbol"]]
 
                 for symbol in ("TEST", "OTHER"):
                     self.publish_change(rename, symbol)

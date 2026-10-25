@@ -16,6 +16,7 @@ from .predecessor_prefix import (
     assess_bridged_initial_prefix,
     assess_independent_donor_prefixes,
     assess_independent_historical_intervals,
+    assess_mapped_continuations,
     assess_predecessor_prefixes,
 )
 from .retired_continuation import assess_retired_continuation
@@ -29,12 +30,12 @@ from .source_continuity import retired_history_lower_bound
 from .terminal_episode import (
     assess_bridged_traded_episodes,
     assess_dated_departure_prefix,
+    assess_historical_asof_gap,
     assess_terminal_traded_episode,
     has_informative_trading,
     has_prolonged_carry_forward,
 )
 from .ticker_reuse_gap import adjustment_session_consensus
-from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
 
 
 def _source_context(authenticated_download) -> dict[str, Any]:
@@ -200,6 +201,15 @@ def build_security_correlation_report(
         correlation_loader=correlation_loader if complete_source else None,
         source_rows_loader=source_rows_loader,
     )
+    mapped_continuations = assess_mapped_continuations(
+        symbol,
+        lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        correlation_loader=correlation_loader if complete_source else None,
+        source_rows_loader=source_rows_loader,
+    )
     independent_history = assess_independent_historical_intervals(
         symbol,
         lineage,
@@ -243,20 +253,13 @@ def build_security_correlation_report(
         if complete_source and terminal_episode is not None
         else None
     )
+    historical_asof_gap = (
+        assess_historical_asof_gap(symbol, lineage, intervals, authenticated_work_items)
+        if complete_source
+        else None
+    )
     closed_history_evidence = (
         complete_source
-        and (
-            any(edge.edge_type in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES for edge in uuid_lineage_edges)
-            or (
-                len({item.get("id") for item in lineage.get("identities", []) if item.get("symbol") == symbol})
-                > 1
-                and any(
-                    action.get("action_type") in ("cash_merger", "stock_and_cash_merger", "stock_merger")
-                    and action.get("acquiree_symbol") == symbol
-                    for action in lineage.get("corporate_actions", [])
-                )
-            )
-        )
         and any(
             source["adjustment"] == "raw" and has_informative_trading(download.rows)
             for download, source, _ in authenticated_work_items
@@ -285,9 +288,11 @@ def build_security_correlation_report(
             evidence_issues=evidence_issues,
             distinct_uuid_transition=distinct_uuid_transition,
             predecessor_prefixes=predecessor_prefixes,
+            mapped_continuations=mapped_continuations,
             terminal_episode=terminal_episode,
             bridged_episodes=bridged_episodes,
             departure_prefix=departure_prefix,
+            historical_asof_gap=historical_asof_gap,
             closed_history_evidence=closed_history_evidence,
             independent_history=independent_history,
             retired_lower_bound=retired_lower_bound,

@@ -28,8 +28,11 @@ from .contract import (
     LineageError,
     reusable_metadata_versions,
     reusable_versions,
+    versions,
 )
 from .metadata import EvidenceClient, acquire, acquire_unpriced, action_requests, dependencies, full_metadata
+from .migration import can_promote_observation_decision
+from .observations import select_observations
 from .pricing import load_pricing
 from .resume import can_resume, eligible_source, unchanged_source, unique_assignment
 from .selection import DependencyGraph
@@ -187,7 +190,7 @@ def _prefetch_metadata(
                     action_requests(
                         symbol,
                         source.get("history_start", HISTORY_START)[:10],
-                        source["latest_request"]["asof"],
+                        source["latest_request"]["end_exclusive"][:10],
                         previous[symbol],
                         refresh=full_metadata(previous[symbol], notices.get(symbol), group_refresh),
                     )
@@ -369,10 +372,16 @@ def process_group(
                 register_discoveries(group)
             if (
                 reuse_metadata
-                and all(reusable_versions(prior["versions"]) for prior in previous.values())
+                and all(
+                    reusable_versions(prior["versions"]) or can_promote_observation_decision(prior)
+                    for prior in previous.values()
+                )
                 and (work_policy is None or work_policy.decision_inputs_satisfied(sources))
             ):
-                receipts = {symbol: dict(prior) for symbol, prior in previous.items()}
+                receipts = {
+                    symbol: {**prior, "schema_version": VERSION, "versions": versions()}
+                    for symbol, prior in previous.items()
+                }
                 if work_policy is not None:
                     work_policy.stamp(receipts, sources)
                 published = receipts != previous
@@ -391,7 +400,8 @@ def process_group(
                         sources=sources,
                     )
                     receipt_cache.published(receipts)
-                    work_policy.update_index({s: index["symbols"][s] for s in receipts})
+                    if work_policy is not None:
+                        work_policy.update_index({s: index["symbols"][s] for s in receipts})
                 if observer is not None:
                     observer(
                         store=store,
@@ -614,86 +624,97 @@ def process_group(
                         resume = False
                         inputs[seed] = load_pricing(store, seed, source=sources[seed])
                         reports = correlate(store, inputs, evidence)
-                    receipts, boundaries = {}, {}
-                    for symbol, view in inputs.items():
-                        prior = previous[symbol]
-                        old = old_boundaries[symbol]
-                        receipts[symbol], boundaries[symbol] = make_publication(
-                            view,
-                            evidence[symbol],
-                            reports[symbol],
-                            sorted(set(deps[symbol]) | unavailable.keys()),
-                            prior,
-                            old,
-                            resume_closed=resume,
-                        )
-                        receipts[symbol]["input_sources"] = {
-                            name: inputs[name].source_sha256
-                            for name in sorted(components[symbol] & inputs.keys())
-                        }
-                        if unavailable:
-                            receipts[symbol]["unavailable_pricing"] = unavailable
-                    if work_policy is not None:
-                        work_policy.stamp(receipts, sources)
-                    if progress:
-                        progress(
-                            "lineage_publication", {"symbols": sorted(receipts), "reused_decision": no_new_rows}
-                        )
-                    storage.publish(
-                        store,
-                        root,
-                        index,
-                        receipts,
-                        boundaries,
-                        notices,
-                        checks=checks,
-                        previous=previous,
-                        sources=sources,
-                    )
-                    receipt_cache.published(receipts)
-                    if work_policy is not None:
-                        work_policy.update_index({symbol: index["symbols"][symbol] for symbol in receipts})
-                    else:
-                        graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
-                    # Inspection observes the actual publication while the same
-                    # locks still protect its inputs. It never runs another resolver.
-                    if observer is not None:
-                        observed_boundaries = {
-                            symbol: {
-                                **storage.read_boundaries(
-                                    root, receipt, kinds=receipt["boundaries"].keys() - boundaries[symbol].keys()
-                                ),
-                                **boundaries[symbol],
+                    # DO NOT REMOVE WITHOUT USER AUTH!#
+                    # The complete group establishes one numerical source choice
+                    # for all views. A required mapping correction must publish
+                    # through pricing first; never stamp the old input as done.
+                    if not no_new_rows:
+                        reports, mapping_corrections = select_observations(inputs, reports)
+                        required.update(mapping_corrections)
+                    if not required:
+                        receipts, boundaries = {}, {}
+                        for symbol, view in inputs.items():
+                            prior = previous[symbol]
+                            old = old_boundaries[symbol]
+                            receipts[symbol], boundaries[symbol] = make_publication(
+                                view,
+                                evidence[symbol],
+                                reports[symbol],
+                                sorted(set(deps[symbol]) | unavailable.keys()),
+                                prior,
+                                old,
+                                resume_closed=resume,
+                            )
+                            receipts[symbol]["input_sources"] = {
+                                name: inputs[name].source_sha256
+                                for name in sorted(components[symbol] & inputs.keys())
                             }
-                            for symbol, receipt in receipts.items()
-                        }
-                        observer(
-                            store=store,
-                            receipts=receipts,
-                            boundaries=observed_boundaries,
-                            inputs=inputs,
-                            reports=None if no_new_rows else reports,
-                            notices=notices,
-                            resumed=resume,
+                            if unavailable:
+                                receipts[symbol]["unavailable_pricing"] = unavailable
+                        if work_policy is not None:
+                            work_policy.stamp(receipts, sources)
+                        if progress:
+                            progress(
+                                "lineage_publication",
+                                {"symbols": sorted(receipts), "reused_decision": no_new_rows},
+                            )
+                        storage.publish(
+                            store,
+                            root,
+                            index,
+                            receipts,
+                            boundaries,
+                            notices,
+                            checks=checks,
+                            previous=previous,
+                            sources=sources,
                         )
-                    return {
-                        "symbol": seed,
-                        "status": "processed",
-                        "processed": sorted(sources),
-                        "acknowledged": sorted(notices),
-                        "unresolved_rows": sum(item["unresolved_rows"] for item in receipts.values()),
-                        "pricing_acquisition_waves": acquisition_waves,
-                        "reused_decision": no_new_rows,
-                        "reused_closed_boundaries": resume,
-                        "historical_rows_reused": sum(item["source_rows"] for item in previous.values())
-                        if resume
-                        else 0,
-                        "pricing_rows_processed": sum(
-                            len(rows) for view in inputs.values() for rows in view.views.values()
-                        ),
-                        "unavailable_pricing": sorted(unavailable),
-                        "pricing_replacements": pricing_replacements,
-                    }
+                        receipt_cache.published(receipts)
+                        if work_policy is not None:
+                            work_policy.update_index({symbol: index["symbols"][symbol] for symbol in receipts})
+                        else:
+                            graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
+                        # Inspection observes the actual publication while the same
+                        # locks still protect its inputs. It never runs another resolver.
+                        if observer is not None:
+                            observed_boundaries = {
+                                symbol: {
+                                    **storage.read_boundaries(
+                                        root,
+                                        receipt,
+                                        kinds=receipt["boundaries"].keys() - boundaries[symbol].keys(),
+                                    ),
+                                    **boundaries[symbol],
+                                }
+                                for symbol, receipt in receipts.items()
+                            }
+                            observer(
+                                store=store,
+                                receipts=receipts,
+                                boundaries=observed_boundaries,
+                                inputs=inputs,
+                                reports=None if no_new_rows else reports,
+                                notices=notices,
+                                resumed=resume,
+                            )
+                        return {
+                            "symbol": seed,
+                            "status": "processed",
+                            "processed": sorted(sources),
+                            "acknowledged": sorted(notices),
+                            "unresolved_rows": sum(item["unresolved_rows"] for item in receipts.values()),
+                            "pricing_acquisition_waves": acquisition_waves,
+                            "reused_decision": no_new_rows,
+                            "reused_closed_boundaries": resume,
+                            "historical_rows_reused": sum(item["source_rows"] for item in previous.values())
+                            if resume
+                            else 0,
+                            "pricing_rows_processed": sum(
+                                len(rows) for view in inputs.values() for rows in view.views.values()
+                            ),
+                            "unavailable_pricing": sorted(unavailable),
+                            "pricing_replacements": pricing_replacements,
+                        }
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
         if required:

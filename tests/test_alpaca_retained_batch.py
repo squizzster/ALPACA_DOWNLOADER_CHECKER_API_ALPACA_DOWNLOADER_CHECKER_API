@@ -109,14 +109,16 @@ class RetainedBatchTests(unittest.TestCase):
         self.assertEqual(self.pages, [])
 
     def test_one_adjustment_mismatch_replaces_only_its_ticker(self):
-        self.live["AAA"]["spin-off"][0]["v"] += 1
+        self.live["AAA"]["spin-off"][0]["c"] += 1
         result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
         by_symbol = {item["symbol"]: item for item in result["results"]}
         self.assertEqual(by_symbol["AAA"]["mode"], "full_refresh")
         self.assertEqual(by_symbol["AAA"]["consistency_check"], "mismatch")
         self.assertTrue(all(by_symbol[s]["mode"] == "update" for s in self.symbols[1:]))
-        self.assertEqual(read_pricing_views(self.store, "AAA")["spin-off"][0][5], "9007199254740994")
+        self.assertEqual(
+            read_pricing_views(self.store, "AAA")["spin-off"][0][4], str(self.live["AAA"]["spin-off"][0]["c"])
+        )
 
     def test_sparse_tail_retains_first_rows_and_checks_each_view(self):
         for views in self.live.values():
@@ -362,7 +364,7 @@ class RetainedBatchTests(unittest.TestCase):
 
     def test_mixed_replacements_are_bounded_after_shared_endpoint_checks(self):
         for symbol in ("AAA", "CCC"):
-            self.live[symbol]["raw"][0]["v"] += 1
+            self.live[symbol]["raw"][0]["c"] += 1
         with patch.object(append, "MAX_ROWS", 30000):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)

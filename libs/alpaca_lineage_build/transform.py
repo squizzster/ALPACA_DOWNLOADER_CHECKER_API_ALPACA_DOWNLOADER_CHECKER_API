@@ -82,6 +82,8 @@ ASSIGNMENT_FIELDS = {
     "reason_codes",
     "candidate_securities",
     "market_data_series_identity",
+    "observation_selection",
+    "observation_tickers",
 }
 
 
