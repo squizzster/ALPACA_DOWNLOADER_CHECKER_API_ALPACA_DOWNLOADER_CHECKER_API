@@ -102,6 +102,7 @@ class UpdateCheckTests(unittest.TestCase):
         (self.store / CHECK_FILE).unlink()
         index = storage.read_index(self.store / "end_of_day/lineage")
         current = versions()
+        policy = index["symbols"]["GOOG"]["correlation_policy"]
         synthetic = {}
         for number in range(6000):
             symbol = f"T{number:04}"
@@ -114,6 +115,7 @@ class UpdateCheckTests(unittest.TestCase):
                 "asset_ids": [],
                 "group_members": [symbol],
                 "versions": current,
+                "correlation_policy": policy,
             }
         opened = []
         load_source = pipeline.load_source
@@ -343,8 +345,17 @@ class UpdateCheckTests(unittest.TestCase):
         self.build()
         index = storage.read_index(self.store / "end_of_day/lineage")
         current = versions()
+        policy = index["symbols"]["GOOG"]["correlation_policy"]
         index["symbols"].update(
-            {f"T{number}": {"dependencies": [], "asset_ids": [], "versions": current} for number in range(6000)}
+            {
+                f"T{number}": {
+                    "dependencies": [],
+                    "asset_ids": [],
+                    "versions": current,
+                    "correlation_policy": policy,
+                }
+                for number in range(6000)
+            }
         )
         with (
             patch.object(storage, "read_index", return_value=index),

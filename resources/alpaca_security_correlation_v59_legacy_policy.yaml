@@ -1,0 +1,50 @@
+schema_version: 4
+policy_id: alpaca_security_correlation
+policy_version: 0.2.0
+policy_role: published_reference
+
+implementation:
+  correlation_version: 59
+  lineage_version: 33
+
+execution:
+  established_fixed_point:
+    max_passes: 3
+    ownership_rules:
+      - name_change_ticker_transition
+      - same_ticker_stock_merger_uuid_transition
+      - cash_merger_acquiree_terminal_boundary
+    row_rules:
+      - exchange_test_symbol_exclusion
+      - name_change_boundary_conflict
+      - complete_current_identity_suffix_after_ticker_reuse_gap
+      - inactive_current_identity_suffix_after_ticker_reuse_gap
+      - dated_terminal_identity_suffix_after_ticker_reuse_gap
+      - ticker_reuse_gap_guard
+      - one_session_distinct_uuid_transition
+      - complete_current_symbol_run_after_authenticated_ticker_reuse
+      - asof_selected_uuid_lineage_interval
+      - exact_independently_resolved_predecessor_prefix
+      - latest_dated_ownership_interval_overlapping_claims
+      - requested_symbol_dated_uuid_interval
+      - unique_uuid_candidate_with_warnings
+      - bounded_retired_name_change_continuation
+    row_default: unresolved_uuid_candidates
+    terminal_rule: stable_continuous_ticker_identity_set
+  frozen_baseline: true
+  reconciliation:
+    scope: unresolved_only_complete_group
+    implementation: reconcile_duplicate_foreign_occupancy_v1
+  ownership_fallback:
+    optional: true
+    position: 4
+    implementation: action_anchored_current_ticker_occupancy_v1
+  second_fixed_point:
+    seed: frozen_baseline
+    max_passes: 3
+  producer_evaluation:
+    timing: once_from_frozen_baseline
+    dependency: legacy_frozen_reconciliation_projection_may_enable_suffix
+  observation_selection:
+    type: fixed_python_postprocessor
+    implementation: lineage_v33

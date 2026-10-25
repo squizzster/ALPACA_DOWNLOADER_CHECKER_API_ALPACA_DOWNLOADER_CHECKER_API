@@ -31,6 +31,34 @@ def exact_cusip_lookup_asset(lineage: dict[str, Any], cusip: str) -> dict[str, A
     return asset
 
 
+def exact_symbol_lookup_asset(lineage: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+    """Return one completed exact symbol lookup, without projecting it backwards."""
+    lookups = lineage.get("asset_lookups")
+    if not isinstance(lookups, list):
+        return None
+    matching = [
+        item
+        for item in lookups
+        if isinstance(item, dict) and item.get("lookup_kind") == "symbol" and item.get("lookup") == symbol
+    ]
+    if len(matching) != 1:
+        return None
+    lookup = matching[0]
+    asset = lookup.get("asset")
+    if (
+        lookup.get("found") is not True
+        or lookup.get("outcome") != "found"
+        or lookup.get("http_status") != 200
+        or not isinstance(asset, dict)
+        or asset.get("class") != "us_equity"
+        or asset.get("symbol") != symbol
+        or not isinstance(asset.get("id"), str)
+        or not asset["id"]
+    ):
+        return None
+    return asset
+
+
 @dataclass(frozen=True)
 class CompletedStockMergerEndpoints:
     symbol: str

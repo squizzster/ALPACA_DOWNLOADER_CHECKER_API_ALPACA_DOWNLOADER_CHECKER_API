@@ -189,5 +189,18 @@
     "modifications": [
       "Route accepted rule-version obligations through the lineage producer even when their pricing rows are already summarized. Preserve exact lineage-31/correlation-58 decisions as compatible because this change affects orchestration only; publish selected outstanding obligations through the existing complete-group migration or recalculation path."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve each complete established correlation before applying the bounded current-suffix fallback or reconciling duplicate foreign-label occupancy. Reconcile a duplicate only when the same completed group has an exact own-label action, agreeing authoritative symbol/CUSIP/UUID lookups, bracketing current-label provider actions, no related structural action, and an authoritative observation assigned on every selected view. Preserve raw evidence, differing values, incomplete views, competing identities and unsupported ownership as unresolved.",
+      "Promote only exact lineage-31-or-32/correlation-58 receipts whose selected metadata proves both new decisions inapplicable; lineage 32 already declared 31/58 observation decisions semantically identical. Recalculate the complete affected group; promote unaffected decisions through the existing journal without pricing decode, provider requests or upstream authentication."
+    ]
+  },
+  {
+    "modifications": [
+      "Load and authorize the canonical correlation policy once per lineage operation, thread the same immutable evaluator through every complete group, and publish deterministic policy provenance in reports, receipts and the compact selector.",
+      "Promote only the exact lineage-33/correlation-59 handoff to lineage 34/correlation 60 when unchanged selected inputs and the pinned policy semantic identity prove identical decisions; otherwise recalculate the complete group.",
+      "Expose that exact promotion as a dedicated offline complete-group migration which requires an empty completed update queue, loads no pricing payloads and executes no identity rules, while leaving durable serving-catalogue work for its owning offline command."
+    ]
   }
 ]

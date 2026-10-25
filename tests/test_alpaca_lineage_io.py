@@ -25,6 +25,7 @@ class LineageIOTests(unittest.TestCase):
     run_build = fixtures.LineageBuildTests.run_build
     receipt = fixtures.LineageBuildTests.receipt
     notice = fixtures.LineageBuildTests.notice
+    install_legacy_rule_contract = fixtures.LineageBuildTests.install_legacy_rule_contract
 
     def test_unchanged_progress_reuses_receipt_without_opening_boundaries(self):
         self.download()
@@ -307,21 +308,8 @@ class LineageIOTests(unittest.TestCase):
         self.download()
         provider = Provider(["GOOG"])
         self.run_build(["GOOG"], client=provider.client)
+        self.install_legacy_rule_contract(lineage_version=20, correlation_version=58)
         receipt = self.receipt()
-        receipt["schema_version"] = 20
-        receipt["versions"]["lineage"] = 20
-        (self.root / "GOOG/lineage.manifest.json").write_bytes(json_bytes(receipt))
-        entry = storage.read_index(self.root)["symbols"]["GOOG"]
-        storage._update_index(
-            self.root,
-            {
-                "GOOG": {
-                    **entry,
-                    "sha256": storage.document_digest(receipt),
-                    "versions": receipt["versions"],
-                }
-            },
-        )
         with closing(connect_sqlite(self.root / "index.sqlite3")) as connection:
             connection.execute("PRAGMA user_version=20")
         with storage.reader_snapshot(
@@ -374,22 +362,7 @@ class LineageIOTests(unittest.TestCase):
     def test_rule_migration_skips_metadata_prefetch_and_incompatible_old_boundaries(self):
         self.download()
         self.run_build()
-        index = storage.read_index(self.root)
-        receipt = self.receipt()
-        receipt["schema_version"] = 11
-        receipt["versions"] = {**receipt["versions"], "lineage": 11, "correlation": 54}
-        (self.root / "GOOG/lineage.manifest.json").write_bytes(json_bytes(receipt))
-        entry = index["symbols"]["GOOG"]
-        storage._update_index(
-            self.root,
-            {
-                "GOOG": {
-                    **entry,
-                    "sha256": storage.document_digest(receipt),
-                    "versions": receipt["versions"],
-                }
-            },
-        )
+        self.install_legacy_rule_contract(lineage_version=11, correlation_version=54)
         with (
             patch.object(pipeline, "_prefetch_metadata", side_effect=AssertionError("metadata prefetch")),
             patch.object(storage, "read_boundaries", side_effect=AssertionError("old boundaries")),

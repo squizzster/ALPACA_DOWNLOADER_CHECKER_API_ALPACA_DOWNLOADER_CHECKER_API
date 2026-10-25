@@ -14,7 +14,7 @@ from libs.common.us_equity_market_session_calendar import (
 
 from . import storage
 from .acquisition import unavailable_pricing
-from .contract import LineageError, versions
+from .contract import LineageError, reusable_decision, versions
 from .pipeline import closure, run_lineage
 from .pricing import load_pricing
 
@@ -182,7 +182,7 @@ class EvidenceCapture:
                 if report
                 else "reused_publication",
                 "freshness": {
-                    "matches_installed_versions": receipt["versions"] == versions(),
+                    "matches_installed_versions": reusable_decision(receipt),
                     "changed_pricing_inputs": changed_inputs,
                     "pending_pricing_inputs": sorted(set(receipt["input_sources"]).intersection(notices))
                     if offline

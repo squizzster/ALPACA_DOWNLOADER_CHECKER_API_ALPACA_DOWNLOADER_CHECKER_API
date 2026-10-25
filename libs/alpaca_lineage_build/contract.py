@@ -8,7 +8,19 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 32
+from .correlation_policy_contract import (
+    POLICY_PROVENANCE_LINEAGE_VERSION,
+    PRODUCTION_CORRELATION_VERSION,
+    PRODUCTION_LINEAGE_VERSION,
+    PRODUCTION_POLICY_SEMANTIC_SHA256,
+    reusable_policy,
+    valid_sha256,
+)
+from .correlation_policy_contract import (
+    SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
+)
+
+VERSION = 34
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -22,11 +34,21 @@ class LineageBusyError(LineageError):
     pass
 
 
+class CorrelationPolicyError(LineageError):
+    """The correlation policy is malformed, unsupported, or unauthorized."""
+
+
 def versions() -> dict:
+    if (CORRELATION_VERSION, VERSION) != (
+        PRODUCTION_CORRELATION_VERSION,
+        PRODUCTION_LINEAGE_VERSION,
+    ):
+        raise LineageError("lineage and correlation versions do not match the production policy contract")
     return {
         "lineage": VERSION,
         "identity_report": REPORT_VERSION,
         "correlation": CORRELATION_VERSION,
+        "correlation_policy_sha256": PRODUCTION_POLICY_SEMANTIC_SHA256,
         "calendar_sha256": us_market_hours_sha256(),
     }
 
@@ -37,20 +59,39 @@ def reusable_versions(published: dict) -> bool:
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # Older assignments have no producer-owned numerical source choice. They
     # need one explicit migration; subsequent compatible decisions remain reusable.
-    return published == current or (
-        (current["lineage"], current["correlation"]) == (32, 58) and published == {**current, "lineage": 31}
+    return published == current
+
+
+def reusable_decision(document: dict) -> bool:
+    """Require both the runtime tuple and the authorized policy meaning."""
+    return (
+        isinstance(document, dict)
+        and reusable_versions(document.get("versions"))
+        and reusable_policy(document.get("correlation_policy"))
     )
 
 
 def reusable_metadata_versions(published: dict) -> bool:
     """A correlation rule change does not invalidate approved upstream evidence."""
+    legacy_keys = {"lineage", "identity_report", "correlation", "calendar_sha256"}
+    policy_bound_keys = legacy_keys | {"correlation_policy_sha256"}
+    if not isinstance(published, dict) or type(published.get("lineage")) is not int:
+        return False
+    expected_keys = (
+        legacy_keys if published["lineage"] < POLICY_PROVENANCE_LINEAGE_VERSION else policy_bound_keys
+    )
+    if set(published) != expected_keys:
+        return False
+    current = versions()
     return (
-        isinstance(published, dict)
+        2 <= published["lineage"] <= VERSION
         and type(published.get("correlation")) is int
         and published["correlation"] > 0
-        and any(
-            {**published, "correlation": CORRELATION_VERSION} == {**versions(), "lineage": version}
-            for version in range(2, VERSION + 1)
+        and published.get("identity_report") == current["identity_report"]
+        and published.get("calendar_sha256") == current["calendar_sha256"]
+        and (
+            published["lineage"] < POLICY_PROVENANCE_LINEAGE_VERSION
+            or valid_sha256(published["correlation_policy_sha256"])
         )
     )
 

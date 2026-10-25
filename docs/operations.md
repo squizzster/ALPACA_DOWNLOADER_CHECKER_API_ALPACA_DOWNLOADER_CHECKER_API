@@ -60,6 +60,7 @@ Finish pending publications through their owner first. Then establish missing bo
 
 ```bash
 ./alpaca-eod lineage migrate-index --store data_pricing
+./alpaca-eod lineage migrate-policy --store data_pricing
 ./alpaca-eod universe rebuild --store data_pricing
 ./alpaca-eod summary rebuild --store data_pricing
 ./alpaca-eod catalogue bootstrap --store data_pricing --plan
@@ -69,6 +70,16 @@ Finish pending publications through their owner first. Then establish missing bo
 
 `migrate-index` projects used lookup evidence and complete membership from indexed receipts in resumable
 batches; no price reads/recalculation. Schema upgrade alone does not establish coverage.
+`migrate-policy` is the dedicated offline promotion for the exact policy-less lineage-33/correlation-59 to
+lineage-34/correlation-60 transition. It first recovers its own frozen journal, then requires a complete empty
+lineage update-check queue and a complete compact selector. It promotes each complete group atomically only when
+every available member and selected source generation still match. It constructs no provider client, reads no
+pricing payload or assignment boundary, and executes no correlation or observation rule. Other versions, mixed
+groups, pending notices and changed sources fail closed. Rerunning is idempotent; interrupted publication rolls
+forward through the lineage journal. The command reads the compact durable serving-work queue after promotion
+and reports `serving_catalogue_action: pending_update` until `catalogue update` acknowledges it; an
+absent/incomplete serving-work boundary reports `bootstrap_required` instead. Finish that independent offline
+stage with `catalogue update` or the reported bootstrap action.
 `universe rebuild` initializes or preserves compatible registration/work state, including an empty store;
 it neither finishes work nor establishes lineage/summary. Incompatible state requires examination, not erasure.
 `summary rebuild` uses indexed status/validators offline, without histories/provider requests.
@@ -151,6 +162,7 @@ the resolved final session or excluding held observations. Finish missing bounda
 | `lineage update` | Pending/incompatible work; explicit hint reconstruction if needed. |
 | `lineage refresh` | Full selected-group evidence, including older corrections. |
 | `lineage inspect --symbol TICKER` | Offline evidence, no rule replay. |
+| `lineage migrate-policy` | Exact offline 33/59→34/60 receipt promotion; no provider or price/rule execution. |
 | `lineage update/refresh --no-pricing-acquisition` | Metadata requests remain possible. |
 
 Pricing has up to three workers sharing one 199-request/minute invocation budget, not an account-wide limit.

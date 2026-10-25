@@ -13,10 +13,31 @@ class OperationContext:
     def __init__(self, store):
         validate_version()
         self.store = Path(store).absolute()
+        self._correlation_policy = None
+        self._lineage_recovery_complete = False
         self.index = None
         self.summary = None
         self.serving = None
         self._pricing = None
+
+    def accept_correlation_policy(self):
+        # Import the YAML compiler only after the caller has completed frozen
+        # journal recovery. Receipt readers and recovery stay independent of
+        # PyYAML and the executable policy engine.
+        from .correlation_policy import authorize_production_policy, load_authorized_policy
+
+        if self._correlation_policy is None:
+            self._correlation_policy = load_authorized_policy()
+        return authorize_production_policy(self._correlation_policy)
+
+    def recover_lineage(self, root):
+        if self._lineage_recovery_complete:
+            return False
+        recovered = storage.recover(self.store, root)
+        self._lineage_recovery_complete = True
+        if recovered:
+            self.index = None
+        return recovered
 
     def pricing(self):
         self._pricing = pricing_context(self.store, self._pricing)
@@ -46,3 +67,11 @@ def accept_context(store, context=None, work_policy=None):
     if context.store != Path(store).absolute():
         raise LineageError("lineage context belongs to another store")
     return context
+
+
+def recover_and_accept_correlation_policy(store, context):
+    """Finish a frozen lineage journal, then authorize all new live work."""
+    if not context._lineage_recovery_complete:
+        with storage.writer_lock(Path(store).absolute()) as root:
+            context.recover_lineage(root)
+    return context.accept_correlation_policy()

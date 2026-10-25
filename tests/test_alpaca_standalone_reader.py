@@ -29,6 +29,8 @@ from libs.alpaca_lineage_build.reader import read_lineage
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_pricing_download.download import download_pricing
 
+_UNCHANGED = object()
+
 
 def hold_lock(path, directory, entered, release):
     descriptor = os.open(path, os.O_RDONLY | (os.O_DIRECTORY if directory else 0))
@@ -121,14 +123,64 @@ class StandaloneReaderTests(unittest.TestCase):
         receipt = storage.read_receipt(self.root, symbol, index)
         return receipt, storage.read_boundaries(self.root, receipt)
 
-    def change_publication(self, change):
+    def change_publication(self, change, *, frozen=False):
         receipt, boundaries = self.publication()
         change(receipt, boundaries)
         for kind, boundary in boundaries.items():
             receipt["boundaries"][kind]["sha256"] = storage.document_digest(boundary)
+        if frozen:
+            receipt.pop("correlation_policy", None)
+            receipt["versions"].pop("correlation_policy_sha256", None)
+            index = storage.read_index(self.root)
+            entry = {
+                **index["symbols"]["TEST"],
+                "sha256": storage.document_digest(receipt),
+                "versions": receipt["versions"],
+            }
+            entry.pop("correlation_policy", None)
+            documents = {"TEST/lineage.manifest.json": receipt}
+            documents.update(
+                {
+                    f"TEST/{receipt['boundaries'][kind]['manifest']}": boundary
+                    for kind, boundary in boundaries.items()
+                }
+            )
+            journal = {
+                "schema_version": receipt["schema_version"],
+                "boundary": "alpaca_lineage_transaction",
+                "documents": documents,
+                "retire": [],
+                "index_updates": {"TEST": entry},
+                "sources": {"TEST": receipt["source_sha256"]},
+                "unavailable_pricing": [],
+                "notices": {},
+            }
+            with (
+                storage.pricing_locks(self.store, receipt["input_sources"]),
+                storage.publication_lock(self.root, exclusive=True),
+            ):
+                storage._install(self.root, journal, compare=False)
+            return
         storage.publish(
             self.store, self.root, storage.read_index(self.root), {"TEST": receipt}, {"TEST": boundaries}, {}
         )
+
+    def corrupt_policy_boundary(self, *, receipt_policy=_UNCHANGED, index_policy=_UNCHANGED):
+        """Bypass the producer to exercise a consumer-facing malformed handoff."""
+        index = storage.read_index(self.root)
+        receipt = storage.read_receipt(self.root, "TEST", index)
+        entry = dict(index["symbols"]["TEST"])
+        for document, policy in ((receipt, receipt_policy), (entry, index_policy)):
+            if policy is _UNCHANGED:
+                continue
+            if policy is None:
+                document.pop("correlation_policy", None)
+            else:
+                document["correlation_policy"] = policy
+        entry["sha256"] = storage.document_digest(receipt)
+        with storage.publication_lock(self.root, exclusive=True):
+            storage.atomic_json(self.root / "TEST/lineage.manifest.json", receipt, compare=False)
+            storage._update_index(self.root, {"TEST": entry})
 
     def renamed_pair(self, *, differing=False):
         old_rows = calendar_bars("2023-12-01", "2023-12-13")
@@ -441,12 +493,11 @@ class StandaloneReaderTests(unittest.TestCase):
             for boundary in boundaries.values():
                 boundary["schema_version"] = 2
 
-        with patch.object(storage, "VERSION", 2):
-            self.change_publication(downgrade)
+        self.change_publication(downgrade, frozen=True)
 
     def test_old_publication_migrates_once_without_reacquiring_prices_or_metadata(self):
         self.v2_publication()
-        with self.assertRaisesRegex(StandaloneReaderError, "protocol needs upgrade"):
+        with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
             self.reader.resolve_ticker("TEST")
         prices = snapshot(self.store / "end_of_day/pricing")
         client = IdentityClient({"TEST": asset("TEST")})
@@ -476,7 +527,7 @@ class StandaloneReaderTests(unittest.TestCase):
     def test_v2_compatibility_does_not_accept_other_changed_versions(self):
         current = versions()
         self.assertTrue(reusable_versions(current))
-        self.assertTrue(reusable_versions({**current, "lineage": 31}))
+        self.assertFalse(reusable_versions({**current, "lineage": 31}))
         self.assertFalse(reusable_versions({**current, "lineage": 2}))
         for name in current:
             self.assertFalse(reusable_versions({**current, name: "changed"}))
@@ -488,9 +539,34 @@ class StandaloneReaderTests(unittest.TestCase):
         def change(receipt, _):
             receipt["versions"]["correlation"] = 1
 
-        self.change_publication(change)
+        self.change_publication(change, frozen=True)
         with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
             self.reader.resolve_ticker("TEST")
+
+    def test_current_policy_provenance_is_accepted(self):
+        self.assertEqual(self.reader.get_history("TEST")["bar_count"], len(self.bars))
+
+    def test_current_versions_without_receipt_policy_are_rejected(self):
+        self.corrupt_policy_boundary(receipt_policy=None)
+        with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
+            self.reader.get_history("TEST")
+
+    def test_current_versions_without_index_policy_are_rejected(self):
+        self.corrupt_policy_boundary(index_policy=None)
+        with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
+            self.reader.get_history("TEST")
+
+    def test_malformed_current_policy_provenance_is_rejected(self):
+        self.corrupt_policy_boundary(receipt_policy={"semantic_sha256": "not-a-digest"})
+        with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
+            self.reader.get_history("TEST")
+
+    def test_selector_and_receipt_policy_provenance_must_match(self):
+        receipt, _ = self.publication()
+        changed = {**receipt["correlation_policy"], "file_sha256": "f" * 64}
+        self.corrupt_policy_boundary(receipt_policy=changed)
+        with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
+            self.reader.get_history("TEST")
 
     def test_index_failure_remains_a_typed_reader_error_without_repair(self):
         before = snapshot(self.store)
@@ -583,7 +659,8 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual(self.reader.get_history("TEST"), expected)
 
     def test_old_rule_versions_are_not_reinterpreted(self):
-        self.change_publication(lambda receipt, _: receipt["versions"].update(correlation=1))
+        self.v2_publication()
+        self.change_publication(lambda receipt, _: receipt["versions"].update(correlation=1), frozen=True)
         with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
             self.reader.get_history("TEST")
 

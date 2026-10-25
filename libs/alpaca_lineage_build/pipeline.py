@@ -26,8 +26,8 @@ from .contract import (
     MAX_CLOSURE,
     VERSION,
     LineageError,
+    reusable_decision,
     reusable_metadata_versions,
-    reusable_versions,
     versions,
 )
 from .metadata import EvidenceClient, acquire, acquire_unpriced, action_requests, dependencies, full_metadata
@@ -301,6 +301,8 @@ def process_group(
     context=None,
     progress=None,
 ):
+    context = accept_context(store, context, work_policy)
+    correlation_policy = context.accept_correlation_policy()
     index = storage.read_index(root) if index is None else index
     receipt_cache = receipt_cache or storage.ReceiptCache(root, index)
     graph = work_policy.graph if work_policy is not None else graph or DependencyGraph(index["symbols"])
@@ -373,13 +375,18 @@ def process_group(
             if (
                 reuse_metadata
                 and all(
-                    reusable_versions(prior["versions"]) or can_promote_observation_decision(prior)
+                    reusable_decision(prior) or can_promote_observation_decision(prior, correlation_policy)
                     for prior in previous.values()
                 )
                 and (work_policy is None or work_policy.decision_inputs_satisfied(sources))
             ):
                 receipts = {
-                    symbol: {**prior, "schema_version": VERSION, "versions": versions()}
+                    symbol: {
+                        **prior,
+                        "schema_version": VERSION,
+                        "versions": versions(),
+                        "correlation_policy": correlation_policy.provenance(),
+                    }
                     for symbol, prior in previous.items()
                 }
                 if work_policy is not None:
@@ -603,12 +610,22 @@ def process_group(
                         members = component & inputs.keys()
                         components.update(dict.fromkeys(members, component))
                         reports.update(
-                            {name: retained_decision_report(previous[name]) for name in members}
+                            {
+                                name: retained_decision_report(previous[name], policy=correlation_policy)
+                                for name in members
+                            }
                             if no_new_rows
                             else correlate(
                                 store,
                                 {name: inputs[name] for name in members},
                                 {name: evidence[name] for name in members},
+                                policy=correlation_policy,
+                                selected_group=sorted(component),
+                                unavailable_pricing=sorted(component & unavailable.keys()),
+                                evidence_generations={
+                                    name: storage.document_digest(evidence[name]) for name in members
+                                },
+                                pricing_generations={name: inputs[name].source_sha256 for name in members},
                             )
                         )
                     if (
@@ -623,7 +640,18 @@ def process_group(
                     ):
                         resume = False
                         inputs[seed] = load_pricing(store, seed, source=sources[seed])
-                        reports = correlate(store, inputs, evidence)
+                        reports = correlate(
+                            store,
+                            inputs,
+                            evidence,
+                            policy=correlation_policy,
+                            selected_group=sorted(set(inputs) | set(unavailable)),
+                            unavailable_pricing=sorted(unavailable),
+                            evidence_generations={
+                                name: storage.document_digest(document) for name, document in evidence.items()
+                            },
+                            pricing_generations={name: view.source_sha256 for name, view in inputs.items()},
+                        )
                     # DO NOT REMOVE WITHOUT USER AUTH!#
                     # The complete group establishes one numerical source choice
                     # for all views. A required mapping correction must publish
@@ -854,7 +882,8 @@ def run_lineage(
     store = Path(store).absolute()
     results, processed = [], set()
     with storage.writer_lock(store) as root:
-        recovered = storage.recover(store, root)
+        recovered = context.recover_lineage(root)
+        context.accept_correlation_policy()
         with storage.publication_lock(root):
             index = context.select_index(root)
         checks = read_checks(store)
@@ -862,11 +891,7 @@ def run_lineage(
             checks = begin_checks(store)
         full_scan = symbols is None and not checks["complete"]
         stale = (
-            {
-                symbol
-                for symbol, entry in index["symbols"].items()
-                if not reusable_versions(entry.get("versions"))
-            }
+            {symbol for symbol, entry in index["symbols"].items() if not reusable_decision(entry)}
             if symbols is None
             else set()
         )

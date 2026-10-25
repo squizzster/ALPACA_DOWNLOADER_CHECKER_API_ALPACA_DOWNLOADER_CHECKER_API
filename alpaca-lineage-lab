@@ -1,0 +1,11 @@
+#!/usr/bin/env python3.11
+"""Executable adapter for the read-only lineage policy laboratory."""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+from libs.alpaca_lineage_policy_lab.command_line import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

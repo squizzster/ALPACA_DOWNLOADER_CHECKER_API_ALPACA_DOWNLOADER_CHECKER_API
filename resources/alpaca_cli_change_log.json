@@ -91,5 +91,10 @@
     "modifications": [
       "Extend INIT-only ai_agent_read_this guidance to update the user only at each heartbeat unless the user directs otherwise."
     ]
+  },
+  {
+    "modifications": [
+      "Add a dedicated offline lineage policy-migration command that promotes only the exact completed policy transition without constructing provider clients or entering live lineage evaluation."
+    ]
   }
 ]

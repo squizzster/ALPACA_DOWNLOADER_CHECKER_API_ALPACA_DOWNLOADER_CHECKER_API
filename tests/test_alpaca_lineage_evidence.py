@@ -118,9 +118,8 @@ class LineageEvidenceTests(unittest.TestCase):
     def test_offline_reports_old_version_without_applying_new_rules(self):
         self.publish()
         receipt = storage.read_receipt(self.root, "GOOG", storage.read_index(self.root))
-        installed = {**receipt["versions"], "correlation": receipt["versions"]["correlation"] + 1}
         before = snapshot(self.store)
-        with patch("libs.alpaca_lineage_build.evidence.versions", return_value=installed):
+        with patch("libs.alpaca_lineage_build.evidence.reusable_decision", return_value=False):
             result = self.output(offline=True)
         self.assertFalse(result["freshness"]["matches_installed_versions"])
         self.assertEqual(result["receipt"]["versions"], receipt["versions"])

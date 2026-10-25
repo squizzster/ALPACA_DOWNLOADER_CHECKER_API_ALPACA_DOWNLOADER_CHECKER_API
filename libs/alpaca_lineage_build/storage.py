@@ -29,8 +29,10 @@ from .contract import (
     LineageBusyError,
     LineageError,
     document_digest,
+    reusable_decision,
     selected_document,
 )
+from .correlation_policy_contract import POLICY_PROVENANCE_LINEAGE_VERSION
 
 
 def path_at(root: Path, relative: str, *, published=False) -> Path:
@@ -419,6 +421,7 @@ def read_boundaries(root: Path, receipt: dict, *, selected_loader=None, kinds=No
 def _install(root: Path, journal: dict, *, compare=True) -> dict:
     # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
+    _validate_journal_policy(journal)
     for relative, value in sorted(journal["documents"].items()):
         atomic_json(path_at(root, relative), value, compare=compare)
     for relative in journal["retire"]:
@@ -429,6 +432,55 @@ def _install(root: Path, journal: dict, *, compare=True) -> dict:
             parent.rmdir()
             parent = parent.parent
     return _update_index(root, journal["index_updates"])
+
+
+def _validate_journal_policy(journal: dict) -> None:
+    """Require one frozen policy provenance across a transaction and its outputs."""
+    from .correlation_policy_contract import valid_policy_provenance
+
+    policy = journal.get("correlation_policy")
+    schema_version = journal.get("schema_version")
+    if (
+        type(schema_version) is int
+        and schema_version in SUPPORTED_VERSIONS
+        and schema_version < POLICY_PROVENANCE_LINEAGE_VERSION
+    ):
+        if (
+            any(
+                isinstance(entry, dict) and entry.get("correlation_policy") is not None
+                for entry in journal.get("index_updates", {}).values()
+            )
+            or any(
+                isinstance(document, dict) and document.get("correlation_policy") is not None
+                for relative, document in journal.get("documents", {}).items()
+                if relative.endswith("/lineage.manifest.json")
+            )
+            or policy is not None
+        ):
+            raise LineageError("legacy lineage transaction has inconsistent policy provenance")
+        return
+    if (
+        type(schema_version) is not int
+        or schema_version not in SUPPORTED_VERSIONS
+        or schema_version < POLICY_PROVENANCE_LINEAGE_VERSION
+        or not valid_policy_provenance(policy)
+    ):
+        raise LineageError("lineage transaction has no frozen policy provenance")
+    if any(
+        not isinstance(entry, dict) or entry.get("correlation_policy") != policy
+        for entry in journal.get("index_updates", {}).values()
+    ):
+        raise LineageError("lineage transaction index policy provenance is inconsistent")
+    receipt_documents = [
+        document
+        for relative, document in journal.get("documents", {}).items()
+        if relative.endswith("/lineage.manifest.json")
+    ]
+    if any(
+        not isinstance(receipt, dict) or receipt.get("correlation_policy") != policy
+        for receipt in receipt_documents
+    ):
+        raise LineageError("lineage transaction receipt policy provenance is inconsistent")
 
 
 def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
@@ -521,6 +573,15 @@ def publish(
     previous=None,
     sources=None,
 ) -> None:
+    if not receipts:
+        raise LineageError("lineage publication requires at least one receipt")
+    if any(not reusable_decision(receipt) for receipt in receipts.values()):
+        raise LineageError("lineage publication requires the authorized current policy")
+    frozen_policy = next(iter(receipts.values())).get("correlation_policy")
+    if not isinstance(frozen_policy, dict) or any(
+        receipt.get("correlation_policy") != frozen_policy for receipt in receipts.values()
+    ):
+        raise LineageError("lineage publication receipts have inconsistent policy provenance")
     documents, retire = {}, []
     updated = {}
     from .projection import project_receipt
@@ -540,6 +601,7 @@ def publish(
             "asset_ids": receipt["asset_ids"],
             "group_members": sorted(set(receipt["input_sources"]) | set(unavailable_pricing(receipt))),
             "versions": receipt["versions"],
+            "correlation_policy": receipt["correlation_policy"],
             "projection": project_receipt(receipt),
         }
         if index["symbols"].get(symbol, {}).get("sha256") != updated[symbol]["sha256"]:
@@ -549,6 +611,7 @@ def publish(
     journal = {
         "schema_version": VERSION,
         "boundary": "alpaca_lineage_transaction",
+        "correlation_policy": frozen_policy,
         "documents": documents,
         "retire": retire,
         "index_updates": updated,
@@ -563,6 +626,7 @@ def publish(
             "epoch": checks["epoch"],
             "checks": {symbol: revision for symbol, revision in checks["checks"].items() if symbol in receipts},
         }
+    _validate_journal_policy(journal)
     # Caller already owns the complete pricing group and the worker-only lock.
     with publication_lock(root, exclusive=True):
         from libs.alpaca_pricing_download.check_summary import invalidate

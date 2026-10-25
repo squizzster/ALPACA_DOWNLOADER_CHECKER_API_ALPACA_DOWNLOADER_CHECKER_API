@@ -33,6 +33,15 @@ Ordered authorities: [ownership intervals](../libs/alpaca_end_of_day_security_co
 [row allocation](../libs/alpaca_end_of_day_security_correlation/row_correlation.py),
 [UUID membership](../libs/alpaca_end_of_day_security_correlation/security_identity.py).
 
+The lineage owner loads and authorizes the canonical YAML policy once per operation, after frozen-journal
+recovery and before new planning, provider requests or evaluation. Its shared compiler and complete-group
+evaluator drive both live lineage and offline replay. The correlation owner retains the ordered rule registries
+and the public factories that turn proved bounded certificates into row or ownership rules.
+
+The read-only [correlation policy lab](policy-lab.md) can select one completed group, replay the versioned
+fixed-point and fallback profile, and compare the candidate with the published handoff. It has no publication
+path and never uses the published decision as candidate evidence.
+
 ## Serving catalogue
 
 The [serving policy](technical-contracts.md#serving-catalogue) adds eligibility to completed assignments;
@@ -50,11 +59,12 @@ adapters. Tests use synthetic fixtures/HTTP doubles; resources hold runtime cont
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch. |
 | [alpaca_recovery_registry](../libs/alpaca_recovery_registry/) | Locked, atomic label union. |
 | [alpaca_pricing_download](../libs/alpaca_pricing_download/) | Acquisition, pricing publication, endpoint validation, summary storage. |
-| [alpaca_lineage_build](../libs/alpaca_lineage_build/) | Orchestration, lineage, summary eligibility, registration and offline status. |
+| [alpaca_lineage_build](../libs/alpaca_lineage_build/) | Orchestration, lineage, correlation-policy compilation and complete-group evaluation, summary eligibility, registration and offline status. |
 | [alpaca_serving_catalogue](../libs/alpaca_serving_catalogue/) | Eligibility, public projections, catalogue publication and recovery. |
 | [alpaca_data_api_solver](../libs/alpaca_data_api_solver/) | Pure request planning. |
 | [alpaca_security_lineage](../libs/alpaca_security_lineage/) | Identity/action acquisition and normalization. |
-| [alpaca_end_of_day_security_correlation](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row assignment and UUID rules. |
+| [alpaca_end_of_day_security_correlation](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row assignment, UUID rules and certified rule factories. |
+| [alpaca_lineage_policy_lab](../libs/alpaca_lineage_policy_lab/) | Read-only selection, replay/audit adapters and semantic comparison over the shared policy engine. |
 | [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
 | [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Shared history source selection. |
 | [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |

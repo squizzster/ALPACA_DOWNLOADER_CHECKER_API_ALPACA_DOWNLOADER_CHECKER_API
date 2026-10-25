@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from .action_identity import exact_cusip_lookup_asset
 
 
-def _action_anchor(action, symbol, cusip):
+def positive_occupancy_action_date(action, symbol, cusip):
     if not action.get("id"):
         return None
     if action.get("action_type") == "cash_dividend":
@@ -43,7 +43,7 @@ def competing_terminal_anchors(symbol, members, terminal, lineage, resolved_pair
             continue
         for action in lineage.get("corporate_actions", []):
             try:
-                effective = _action_anchor(action, symbol, cusip)
+                effective = positive_occupancy_action_date(action, symbol, cusip)
             except (KeyError, TypeError, ValueError, InvalidOperation):
                 continue
             if effective is not None:
@@ -88,7 +88,7 @@ def dated_occupancy_anchors(symbol, lineage, intervals):
             continue
         for action in lineage.get("corporate_actions", []):
             try:
-                effective = _action_anchor(action, symbol, interval.cusip)
+                effective = positive_occupancy_action_date(action, symbol, interval.cusip)
             except (KeyError, TypeError, ValueError, InvalidOperation):
                 continue
             if effective is None or effective >= interval.end_date_exclusive:

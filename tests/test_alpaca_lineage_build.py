@@ -16,7 +16,7 @@ from test_alpaca_security_lineage import FakeIdentityClient
 
 from libs.alpaca_end_of_day_security_correlation.security_identity import security_id_for_alpaca_asset_ids
 from libs.alpaca_lineage_build import storage
-from libs.alpaca_lineage_build.contract import validate_version
+from libs.alpaca_lineage_build.contract import validate_version, versions
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.reader import read_lineage
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
@@ -124,6 +124,51 @@ class LineageBuildTests(unittest.TestCase):
     def receipt(self, symbol="GOOG"):
         return storage.read_receipt(self.root, symbol, storage.read_index(self.root))
 
+    def install_legacy_rule_contract(
+        self,
+        symbol="GOOG",
+        *,
+        lineage_version=32,
+        correlation_version=58,
+    ):
+        """Install one complete synthetic group as a genuine policy-less handoff."""
+        index = storage.read_index(self.root)
+        group = set(index["symbols"][symbol]["group_members"])
+        receipts = {
+            name: copy.deepcopy(storage.read_receipt(self.root, name, index))
+            for name in sorted(group & index["symbols"].keys())
+        }
+        legacy_versions = {
+            **versions(),
+            "lineage": lineage_version,
+            "correlation": correlation_version,
+        }
+        legacy_versions.pop("correlation_policy_sha256")
+        updates = {}
+        for name, receipt in receipts.items():
+            receipt.update(schema_version=lineage_version, versions=copy.deepcopy(legacy_versions))
+            receipt.pop("correlation_policy")
+            entry = copy.deepcopy(index["symbols"][name])
+            entry.update(sha256=storage.document_digest(receipt), versions=copy.deepcopy(legacy_versions))
+            entry.pop("correlation_policy")
+            updates[name] = entry
+        journal = {
+            "schema_version": lineage_version,
+            "boundary": "alpaca_lineage_transaction",
+            "documents": {f"{name}/lineage.manifest.json": receipt for name, receipt in receipts.items()},
+            "retire": [],
+            "index_updates": updates,
+            "sources": {name: receipt["source_sha256"] for name, receipt in receipts.items()},
+            "unavailable_pricing": sorted(group - receipts.keys()),
+            "notices": {},
+        }
+        with (
+            storage.pricing_locks(self.store, group),
+            storage.publication_lock(self.root, exclusive=True),
+        ):
+            storage._install(self.root, journal, compare=False)
+        return receipts
+
     def notice(self, symbol="GOOG"):
         return self.store / f"end_of_day/manifests/{symbol}/update.json"
 
@@ -190,10 +235,10 @@ class LineageBuildTests(unittest.TestCase):
 
     def test_rule_decisions_are_shared_within_one_build_only(self):
         from libs.alpaca_end_of_day_security_correlation import row_correlation
-        from libs.alpaca_lineage_build import transform
+        from libs.alpaca_lineage_build import policy_engine
 
         self.download()
-        build_report = transform.build_security_correlation_report
+        build_report = policy_engine.build_security_correlation_report
         with (
             patch.object(row_correlation, "_decide_row", wraps=row_correlation._decide_row) as decide,
             patch.object(
@@ -206,7 +251,7 @@ class LineageBuildTests(unittest.TestCase):
                 "build_uuid_lineage_edges",
                 wraps=row_correlation.build_uuid_lineage_edges,
             ) as edges,
-            patch.object(transform, "build_security_correlation_report", wraps=build_report) as build,
+            patch.object(policy_engine, "build_security_correlation_report", wraps=build_report) as build,
         ):
             self.run_build()
             self.assertEqual(len(self.bars), decide.call_count)
@@ -296,9 +341,9 @@ class LineageBuildTests(unittest.TestCase):
                 self.fail("approved cold pricing was reopened")
             return original(path)
 
-        from libs.alpaca_lineage_build import transform
+        from libs.alpaca_lineage_build import policy_engine
 
-        correlate = transform.build_security_correlation_report
+        correlate = policy_engine.build_security_correlation_report
 
         def check_rows(*args, **kwargs):
             reader = kwargs["authenticated_download_reader"]
@@ -309,7 +354,7 @@ class LineageBuildTests(unittest.TestCase):
 
         with (
             patch.object(Path, "read_bytes", read_bytes),
-            patch.object(transform, "build_security_correlation_report", side_effect=check_rows),
+            patch.object(policy_engine, "build_security_correlation_report", side_effect=check_rows),
         ):
             result = self.run_build()
         self.assertTrue(result["results"][0]["reused_closed_boundaries"])
@@ -593,23 +638,39 @@ class LineageBuildTests(unittest.TestCase):
             {security_id_for_alpaca_asset_ids(["meta-id"])},
         )
 
-    def test_v1_publication_recovers_and_upgrades_without_reacquiring_prices(self):
-        from libs.alpaca_lineage_build import transform
-
+    def test_legacy_policy_publication_recovers_and_upgrades_without_reacquiring_prices(self):
         self.download()
-        with (
-            patch.object(storage, "VERSION", 1),
-            patch.object(transform, "VERSION", 1),
-            patch.object(storage, "_acknowledge", side_effect=OSError("crash")),
-        ):
-            result = run_lineage(self.store, identity_client=IdentityClient())
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(self.receipt()["schema_version"], 1)
+        self.run_build()
+        index = storage.read_index(self.root)
+        receipt = storage.read_receipt(self.root, "GOOG", index)
+        legacy_versions = {**versions(), "lineage": 33, "correlation": 59}
+        legacy_versions.pop("correlation_policy_sha256")
+        receipt.update(schema_version=33, versions=legacy_versions)
+        receipt.pop("correlation_policy")
+        entry = {
+            **index["symbols"]["GOOG"],
+            "sha256": storage.document_digest(receipt),
+            "versions": legacy_versions,
+        }
+        entry.pop("correlation_policy")
+        storage.atomic_json(
+            self.root / ".pending.json",
+            {
+                "schema_version": 33,
+                "boundary": "alpaca_lineage_transaction",
+                "documents": {"GOOG/lineage.manifest.json": receipt},
+                "retire": [],
+                "index_updates": {"GOOG": entry},
+                "sources": {"GOOG": receipt["source_sha256"]},
+                "unavailable_pricing": [],
+                "notices": {},
+            },
+        )
         before = snapshot(self.store / "end_of_day/pricing")
         with patch(
             "libs.alpaca_lineage_build.pipeline.download_pricing", side_effect=AssertionError("download")
         ):
-            result = self.run_build(["GOOG"], refresh=True)
+            result = self.run_build(["GOOG"])
         self.assertTrue(result["recovered"])
         self.assertEqual(self.receipt()["schema_version"], storage.VERSION)
         self.assertEqual(before, snapshot(self.store / "end_of_day/pricing"))

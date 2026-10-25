@@ -7,7 +7,7 @@ from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.live_check import verify
 from libs.alpaca_pricing_download.refresh import check_retained_source, prepare_refresh, replace_prepared
 
-from .context import accept_context
+from .context import accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
 
 
@@ -17,6 +17,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
     if not any(item.get("required_history_check") for item in work_policy.work.values()):
         return empty
     context = accept_context(store, context, work_policy)
+    recover_and_accept_correlation_policy(store, context)
     metrics = {}
     if callable(getattr(pricing_client, "execute_plan", None)):
         pricing_client = MeasuredRequests(pricing_client, metrics)
@@ -78,6 +79,7 @@ def refresh_existing(
 ):
     """Check newly eligible members too; approval never expands with the summary."""
     context = accept_context(store, context, work_policy)
+    recover_and_accept_correlation_policy(store, context)
     pricing_context = context.pricing()
     verified, generations, checks = {}, {}, []
     pricing = {"results": [], "failed": 0, "requests": {}}
