@@ -4,94 +4,42 @@ from bisect import bisect_left, bisect_right
 from copy import deepcopy
 from dataclasses import dataclass
 
-from libs.alpaca_end_of_day_security_correlation.correlation import build_security_correlation_report
-from libs.alpaca_end_of_day_security_correlation.row_correlation import CorrelationCache
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.alpaca_pricing_download.storage import boundary_paths
 
 from .contract import VERSION, LineageError, document_digest, versions
-from .occupancy import (
-    may_have_action_anchored_current_suffix,
-    reconcile_duplicate_foreign_occupancy,
-)
-from .pricing import empty_exclusions, rule_loaders
+from .policy_engine import evaluate_policy
 
 
-def _correlate_until_stable(
+def correlate(
     store,
     inputs,
     evidence,
-    cache,
-    previous,
     *,
-    suffix_sources=frozenset(),
-    occupancy_reconciliations=None,
+    policy,
+    selected_group=None,
+    unavailable_pricing=None,
+    evidence_generations=None,
+    pricing_generations=None,
+    execution_trace=None,
+    evidence_projection=None,
 ):
-    occupancy_reconciliations = occupancy_reconciliations or {}
-    for _ in range(3):
-        sessions, correlation, rows = rule_loaders(inputs, previous, cache)
-        reports = {
-            symbol: build_security_correlation_report(
-                {"symbol": symbol, "local": view.local, "lineage": evidence[symbol]},
-                store,
-                authenticated_download_reader=view.reader,
-                verified_session_exclusions_reader=empty_exclusions,
-                authenticated_symbol_sessions=sessions,
-                correlation_loader=correlation,
-                source_rows_loader=rows,
-                cache=cache,
-                occupancy_reconciliations=occupancy_reconciliations.get(symbol, ()),
-                include_action_anchored_current_suffix=symbol in suffix_sources,
-            )
-            for symbol, view in sorted(inputs.items())
-        }
-        if reports == previous:
-            return reports
-        previous = reports
-    raise LineageError("lineage correlation did not reach its established fixed point")
-
-
-def correlate(store, inputs, evidence):
-    cache = CorrelationCache()
-    # Identity rules consume only this selected group's already-loaded rows.
-    # Missing complete evidence withholds a certificate; never open more histories
-    # or fetch provider bars here to make a downstream rule succeed.
-    for symbol, view in inputs.items():
-        cache.register_name_change_source(
-            symbol,
-            view.downloads.values(),
-            complete=all(
-                descriptor.get("rows", len(view.downloads[descriptor["file"]].rows))
-                == len(view.downloads[descriptor["file"]].rows)
-                for descriptor in view.local["downloads"]
-            ),
-        )
-    baseline = _correlate_until_stable(store, inputs, evidence, cache, {})
-    unresolved_sources = {
-        symbol for symbol, report in baseline.items() if report["uncorrelated"]["row_count"] > 0
-    }
-    reconciliations = reconcile_duplicate_foreign_occupancy(inputs, evidence, baseline)
-    suffix_sources = frozenset(
-        symbol for symbol in unresolved_sources if may_have_action_anchored_current_suffix(evidence[symbol])
-    )
-    suffix_sources |= reconciliations.keys()
-    if not suffix_sources and not reconciliations:
-        return baseline
-    # Freeze decisions proved by the completed baseline. A fallback may resolve
-    # every remaining row, but it must neither erase its own proof on the next
-    # fixed-point pass nor become new evidence for another reconciliation.
-    return _correlate_until_stable(
+    """Run the shared compiled policy against one already-loaded complete group."""
+    return evaluate_policy(
         store,
         inputs,
         evidence,
-        cache,
-        baseline,
-        suffix_sources=suffix_sources,
-        occupancy_reconciliations=reconciliations,
+        policy=policy,
+        selected_group=selected_group,
+        unavailable_pricing=unavailable_pricing,
+        evidence_generations=evidence_generations,
+        pricing_generations=pricing_generations,
+        execution_trace=execution_trace,
+        evidence_projection=evidence_projection,
     )
 
 
-def retained_decision_report(previous):
+def retained_decision_report(previous, *, policy):
     """Adapt an accepted decision to publication when there are no new rows."""
     return {
         **{
@@ -103,6 +51,7 @@ def retained_decision_report(previous):
                 "row_partition_complete",
             )
         },
+        "correlation_policy": policy.provenance(),
         "source_row_count": 0,
         "correlated": {"row_count": 0, "segments": []},
         "uncorrelated": {"row_count": 0, "segments": []},
@@ -288,6 +237,7 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         "boundary": "alpaca_standalone_lineage",
         "symbol": view.symbol,
         "versions": versions(),
+        "correlation_policy": report["correlation_policy"],
         "source_sha256": view.source_sha256,
         "pricing_boundaries": view.source["boundaries"],
         "anchor_month": anchor,

@@ -16,7 +16,7 @@ from libs.alpaca_lineage_build.acquisition import check_unavailable_pricing, una
 from libs.alpaca_lineage_build.contract import (
     LineageBusyError,
     document_digest,
-    reusable_versions,
+    reusable_decision,
     selected_document,
 )
 from libs.alpaca_lineage_build.storage import (
@@ -531,7 +531,14 @@ class StandaloneReader:
                     ):
                         raise StandaloneReaderError("lineage awaits changed pricing; run lineage first")
                     receipt = snap["receipts"][name]
-                    if receipt is None or not reusable_versions(receipt["versions"]):
+                    entry = snap["entries"].get(name)
+                    if (
+                        receipt is None
+                        or entry is None
+                        or not reusable_decision(entry)
+                        or not reusable_decision(receipt)
+                        or entry["correlation_policy"] != receipt["correlation_policy"]
+                    ):
                         raise StandaloneReaderError("lineage is missing or uses older rules; run lineage first")
                     if (
                         receipt["input_sources"] != selected_sources

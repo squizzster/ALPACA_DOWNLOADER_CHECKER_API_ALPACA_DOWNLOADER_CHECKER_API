@@ -345,9 +345,11 @@ class LineageBatchingTests(unittest.TestCase):
 
     def test_resume_preserves_old_evidence_and_new_labels_require_full_history(self):
         old = event("A", "old", process_date="2016-02-01")
+        legacy_versions = {**versions(), "lineage": 8}
+        legacy_versions.pop("correlation_policy_sha256")
         previous = {
             "anchor_month": "2026-10",
-            "versions": {**versions(), "lineage": 8},
+            "versions": legacy_versions,
             "evidence": {"queried_symbols": ["A"], "corporate_actions": [old]},
         }
         self.assertFalse(reusable_versions(previous["versions"]))

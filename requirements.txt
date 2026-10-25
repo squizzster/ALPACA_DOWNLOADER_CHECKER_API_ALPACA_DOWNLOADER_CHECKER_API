@@ -1,0 +1,2 @@
+# Required by the production correlation policy compiler.
+PyYAML==6.0.3

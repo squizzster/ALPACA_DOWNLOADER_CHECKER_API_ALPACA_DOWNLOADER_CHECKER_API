@@ -135,7 +135,11 @@ class StandaloneExportProjectionTests(unittest.TestCase):
         self.assertNotEqual(old_group["generation"], self.reader.get_evidence("TEST")["generation"])
 
     def test_stale_group_remains_a_roster_entry_but_cannot_supply_evidence(self):
-        self.change_publication(lambda receipt, _: receipt["versions"].update(correlation=1))
+        def install_legacy(receipt, _):
+            receipt["schema_version"] = 32
+            receipt["versions"].update(lineage=32, correlation=58)
+
+        self.change_publication(install_legacy, frozen=True)
         self.assertEqual(len(self.reader.list_published_sources()["sources"]), 1)
         with self.assertRaisesRegex(StandaloneReaderError, "older rules"):
             self.reader.get_evidence("TEST")

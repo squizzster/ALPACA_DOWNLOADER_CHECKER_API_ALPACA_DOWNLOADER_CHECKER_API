@@ -3,10 +3,13 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from tests import test_alpaca_closed_split_history as split_fixtures
 from tests.test_alpaca_end_of_day_security_correlation import asset
+
+PRODUCTION_POLICY = load_authorized_policy()
 
 
 class ClosedDividendHistoryTests(unittest.TestCase):
@@ -175,7 +178,7 @@ class ClosedDividendHistoryTests(unittest.TestCase):
             local=dict(directory="SPLT", downloads=descriptors, present=True),
             reader=lambda _root, _directory, descriptor: downloads[descriptor["file"]],
         )
-        report = correlate(Path("."), {"SPLT": view}, {"SPLT": self.lineage})["SPLT"]
+        report = correlate(Path("."), {"SPLT": view}, {"SPLT": self.lineage}, policy=PRODUCTION_POLICY)["SPLT"]
         self.assertEqual(len(self.fixture.rows) * 8, report["correlated"]["row_count"])
         self.assertEqual(0, report["uncorrelated"]["row_count"])
         self.assertEqual([], report["uuid_lineage_edges"])

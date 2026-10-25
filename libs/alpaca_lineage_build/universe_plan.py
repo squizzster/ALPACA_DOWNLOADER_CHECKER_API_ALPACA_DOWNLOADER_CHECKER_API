@@ -16,7 +16,7 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 
 from . import storage, universe_state
 from .catalogue import DISCOVERY_EXCHANGES, by_symbol, discovery_labels
-from .contract import LineageError, document_digest, reusable_versions
+from .contract import LineageError, document_digest, reusable_decision
 from .projection import require_complete
 from .work_contract import (
     acquisition_fingerprint,
@@ -143,7 +143,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     for symbol in accepted["checks"]["checks"]:
         add(symbol, "pending_lineage")
     for symbol, entry in entries.items():
-        if not reusable_versions(entry.get("versions")):
+        if not reusable_decision(entry):
             add(symbol, "changed_rules")
 
     # Stored active identity remains maintenance authority when the catalogue omits

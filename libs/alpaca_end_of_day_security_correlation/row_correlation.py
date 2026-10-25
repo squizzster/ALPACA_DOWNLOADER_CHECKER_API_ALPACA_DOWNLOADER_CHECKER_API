@@ -212,7 +212,9 @@ class CorrelationCache:
     reload/publication; it is never a cross-run or whole-universe cache.
     """
 
-    def __init__(self):
+    def __init__(self, *, ownership_interval_rules=None, row_correlation_rules=None):
+        self.ownership_interval_rules = ownership_interval_rules
+        self.row_correlation_rules = row_correlation_rules
         self._sessions = {}
         self._downloads = {}
         self._decisions = {}
@@ -247,6 +249,7 @@ class CorrelationCache:
             intervals, interval_issues = build_ticker_ownership_intervals(
                 lineage,
                 uuid_lineage_edges=candidates,
+                rules=self.ownership_interval_rules,
                 include_action_anchored_current_suffix=include_action_anchored_current_suffix,
             )
             assessment = assess_name_change_history(lineage, intervals, candidates, self._name_change_sources)
@@ -1052,11 +1055,9 @@ ROW_CORRELATION_RULES = (
 )
 
 
-def row_correlation_rule_order() -> list[dict[str, Any]]:
-    row_rules = [
-        {"order": rule_order, "name": rule.name}
-        for rule_order, rule in enumerate(ROW_CORRELATION_RULES, start=1)
-    ]
+def row_correlation_rule_order(*, rules: tuple[RowCorrelationRule, ...] | None = None) -> list[dict[str, Any]]:
+    rules = ROW_CORRELATION_RULES if rules is None else rules
+    row_rules = [{"order": rule_order, "name": rule.name} for rule_order, rule in enumerate(rules, start=1)]
     return [
         *row_rules,
         {
@@ -1066,8 +1067,13 @@ def row_correlation_rule_order() -> list[dict[str, Any]]:
     ]
 
 
-def _decide_row(context: _RowRuleContext) -> _RowDecision:
-    for rule_order, rule in enumerate(ROW_CORRELATION_RULES, start=1):
+def _decide_row(
+    context: _RowRuleContext,
+    *,
+    rules: tuple[RowCorrelationRule, ...] | None = None,
+) -> _RowDecision:
+    rules = ROW_CORRELATION_RULES if rules is None else rules
+    for rule_order, rule in enumerate(rules, start=1):
         decision = rule.apply(context)
         if decision is not None:
             return replace(
@@ -1169,7 +1175,20 @@ def correlate_download_rows(
     uuid_lineage_edges: list[UuidLineageEdge] | None = None,
     adopted_target_pairs: frozenset[tuple[str, str]] | None = None,
     name_change_assessment: NameChangeAssessment = NameChangeAssessment(),
+    row_rules: tuple[RowCorrelationRule, ...] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
+    if cache is not None:
+        if row_rules is None:
+            row_rules = cache.row_correlation_rules
+        elif cache.row_correlation_rules is None:
+            raise SecurityCorrelationError("explicit row rules require a policy-bound correlation cache")
+    row_rules = ROW_CORRELATION_RULES if row_rules is None else row_rules
+    if (
+        cache is not None
+        and cache.row_correlation_rules is not None
+        and tuple(cache.row_correlation_rules) != tuple(row_rules)
+    ):
+        raise SecurityCorrelationError("correlation cache row policy does not match requested rules")
     requested_symbol = source["requested_symbol"]
     independent_history = (
         *independent_history,
@@ -1302,7 +1321,8 @@ def correlate_download_rows(
         decision = decisions.get(session_date)
         if decision is None:
             decision = decisions[session_date] = _decide_row(
-                _RowRuleContext(session_date=session_date, **context)
+                _RowRuleContext(session_date=session_date, **context),
+                rules=row_rules,
             )
         correlated_rows.append(
             _CorrelatedRow(
@@ -1438,5 +1458,5 @@ def correlate_download_rows(
         source_rows=rows,
         adjustment_consensus=adjustment_consensus,
         closed_history_evidence=closed_history_evidence,
-        rule_order=len(ROW_CORRELATION_RULES) + 1,
+        rule_order=len(row_rules) + 1,
     )

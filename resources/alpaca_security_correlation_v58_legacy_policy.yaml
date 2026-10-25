@@ -1,0 +1,40 @@
+schema_version: 1
+policy_id: alpaca_security_correlation
+policy_version: 0.1.0
+
+implementation:
+  correlation_version: 58
+
+fixed_point:
+  max_passes: 3
+
+stages:
+  ownership_intervals:
+    type: sequential
+    rules:
+      - name_change_ticker_transition
+      - same_ticker_stock_merger_uuid_transition
+      - cash_merger_acquiree_terminal_boundary
+
+  row_assignment:
+    type: first_match
+    rules:
+      - exchange_test_symbol_exclusion
+      - name_change_boundary_conflict
+      - complete_current_identity_suffix_after_ticker_reuse_gap
+      - inactive_current_identity_suffix_after_ticker_reuse_gap
+      - dated_terminal_identity_suffix_after_ticker_reuse_gap
+      - ticker_reuse_gap_guard
+      - one_session_distinct_uuid_transition
+      - complete_current_symbol_run_after_authenticated_ticker_reuse
+      - asof_selected_uuid_lineage_interval
+      - exact_independently_resolved_predecessor_prefix
+      - latest_dated_ownership_interval_overlapping_claims
+      - requested_symbol_dated_uuid_interval
+      - unique_uuid_candidate_with_warnings
+      - bounded_retired_name_change_continuation
+    default: unresolved_uuid_candidates
+
+  terminal_promotion:
+    type: whole_series
+    rule: stable_continuous_ticker_identity_set

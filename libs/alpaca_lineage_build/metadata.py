@@ -35,13 +35,13 @@ def action_symbols(value):
 
 
 def full_metadata(previous, notice, refresh):
-    from .contract import reusable_versions
+    from .contract import reusable_metadata_versions
 
     return (
         refresh
         or previous is not None
         and (
-            not reusable_versions(previous["versions"])
+            not reusable_metadata_versions(previous.get("versions"))
             or (notice or {}).get("from", previous["anchor_month"] + "-01") < previous["anchor_month"] + "-01"
         )
     )

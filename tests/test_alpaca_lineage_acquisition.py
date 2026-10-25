@@ -31,6 +31,7 @@ class AuxiliaryAcquisitionTests(unittest.TestCase):
     download = fixtures.LineageBuildTests.download
     receipt = fixtures.LineageBuildTests.receipt
     notice = fixtures.LineageBuildTests.notice
+    install_legacy_rule_contract = fixtures.LineageBuildTests.install_legacy_rule_contract
 
     def prepare_entitlement(self):
         self.bars = calendar_bars("2026-09-28", "2026-10-15")
@@ -158,9 +159,9 @@ class AuxiliaryAcquisitionTests(unittest.TestCase):
         first = run_lineage(self.store, ["BUYER"], identity_client=identities, pricing_client=pricing)
         self.assertEqual(first["failed"], 0, first)
         previous = self.receipt("BUYER")
+        self.install_legacy_rule_contract("BUYER")
         count = identities.request_count
         with (
-            patch.object(contract, "CORRELATION_VERSION", contract.CORRELATION_VERSION + 1),
             patch.object(pipeline, "acquire", side_effect=AssertionError("metadata reacquisition")),
             patch.object(pipeline, "acquire_unpriced", side_effect=AssertionError("auxiliary reacquisition")),
             patch.object(pipeline, "download_pricing", side_effect=AssertionError("pricing acquisition")),

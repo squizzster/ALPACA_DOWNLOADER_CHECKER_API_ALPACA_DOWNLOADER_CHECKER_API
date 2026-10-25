@@ -877,10 +877,7 @@ def _apply_action_anchored_current_suffix_rule(
         ):
             continue
         pairs = sorted(
-            (
-                cusip,
-                asset_id,
-            )
+            (cusip, asset_id)
             for (candidate_symbol, cusip), asset_id in context.asset_ids_by_symbol_and_cusip.items()
             if candidate_symbol == symbol
         )
@@ -961,11 +958,11 @@ OWNERSHIP_INTERVAL_RULES = (
 )
 
 
-def ownership_interval_rule_order() -> list[dict[str, Any]]:
-    return [
-        {"order": rule_order, "name": rule.name}
-        for rule_order, rule in enumerate(OWNERSHIP_INTERVAL_RULES, start=1)
-    ]
+def ownership_interval_rule_order(
+    *, rules: tuple[OwnershipIntervalRule, ...] | None = None
+) -> list[dict[str, Any]]:
+    rules = OWNERSHIP_INTERVAL_RULES if rules is None else rules
+    return [{"order": rule_order, "name": rule.name} for rule_order, rule in enumerate(rules, start=1)]
 
 
 def _asset_ids_by_symbol_and_cusip(
@@ -1016,8 +1013,10 @@ def build_ticker_ownership_intervals(
     lineage: dict[str, Any],
     *,
     uuid_lineage_edges=None,
+    rules: tuple[OwnershipIntervalRule, ...] | None = None,
     include_action_anchored_current_suffix: bool = False,
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
+    rules = OWNERSHIP_INTERVAL_RULES if rules is None else rules
     corporate_actions = lineage.get("corporate_actions")
     if not isinstance(corporate_actions, list):
         return [], [{"reason_code": "malformed_corporate_actions", "detail": "expected a list"}]
@@ -1039,7 +1038,7 @@ def build_ticker_ownership_intervals(
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
 
-    for rule_order, rule in enumerate(OWNERSHIP_INTERVAL_RULES, start=1):
+    for rule_order, rule in enumerate(rules, start=1):
         if (
             rule.name == "action_anchored_current_ticker_occupancy"
             and not include_action_anchored_current_suffix

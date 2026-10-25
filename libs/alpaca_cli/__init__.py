@@ -17,7 +17,7 @@ from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 from libs.common.store_lock import StoreBusyError, operation_lock
 
-VERSION = 18
+VERSION = 19
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -151,7 +151,7 @@ def build_parser():
         if name == "check":
             p.add_argument("--batch-size", type=int, default=4000)
     lineage = commands.add_parser("lineage").add_subparsers(dest="operation", required=True, parser_class=Parser)
-    for name in ("update", "refresh", "inspect", "migrate-index"):
+    for name in ("update", "refresh", "inspect", "migrate-index", "migrate-policy"):
         p = lineage.add_parser(name)
         _store(p)
         if name in {"update", "refresh"}:
@@ -160,7 +160,7 @@ def build_parser():
             p.add_argument("--no-pricing-acquisition", action="store_true")
         elif name == "inspect":
             p.add_argument("--symbol", required=True)
-        else:
+        elif name == "migrate-index":
             p.add_argument("--batch-size", type=int, default=128)
     universe = commands.add_parser("universe").add_subparsers(
         dest="operation", required=True, parser_class=Parser
@@ -262,7 +262,7 @@ def _store_operation_mode(args):
     writes = (
         (command == "update" and not args.plan)
         or (command == "pricing" and operation in {"acquire", "refresh"})
-        or (command == "lineage" and operation in {"update", "refresh", "migrate-index"})
+        or (command == "lineage" and operation in {"update", "refresh", "migrate-index", "migrate-policy"})
         or (command == "universe" and operation in {"reconcile", "rebuild"})
         or (command == "summary" and operation == "rebuild")
         or (command == "catalogue" and operation in {"bootstrap", "rebuild", "update"} and not args.plan)
@@ -332,6 +332,15 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "migrate-policy":
+            from libs.alpaca_lineage_build.migration import migrate_correlation_policy
+
+            return migrate_correlation_policy(
+                args.store,
+                progress=lambda done, total: print(
+                    f"policy migration: {done}/{total} groups", file=sys.stderr, flush=True
+                ),
+            )
         if operation == "migrate-index":
             from libs.alpaca_lineage_build.projection import migrate_index
 

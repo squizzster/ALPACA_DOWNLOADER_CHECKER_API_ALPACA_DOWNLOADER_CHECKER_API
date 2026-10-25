@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import test_alpaca_lineage_build as fixture
 
-from libs.alpaca_lineage_build import pipeline, storage, transform
+from libs.alpaca_lineage_build import pipeline, policy_engine, storage
 from libs.alpaca_lineage_build.resume import eligible_source
 
 
@@ -56,7 +56,7 @@ class LineageContinuationTests(unittest.TestCase):
         start, end = "2025-12-01", "2026-09-29"
         case.download(end=end, bars=fixture.calendar_bars(start, end))
         case.run_build()
-        build = transform.build_security_correlation_report
+        build = policy_engine.build_security_correlation_report
         for target in ("2026-09-30", "2026-10-15", "2026-12-31", "2027-01-06", "2028-02-03"):
             with self.subTest(previous=end, target=target):
                 previous = case.receipt()
@@ -72,7 +72,7 @@ class LineageContinuationTests(unittest.TestCase):
                         observed.update(timestamps)
                     return build(report, *args, **kwargs)
 
-                with patch.object(transform, "build_security_correlation_report", side_effect=resolve):
+                with patch.object(policy_engine, "build_security_correlation_report", side_effect=resolve):
                     result = case.run_build()
                 self.assertEqual(observed, added)
                 self.assertTrue(result["results"][0]["reused_closed_boundaries"])
@@ -118,7 +118,7 @@ class LineageContinuationTests(unittest.TestCase):
             index = storage.read_index(root)
             storage.publish(case.store, root, index, {"GOOG": receipt}, {"GOOG": {}}, {})
         case.download(end="2026-10-15", bars=case.bars + [fixture.bar("2026-10-14")])
-        build = transform.build_security_correlation_report
+        build = policy_engine.build_security_correlation_report
 
         def resolve(report, *args, **kwargs):
             for descriptor in report["local"]["downloads"]:
@@ -126,7 +126,7 @@ class LineageContinuationTests(unittest.TestCase):
                 self.assertEqual([row["t"] for row in rows], [fixture.bar("2026-10-14")["t"]])
             return build(report, *args, **kwargs)
 
-        with patch.object(transform, "build_security_correlation_report", side_effect=resolve):
+        with patch.object(policy_engine, "build_security_correlation_report", side_effect=resolve):
             case.run_build()
         self.assertIn("assignment_summary", case.receipt())
 

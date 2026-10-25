@@ -1,0 +1,164 @@
+schema_version: 4
+policy_id: alpaca_security_correlation
+policy_version: 0.5.0
+policy_role: corrected_candidate
+
+implementation:
+  correlation_version: 59
+  lineage_version: 33
+
+fact_producers:
+  - cross_receipt_cash_dividend_pair_v1
+  - active_cusip_dividend_suffix_v2
+
+facts:
+  quality.cash_dividend_pair: {type: boolean}
+  quality.query_coverage_complete: {type: boolean}
+  quality.unique_reference_match: {type: boolean}
+  quality.subject_symbol_matches_input: {type: boolean}
+  quality.reference_symbol_matches_input: {type: boolean}
+  quality.distinct_action_ids: {type: boolean}
+  quality.distinct_action_symbols: {type: boolean}
+  quality.same_cusip: {type: boolean}
+  quality.nonidentity_payload_exact: {type: boolean}
+  quality.rate_precision_equivalent: {type: boolean}
+  quality.lookup_routes_consistent: {type: boolean}
+  quality.resolved_assets_distinct: {type: boolean}
+  quality.subject_history_brackets_event: {type: boolean}
+  quality.owner_history_brackets_event: {type: boolean}
+  quality.endpoint_lookup_unresolved: {type: boolean}
+  quality.selected_structural_link_present: {type: boolean}
+  quality.projection_closure_complete: {type: boolean}
+  suffix.single_receipt_complete_group: {type: boolean}
+  suffix.evidence_projection_unchanged: {type: boolean}
+  suffix.complete_covering_query: {type: boolean}
+  suffix.current_lookup_matches_cutoff: {type: boolean}
+  suffix.current_symbol_lookup_exact: {type: boolean}
+  suffix.current_asset_active: {type: boolean}
+  suffix.current_cusip_route_exact: {type: boolean}
+  suffix.candidate_assets_exactly_two: {type: boolean}
+  suffix.candidate_lookup_closure_complete: {type: boolean}
+  suffix.histories_non_interleaving: {type: boolean}
+  suffix.boundary_overlap_consistent: {type: boolean}
+  suffix.positive_anchor_available: {type: boolean}
+  suffix.repeated_active_anchors: {type: boolean}
+  suffix.unresolved_relevant_occupancy_present: {type: boolean}
+  suffix.competing_occupancy_on_or_after_anchor: {type: boolean}
+  suffix.post_anchor_occupancy_closure_exact: {type: boolean}
+  suffix.structural_candidate_link_present: {type: boolean}
+  suffix.uuid_candidate_edge_present: {type: boolean}
+  suffix.adjustment_set_complete: {type: boolean}
+  suffix.adjustment_sessions_consistent: {type: boolean}
+  suffix.suffix_session_coverage_complete: {type: boolean}
+  suffix.row_candidates_exact: {type: boolean}
+
+stages:
+  evidence_quality:
+    type: per_candidate_action
+    rules:
+      - id: QUARANTINE_CROSS_SYMBOL_DUPLICATE_DIVIDEND
+        description: Withhold a duplicate dividend's non-owner label from candidate identity evidence.
+        scope: cross_receipt_action_pair
+        when:
+          all:
+            - {fact: quality.cash_dividend_pair, eq: true}
+            - {fact: quality.query_coverage_complete, eq: true}
+            - {fact: quality.unique_reference_match, eq: true}
+            - {fact: quality.subject_symbol_matches_input, eq: true}
+            - {fact: quality.reference_symbol_matches_input, eq: true}
+            - {fact: quality.distinct_action_ids, eq: true}
+            - {fact: quality.distinct_action_symbols, eq: true}
+            - {fact: quality.same_cusip, eq: true}
+            - {fact: quality.nonidentity_payload_exact, eq: true}
+            - {fact: quality.rate_precision_equivalent, eq: true}
+            - {fact: quality.lookup_routes_consistent, eq: true}
+            - {fact: quality.resolved_assets_distinct, eq: true}
+            - {fact: quality.subject_history_brackets_event, eq: true}
+            - {fact: quality.owner_history_brackets_event, eq: true}
+            - {fact: quality.endpoint_lookup_unresolved, eq: false}
+            - {fact: quality.selected_structural_link_present, eq: false}
+            - {fact: quality.projection_closure_complete, eq: true}
+        effect:
+          type: lab_quarantine
+          target: subject_action
+          closure: derived_evidence
+
+  active_suffix_assignment:
+    type: per_symbol_certificate
+    position: immediately_before_unresolved_fallback
+    rules:
+      - id: ASSIGN_ACTIVE_UUID_FROM_POST_AMBIGUITY_DIVIDEND_SUFFIX
+        description: Assign only the observed suffix bounded by repeated, uncontested active-UUID evidence.
+        scope: single_symbol_observed_suffix
+        when:
+          all:
+            - {fact: suffix.single_receipt_complete_group, eq: true}
+            - {fact: suffix.evidence_projection_unchanged, eq: true}
+            - {fact: suffix.complete_covering_query, eq: true}
+            - {fact: suffix.current_lookup_matches_cutoff, eq: true}
+            - {fact: suffix.current_symbol_lookup_exact, eq: true}
+            - {fact: suffix.current_asset_active, eq: true}
+            - {fact: suffix.current_cusip_route_exact, eq: true}
+            - {fact: suffix.candidate_assets_exactly_two, eq: true}
+            - {fact: suffix.candidate_lookup_closure_complete, eq: true}
+            - {fact: suffix.histories_non_interleaving, eq: true}
+            - {fact: suffix.boundary_overlap_consistent, eq: true}
+            - {fact: suffix.positive_anchor_available, eq: true}
+            - {fact: suffix.repeated_active_anchors, eq: true}
+            - {fact: suffix.unresolved_relevant_occupancy_present, eq: false}
+            - {fact: suffix.competing_occupancy_on_or_after_anchor, eq: false}
+            - {fact: suffix.post_anchor_occupancy_closure_exact, eq: true}
+            - {fact: suffix.structural_candidate_link_present, eq: false}
+            - {fact: suffix.uuid_candidate_edge_present, eq: false}
+            - {fact: suffix.adjustment_set_complete, eq: true}
+            - {fact: suffix.adjustment_sessions_consistent, eq: true}
+            - {fact: suffix.suffix_session_coverage_complete, eq: true}
+            - {fact: suffix.row_candidates_exact, eq: true}
+        effect:
+          type: assign_observed_suffix
+          identity: exact_active_asset
+          start: positive_evidence_anchor
+          membership: single_asset
+
+
+execution:
+  established_fixed_point:
+    max_passes: 3
+    ownership_rules:
+      - name_change_ticker_transition
+      - same_ticker_stock_merger_uuid_transition
+      - cash_merger_acquiree_terminal_boundary
+    row_rules:
+      - exchange_test_symbol_exclusion
+      - name_change_boundary_conflict
+      - complete_current_identity_suffix_after_ticker_reuse_gap
+      - inactive_current_identity_suffix_after_ticker_reuse_gap
+      - dated_terminal_identity_suffix_after_ticker_reuse_gap
+      - ticker_reuse_gap_guard
+      - one_session_distinct_uuid_transition
+      - complete_current_symbol_run_after_authenticated_ticker_reuse
+      - asof_selected_uuid_lineage_interval
+      - exact_independently_resolved_predecessor_prefix
+      - latest_dated_ownership_interval_overlapping_claims
+      - requested_symbol_dated_uuid_interval
+      - unique_uuid_candidate_with_warnings
+      - bounded_retired_name_change_continuation
+    row_default: unresolved_uuid_candidates
+    terminal_rule: stable_continuous_ticker_identity_set
+  frozen_baseline: true
+  reconciliation:
+    scope: unresolved_only_complete_group
+    implementation: reconcile_duplicate_foreign_occupancy_v2
+  ownership_fallback:
+    optional: true
+    position: 4
+    implementation: action_anchored_current_ticker_occupancy_v2
+  second_fixed_point:
+    seed: frozen_baseline
+    max_passes: 3
+  producer_evaluation:
+    timing: once_from_frozen_baseline
+    dependency: independent_raw_evidence_projection_unchanged
+  observation_selection:
+    type: fixed_python_postprocessor
+    implementation: lineage_v33

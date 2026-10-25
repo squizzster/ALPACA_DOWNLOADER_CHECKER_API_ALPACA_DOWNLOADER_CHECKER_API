@@ -1,0 +1,2 @@
+# The lab uses the same production policy compiler and runtime dependency.
+-r requirements.txt

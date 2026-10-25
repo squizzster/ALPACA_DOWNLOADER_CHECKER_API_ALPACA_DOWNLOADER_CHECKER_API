@@ -16,6 +16,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import (
     download_session_dates,
 )
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
+from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from tests.test_alpaca_end_of_day_security_correlation import (
@@ -24,6 +25,8 @@ from tests.test_alpaca_end_of_day_security_correlation import (
     complete_market_session_rows,
     correlation_source,
 )
+
+PRODUCTION_POLICY = load_authorized_policy()
 
 
 def lineage():
@@ -291,7 +294,12 @@ class PredecessorPrefixTests(unittest.TestCase):
                 local={"directory": symbol, "downloads": descriptors, "present": True},
                 reader=lambda _root, _directory, descriptor, items=downloads: items[descriptor["file"]],
             )
-        reports = correlate(Path("."), inputs, {symbol: self.lineage for symbol in inputs})
+        reports = correlate(
+            Path("."),
+            inputs,
+            {symbol: self.lineage for symbol in inputs},
+            policy=PRODUCTION_POLICY,
+        )
         self.assertEqual(0, reports["OLD"]["correlated"]["row_count"])
         self.assertEqual(24, reports["OLD"]["uncorrelated"]["row_count"])
         self.assertEqual([], reports["OLD"]["predecessor_prefix_assessments"])
@@ -299,7 +307,12 @@ class PredecessorPrefixTests(unittest.TestCase):
         # An incremental open-month input is not the complete on-disk prefix.
         for descriptor in inputs["OLD"].local["downloads"]:
             descriptor["rows"] = 100
-        reports = correlate(Path("."), inputs, {symbol: self.lineage for symbol in inputs})
+        reports = correlate(
+            Path("."),
+            inputs,
+            {symbol: self.lineage for symbol in inputs},
+            policy=PRODUCTION_POLICY,
+        )
         self.assertEqual(0, reports["OLD"]["correlated"]["row_count"])
 
     def reused_source(self):

@@ -6,11 +6,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
+from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.observations import select_observations
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, FIELDS
 from libs.alpaca_serving_catalogue.policy import _metadata
 from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge
+
+PRODUCTION_POLICY = load_authorized_policy()
 
 
 def bars(days, base=10):
@@ -105,6 +108,7 @@ def run(evidence, histories, **input_options):
         Path("."),
         inputs_for(histories, **input_options),
         {symbol: evidence for symbol in histories},
+        policy=PRODUCTION_POLICY,
     )
 
 
@@ -177,6 +181,7 @@ class NameChangeEvidenceTests(unittest.TestCase):
             Path("."),
             inputs,
             {symbol: evidence for symbol in histories},
+            policy=PRODUCTION_POLICY,
         )
 
         self.assertEqual([], raw_segments(reports["OLD"], "uncorrelated"))
@@ -340,7 +345,7 @@ class NameChangeEvidenceTests(unittest.TestCase):
         evidence = rename()
         inputs = inputs_for({"OLD": bars(self.days[:3]), "NEW": bars(self.days)})
         inputs["OLD"].local["downloads"][0]["rows"] += 1
-        reports = correlate(Path("."), inputs, {symbol: evidence for symbol in inputs})
+        reports = correlate(Path("."), inputs, {symbol: evidence for symbol in inputs}, policy=PRODUCTION_POLICY)
         self.assertEqual([], reports["NEW"]["uuid_lineage_edges"])
         reports = run(evidence, {"NEW": bars(self.days)})
         self.assertEqual([], reports["NEW"]["uuid_lineage_edges"])

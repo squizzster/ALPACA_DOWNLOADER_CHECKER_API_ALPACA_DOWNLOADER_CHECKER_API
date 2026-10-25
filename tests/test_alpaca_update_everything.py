@@ -149,9 +149,41 @@ class UpdateEverythingTests(unittest.TestCase):
         checks = read_checks(self.store)
         self.assertTrue(checks["complete"])
         self.assertEqual(checks["checks"], {})
+        root = self.store / "end_of_day/lineage"
+        index = lineage_storage.read_index(root)
+        legacy_versions = {**lineage_contract.versions(), "lineage": 33, "correlation": 59}
+        legacy_versions.pop("correlation_policy_sha256")
+        receipts, entries, documents, sources = {}, {}, {}, {}
+        for symbol in sorted(self.assets):
+            receipt = lineage_storage.read_receipt(root, symbol, index)
+            receipt.update(schema_version=33, versions=legacy_versions)
+            receipt.pop("correlation_policy")
+            receipts[symbol] = receipt
+            documents[f"{symbol}/lineage.manifest.json"] = receipt
+            entries[symbol] = {
+                **index["symbols"][symbol],
+                "sha256": lineage_storage.document_digest(receipt),
+                "versions": legacy_versions,
+            }
+            entries[symbol].pop("correlation_policy")
+            sources[symbol] = receipt["source_sha256"]
+        journal = {
+            "schema_version": 33,
+            "boundary": "alpaca_lineage_transaction",
+            "documents": documents,
+            "retire": [],
+            "index_updates": entries,
+            "sources": sources,
+            "unavailable_pricing": [],
+            "notices": {},
+        }
+        with (
+            lineage_storage.pricing_locks(self.store, self.assets),
+            lineage_storage.publication_lock(root, exclusive=True),
+        ):
+            lineage_storage._install(root, journal, compare=False)
         pricing = files_snapshot(self.store / "end_of_day/pricing")
         with (
-            patch.object(lineage_contract, "CORRELATION_VERSION", lineage_contract.CORRELATION_VERSION + 1),
             patch.object(pipeline, "acquire", side_effect=AssertionError("metadata reacquisition")),
             patch.object(pipeline, "local_symbols", side_effect=AssertionError("receipt discovery")),
         ):

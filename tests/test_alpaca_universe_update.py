@@ -17,7 +17,7 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_lineage_build import storage, universe_plan, universe_state
 from libs.alpaca_lineage_build.catalogue import discovery_labels, observe_catalogue
 from libs.alpaca_lineage_build.check_summary import rebuild
-from libs.alpaca_lineage_build.contract import LineageError, versions
+from libs.alpaca_lineage_build.contract import CorrelationPolicyError, LineageError, versions
 from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.projection import migrate_index, require_complete
@@ -116,6 +116,22 @@ class UniverseUpdateTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_plan_rejects_invalid_policy_before_catalogue_request(self):
+        before = self.identity.request_count
+        with (
+            patch(
+                "libs.alpaca_lineage_build.correlation_policy.load_authorized_policy",
+                side_effect=CorrelationPolicyError("invalid policy"),
+            ),
+            patch(
+                "libs.alpaca_lineage_build.universe_update.observe_catalogue",
+                side_effect=AssertionError("catalogue request"),
+            ),
+            self.assertRaisesRegex(CorrelationPolicyError, "invalid policy"),
+        ):
+            plan_update(self.store, "2026-10-17", identity_client=self.identity, registry=self.registry)
+        self.assertEqual(before, self.identity.request_count)
+
     def test_discovery_registers_nontradable_and_empty_then_repeat_does_no_acquisition(self):
         result = self.update()
         self.assertTrue(result["complete"], result)
@@ -165,10 +181,31 @@ class UniverseUpdateTests(unittest.TestCase):
         root = self.store / "end_of_day/lineage"
         index = storage.read_index(root)
         receipt = storage.read_receipt(root, "AAA", index)
-        boundaries = storage.read_boundaries(root, receipt)
-        receipt.update(schema_version=31, versions={**versions(), "lineage": 31, "correlation": 58})
-        with storage.pricing_locks(self.store, receipt["input_sources"]):
-            storage.publish(self.store, root, index, {"AAA": receipt}, {"AAA": boundaries}, {})
+        legacy_versions = {**versions(), "lineage": 33, "correlation": 59}
+        legacy_versions.pop("correlation_policy_sha256")
+        receipt.update(schema_version=33, versions=legacy_versions)
+        receipt.pop("correlation_policy")
+        entry = {
+            **index["symbols"]["AAA"],
+            "sha256": storage.document_digest(receipt),
+            "versions": legacy_versions,
+        }
+        entry.pop("correlation_policy")
+        journal = {
+            "schema_version": 33,
+            "boundary": "alpaca_lineage_transaction",
+            "documents": {"AAA/lineage.manifest.json": receipt},
+            "retire": [],
+            "index_updates": {"AAA": entry},
+            "sources": {"AAA": receipt["source_sha256"]},
+            "unavailable_pricing": [],
+            "notices": {},
+        }
+        with (
+            storage.pricing_locks(self.store, receipt["input_sources"]),
+            storage.publication_lock(root, exclusive=True),
+        ):
+            storage._install(root, journal, compare=False)
         pricing_before = snapshot(self.store / "end_of_day/pricing/AAA")
         requests_before = self.identity.request_count
 
@@ -504,8 +541,15 @@ class UniverseUpdateTests(unittest.TestCase):
         report = plan_update(self.store, "2026-10-17", identity_client=self.identity, registry=self.registry)
         self.assertTrue(report["blockers"])
         self.assertEqual(before, snapshot(self.directory))
-        with self.assertRaisesRegex(LineageError, "universe rebuild"):
+        with (
+            patch("libs.alpaca_lineage_build.context.OperationContext.select_serving") as select_serving,
+            patch("libs.alpaca_lineage_build.universe_update.recover_publications") as recover,
+            self.assertRaisesRegex(LineageError, "universe rebuild"),
+        ):
             self.update()
+        select_serving.assert_not_called()
+        recover.assert_not_called()
+        self.assertEqual(before, snapshot(self.directory))
 
     def test_projection_migration_is_resumable_and_never_reads_prices(self):
         root = self.store / "end_of_day/lineage"
@@ -602,7 +646,10 @@ class UniverseUpdateTests(unittest.TestCase):
         execute = self.identity.execute_plan
 
         def observe_after_recovery(plan):
-            recovered.assert_called_once_with(self.store.absolute())
+            recovered.assert_called_once()
+            args, kwargs = recovered.call_args
+            self.assertEqual((self.store.absolute(),), args)
+            self.assertIn("context", kwargs)
             return execute(plan)
 
         with (

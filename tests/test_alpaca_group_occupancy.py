@@ -9,6 +9,7 @@ from libs.alpaca_end_of_day_security_correlation.correlation import (
 from libs.alpaca_end_of_day_security_correlation.evidence import (
     build_ticker_ownership_intervals,
 )
+from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.occupancy import reconcile_duplicate_foreign_occupancy
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
@@ -18,6 +19,8 @@ from tests.test_alpaca_end_of_day_security_correlation import (
     same_symbol_split_lineage,
 )
 from tests.test_alpaca_name_change_evidence import bars, inputs_for
+
+PRODUCTION_POLICY = load_authorized_policy()
 
 
 class DuplicateForeignOccupancyTests(unittest.TestCase):
@@ -200,7 +203,7 @@ class DuplicateForeignOccupancyTests(unittest.TestCase):
                 download.manifest["request_to"] = "2025-06-18"
             view.source["latest_request"]["end_exclusive"] = "2025-06-18"
 
-        reports = correlate(Path("."), inputs, self.evidence)
+        reports = correlate(Path("."), inputs, self.evidence, policy=PRODUCTION_POLICY)
 
         self.assertEqual(0, reports["CURR"]["uncorrelated"]["row_count"])
         self.assertEqual(len(ADJUSTMENTS), reports["CURR"]["correlated"]["row_count"])
@@ -298,7 +301,7 @@ class ProducerOccupancyFallbackTests(unittest.TestCase):
                 request_to="2026-10-02",
             )
 
-        report = correlate(Path("."), inputs, {"SPLT": evidence})["SPLT"]
+        report = correlate(Path("."), inputs, {"SPLT": evidence}, policy=PRODUCTION_POLICY)["SPLT"]
 
         self.assertEqual(len(rows) * len(ADJUSTMENTS), report["correlated"]["row_count"])
         self.assertEqual(0, report["uncorrelated"]["row_count"])

@@ -6,7 +6,7 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, symbol_label
 from libs.alpaca_pricing_download.storage import load_source, published_path, read_update
 
 from .acquisition import check_unavailable_pricing, unavailable_pricing
-from .contract import LineageError, document_digest, reusable_versions
+from .contract import LineageError, document_digest, reusable_decision
 from .storage import reader_snapshot, select_inputs
 
 
@@ -18,8 +18,14 @@ def read_lineage(store, symbol):
     """
     store, symbol = Path(store).absolute(), symbol_label(symbol)
     with reader_snapshot(store, lambda root: select_inputs(root, symbol)) as snap:
+        if any(
+            receipt is not None
+            and snap["entries"][label].get("correlation_policy") != receipt.get("correlation_policy")
+            for label, receipt in snap["receipts"].items()
+        ):
+            raise LineageError("lineage selector and receipt policy provenance differ")
         receipt = snap["receipts"][symbol]
-        if not reusable_versions(receipt["versions"]):
+        if not reusable_decision(receipt):
             raise LineageError("lineage rules changed; process pending lineage work")
         check_unavailable_pricing(store, unavailable_pricing(receipt), snap["locked"])
         for dependency, expected in receipt["input_sources"].items():

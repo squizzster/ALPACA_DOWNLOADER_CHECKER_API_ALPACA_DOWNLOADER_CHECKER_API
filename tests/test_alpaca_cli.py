@@ -27,6 +27,7 @@ class CanonicalCliTests(unittest.TestCase):
             ("lineage", "update", False, "exclusive"),
             ("lineage", "refresh", False, "exclusive"),
             ("lineage", "migrate-index", False, "exclusive"),
+            ("lineage", "migrate-policy", False, "exclusive"),
             ("lineage", "inspect", False, None),
             ("universe", "reconcile", False, "exclusive"),
             ("universe", "rebuild", False, "exclusive"),
@@ -59,6 +60,22 @@ class CanonicalCliTests(unittest.TestCase):
             ):
                 self.assertEqual(main(["update", "--store", str(store)]), 3)
             self.assertIn("store is busy with an export or update", errors.getvalue())
+
+    def test_policy_migration_dispatches_before_dates_or_clients(self):
+        store = Path("/data2/alpaca/test-store")
+        args = build_parser().parse_args(["lineage", "migrate-policy", "--store", str(store)])
+        expected = {"complete": True, "failed": 0}
+        with (
+            patch("libs.alpaca_cli._pricing_end", side_effect=AssertionError("resolved live cutoff")),
+            patch("libs.alpaca_cli.clients", side_effect=AssertionError("constructed provider clients")),
+            patch(
+                "libs.alpaca_lineage_build.migration.migrate_correlation_policy",
+                return_value=expected,
+            ) as migrate,
+            redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(expected, dispatch(args))
+        self.assertEqual(store, migrate.call_args.args[0])
 
     def test_retired_experiment_interface_fails_with_canonical_command(self):
         result = subprocess.run(

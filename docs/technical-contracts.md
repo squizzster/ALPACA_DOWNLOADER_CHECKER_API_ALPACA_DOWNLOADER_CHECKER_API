@@ -141,20 +141,31 @@ and expansion; neither a global HTTP minimum nor an ETA is promised.
 
 [Reuse gates](../libs/alpaca_lineage_build/pipeline.py) require matching complete-group inputs, dependency and
 recorded-absence sets, compatible versions, no pending pricing work and no explicit metadata refresh.
+Current receipts and index entries bind the authorized policy ID, role, implementation tuple and semantic digest;
+the policy-file digest records the exact bytes without making formatting part of reuse identity. The canonical
+policy is loaded once after journal recovery and before new selection, evaluation or network work. Recovery
+validates a journal's internally frozen provenance but never reinterprets it using the newly installed policy.
 Evidence fingerprints remain independent of history approval: a missing approval republishes the completed
 decision through its journal before acknowledgement, without pricing decode/correlation. Already projected
 approval needs no group reopening. Rule-only changes reuse approved evidence. The lineage producer may promote
-a completed observation decision through its journal when the exact version transition proves its assignments
-unchanged; otherwise it recalculates the selected complete group. This migration proof uses selected receipt
+a completed lineage-33/correlation-59 observation decision through its journal to lineage 34/correlation 60 only
+when every selected group member qualifies and the authorized YAML has the pinned behavior-identical semantic
+identity; otherwise it recalculates the selected complete group. This migration proof uses selected receipt
 metadata only and is not repeated after the current-version handoff is published.
+The dedicated `lineage migrate-policy` operation exposes only that proof. Under the exclusive store operation
+lock it recovers the lineage journal, requires completed empty scheduling hints, preflights every compact selector
+entry, and publishes qualifying complete groups with their existing boundary references. It does not enter live
+lineage orchestration, decode pricing payloads, select observations or construct authenticated clients. Each
+publication records the normal serving obligation; catalogue maintenance remains a separate offline owner stage.
 
 [Observation selection](../libs/alpaca_lineage_build/observations.py) is a separate producer decision from
 identity assignment. For each identity/session, a complete eight-view bundle from the latest independently
 observed own-label source supplies every numerical view. This is an explicit source-selection policy, not proof
 of historical completeness. Equal complete bundles can collapse; unresolved source authority remains explicit.
 The producer preserves all accepted dated labels independently, including ambiguity. Readers and exports consume
-these decisions without repeating selection or activity checks. Prior lineage versions require one selected-group
-rebuild using retained evidence and prices; subsequent unchanged groups reuse the completed decisions.
+these decisions without repeating selection or activity checks. Versions outside the one exact compatible
+33/59 transition require a selected-group rebuild using retained evidence and prices; subsequent unchanged groups
+reuse the completed policy-bound decisions.
 
 Complete established correlation is evaluated before either occupancy fallback. For a source that remains
 unresolved, a reused active label may be bounded from its first positive provider action after all competing UUID

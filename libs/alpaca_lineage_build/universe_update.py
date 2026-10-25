@@ -11,7 +11,7 @@ from libs.alpaca_recovery_registry import DEFAULT_REGISTRY
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
-from .context import accept_context
+from .context import accept_context, recover_and_accept_correlation_policy
 from .contract import LineageError
 from .metadata import EvidenceClient
 from .pipeline import run_lineage
@@ -21,7 +21,7 @@ from .update import update_everything
 from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target, satisfying_entry
 
 
-def recover_publications(store):
+def recover_publications(store, *, context=None):
     """Roll forward known journals only; retry selection owns subsequent network work."""
     selected = set(pending_symbols(store)) | set(read_checks(store)["checks"])
     recovered = []
@@ -32,12 +32,16 @@ def recover_publications(store):
                 if pricing_storage.recover(root):
                     recovered.append(symbol)
     with storage.writer_lock(store) as root:
-        lineage = storage.recover(store, root)
+        lineage = context.recover_lineage(root) if context is not None else storage.recover(store, root)
     return {"pricing_recovered": recovered, "lineage_recovered": lineage, "failed": 0}
 
 
 def plan_update(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY, retry_blocked=False):
     end = request_end(end_date).date().isoformat()
+    # Planning is read-only and does not recover journals, but it still uses
+    # policy-bearing lineage projections. Reject an invalid live policy before
+    # the catalogue client can issue a request.
+    accept_context(store).accept_correlation_policy()
     metadata_before = identity_client.request_count
     observation = observe_catalogue(identity_client)
     try:
@@ -85,24 +89,14 @@ def run_update(
     metadata_started = identity_client.request_count
     pricing_started = getattr(pricing_client, "request_count", None)
     with universe_state.update_lock(store):
-        # Fail before network or any recovery if durable state was never initialized.
+        # Explicit universe initialization is the outer operation gate. Fail
+        # before recovering any owner publication when it is absent; recovery
+        # must not silently initialize or otherwise mutate an uninitialized
+        # store.
         universe_state.read_state(store)
+
         from libs.alpaca_serving_catalogue import work as serving_work
 
-        # Daily completion includes serving publication. Adoption is explicit and
-        # offline; never silently bootstrap from an ordinary network update.
-        context.select_serving(recover=True)
-        from .projection import require_complete
-
-        root = store / "end_of_day/lineage"
-        # Recover SQLite's own interrupted transaction before accepting compact
-        # selectors. No payload repair or catalogue bootstrap occurs here.
-        with storage.writer_lock(store), storage.publication_lock(root):
-            serving_work.read(store)
-            context.index = storage.read_index(root)
-            require_complete(context.index)
-        if not read_checks(store)["complete"]:
-            raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
         registered = set()
 
         def register(symbols):
@@ -115,13 +109,31 @@ def run_update(
         # dependency acquisitions are explicitly capped by this invocation.
         if progress:
             progress("recovery", {"state": "started"})
-        recovered = recover_publications(store)
+        # Finish every owner journal under its frozen provenance before the new
+        # runtime policy is loaded. A broken new YAML file cannot strand an
+        # already-recorded valid transaction.
+        context.select_serving(recover=True)
+        recovered = recover_publications(store, context=context)
         if progress:
             progress("recovery", {"state": "completed", **recovered})
         result["stages"]["recovery"] = recovered
         if recovered["failed"]:
             result["failed"] = recovered["failed"]
             return result
+        context.accept_correlation_policy()
+
+        from .projection import require_complete
+
+        root = store / "end_of_day/lineage"
+        # Recovery may have replaced the selector; accept its current boundary
+        # only after authorizing the policy for all new work.
+        context.index = None
+        with storage.writer_lock(store), storage.publication_lock(root):
+            serving_work.read(store)
+            context.index = storage.read_index(root)
+            require_complete(context.index)
+        if not read_checks(store)["complete"]:
+            raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
         pending = pending_symbols(store)
         if pending:
             # Recovery selects the summary's named inputs and their complete groups.
@@ -447,7 +459,9 @@ def rebuild_universe(store):
 
 def reconcile_universe(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY):
     """Accept one observation and register its selected work without acquisition."""
+    context = accept_context(store)
     with universe_state.update_lock(store):
+        recover_and_accept_correlation_policy(store, context)
         accepted = universe_plan.boundaries(store, registry)
         observation = observe_catalogue(identity_client)
         evidence = EvidenceClient(identity_client, observation=observation)

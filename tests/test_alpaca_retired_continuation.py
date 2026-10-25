@@ -10,10 +10,13 @@ from libs.alpaca_end_of_day_security_correlation.retired_continuation import (
     retired_rename_path,
 )
 from libs.alpaca_end_of_day_security_correlation.row_correlation import download_session_dates
+from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 from tests.test_alpaca_end_of_day_security_correlation import asset, correlation_source
+
+PRODUCTION_POLICY = load_authorized_policy()
 
 
 def history(start, end):
@@ -137,7 +140,7 @@ class RetiredContinuationTests(unittest.TestCase):
                 local=dict(directory=symbol, downloads=descriptors, present=True),
                 reader=lambda _root, _directory, descriptor, items=downloads: items[descriptor["file"]],
             )
-        reports = correlate(Path("."), inputs, {s: self.lineage for s in inputs})
+        reports = correlate(Path("."), inputs, {s: self.lineage for s in inputs}, policy=PRODUCTION_POLICY)
         self.assertEqual(len(self.old) * 8, reports["OLD"]["correlated"]["row_count"])
         self.assertEqual([], reports["OLD"]["uuid_lineage_edges"])
         for segment in reports["OLD"]["correlated"]["segments"]:
@@ -147,7 +150,7 @@ class RetiredContinuationTests(unittest.TestCase):
             self.assertEqual(["known"], segment["security_identity"]["member_alpaca_asset_ids"])
         for descriptor in inputs["OLD"].local["downloads"]:
             descriptor["rows"] += 100
-        partial = correlate(Path("."), inputs, {s: self.lineage for s in inputs})
+        partial = correlate(Path("."), inputs, {s: self.lineage for s in inputs}, policy=PRODUCTION_POLICY)
         self.assertEqual(0, partial["OLD"]["correlated"]["row_count"])
 
     def test_later_reuse_and_shared_inert_bridge_are_not_published(self):

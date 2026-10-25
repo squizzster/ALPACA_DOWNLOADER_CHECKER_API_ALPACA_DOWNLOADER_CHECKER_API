@@ -101,7 +101,7 @@ def _has_related_structural_action(evidence: dict[str, dict[str, Any]], symbols:
 def may_have_duplicate_foreign_occupancy(lineage: dict[str, Any], symbol: str) -> bool:
     """Recognize the local evidence shape that needs complete-group review.
 
-    This is deliberately only a migration predicate.  Resolution still requires
+    This is deliberately only a migration predicate. Resolution still requires
     the other source's matching action, eight complete assigned views, and the
     complete group's structural-action check below.
     """

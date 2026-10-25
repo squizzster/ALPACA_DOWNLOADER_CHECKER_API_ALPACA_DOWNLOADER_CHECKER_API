@@ -114,11 +114,32 @@ def build_security_correlation_report(
     correlation_loader: Callable[[str], Any] | None = None,
     source_rows_loader: Callable[[str, str], tuple[list[dict], str]] | None = None,
     cache: CorrelationCache | None = None,
+    ownership_interval_rules=None,
+    row_correlation_rules=None,
     occupancy_reconciliations: tuple[dict[str, Any], ...] = (),
     include_action_anchored_current_suffix: bool = False,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
-    cache = cache if cache is not None else CorrelationCache()
+    cache = (
+        cache
+        if cache is not None
+        else CorrelationCache(
+            ownership_interval_rules=ownership_interval_rules,
+            row_correlation_rules=row_correlation_rules,
+        )
+    )
+    if ownership_interval_rules is None:
+        ownership_interval_rules = cache.ownership_interval_rules
+    elif cache.ownership_interval_rules is None or tuple(cache.ownership_interval_rules) != tuple(
+        ownership_interval_rules
+    ):
+        raise SecurityCorrelationError("correlation cache ownership policy does not match requested rules")
+    if row_correlation_rules is None:
+        row_correlation_rules = cache.row_correlation_rules
+    elif cache.row_correlation_rules is None or tuple(cache.row_correlation_rules) != tuple(
+        row_correlation_rules
+    ):
+        raise SecurityCorrelationError("correlation cache row policy does not match requested rules")
     if not isinstance(lineage_report, dict):
         raise SecurityCorrelationError("lineage API returned a non-object report")
     symbol = lineage_report.get("symbol")
@@ -354,6 +375,7 @@ def build_security_correlation_report(
                 lineage,
                 include_action_anchored_current_suffix=include_action_anchored_current_suffix,
             ),
+            row_rules=row_correlation_rules,
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]
@@ -418,8 +440,8 @@ def build_security_correlation_report(
         "lineage_report": lineage_report,
         "source_downloads": source_downloads,
         "source_row_count": source_row_count,
-        "ownership_interval_rule_order": ownership_interval_rule_order(),
-        "row_correlation_rule_order": row_correlation_rule_order(),
+        "ownership_interval_rule_order": ownership_interval_rule_order(rules=ownership_interval_rules),
+        "row_correlation_rule_order": row_correlation_rule_order(rules=row_correlation_rules),
         "uuid_lineage_edges": [edge.as_report_object() for edge in uuid_lineage_edges],
         "ticker_ownership_intervals": [_interval_report_object(interval) for interval in intervals],
         "evidence_issues": evidence_issues,
