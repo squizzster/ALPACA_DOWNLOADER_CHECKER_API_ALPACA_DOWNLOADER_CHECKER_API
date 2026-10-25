@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from .predecessor_prefix import (
     assess_bridged_initial_prefix,
     assess_independent_donor_prefixes,
     assess_independent_historical_intervals,
+    assess_mapped_continuations,
     assess_predecessor_prefixes,
 )
 from .retired_continuation import assess_retired_continuation
@@ -29,12 +31,12 @@ from .source_continuity import retired_history_lower_bound
 from .terminal_episode import (
     assess_bridged_traded_episodes,
     assess_dated_departure_prefix,
+    assess_historical_asof_gap,
     assess_terminal_traded_episode,
     has_informative_trading,
     has_prolonged_carry_forward,
 )
 from .ticker_reuse_gap import adjustment_session_consensus
-from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
 
 
 def _source_context(authenticated_download) -> dict[str, Any]:
@@ -64,6 +66,44 @@ def _interval_report_object(interval) -> dict[str, Any]:
     }
 
 
+def _without_reconciled_occupancy_actions(
+    lineage: dict[str, Any], reconciliations: tuple[dict[str, Any], ...]
+) -> dict[str, Any]:
+    if not reconciliations:
+        return lineage
+    rejected = {item["action_id"] for item in reconciliations}
+    interpreted = deepcopy(lineage)
+    interpreted["corporate_actions"] = [
+        action
+        for action in interpreted.get("corporate_actions", ())
+        if not (
+            isinstance(action, dict)
+            and action.get("action_type") == "cash_dividend"
+            and action.get("id") in rejected
+        )
+    ]
+    for field in ("symbol_occupancy_evidence", "input_symbol_occupants"):
+        filtered = []
+        for occupancy in interpreted.get(field, ()):
+            if not isinstance(occupancy, dict) or not isinstance(occupancy.get("evidence"), list):
+                filtered.append(occupancy)
+                continue
+            if not any(
+                isinstance(item, dict) and item.get("action_id") in rejected for item in occupancy["evidence"]
+            ):
+                filtered.append(occupancy)
+                continue
+            remaining = [
+                item
+                for item in occupancy["evidence"]
+                if not isinstance(item, dict) or item.get("action_id") not in rejected
+            ]
+            if remaining:
+                filtered.append({**occupancy, "evidence": remaining})
+        interpreted[field] = filtered
+    return interpreted
+
+
 def build_security_correlation_report(
     lineage_report: dict[str, Any],
     repository_root: Path,
@@ -74,6 +114,8 @@ def build_security_correlation_report(
     correlation_loader: Callable[[str], Any] | None = None,
     source_rows_loader: Callable[[str, str], tuple[list[dict], str]] | None = None,
     cache: CorrelationCache | None = None,
+    occupancy_reconciliations: tuple[dict[str, Any], ...] = (),
+    include_action_anchored_current_suffix: bool = False,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
     cache = cache if cache is not None else CorrelationCache()
@@ -81,12 +123,21 @@ def build_security_correlation_report(
         raise SecurityCorrelationError("lineage API returned a non-object report")
     symbol = lineage_report.get("symbol")
     local_report = lineage_report.get("local")
-    lineage = lineage_report.get("lineage")
-    if not isinstance(symbol, str) or not isinstance(local_report, dict) or not isinstance(lineage, dict):
+    supplied_lineage = lineage_report.get("lineage")
+    if (
+        not isinstance(symbol, str)
+        or not isinstance(local_report, dict)
+        or not isinstance(supplied_lineage, dict)
+    ):
         raise SecurityCorrelationError("lineage API report is missing symbol, local, or lineage objects")
+    lineage = _without_reconciled_occupancy_actions(supplied_lineage, occupancy_reconciliations)
 
-    intervals, evidence_issues, uuid_lineage_edges, uuid_lineage_issues = cache.lineage_analysis(lineage)
+    intervals, evidence_issues, uuid_lineage_edges, uuid_lineage_issues = cache.lineage_analysis(
+        lineage,
+        include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+    )
     evidence_issues.extend(uuid_lineage_issues)
+    evidence_issues.extend(deepcopy(occupancy_reconciliations))
     adopted_target_pairs = frozenset(
         (issue["target_asset_id"], issue["acquirer_asset_id"])
         for issue in uuid_lineage_issues
@@ -200,6 +251,15 @@ def build_security_correlation_report(
         correlation_loader=correlation_loader if complete_source else None,
         source_rows_loader=source_rows_loader,
     )
+    mapped_continuations = assess_mapped_continuations(
+        symbol,
+        lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        correlation_loader=correlation_loader if complete_source else None,
+        source_rows_loader=source_rows_loader,
+    )
     independent_history = assess_independent_historical_intervals(
         symbol,
         lineage,
@@ -243,20 +303,13 @@ def build_security_correlation_report(
         if complete_source and terminal_episode is not None
         else None
     )
+    historical_asof_gap = (
+        assess_historical_asof_gap(symbol, lineage, intervals, authenticated_work_items)
+        if complete_source
+        else None
+    )
     closed_history_evidence = (
         complete_source
-        and (
-            any(edge.edge_type in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES for edge in uuid_lineage_edges)
-            or (
-                len({item.get("id") for item in lineage.get("identities", []) if item.get("symbol") == symbol})
-                > 1
-                and any(
-                    action.get("action_type") in ("cash_merger", "stock_and_cash_merger", "stock_merger")
-                    and action.get("acquiree_symbol") == symbol
-                    for action in lineage.get("corporate_actions", [])
-                )
-            )
-        )
         and any(
             source["adjustment"] == "raw" and has_informative_trading(download.rows)
             for download, source, _ in authenticated_work_items
@@ -285,9 +338,11 @@ def build_security_correlation_report(
             evidence_issues=evidence_issues,
             distinct_uuid_transition=distinct_uuid_transition,
             predecessor_prefixes=predecessor_prefixes,
+            mapped_continuations=mapped_continuations,
             terminal_episode=terminal_episode,
             bridged_episodes=bridged_episodes,
             departure_prefix=departure_prefix,
+            historical_asof_gap=historical_asof_gap,
             closed_history_evidence=closed_history_evidence,
             independent_history=independent_history,
             retired_lower_bound=retired_lower_bound,
@@ -295,7 +350,10 @@ def build_security_correlation_report(
             cache=cache,
             uuid_lineage_edges=uuid_lineage_edges,
             adopted_target_pairs=adopted_target_pairs,
-            name_change_assessment=cache.name_change_assessment(lineage),
+            name_change_assessment=cache.name_change_assessment(
+                lineage,
+                include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+            ),
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]

@@ -10,7 +10,7 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 
 from .action_identity import exact_cusip_lookup_asset
 from .current_symbol_reuse import _complete_corporate_action_query, _current_identity
-from .occupancy_anchor import _action_anchor
+from .occupancy_anchor import positive_occupancy_action_date
 from .ownership_interval_rules import TickerOwnershipInterval
 from .security_identity import security_identity_for_alpaca_assets
 from .ticker_reuse_gap import adjustment_session_consensus, assess_ticker_reuse_gap
@@ -35,6 +35,21 @@ class DatedDeparturePrefix:
     first: date
     last: date
     interval: TickerOwnershipInterval
+
+
+@dataclass(frozen=True)
+class HistoricalAsOfGap:
+    first: date
+    asof: date
+    next_observed: date
+    end_exclusive: date
+    interval: TickerOwnershipInterval
+    successor_asset_id: str
+    successor_cusip: str
+    action_id: str
+
+    def contains_unresolved_tail(self, session: date) -> bool:
+        return self.asof < session < self.end_exclusive
 
 
 def _current_same_uuid_alias(lineage, action, asset):
@@ -237,7 +252,7 @@ def _dividend_backed_current_reuse(
         if action.get("action_type") != "cash_dividend" or action.get("cusip") != cusip:
             return False  # A return, structural change or another issue needs its own dated allocation.
         try:
-            anchored |= _action_anchor(action, symbol, cusip) == when
+            anchored |= positive_occupancy_action_date(action, symbol, cusip) == when
         except (KeyError, TypeError, ValueError, InvalidOperation):
             return False
     # A conflicting dated occupant may not have produced an ownership interval.
@@ -447,6 +462,115 @@ def assess_dated_departure_prefix(symbol, lineage, intervals, work_items):
     return DatedDeparturePrefix(start, end, qualified[0])
 
 
+def assess_historical_asof_gap(symbol, lineage, intervals, work_items):
+    """Bound an old mapped prefix without inventing the later ticker boundary.
+
+    A mapping as-of selects an entity, not the end of its observations. It can
+    nevertheless bound the already supported side of a discontinuity when the
+    selected date is the complete prefix endpoint and provider evidence later
+    names a distinct successor. Rows after the gap retain their ambiguity.
+    """
+    views = {
+        source["adjustment"]: (download.rows, source, sessions) for download, source, sessions in work_items
+    }
+    if len(views) != len(work_items) or set(views) != set(ALPACA_ADJUSTMENT_MODES):
+        return None
+    _, _, sessions = views["raw"]
+    if not sessions or any(grid != sessions for _, _, grid in views.values()):
+        return None
+    asof_values = {item[1].get("asof") for item in views.values()}
+    if len(asof_values) != 1:
+        return None
+    try:
+        asof = date.fromisoformat(next(iter(asof_values))[:10])
+    except (TypeError, ValueError):
+        return None
+    if asof not in sessions:
+        return None
+    position = sessions.index(asof)
+    if position + 1 >= len(sessions):
+        return None
+    first, next_observed = sessions[0], sessions[position + 1]
+    expected_prefix = expected_market_session_coverage(first.isoformat(), (asof + timedelta(days=1)).isoformat())
+    if tuple(session.isoformat() for session in sessions[: position + 1]) != expected_prefix.session_dates:
+        return None
+    gap_start = asof + timedelta(days=1)
+    if gap_start >= next_observed:
+        return None
+    missing = expected_market_session_coverage(gap_start.isoformat(), next_observed.isoformat())
+    if not missing.session_dates:
+        return None
+    if any(
+        not has_informative_trading(values[: position + 1])
+        or has_prolonged_carry_forward(values[: position + 1])
+        for values, _, _ in views.values()
+    ):
+        return None
+
+    owners = [
+        interval for interval in intervals if interval.historical_symbol == symbol and interval.contains(asof)
+    ]
+    if len(owners) != 1:
+        return None
+    owner = owners[0]
+    endpoint = exact_cusip_lookup_asset(lineage, owner.cusip)
+    if (
+        endpoint is None
+        or endpoint.get("id") != owner.asset_id
+        or endpoint.get("symbol") != symbol
+        or endpoint.get("status") != "inactive"
+    ):
+        return None
+    if any(
+        interval.historical_symbol == symbol
+        and interval.asset_id != owner.asset_id
+        and (interval.start_date_inclusive is None or interval.start_date_inclusive <= asof)
+        and (interval.end_date_exclusive is None or interval.end_date_exclusive > first)
+        for interval in intervals
+    ):
+        return None
+
+    supporting = {action_id for rule in owner.applied_rules for action_id in rule.supporting_action_ids}
+    candidates = []
+    for action in lineage.get("corporate_actions", []):
+        if (
+            action.get("id") not in supporting
+            or action.get("action_type") != "name_change"
+            or (action.get("old_symbol"), action.get("old_cusip")) != (symbol, owner.cusip)
+            or action.get("new_symbol") in (None, symbol)
+            or action.get("new_cusip") in (None, owner.cusip)
+        ):
+            continue
+        successor = exact_cusip_lookup_asset(lineage, action["new_cusip"])
+        try:
+            when = date.fromisoformat(action["process_date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            successor is not None
+            and successor.get("id") not in (None, owner.asset_id)
+            and successor.get("symbol") == action["new_symbol"]
+            and owner.end_date_exclusive == when
+            and next_observed < when
+        ):
+            candidates.append((action, successor, when))
+    if len(candidates) != 1:
+        return None
+    action, successor, end = candidates[0]
+    if not _complete_corporate_action_query(lineage, first, end):
+        return None
+    return HistoricalAsOfGap(
+        first,
+        asof,
+        next_observed,
+        end,
+        owner,
+        successor["id"],
+        action["new_cusip"],
+        action["id"],
+    )
+
+
 def _same_day_cash_termination(symbol, cusip, when, lineage, intervals):
     """A cash closing date need not exclude that day's departing-issue trades."""
     supporting = {
@@ -497,7 +621,10 @@ def assess_terminal_traded_episode(symbol, lineage, intervals, work_items):
     )
     prior_end = len(rows)
     if gap is not None:
-        if not gap.complete_current_suffix_eligible or gap.current_asset_status != "active":
+        if (
+            not (gap.complete_current_suffix_eligible or gap.active_current_suffix_eligible)
+            or gap.current_asset_status != "active"
+        ):
             return None
         prior_end = sessions.index(gap.left_observed_session) + 1
     prior_rows = rows[:prior_end]

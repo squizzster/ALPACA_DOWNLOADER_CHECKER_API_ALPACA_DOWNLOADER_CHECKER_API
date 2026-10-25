@@ -24,7 +24,14 @@ from .contract import (
     symbol_label,
     timestamp,
 )
-from .download import _incremental_endpoints, _join, publish_acquired, request_end, updated_boundaries
+from .download import (
+    _incremental_endpoints,
+    _join,
+    acquisition_asof,
+    publish_acquired,
+    request_end,
+    updated_boundaries,
+)
 from .endpoints import endpoints_of, same_row, session_extent
 from .handoff import load_published_boundary
 from .responses import completed_bars
@@ -41,27 +48,29 @@ MAX_ROWS = 200000  # Bound acquired rows across eight views per publication coho
 def _validate_append_entry(entry):
     """Accept the active-summary row or an internal empty-source baseline."""
     if entry.get("last_all") is not None:
-        return validate_entry(entry)
-    if set(entry) != {"symbol", "asof", "last_all"}:
+        symbol, asof, end, row = validate_entry(entry)
+        return symbol, asof, timestamp(end), row
+    if set(entry) != {"symbol", "asof", "end_exclusive", "last_all"}:
         raise DownloadError("invalid empty append entry")
     symbol = symbol_label(entry["symbol"])
     try:
         asof = date.fromisoformat(entry["asof"]).isoformat()
     except (TypeError, ValueError) as error:
         raise DownloadError("invalid empty append asof") from error
-    return symbol, asof, None
+    end = timestamp(entry["end_exclusive"])
+    return symbol, asof, end, None
 
 
 def append_needs(entries, end, *, end_by_symbol=None):
     """Pure needs compiler: saved covered end/asof -> frozen missing interval."""
     needs, unchanged, seen = [], [], set()
     for entry in entries:
-        symbol, asof, _ = _validate_append_entry(entry)
+        symbol, asof, covered, _ = _validate_append_entry(entry)
         if symbol in seen:
             raise DownloadError(f"duplicate append ticker: {symbol}")
         seen.add(symbol)
         target = end if end_by_symbol is None else end_by_symbol[symbol]
-        start = timestamp(asof + "T00:00:00Z")
+        start = covered
         if start >= target:
             unchanged.append({"symbol": symbol, "status": "unchanged", "mode": "unchanged", "changed": False})
             continue
@@ -71,7 +80,9 @@ def append_needs(entries, end, *, end_by_symbol=None):
                 "why": "append_completed_sessions",
                 "symbols": [symbol],
                 "adjustments": list(ADJUSTMENTS),
-                "asof": target.date().isoformat(),
+                "asof": acquisition_asof(
+                    {"latest_request": {"asof": asof, "end_exclusive": entry["end_exclusive"]}}, target
+                ),
                 "ranges": [{"start": start.isoformat(), "end_exclusive": target.isoformat()}],
             }
         )

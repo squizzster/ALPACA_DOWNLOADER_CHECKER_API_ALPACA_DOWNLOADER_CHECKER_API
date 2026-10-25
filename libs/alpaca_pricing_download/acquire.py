@@ -17,7 +17,7 @@ from .contract import (
     json_bytes,
     timestamp,
 )
-from .download import download_pricing, request_end, request_start
+from .download import acquisition_asof, download_pricing, request_end, request_start
 from .http import BarsClient
 from .refresh import acquire_full, acquire_retained
 from .storage import load_source, read_update, read_validator, recover, regular_path, ticker_lock
@@ -141,8 +141,17 @@ def acquire_selected(
         if source and not extending and (symbol not in invalidate or accepted_evidence):
             # Retain this coherent selection for batched ordinary endpoint checks.
             # Empty ranges use the existing incremental covered-range path.
+            # DO NOT REMOVE WITHOUT USER AUTH!#
+            # Empty fast append carries coverage and entity mapping separately.
             if endpoints is not None and not any(endpoints.values()):
-                empty.append({"symbol": symbol, "asof": source["latest_request"]["asof"], "last_all": None})
+                empty.append(
+                    {
+                        "symbol": symbol,
+                        "asof": source["latest_request"]["asof"],
+                        "end_exclusive": source["latest_request"]["end_exclusive"],
+                        "last_all": None,
+                    }
+                )
             else:
                 retained[symbol] = (source, endpoints)
             continue
@@ -152,7 +161,7 @@ def acquire_selected(
                 "why": "initial_or_invalidated_history",
                 "symbols": [symbol],
                 "adjustments": list(ADJUSTMENTS),
-                "asof": end.date().isoformat(),
+                "asof": acquisition_asof(source, end),
                 "ranges": [
                     {
                         "start": start + "T00:00:00Z",

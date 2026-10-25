@@ -80,14 +80,58 @@ def _identity_prefix(runs, count, public_id):
 def select_prefixes(group, previous, inputs, offsets):
     prefixes = {}
     for prior_group in previous:
-        if prior_group["policy"] != policy():
-            continue
-        completed = prior_group["history_validation"]
+        if prior_group["policy"] == policy():
+            completed = prior_group["history_validation"]
+        else:
+            completed = _unchanged_history_checkpoint(prior_group, inputs)
+            if completed is None:
+                continue
         for record in completed["prefix_records"]:
             prefix = _select_identity_prefix(group, completed, record, inputs, offsets)
             if prefix is not None:
                 prefixes[record["public_id"]] = prefix
     return prefixes
+
+
+def _unchanged_history_checkpoint(prior_group, inputs):
+    """Translate an unchanged policy-5 checkpoint at its maintenance owner."""
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # Policy 6 changes numerical source selection and makes each ownership label
+    # a list. If the COMPLETE group's published pricing generations and EVERY
+    # row/source/owner/label selection are unchanged, the completed numeric and
+    # session checks still describe the identical history.
+    # Compare only these already loaded producer handoffs: no payload reads,
+    # upstream authentication, or identity calculation belongs in this proof.
+    current = policy()
+    if current["version"] != 6 or prior_group["policy"] != {**current, "version": 5}:
+        return None
+    completed = prior_group["history_validation"]
+    translated = {
+        symbol: {
+            **source,
+            "views": {
+                adjustment: {
+                    **view,
+                    "ownership": [
+                        {**run, "owner": [run["owner"][0], [run["owner"][1]] if run["owner"][0] else None]}
+                        for run in view["ownership"]
+                    ],
+                }
+                for adjustment, view in source["views"].items()
+            },
+        }
+        for symbol, source in completed["inputs"].items()
+    }
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # A changed source, generation, row count, owner, label or session defeats
+    # migration and retains the ordinary full evaluation. A newly superseded
+    # source changes these runs even if its numbers equal the winner's. Existing
+    # assembly consumes published conflicts before using any prefix; migration
+    # cannot turn a conflict into an eligible history. Metadata is still projected
+    # from the current group by evaluate(); only identical completed history
+    # facts are reused.
+    # This exact transition deliberately expires at the next policy version.
+    return {**completed, "inputs": inputs} if translated == inputs else None
 
 
 def _select_identity_prefix(group, completed, record, inputs, offsets):

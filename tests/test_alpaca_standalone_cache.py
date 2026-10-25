@@ -205,11 +205,8 @@ class StandaloneCacheTests(unittest.TestCase):
             standalone, "_resolve_bar_candidates", wraps=standalone._resolve_bar_candidates
         ) as resolve:
             result = self.cached().get_histories("NEW")
-        # Eight aliased views: one raw policy and one adjusted policy assembly.
-        self.assertEqual(resolve.call_count, 2)
-        self.assertEqual(
-            [call.kwargs["allow_strict_superset_selection"] for call in resolve.call_args_list], [False, True]
-        )
+        # The completed producer selected all eight views; no consumer contest.
+        self.assertEqual(resolve.call_count, 0)
         expected_tickers = list(result["views"]["all"]["bars"][0]["tickers"])
         result["views"]["split"]["bars"][0]["close"] = "caller mutation"
         result["views"]["split"]["bars"][0]["tickers"].append("caller mutation")
@@ -223,6 +220,7 @@ class StandaloneCacheTests(unittest.TestCase):
                     if entry["adjustment"] == "all":
                         for segment in entry["segments"]:
                             segment["historical_symbol"] = "OTHER"
+                            segment["observation_tickers"] = ["OTHER"]
 
         self.change_publication(change)
         result = self.cached().get_histories("TEST")

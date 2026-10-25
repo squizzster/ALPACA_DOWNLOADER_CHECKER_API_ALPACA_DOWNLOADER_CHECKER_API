@@ -41,6 +41,10 @@ def completed_bars(value, symbol, adjustment, start, end, asof):
     return CompletedBars(symbol, adjustment, start, end, asof, transform(value, start, end))
 
 
-def fetch_rows(client, symbol, adjustment, start, end, *, asof=None):
-    value = client.fetch(symbol, adjustment, start, end, asof=asof)
+def fetch_rows(client, symbol, adjustment, start, end, *, asof=None, acquisition=False):
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # A mapped acquisition has an explicit asof too. Its buffered body is still
+    # distinct from the independently acquired endpoint confirmation.
+    fetch = getattr(client, "fetch_acquired", client.fetch) if acquisition else client.fetch
+    value = fetch(symbol, adjustment, start, end, asof=asof)
     return completed_bars(value, symbol, adjustment, start, end, asof or end.date().isoformat()).rows

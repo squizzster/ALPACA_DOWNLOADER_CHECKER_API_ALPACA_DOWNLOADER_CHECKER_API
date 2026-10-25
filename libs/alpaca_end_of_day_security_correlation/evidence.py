@@ -58,7 +58,17 @@ def identity_candidates_for_symbol(
             for interval in intervals
             if interval.historical_symbol == symbol and interval.asset_id == asset_id
         ]
-        if candidate_intervals and not any(interval.contains(session_date) for interval in candidate_intervals):
+        unknown_prefix = any(
+            interval.start_date_inclusive is not None
+            and session_date < interval.start_date_inclusive
+            and any(rule.name == "action_anchored_current_ticker_occupancy" for rule in interval.applied_rules)
+            for interval in candidate_intervals
+        )
+        if (
+            candidate_intervals
+            and not unknown_prefix
+            and not any(interval.contains(session_date) for interval in candidate_intervals)
+        ):
             continue
         evidence = occupancy.get("evidence")
         candidates_by_key[(asset_id, cusip)] = {

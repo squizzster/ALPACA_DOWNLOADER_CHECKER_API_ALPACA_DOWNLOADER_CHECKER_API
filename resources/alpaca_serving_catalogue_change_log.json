@@ -23,5 +23,10 @@
     "modifications": [
       "Keep descriptive metadata with own-symbol observations of the observed member UUID. Exclude historical descriptions inferred from current CUSIP lookups, retain independently published CUSIP provenance, and never turn observation times into historical effective dates."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve producer-selected observation sources and the full accepted dated-label set in serving checkpoints; rebuild prior checkpoints without repeating upstream decisions, reusing completed history facts when the complete published history is unchanged."
+    ]
   }
 ]

@@ -15,6 +15,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import row_corr
 from libs.alpaca_end_of_day_security_correlation.terminal_fallback import TERMINAL_FALLBACK_RULE_NAME
 from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.evidence import output_evidence, rule_path, validate_evidence_version
+from libs.alpaca_lineage_build.observations import select_observations
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_pricing_download.download import download_pricing
@@ -54,13 +55,22 @@ class LineageEvidenceTests(unittest.TestCase):
         captured = {}
 
         def real_calculation(*args, **kwargs):
-            reports = correlate(*args, **kwargs)
-            captured.update(reports)
-            return reports
+            return correlate(*args, **kwargs)
 
-        with patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=real_calculation) as calculate:
+        def real_selection(*args, **kwargs):
+            reports, corrections = select_observations(*args, **kwargs)
+            captured.update(reports)
+            return reports, corrections
+
+        with (
+            patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=real_calculation) as calculate,
+            patch(
+                "libs.alpaca_lineage_build.pipeline.select_observations", side_effect=real_selection
+            ) as select,
+        ):
             result = self.output(identity_client=IdentityClient())
         self.assertEqual(calculate.call_count, 1)
+        self.assertEqual(select.call_count, 1)
         self.assertEqual(result["status"], "calculated")
         self.assertEqual(result["actual_calculation_scope"], "full_history")
         self.assertEqual(

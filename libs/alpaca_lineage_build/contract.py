@@ -8,7 +8,7 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 28
+VERSION = 33
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -32,14 +32,12 @@ def versions() -> dict:
 
 
 def reusable_versions(published: dict) -> bool:
-    """Execution and trusted-handoff changes preserve compatible earlier decisions.
-
-    Do not generalize this exception to other execution or rule versions. Older
-    readable schemas are not necessarily reusable, and all other version fields
-    must still match exactly.
-    """
+    """Reuse only a completed observation decision under the current contract."""
     current = versions()
-    return any(published == {**current, "lineage": version} for version in range(2, VERSION + 1))
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # Older assignments have no producer-owned numerical source choice. They
+    # need one explicit migration; subsequent compatible decisions remain reusable.
+    return published == current
 
 
 def reusable_metadata_versions(published: dict) -> bool:
@@ -48,7 +46,10 @@ def reusable_metadata_versions(published: dict) -> bool:
         isinstance(published, dict)
         and type(published.get("correlation")) is int
         and published["correlation"] > 0
-        and reusable_versions({**published, "correlation": CORRELATION_VERSION})
+        and any(
+            {**published, "correlation": CORRELATION_VERSION} == {**versions(), "lineage": version}
+            for version in range(2, VERSION + 1)
+        )
     )
 
 

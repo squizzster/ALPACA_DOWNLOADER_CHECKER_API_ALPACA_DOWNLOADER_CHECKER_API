@@ -226,6 +226,17 @@ class PricingDownloadTests(unittest.TestCase):
                         ]
 
                     with patch.object(client, "fetch", side_effect=revised):
+                        inconsistent = (
+                            field == "n"
+                            or field == "v"
+                            and adjustment in {"raw", "dividend", "spin-off", "dividend,spin-off"}
+                        )
+                        if inconsistent:
+                            before = snapshot(self.root)
+                            with self.assertRaisesRegex(DownloadError, "adjustment views disagree"):
+                                download_pricing(self.store, "GOOG", end.isoformat(), client=client)
+                            self.assertEqual(snapshot(self.root), before)
+                            continue
                         result = download_pricing(self.store, "GOOG", end.isoformat(), client=client)
                     self.assertEqual(result["mode"], "full_refresh")
                     self.assertEqual(result["consistency_check"], "mismatch")

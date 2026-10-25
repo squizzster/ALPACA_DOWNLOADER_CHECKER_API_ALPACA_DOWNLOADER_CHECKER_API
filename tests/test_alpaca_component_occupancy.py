@@ -7,7 +7,11 @@ from libs.alpaca_end_of_day_security_correlation.evidence import build_ticker_ow
 from libs.alpaca_end_of_day_security_correlation.occupancy_anchor import dated_occupancy_anchors
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
-from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge, correlation_source
+from tests.test_alpaca_end_of_day_security_correlation import (
+    add_name_change_edge,
+    asset,
+    correlation_source,
+)
 
 
 class ComponentOccupancyTests(unittest.TestCase):
@@ -179,3 +183,178 @@ class ComponentOccupancyTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.lineage["corporate_actions"][-1] = {**dividend, **change}
                 self.assertEqual({}, dated_occupancy_anchors("REUS", self.lineage, self.intervals))
+
+
+class CurrentActionAnchoredSuffixTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_id = "previous-reused-symbol-id"
+        self.current_id = "current-reused-symbol-id"
+        self.previous_cusip = "111111111"
+        self.current_cusip = "222222222"
+        self.previous_asset = {
+            **asset(self.previous_id, "OLD", "Previous Security"),
+            "status": "inactive",
+            "tradable": False,
+            "lookup_cusips": [self.previous_cusip],
+        }
+        self.current_asset = {
+            **asset(self.current_id, "REUS", "Current Security"),
+            "lookup_cusips": [self.current_cusip],
+        }
+        self.previous_action = self.dividend("previous-distribution", self.previous_cusip, "2024-01-03")
+        self.current_action = self.dividend("current-distribution", self.current_cusip, "2024-01-08")
+        self.lineage = {
+            "corporate_actions": [self.previous_action, self.current_action],
+            "identities": [self.previous_asset, self.current_asset],
+            "symbol_occupancy_evidence": [
+                self.occupancy(self.previous_cusip, self.previous_id),
+                self.occupancy(self.current_cusip, self.current_id),
+            ],
+            "asset_lookups": [
+                self.lookup("symbol", "REUS", self.current_asset),
+                self.lookup("cusip", self.previous_cusip, self.previous_asset),
+                self.lookup("cusip", self.current_cusip, self.current_asset),
+            ],
+        }
+
+    @staticmethod
+    def dividend(action_id, cusip, ex_date):
+        return {
+            "id": action_id,
+            "action_type": "cash_dividend",
+            "symbol": "REUS",
+            "cusip": cusip,
+            "ex_date": ex_date,
+            "rate": 0.1,
+            "process_date": ex_date,
+        }
+
+    @staticmethod
+    def occupancy(cusip, asset_id):
+        return {
+            "symbol": "REUS",
+            "cusip": cusip,
+            "asset_id": asset_id,
+            "evidence": [],
+        }
+
+    @staticmethod
+    def lookup(kind, value, selected_asset):
+        return {
+            "lookup": value,
+            "lookup_kind": kind,
+            "found": True,
+            "outcome": "found",
+            "http_status": 200,
+            "asset": selected_asset,
+        }
+
+    def build(self):
+        return build_ticker_ownership_intervals(
+            self.lineage,
+            include_action_anchored_current_suffix=True,
+        )
+
+    def correlate(self, dates=("2024-01-05", "2024-01-08")):
+        intervals, issues = self.build()
+        self.assertEqual([], issues)
+        return intervals, correlate_download_rows(
+            [{"t": value + "T12:00:00Z"} for value in dates],
+            correlation_source("REUS", asof="2024-01-09"),
+            self.lineage,
+            intervals,
+        )
+
+    def test_positive_current_action_bounds_supported_suffix_without_claiming_prefix(self):
+        intervals, branches = self.correlate()
+
+        self.assertEqual(1, len(intervals))
+        interval = intervals[0]
+        self.assertEqual(self.current_id, interval.asset_id)
+        self.assertEqual(date(2024, 1, 8), interval.start_date_inclusive)
+        self.assertIsNone(interval.end_date_exclusive)
+        self.assertEqual(
+            [
+                {
+                    "order": 4,
+                    "name": "action_anchored_current_ticker_occupancy",
+                    "supporting_corporate_action_ids": ["current-distribution"],
+                }
+            ],
+            interval.as_report_object()["ownership_interval_rules"],
+        )
+        self.assertEqual(1, branches["uncorrelated"][0]["row_count"])
+        self.assertEqual(1, branches["correlated"][0]["row_count"])
+        self.assertEqual(
+            self.current_id,
+            branches["correlated"][0]["canonical_security"]["alpaca_asset_id"],
+        )
+
+    def test_producer_can_preserve_an_already_complete_baseline(self):
+        intervals, issues = build_ticker_ownership_intervals(
+            self.lineage,
+            include_action_anchored_current_suffix=False,
+        )
+        self.assertEqual([], issues)
+        self.assertEqual([], intervals)
+
+    def test_later_competing_action_requires_a_newer_current_anchor(self):
+        self.lineage["corporate_actions"].append(
+            self.dividend("late-previous-distribution", self.previous_cusip, "2024-01-10")
+        )
+        intervals, issues = self.build()
+        self.assertEqual([], issues)
+        self.assertEqual([], intervals)
+
+        self.lineage["corporate_actions"].append(
+            self.dividend("later-current-distribution", self.current_cusip, "2024-01-12")
+        )
+        intervals, issues = self.build()
+        self.assertEqual([], issues)
+        self.assertEqual(date(2024, 1, 12), intervals[0].start_date_inclusive)
+
+    def test_single_uuid_history_is_not_truncated(self):
+        self.lineage["identities"] = [self.current_asset]
+        self.lineage["symbol_occupancy_evidence"] = [self.occupancy(self.current_cusip, self.current_id)]
+        self.lineage["asset_lookups"] = [
+            self.lookup("symbol", "REUS", self.current_asset),
+            self.lookup("cusip", self.current_cusip, self.current_asset),
+        ]
+        self.lineage["corporate_actions"] = [self.current_action]
+
+        intervals, issues = self.build()
+        self.assertEqual([], issues)
+        self.assertEqual([], intervals)
+
+    def test_incomplete_current_lookup_cannot_create_suffix(self):
+        symbol_lookup = self.lineage["asset_lookups"][0]
+        for change in (
+            {"http_status": 404},
+            {"found": False},
+            {"outcome": "not_found"},
+            {"asset": {**self.current_asset, "status": "inactive"}},
+            {"asset": {**self.current_asset, "tradable": False}},
+            {"asset": {**self.current_asset, "exchange": "OTC"}},
+        ):
+            with self.subTest(change=change):
+                self.lineage["asset_lookups"][0] = {**symbol_lookup, **change}
+                intervals, issues = self.build()
+                self.assertEqual([], issues)
+                self.assertEqual([], intervals)
+
+    def test_existing_ownership_interval_prevents_fallback_suffix(self):
+        add_name_change_edge(
+            self.lineage,
+            action_id="previous-arrival",
+            process_date="2024-01-02",
+            predecessor=(self.previous_id, "OLD", self.previous_cusip, "Previous Security"),
+            successor=(self.previous_id, "REUS", self.previous_cusip, "Previous Security"),
+        )
+
+        intervals, issues = self.build()
+        self.assertEqual([], issues)
+        reused_intervals = [item for item in intervals if item.historical_symbol == "REUS"]
+        self.assertEqual(1, len(reused_intervals))
+        self.assertEqual(self.previous_id, reused_intervals[0].asset_id)
+        self.assertIsNone(reused_intervals[0].end_date_exclusive)
+        self.assertNotIn(self.current_id, {item.asset_id for item in intervals})

@@ -17,7 +17,7 @@ from libs.alpaca_data_api_solver import build_plan
 from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timestamp
 from .http import execute_bar_plan
 
-VERSION = 4
+VERSION = 5
 DEFAULT_BATCH_SIZE = 4000
 
 
@@ -43,9 +43,12 @@ def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):
             "ranges": [
                 {
                     "start": datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK).isoformat(),
-                    "end_exclusive": min(
-                        datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=NEW_YORK),
-                        timestamp(asof + "T00:00:00Z"),
+                    # The saved asof selects the entity. The exact retained row
+                    # selects the observation window independently. UTC midnight
+                    # preserves the established request bound without reaching
+                    # the next New York daily bar.
+                    "end_exclusive": datetime.combine(
+                        day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
                     ).isoformat(),
                 }
             ],

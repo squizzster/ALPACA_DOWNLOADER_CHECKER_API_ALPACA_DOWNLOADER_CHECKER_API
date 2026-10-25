@@ -90,7 +90,7 @@ def refresh_existing(
             symbol = entry["symbol"]
             if symbols is not None and symbol not in symbols:
                 continue
-            if end_date and entry["asof"] > end_date:
+            if end_date and entry["end_exclusive"][:10] > end_date:
                 beyond.add(symbol)
             elif work_policy is not None and not work_policy.allowed({symbol}):
                 restricted.add(symbol)

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -293,6 +293,7 @@ class StandaloneReaderTests(unittest.TestCase):
                 for entry in boundary["adjustments"]:
                     for segment in entry["segments"]:
                         segment["historical_symbol"] = "ACTUAL"
+                        segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.change_publication(change)
         self.assertEqual(len(self.reader.resolve_ticker("TEST")["matches"]), 1)
@@ -443,30 +444,31 @@ class StandaloneReaderTests(unittest.TestCase):
         with patch.object(storage, "VERSION", 2):
             self.change_publication(downgrade)
 
-    def test_v2_protocol_upgrade_reuses_receipts_without_prices_requests_or_rewrites(self):
+    def test_old_publication_migrates_once_without_reacquiring_prices_or_metadata(self):
         self.v2_publication()
         with self.assertRaisesRegex(StandaloneReaderError, "protocol needs upgrade"):
             self.reader.resolve_ticker("TEST")
-        before = snapshot(self.store)
+        prices = snapshot(self.store / "end_of_day/pricing")
         client = IdentityClient({"TEST": asset("TEST")})
+        result = run_lineage(self.store, ["TEST"], identity_client=client)
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(result["results"][0]["status"], "processed")
+        self.assertEqual(client.request_count, 0)
+        self.assertEqual(prices, snapshot(self.store / "end_of_day/pricing"))
+        self.assertEqual(self.publication()[0]["versions"], versions())
+        before = snapshot(self.store)
         with (
             patch("libs.alpaca_lineage_build.pipeline.load_pricing", side_effect=AssertionError("price read")),
             patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=AssertionError("rules")),
+            patch(
+                "libs.alpaca_lineage_build.pipeline.select_observations",
+                side_effect=AssertionError("selection replay"),
+            ),
         ):
-            result = run_lineage(self.store, ["TEST"], identity_client=client)
-        self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(result["results"][0]["status"], "unchanged")
-        self.assertEqual(client.request_count, 0)
-        after = snapshot(self.store)
-        self.assertEqual(set(before), set(after))
-        self.assertEqual(
-            [path for path in before if before[path] != after[path]], ["end_of_day/lineage/index.sqlite3"]
-        )
-        with closing(sqlite3.connect(self.root / "index.sqlite3")) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], storage.VERSION)
-        self.assertEqual(self.publication()[0]["versions"]["lineage"], 2)
+            repeated = run_lineage(self.store, ["TEST"], identity_client=client)
+        self.assertEqual(repeated["results"][0]["status"], "unchanged")
+        self.assertEqual(snapshot(self.store), before)
         self.assertEqual(self.reader.get_history("TEST")["bar_count"], len(self.bars))
-        self.assertEqual(read_lineage(self.store, "TEST")["receipt"]["versions"]["lineage"], 2)
         with patch.object(storage, "SUPPORTED_VERSIONS", (1, 2)):
             with self.assertRaisesRegex(LineageError, "unsupported lineage index"):
                 storage.read_index(self.root)
@@ -474,7 +476,8 @@ class StandaloneReaderTests(unittest.TestCase):
     def test_v2_compatibility_does_not_accept_other_changed_versions(self):
         current = versions()
         self.assertTrue(reusable_versions(current))
-        self.assertTrue(reusable_versions({**current, "lineage": 2}))
+        self.assertFalse(reusable_versions({**current, "lineage": 31}))
+        self.assertFalse(reusable_versions({**current, "lineage": 2}))
         for name in current:
             self.assertFalse(reusable_versions({**current, name: "changed"}))
         self.assertFalse(reusable_versions({**current, "lineage": 1}))
@@ -496,11 +499,12 @@ class StandaloneReaderTests(unittest.TestCase):
                 self.reader.resolve_ticker("TEST")
         self.assertEqual(before, snapshot(self.store))
 
-    def test_v2_month_resume_keeps_cold_payloads_closed(self):
+    def test_after_one_off_migration_month_resume_keeps_cold_payloads_closed(self):
         bars = [bar("2025-12-31")] + calendar_bars("2026-01-02", "2026-10-14")
         download_pricing(self.store, "TEST", "2026-10-14", client=FakeClient(bars), refresh_all=True)
         self.build(["TEST"], IdentityClient({"TEST": asset("TEST")}))
         self.v2_publication()
+        self.build(["TEST"], IdentityClient({"TEST": asset("TEST")}))
         self.download("TEST", bars + [bar("2026-10-14")], end="2026-10-15")
         original, opened = Path.read_bytes, []
 
@@ -637,7 +641,7 @@ class StandaloneReaderTests(unittest.TestCase):
         self.renamed_pair(differing=True)
         raw = self.reader.get_history("NEW", "raw")
         adjusted = self.reader.get_history("NEW", "all")
-        self.assertEqual(raw["bars"][0]["close"], str(bar("2023-12-01")["c"]))
+        self.assertEqual(raw["bars"][0]["close"], "200.0000000000000000001")
         self.assertEqual(adjusted["bars"][0]["close"], "200.0000000000000000001")
         narrow = self.reader.get_history("NEW", "all", start="2023-12-01", end="2023-12-01")
         self.assertEqual(narrow["bars"], adjusted["bars"][:1])
@@ -645,21 +649,22 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual(both["views"]["raw"]["bars"], raw["bars"][:1])
         self.assertEqual(both["views"]["all"]["bars"], adjusted["bars"][:1])
 
-    def test_unsettled_overlap_fails_without_silently_choosing(self):
+    def test_reader_trusts_explicit_producer_conflict_without_selecting_a_winner(self):
         self.renamed_pair(differing=True)
-        # Remove the one historical-ticker preference in this synthetic
-        # publication; raw prices now have no established selection rule.
+        # DO NOT REMOVE WITHOUT USER AUTH!#
+        # A producer conflict is authoritative. Consumer-side label or coverage
+        # preferences must never override this completed decision.
         receipt, boundaries = self.publication("OLD")
         for boundary in boundaries.values():
             for entry in boundary["adjustments"]:
                 for segment in entry["segments"]:
-                    segment["historical_symbol"] = "FORMER"
+                    segment["observation_selection"] = "conflict"
         for kind, boundary in boundaries.items():
             receipt["boundaries"][kind]["sha256"] = storage.document_digest(boundary)
         storage.publish(
             self.store, self.root, storage.read_index(self.root), {"OLD": receipt}, {"OLD": boundaries}, {}
         )
-        with self.assertRaisesRegex(StandaloneReaderError, "conflicting authenticated bars"):
+        with self.assertRaisesRegex(StandaloneReaderError, "producer could not establish"):
             self.reader.get_history("NEW", "raw")
 
     def test_changed_related_input_blocks_whole_read(self):

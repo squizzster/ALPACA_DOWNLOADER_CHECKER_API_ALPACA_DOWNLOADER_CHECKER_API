@@ -57,6 +57,15 @@ intervals. Publication rechecks generations under ticker locks even when the las
 New summary membership cannot inherit approval. Empty append requires all eight retained views empty;
 partial views take ordinary checks. Buffered acquisitions bind either a generation or explicit absence;
 a concurrent replacement requires reselection. Retained-span refresh preserves start, end and mapping date.
+Explicit historical entity mappings remain pinned across retries and cutoff extensions. Endpoint windows and
+corporate-action discovery use the independent observation cutoff. A mapping change requires a complete,
+generation-bound replacement; completed acquisition and endpoint responses remain distinct handoffs.
+
+The [pricing producer](../libs/alpaca_pricing_download/activity.py) validates new partitions: trade counts agree
+across all views, and views without split adjustment retain raw share volume. Exact decimals preserve share
+units; absent rows are not zeroes. The source's `activity_consistent` flag covers the complete retained history
+only after complete validation or inheritance of that completed guarantee. Appending to a legacy source cannot
+certify untouched cold partitions. Readers trust the published guarantee.
 
 [Pricing ancestry](../libs/alpaca_pricing_download/changes.py) retains at most 64 ancestor generations and
 the earliest possibly changed session across all views, including removals; null means identical observations.
@@ -65,10 +74,13 @@ affected histories must be reevaluated. This recovery cost never authorizes a st
 
 ## Check summary
 
-Each entry contains only `symbol`, saved `asof` and the exact eight-field `last_all`. Eligibility requires a
-unique stored same-symbol active US-equity lookup and nonempty `all` endpoint; stored activity is not online
-availability. Date/asof pairs group checks. Epoch/revision/coverage and separate owner-pending markers control
-publication; the summary contains no identities, other views, first rows or saved comparison outcomes.
+Each entry contains only `symbol`, saved mapping `asof`, completed source `end_exclusive` and the exact
+eight-field `last_all`. Eligibility requires a unique stored same-symbol active US-equity lookup and nonempty
+`all` endpoint; stored activity is not online availability. Last-session/asof pairs group checks: the exact last
+row supplies its session window while saved `asof` remains the independent provider identity selector. The
+completed exclusive end starts any append independently of both. Epoch/revision/coverage and separate
+owner-pending markers control publication; the summary contains no identities, other views, first rows or saved
+comparison outcomes.
 Pricing owns baselines; lineage owns membership. Missing/incomplete/pending coverage fails closed; snapshot
 tokens guard comparisons without ticker enumeration. Authorities: [storage](../libs/alpaca_pricing_download/check_summary.py),
 [eligibility/rebuild](../libs/alpaca_lineage_build/check_summary.py).
@@ -101,7 +113,11 @@ cannot force a summarized maintained source away from live check → approved ap
 Every lineage entry point reconciles used lookup facts before acquisition. Identity changes require complete-group
 replacement, including evidence discovered for new dependencies. Pricing binds the evidence fingerprint and source
 generation; lineage cannot stamp different facts. Catalogue-versus-exact provenance alone does not invalidate
-identical facts. A required-member failure blocks sibling publication. Failure transactions refresh in-memory
+identical facts. A newly accepted mapping change binds every affected member to one group mapping fingerprint,
+including members whose own lookup is absent or unchanged. Retries and metadata-only changes preserve that
+requirement. Selection or evidence reconciliation binds older pending replacements with no fingerprint from
+accepted group evidence, retaining existing non-null requirements and completed pricing handoffs.
+A required-member failure blocks sibling publication. Failure transactions refresh in-memory
 policy without losing attempts/deadlines when obligations expand. [Operator retry/coverage rules](operations.md#recovery-registry-and-retries).
 
 [Status](../libs/alpaca_lineage_build/status.py) reads compact boundaries and only the pricing journals selected
@@ -127,7 +143,71 @@ and expansion; neither a global HTTP minimum nor an ETA is promised.
 recorded-absence sets, compatible versions, no pending pricing work and no explicit metadata refresh.
 Evidence fingerprints remain independent of history approval: a missing approval republishes the completed
 decision through its journal before acknowledgement, without pricing decode/correlation. Already projected
-approval needs no group reopening. Rule-only changes may reuse approved evidence but recalculate assignments.
+approval needs no group reopening. Rule-only changes reuse approved evidence. The lineage producer may promote
+a completed observation decision through its journal when the exact version transition proves its assignments
+unchanged; otherwise it recalculates the selected complete group. This migration proof uses selected receipt
+metadata only and is not repeated after the current-version handoff is published.
+
+[Observation selection](../libs/alpaca_lineage_build/observations.py) is a separate producer decision from
+identity assignment. For each identity/session, a complete eight-view bundle from the latest independently
+observed own-label source supplies every numerical view. This is an explicit source-selection policy, not proof
+of historical completeness. Equal complete bundles can collapse; unresolved source authority remains explicit.
+The producer preserves all accepted dated labels independently, including ambiguity. Readers and exports consume
+these decisions without repeating selection or activity checks. Prior lineage versions require one selected-group
+rebuild using retained evidence and prices; subsequent unchanged groups reuse the completed decisions.
+
+Complete established correlation is evaluated before either occupancy fallback. For a source that remains
+unresolved, a reused active label may be bounded from its first positive provider action after all competing UUID
+actions, provided exact active symbol and CUSIP lookups agree; the unsupported prefix remains ambiguous. A foreign-
+label distribution may be ignored for occupancy only when the same completed group contains the exact own-label
+action, its source assigns that session to the exact UUID in all eight views, current-label actions bracket it, and
+no related structural action exists. These rules preserve provider evidence and do not derive identity from equal
+prices, returned-bar timing or external research.
+
+When overlapping bundles disagree in any numerical view and the selected request's mapping date lies outside
+its accepted occupancy, lineage requests only that source's full retained span with an observed own-label mapping
+date. Accepted departures across CUSIP/UUID changes within the same public identity also bound this route.
+Equal bundles, disjoint histories and superseded sources do not trigger acquisition. A source containing multiple
+public identities cannot be globally remapped to one occupant. Pricing publishes the correction before lineage
+publishes its selection; failure leaves the new selection unpublished.
+
+An older occupant's closure does not disprove the source-wide mapping when that same source independently
+observes a later own-label occupant. The per-identity observation choice remains valid without a replacement.
+For identity inference, a cash-terminal date alone cannot establish unbounded prior ownership across a distinct
+occupant with positive dated evidence on both sides of that boundary. Existing dated intervals and accepted
+split continuity remain authoritative; provider actions and candidate relations remain retained evidence.
+
+A request cutoff is not ownership evidence. After a verified ticker-reuse gap, a current active suffix that is
+complete through its last observed session remains bounded to those observations when a later request horizon
+adds no contradictory owner. This requires one exact active symbol lookup, complete agreeing view grids, no
+interior missing session, no current UUID in the earlier episode and no conflicting UUID in the suffix. A closed
+earlier episode is assessed against its own evidence; an incomplete later request does not revoke it.
+
+A deliberately historical mapping date is not a general observation cutoff. When it is itself the final session
+of a complete informative eight-view prefix, an immediate market-session gap follows, and complete provider
+evidence later names one inactive predecessor and a distinct-symbol, distinct-CUSIP and distinct-UUID successor,
+the producer preserves that prefix and stops the as-of ownership inference at the gap. Observations after the gap
+and before the provider endpoint remain unresolved unless the ordinary independent mapped-continuation proof owns
+their exact sessions. This establishes no effective transition date and does not use returned-bar timing or
+external research as dated ownership evidence.
+
+The terminal continuous-ticker fallback does not freely union disconnected UUIDs. Existing accepted components
+remain valid. A new two-component union additionally requires a complete informative history without prolonged
+carry-forward and retained provider structural-action evidence; three or more disconnected components remain
+unresolved. Independently certified closed-history departures keep their narrower behavior. Ordinary inactive
+sessions within an established identity do not create a new component or invalidate it.
+
+A mapped predecessor source can contribute successor-period rows only after an accepted cross-UUID provider
+edge, an as-of selection inside the predecessor interval, unique incoming and outgoing branches, and an
+independently correlated successor source establish ownership for the exact sessions. Every field in all eight
+selected views must match. Correlation then publishes the successor-owned assignment and observation selection
+marks the predecessor copy superseded. Equality alone, incomplete views, reused labels, competing branches and
+different values leave the rows unresolved.
+
+Corporate-action dates retain their provider field semantics. The producer uses exact supported endpoints and
+does not substitute an earliest date, next session, returned-bar boundary, researched marketplace date or
+ticker-specific override. Missing or conflicting dated evidence remains unresolved; external research may audit
+the result but is not lineage input.
 
 [Selection](../libs/alpaca_lineage_build/selection.py) retains previous published membership until retirement.
 When evidence links disappear, the producer correlates replacement components separately and publishes all
@@ -141,7 +221,7 @@ accepted index ranges. Covered acquisition consumes its source boundary without 
 validator. After interruption, only selected pending source receipts supply
 missing planning facts, one bounded cohort at a time; publication reselects generations under its own locks.
 Prefetch reads selected lineage receipt bodies for evidence queries;
-[EvidenceClient](../libs/alpaca_lineage_build/metadata.py#L56) reuses containing completed action intervals only within
+[EvidenceClient](../libs/alpaca_lineage_build/metadata.py#L57) reuses containing completed action intervals only within
 an invocation. Failed/incomplete responses establish no coverage; wider requests/new invocations acquire evidence.
 Conflicting action IDs block only evidence containing those IDs, including previously cached intervals.
 Unrelated symbols in a completely acquired and routed batch remain usable; transport or routing failure
@@ -243,7 +323,12 @@ Reuse covers the latest validated session across **all** views, so changed cover
 cross-view decision. Raw continuity labels are retained separately from public all-view labels. Gap explanations
 use current evidence; changed group inputs refresh bounded gap-presence reads without repeating unaffected
 numeric checks. Physical aliases share decoding. Checkpoints and decisions commit together; policy changes
-require explicit rebuild of the single current checkpoint format.
+require explicit rebuild of the single current checkpoint format. During the policy-5 to policy-6
+transition, the producer translates scalar ownership labels to lists and reuses completed history facts
+only when the complete group's pricing generations and every row/source/owner/label selection are identical.
+This comparison uses already selected checkpoints and assignments, without price reads. Changed groups
+receive ordinary evaluation; current metadata is projected in either case. Consumers still require the
+current policy. The migration does not apply to other policy or calendar changes.
 
 [Catalogue storage](../libs/alpaca_serving_catalogue/storage.py) atomically replaces a component's old decisions,
 public fields, dated matches and ID/group/input references. Incompatible duplicate IDs abort publication.

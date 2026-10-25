@@ -29,7 +29,12 @@ def bar(day="2026-10-14", **changes):
 
 def entry(symbol, day="2026-10-14", asof="2026-10-15"):
     values = bar(day)
-    return {"symbol": symbol, "asof": asof, "last_all": [str(values[key]) for key in FIELDS]}
+    return {
+        "symbol": symbol,
+        "asof": asof,
+        "end_exclusive": "2026-10-15T00:00:00Z",
+        "last_all": [str(values[key]) for key in FIELDS],
+    }
 
 
 def snapshot(*entries):
@@ -52,6 +57,21 @@ class LiveCheckTests(unittest.TestCase):
         self.assertEqual(value, original)
         with self.assertRaises(ValueError):
             live_check.plan(value, batch_size=0)
+
+    def test_historical_identity_mapping_does_not_bound_the_observation_window(self):
+        value = snapshot(entry("OLD", day="2026-10-14", asof="2025-09-04"))
+        calls = []
+
+        def get_page(parameters):
+            calls.append(parameters)
+            return {"bars": {"OLD": [bar("2026-10-14")]}}
+
+        result = live_check.verify(value, get_page)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["stats"]["matched"], 1)
+        self.assertEqual(calls[0]["asof"], "2025-09-04")
+        self.assertEqual(calls[0]["start"], "2026-10-14T04:00:00Z")
+        self.assertEqual(calls[0]["end"], "2026-10-14T23:59:59.999999Z")
 
     def test_exact_comparisons_classification_missing_and_no_filesystem_access(self):
         value = snapshot(*(entry(symbol) for symbol in ("A", "B", "C", "D")))

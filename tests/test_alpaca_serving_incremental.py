@@ -69,7 +69,7 @@ class IncrementalServingTests(NativeCase):
 
             self.publish_change(connect, symbol)
 
-    def connect_alias(self):
+    def connect_alias(self, *, winner="TEST"):
         entries = lineage_storage.read_index(self.root)["symbols"]
         sources = {name: entries[name]["source_sha256"] for name in ("TEST", "ALIAS")}
         for symbol in sources:
@@ -82,6 +82,10 @@ class IncrementalServingTests(NativeCase):
                         for segment in entry["segments"]:
                             segment["security_identity"]["security_id"] = "e" * 64
                             segment["historical_symbol"] = "TEST"
+                            segment["observation_tickers"] = [segment["historical_symbol"]]
+                            segment["observation_selection"] = (
+                                "selected" if receipt["symbol"] == winner else "superseded"
+                            )
 
             self.publish_change(connect, symbol)
 
@@ -92,6 +96,7 @@ class IncrementalServingTests(NativeCase):
         entry = {
             "symbol": symbol,
             "asof": source["latest_request"]["asof"],
+            "end_exclusive": source["latest_request"]["end_exclusive"],
             "last_all": list(endpoints["all"][-1]),
         }
         client = BarsClient("test", "test")
@@ -192,6 +197,7 @@ class IncrementalServingTests(NativeCase):
                     if view["adjustment"] == "all":
                         for segment in view["segments"]:
                             segment["historical_symbol"] = "ALIAS"
+                            segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(alias, "OLD")
         self.bootstrap()
@@ -227,6 +233,7 @@ class IncrementalServingTests(NativeCase):
                 for view in boundary["adjustments"]:
                     for segment in view["segments"]:
                         segment["historical_symbol"] = "OLD"
+                        segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(relabel)
         rows = standalone._rows
@@ -286,6 +293,7 @@ class IncrementalServingTests(NativeCase):
             for view in boundaries["current_year"]["adjustments"]:
                 for segment in view["segments"]:
                     segment["historical_symbol"] = "EARLIER"
+                    segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(relabel, "REUSED")
         with patch.object(policy, "_bar_reasons", wraps=policy._bar_reasons) as checks:
@@ -476,6 +484,7 @@ class IncrementalServingTests(NativeCase):
                 for entry in boundary["adjustments"]:
                     for segment in entry["segments"]:
                         segment["historical_symbol"] = "OLD"
+                        segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(relabel)
         result = maintain(self.store)
@@ -504,13 +513,13 @@ class IncrementalServingTests(NativeCase):
         self.assert_full_agreement("ALIAS")
         before = DataLibrary(store=self.store).get_history("e" * 64, adjustment="all").bars[0].close
 
-        # Extending only ALIAS gives it strictly broader correlated coverage.
-        # The established adjusted-history policy now selects its older prices.
+        # A new producer decision selects ALIAS for all eight views. Serving
+        # must invalidate the old prefix rather than repeating source selection.
         self.append("ALIAS", "2026-10-16", low(valid_bars("2026-10-15", "2026-10-16")), lineage=False)
         self.append("TEST", "2026-10-16", [], lineage=False)
         result = run_lineage(self.store, ["TEST", "ALIAS"], identity_client=identities)
         self.assertEqual(result["failed"], 0, result)
-        self.connect_alias()
+        self.connect_alias(winner="ALIAS")
         result = maintain(self.store)
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["reused_history_prefixes"], 0)

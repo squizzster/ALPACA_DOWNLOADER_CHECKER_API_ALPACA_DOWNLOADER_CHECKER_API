@@ -273,6 +273,7 @@ def run_update(
                 or item["invalidate_pricing"]
                 or item["refresh_metadata"]
                 or symbol in accepted["checks"]["checks"]
+                or "changed_rules" in item.get("reasons", ())
             )
         }
         lineage_results = []

@@ -160,6 +160,26 @@ def _potential_identity_change_actions(
     return result
 
 
+def _candidate_identity_components(candidate_asset_ids, edges):
+    remaining = set(candidate_asset_ids)
+    components = []
+    while remaining:
+        connected = {remaining.pop()}
+        while True:
+            expanded = connected | {
+                asset_id
+                for edge in edges
+                if connected.intersection((edge.predecessor_asset_id, edge.successor_asset_id))
+                for asset_id in (edge.predecessor_asset_id, edge.successor_asset_id)
+            }
+            if expanded == connected:
+                break
+            connected = expanded
+        components.append(tuple(sorted(connected.intersection(candidate_asset_ids))))
+        remaining.difference_update(connected)
+    return tuple(sorted(components))
+
+
 def _session_coverage(
     session_dates: tuple[date, ...],
     source: dict[str, Any],
@@ -520,6 +540,15 @@ def apply_terminal_continuous_ticker_fallback(
         }
     )
     candidate_names_match = len(candidate_names) == 1
+    potential_actions = _potential_identity_change_actions(
+        lineage,
+        matching_candidates_by_asset_id,
+    )
+    identity_components = _candidate_identity_components(
+        matching_candidate_asset_ids,
+        uuid_lineage_edges,
+    )
+    creates_disconnected_union = len(identity_components) > 1
     initial_uncorrelated_row_count = sum(segment.get("row_count", 0) for segment in uncorrelated_segments)
     all_rows_initially_uncorrelated = (
         bool(session_dates) and not correlated_segments and initial_uncorrelated_row_count == len(session_dates)
@@ -593,6 +622,13 @@ def apply_terminal_continuous_ticker_fallback(
         "market_calendar_evaluation_succeeded": calendar_evaluated,
         "no_missing_expected_market_sessions": no_missing_sessions,
         "no_unexpected_market_sessions": no_unexpected_sessions,
+        "candidate_identity_continuity_supported": (
+            not creates_disconnected_union
+            or departure is not None
+            or len(identity_components) == 2
+            and closed_history_evidence is True
+            and bool(potential_actions)
+        ),
     }
     eligible = all(value is True for value in criteria.values())
     candidate_statuses = sorted(
@@ -602,10 +638,6 @@ def apply_terminal_continuous_ticker_fallback(
             for candidate in candidates
             if isinstance(candidate.get("asset_status"), str) and candidate["asset_status"]
         }
-    )
-    potential_actions = _potential_identity_change_actions(
-        lineage,
-        matching_candidates_by_asset_id,
     )
     evaluation = {
         "rule": {
@@ -620,6 +652,8 @@ def apply_terminal_continuous_ticker_fallback(
         "matching_ticker_candidate_alpaca_asset_ids": matching_candidate_asset_ids,
         "excluded_nonmatching_ticker_candidate_alpaca_asset_ids": excluded_candidate_asset_ids,
         "asof_symbol_lookup_candidate_asset_ids": current_lookup_asset_ids,
+        "candidate_identity_components": [list(component) for component in identity_components],
+        "creates_disconnected_identity_union": creates_disconnected_union,
         "session_coverage": coverage,
         "supplementary_corroboration": {
             "candidate_asset_names": candidate_names,
@@ -627,6 +661,7 @@ def apply_terminal_continuous_ticker_fallback(
             "candidate_asset_statuses": candidate_statuses,
             "potential_identity_change_explanation_available": bool(potential_actions),
             "potential_identity_change_actions": potential_actions,
+            "complete_informative_history_without_prolonged_carry_forward": (closed_history_evidence is True),
         },
     }
 

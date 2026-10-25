@@ -10,11 +10,48 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timesta
 from libs.alpaca_pricing_download.storage import boundary_paths
 
 from .contract import VERSION, LineageError, document_digest, versions
+from .occupancy import (
+    may_have_action_anchored_current_suffix,
+    reconcile_duplicate_foreign_occupancy,
+)
 from .pricing import empty_exclusions, rule_loaders
 
 
+def _correlate_until_stable(
+    store,
+    inputs,
+    evidence,
+    cache,
+    previous,
+    *,
+    suffix_sources=frozenset(),
+    occupancy_reconciliations=None,
+):
+    occupancy_reconciliations = occupancy_reconciliations or {}
+    for _ in range(3):
+        sessions, correlation, rows = rule_loaders(inputs, previous, cache)
+        reports = {
+            symbol: build_security_correlation_report(
+                {"symbol": symbol, "local": view.local, "lineage": evidence[symbol]},
+                store,
+                authenticated_download_reader=view.reader,
+                verified_session_exclusions_reader=empty_exclusions,
+                authenticated_symbol_sessions=sessions,
+                correlation_loader=correlation,
+                source_rows_loader=rows,
+                cache=cache,
+                occupancy_reconciliations=occupancy_reconciliations.get(symbol, ()),
+                include_action_anchored_current_suffix=symbol in suffix_sources,
+            )
+            for symbol, view in sorted(inputs.items())
+        }
+        if reports == previous:
+            return reports
+        previous = reports
+    raise LineageError("lineage correlation did not reach its established fixed point")
+
+
 def correlate(store, inputs, evidence):
-    previous = {}
     cache = CorrelationCache()
     # Identity rules consume only this selected group's already-loaded rows.
     # Missing complete evidence withholds a certificate; never open more histories
@@ -29,25 +66,29 @@ def correlate(store, inputs, evidence):
                 for descriptor in view.local["downloads"]
             ),
         )
-    for iteration in range(3):
-        sessions, correlation, rows = rule_loaders(inputs, previous, cache)
-        reports = {
-            symbol: build_security_correlation_report(
-                {"symbol": symbol, "local": view.local, "lineage": evidence[symbol]},
-                store,
-                authenticated_download_reader=view.reader,
-                verified_session_exclusions_reader=empty_exclusions,
-                authenticated_symbol_sessions=sessions,
-                correlation_loader=correlation,
-                source_rows_loader=rows,
-                cache=cache,
-            )
-            for symbol, view in sorted(inputs.items())
-        }
-        if iteration and reports == previous:
-            return reports
-        previous = reports
-    raise LineageError("lineage correlation did not reach its established fixed point")
+    baseline = _correlate_until_stable(store, inputs, evidence, cache, {})
+    unresolved_sources = {
+        symbol for symbol, report in baseline.items() if report["uncorrelated"]["row_count"] > 0
+    }
+    reconciliations = reconcile_duplicate_foreign_occupancy(inputs, evidence, baseline)
+    suffix_sources = frozenset(
+        symbol for symbol in unresolved_sources if may_have_action_anchored_current_suffix(evidence[symbol])
+    )
+    suffix_sources |= reconciliations.keys()
+    if not suffix_sources and not reconciliations:
+        return baseline
+    # Freeze decisions proved by the completed baseline. A fallback may resolve
+    # every remaining row, but it must neither erase its own proof on the next
+    # fixed-point pass nor become new evidence for another reconciliation.
+    return _correlate_until_stable(
+        store,
+        inputs,
+        evidence,
+        cache,
+        baseline,
+        suffix_sources=suffix_sources,
+        occupancy_reconciliations=reconciliations,
+    )
 
 
 def retained_decision_report(previous):
@@ -82,6 +123,8 @@ ASSIGNMENT_FIELDS = {
     "reason_codes",
     "candidate_securities",
     "market_data_series_identity",
+    "observation_selection",
+    "observation_tickers",
 }
 
 

@@ -11,7 +11,12 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar
 
 from libs.alpaca_data_api_solver import ACTION_URL, build_plan
-from libs.alpaca_lineage_build.contract import LineageError, reusable_versions, versions
+from libs.alpaca_lineage_build.contract import (
+    LineageError,
+    reusable_metadata_versions,
+    reusable_versions,
+    versions,
+)
 from libs.alpaca_lineage_build.metadata import (
     EvidenceClient,
     WindowClient,
@@ -345,7 +350,8 @@ class LineageBatchingTests(unittest.TestCase):
             "versions": {**versions(), "lineage": 8},
             "evidence": {"queried_symbols": ["A"], "corporate_actions": [old]},
         }
-        self.assertTrue(reusable_versions(previous["versions"]))
+        self.assertFalse(reusable_versions(previous["versions"]))
+        self.assertTrue(reusable_metadata_versions(previous["versions"]))
         self.assertEqual(action_requests("A", START, END, previous), [("A", "2026-10-01", END)])
         self.assertEqual(action_requests("A", START, END, previous, refresh=True), [("A", START, END)])
         self.assertTrue(full_metadata(previous, {"from": "2016-01-01"}, False))
@@ -447,6 +453,10 @@ class LineageBatchingTests(unittest.TestCase):
 
         view = SimpleNamespace(
             symbol="A",
+            source={
+                "history_start": START + "T00:00:00Z",
+                "latest_request": {"end_exclusive": END + "T00:00:00Z"},
+            },
             local={
                 "present": False,
                 "downloads": [{"request_from": START, "asof": END, "stat_matches_sidecar": True}],

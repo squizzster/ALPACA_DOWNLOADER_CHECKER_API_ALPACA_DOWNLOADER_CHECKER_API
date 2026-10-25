@@ -2567,7 +2567,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertTrue(suffix["ticker_reuse_gap"]["inactive_current_suffix_rule"]["eligible"])
         self.assertEqual(1, len(branches["uncorrelated"]))
 
-    def test_active_asset_flags_contiguous_suffix_ending_before_request_end(self) -> None:
+    def test_active_asset_keeps_contiguous_suffix_when_only_request_end_advances(self) -> None:
         lineage = dell_lineage()
         sessions = expected_market_session_coverage("2024-01-02", "2024-12-31").session_dates
         observed_sessions = (sessions[0], *sessions[101:-10])
@@ -2577,16 +2577,13 @@ class RowCorrelationTests(unittest.TestCase):
 
         branches = correlate_download_rows(rows, source, lineage, [])
 
-        self.assertEqual([], branches["correlated"])
+        self.assertEqual(1, len(branches["correlated"]))
         self.assertEqual(
-            ["active_asset_with_incomplete_right_boundary"],
-            branches["uncorrelated"][1]["reason_codes"],
+            "complete_current_identity_suffix_after_ticker_reuse_gap",
+            branches["correlated"][0]["correlation_method"],
         )
-        self.assertTrue(
-            branches["uncorrelated"][1]["ticker_reuse_gap"]["inactive_current_suffix_rule"][
-                "active_asset_flagged"
-            ]
-        )
+        self.assertTrue(branches["correlated"][0]["ticker_reuse_gap"]["active_current_suffix_rule"]["eligible"])
+        self.assertEqual(1, len(branches["uncorrelated"]))
 
     def test_inactive_asset_does_not_override_conflicting_dated_rhs_uuid(self) -> None:
         lineage = copy.deepcopy(dell_lineage())
@@ -3088,6 +3085,7 @@ class RowCorrelationTests(unittest.TestCase):
                 {"order": 1, "name": "name_change_ticker_transition"},
                 {"order": 2, "name": "same_ticker_stock_merger_uuid_transition"},
                 {"order": 3, "name": "cash_merger_acquiree_terminal_boundary"},
+                {"order": 4, "name": "action_anchored_current_ticker_occupancy"},
             ],
             ownership_interval_rule_order(),
         )
@@ -3281,6 +3279,7 @@ class RowCorrelationTests(unittest.TestCase):
             fun_like_source(),
             lineage,
             intervals,
+            closed_history_evidence=True,
         )
 
         self.assertEqual([], branches["uncorrelated"])
@@ -3308,7 +3307,7 @@ class RowCorrelationTests(unittest.TestCase):
             fallback["supplementary_corroboration"]["potential_identity_change_actions"][0]["effective_date"],
         )
 
-    def test_gapless_three_id_same_ticker_history_receives_one_internal_security_id(self) -> None:
+    def test_gapless_three_unconnected_ids_do_not_receive_one_internal_security_id(self) -> None:
         lineage = fun_like_lineage()
         middle_id = "middle-fun-alpaca-id"
         middle_cusip = "150185205"
@@ -3342,15 +3341,35 @@ class RowCorrelationTests(unittest.TestCase):
             fun_like_source(),
             lineage,
             intervals,
+            closed_history_evidence=True,
         )
 
-        self.assertEqual([], branches["uncorrelated"])
-        segment = branches["correlated"][0]
-        self.assertEqual(
-            ["current-fun-alpaca-id", "middle-fun-alpaca-id", "old-fun-alpaca-id"],
-            segment["security_identity"]["member_alpaca_asset_ids"],
+        self.assertEqual([], branches["correlated"])
+        fallback = branches["uncorrelated"][0]["terminal_correlation_fallback"]
+        self.assertFalse(fallback["eligible"])
+        self.assertFalse(fallback["criteria"]["candidate_identity_continuity_supported"])
+        self.assertEqual(3, len(fallback["candidate_identity_components"]))
+
+    def test_disconnected_ids_need_complete_informative_history(self) -> None:
+        lineage = fun_like_lineage()
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        rows = [
+            {"t": "2024-06-28T04:00:00Z"},
+            {"t": "2024-07-01T04:00:00Z"},
+            {"t": "2024-07-02T04:00:00Z"},
+        ]
+
+        branches = correlate_download_rows(
+            rows,
+            fun_like_source(),
+            lineage,
+            intervals,
+            closed_history_evidence=False,
         )
-        self.assertTrue(segment["terminal_correlation_fallback"]["eligible"])
+
+        self.assertEqual([], branches["correlated"])
+        fallback = branches["uncorrelated"][0]["terminal_correlation_fallback"]
+        self.assertFalse(fallback["criteria"]["candidate_identity_continuity_supported"])
 
     def test_continuous_ticker_history_excludes_mismatched_asset_ticker_candidate(self) -> None:
         lineage = fun_like_lineage()
@@ -3385,6 +3404,7 @@ class RowCorrelationTests(unittest.TestCase):
             fun_like_source(),
             lineage,
             intervals,
+            closed_history_evidence=True,
         )
 
         self.assertEqual([], branches["uncorrelated"])
