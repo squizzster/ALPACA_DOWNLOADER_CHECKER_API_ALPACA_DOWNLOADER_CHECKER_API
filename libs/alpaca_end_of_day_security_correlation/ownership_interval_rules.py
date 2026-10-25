@@ -1,10 +1,15 @@
 from dataclasses import dataclass
 from datetime import date
+from decimal import InvalidOperation
 from typing import Any, Callable
 
-from .action_identity import complete_stock_merger_endpoints
+from .action_identity import (
+    complete_stock_merger_endpoints,
+    exact_cusip_lookup_asset,
+    exact_symbol_lookup_asset,
+)
 from .name_change import name_change_dates
-from .occupancy_anchor import competing_terminal_anchors
+from .occupancy_anchor import competing_terminal_anchors, positive_occupancy_action_date
 from .security_identity import security_identity_for_alpaca_assets
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
 
@@ -834,6 +839,108 @@ def _apply_same_ticker_stock_merger_transition_rule(
     )
 
 
+def _apply_action_anchored_current_suffix_rule(
+    context: _OwnershipIntervalRuleContext,
+    existing_intervals: tuple[TickerOwnershipInterval, ...],
+    rule_order: int,
+    rule_name: str,
+) -> _OwnershipIntervalRuleResult:
+    """Bound a current reused ticker from positive provider evidence onward.
+
+    The first current-UUID action after every competing UUID action is a lower
+    ownership bound, not a ticker-change date. The unsupported prefix remains
+    ambiguous, and no UUID continuity is inferred.
+    """
+    intervals = list(existing_intervals)
+    symbol_lookups = context.lineage.get("asset_lookups")
+    if not isinstance(symbol_lookups, list):
+        return _OwnershipIntervalRuleResult(intervals=existing_intervals)
+    symbols = sorted(
+        {
+            lookup.get("lookup")
+            for lookup in symbol_lookups
+            if isinstance(lookup, dict)
+            and lookup.get("lookup_kind") == "symbol"
+            and isinstance(lookup.get("lookup"), str)
+            and lookup["lookup"]
+        }
+    )
+    for symbol in symbols:
+        if any(interval.historical_symbol == symbol for interval in existing_intervals):
+            continue
+        current = exact_symbol_lookup_asset(context.lineage, symbol)
+        if (
+            current is None
+            or current.get("status") != "active"
+            or current.get("tradable") is not True
+            or current.get("exchange") in (None, "", "OTC")
+        ):
+            continue
+        pairs = sorted(
+            (
+                cusip,
+                asset_id,
+            )
+            for (candidate_symbol, cusip), asset_id in context.asset_ids_by_symbol_and_cusip.items()
+            if candidate_symbol == symbol
+        )
+        if len({asset_id for _, asset_id in pairs}) < 2:
+            continue
+        current_pairs = [(cusip, asset_id) for cusip, asset_id in pairs if asset_id == current["id"]]
+        if len(current_pairs) != 1:
+            continue
+        current_cusip, current_asset_id = current_pairs[0]
+        current_cusip_asset = exact_cusip_lookup_asset(context.lineage, current_cusip)
+        if (
+            current_cusip_asset is None
+            or current_cusip_asset.get("id") != current_asset_id
+            or current_cusip_asset.get("symbol") != symbol
+            or current_cusip_asset.get("exchange") in (None, "", "OTC")
+        ):
+            continue
+
+        anchors = []
+        for action in context.corporate_actions:
+            for cusip, asset_id in pairs:
+                try:
+                    effective = positive_occupancy_action_date(action, symbol, cusip)
+                except (KeyError, TypeError, ValueError, InvalidOperation):
+                    continue
+                if effective is not None:
+                    anchors.append((effective, str(action["id"]), cusip, asset_id))
+        competing_dates = [effective for effective, _, _, asset_id in anchors if asset_id != current_asset_id]
+        last_competing = max(competing_dates, default=None)
+        current_anchors = sorted(
+            item
+            for item in anchors
+            if item[3] == current_asset_id and (last_competing is None or item[0] > last_competing)
+        )
+        if not current_anchors:
+            continue
+        lower_bound = current_anchors[0][0]
+        supporting_action_ids = tuple(
+            action_id
+            for effective, action_id, cusip, asset_id in current_anchors
+            if effective == lower_bound and cusip == current_cusip and asset_id == current_asset_id
+        )
+        constraint = TickerOwnershipInterval(
+            historical_symbol=symbol,
+            cusip=current_cusip,
+            asset_id=current_asset_id,
+            start_date_inclusive=lower_bound,
+            end_date_exclusive=None,
+            applied_rules=(
+                AppliedOwnershipIntervalRule(
+                    order=rule_order,
+                    name=rule_name,
+                    supporting_action_ids=supporting_action_ids,
+                ),
+            ),
+        )
+        _constrain_or_append_interval(intervals, constraint)
+    return _OwnershipIntervalRuleResult(intervals=_merge_exact_intervals(intervals))
+
+
 OWNERSHIP_INTERVAL_RULES = (
     OwnershipIntervalRule(
         name="name_change_ticker_transition",
@@ -846,6 +953,10 @@ OWNERSHIP_INTERVAL_RULES = (
     OwnershipIntervalRule(
         name="cash_merger_acquiree_terminal_boundary",
         apply=_apply_cash_merger_terminal_rule,
+    ),
+    OwnershipIntervalRule(
+        name="action_anchored_current_ticker_occupancy",
+        apply=_apply_action_anchored_current_suffix_rule,
     ),
 )
 
@@ -905,6 +1016,7 @@ def build_ticker_ownership_intervals(
     lineage: dict[str, Any],
     *,
     uuid_lineage_edges=None,
+    include_action_anchored_current_suffix: bool = False,
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
     corporate_actions = lineage.get("corporate_actions")
     if not isinstance(corporate_actions, list):
@@ -928,6 +1040,11 @@ def build_ticker_ownership_intervals(
     intervals: tuple[TickerOwnershipInterval, ...] = ()
 
     for rule_order, rule in enumerate(OWNERSHIP_INTERVAL_RULES, start=1):
+        if (
+            rule.name == "action_anchored_current_ticker_occupancy"
+            and not include_action_anchored_current_suffix
+        ):
+            continue
         rule_result = rule.apply(context, intervals, rule_order, rule.name)
         intervals = rule_result.intervals
         evidence_issues.extend(rule_result.evidence_issues)

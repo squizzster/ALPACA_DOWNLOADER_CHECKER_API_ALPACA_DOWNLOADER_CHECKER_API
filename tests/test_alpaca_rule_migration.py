@@ -7,7 +7,6 @@ from unittest.mock import patch
 from test_alpaca_end_of_day_api import NativeCase
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import snapshot
-from test_alpaca_terminal_occupancy import terminal_fixture
 
 from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.contract import versions
@@ -16,7 +15,7 @@ from libs.alpaca_lineage_build.pipeline import run_lineage
 
 
 class RuleMigrationProofTests(TestCase):
-    def receipt(self, *, schema_version=30, lineage_version=30, correlation_version=56):
+    def receipt(self, *, schema_version=32, lineage_version=32, correlation_version=58):
         return {
             "schema_version": schema_version,
             "versions": {
@@ -24,96 +23,167 @@ class RuleMigrationProofTests(TestCase):
                 "lineage": lineage_version,
                 "correlation": correlation_version,
             },
-            "asset_ids": ["old-id", "live-id"],
-            "evidence": terminal_fixture(),
+            "symbol": "TEST",
+            "asset_ids": ["id"],
             "unresolved_rows": 0,
         }
 
-    def prior_receipt(self):
-        return self.receipt(schema_version=31, lineage_version=31, correlation_version=57)
+    @staticmethod
+    def asset(asset_id, symbol, *, active=True):
+        return {
+            "id": asset_id,
+            "symbol": symbol,
+            "class": "us_equity",
+            "exchange": "NYSE",
+            "status": "active" if active else "inactive",
+            "tradable": active,
+        }
 
-    def test_changed_terminal_interval_requires_group_recorrelation(self):
-        self.assertFalse(can_promote_observation_decision(self.receipt()))
+    @staticmethod
+    def lookup(kind, value, selected_asset):
+        return {
+            "lookup_kind": kind,
+            "lookup": value,
+            "found": True,
+            "outcome": "found",
+            "http_status": 200,
+            "asset": selected_asset,
+        }
 
-    def test_unaffected_legacy_decision_is_promoted_through_both_changes(self):
+    @staticmethod
+    def dividend(action_id, cusip, when):
+        return {
+            "id": action_id,
+            "action_type": "cash_dividend",
+            "symbol": "TEST",
+            "cusip": cusip,
+            "ex_date": when,
+            "record_date": when,
+            "payable_date": when,
+            "process_date": when,
+            "rate": 0.1,
+        }
+
+    def reused_label_evidence(self):
+        old = self.asset("old-id", "OLD", active=False)
+        current = self.asset("current-id", "TEST")
+        return {
+            "corporate_actions": [
+                self.dividend("old-action", "111111111", "2024-01-03"),
+                self.dividend("current-action", "222222222", "2024-01-08"),
+            ],
+            "identities": [old, current],
+            "symbol_occupancy_evidence": [
+                {
+                    "symbol": "TEST",
+                    "cusip": "111111111",
+                    "asset_id": "old-id",
+                    "evidence": [{"action_id": "old-action"}],
+                },
+                {
+                    "symbol": "TEST",
+                    "cusip": "222222222",
+                    "asset_id": "current-id",
+                    "evidence": [{"action_id": "current-action"}],
+                },
+            ],
+            "asset_lookups": [
+                self.lookup("symbol", "TEST", current),
+                self.lookup("cusip", "111111111", old),
+                self.lookup("cusip", "222222222", current),
+            ],
+        }
+
+    def test_completed_single_uuid_decision_needs_no_evidence_replay(self):
         receipt = self.receipt()
-        receipt["asset_ids"] = ["live-id"]
         before = deepcopy(receipt)
         self.assertTrue(can_promote_observation_decision(receipt))
         self.assertEqual(receipt, before)
 
-    def test_completed_single_uuid_prior_decision_needs_no_evidence_replay(self):
-        receipt = self.prior_receipt()
-        receipt["asset_ids"] = ["id"]
-        receipt.pop("evidence")  # The compact authoritative projection is sufficient.
+    def test_compatible_lineage_31_decision_uses_the_same_exact_proof(self):
+        receipt = self.receipt(schema_version=31, lineage_version=31)
         self.assertTrue(can_promote_observation_decision(receipt))
 
     def test_unresolved_single_uuid_without_shape_evidence_fails_closed(self):
-        receipt = self.prior_receipt()
-        receipt.update(asset_ids=["id"], unresolved_rows=8)
-        receipt.pop("evidence")
+        receipt = self.receipt()
+        receipt["unresolved_rows"] = 8
         self.assertFalse(can_promote_observation_decision(receipt))
 
-    def test_disconnected_same_label_occupants_require_recorrelation(self):
-        self.assertFalse(can_promote_observation_decision(self.prior_receipt()))
-
-    def test_cross_uuid_name_change_requires_recorrelation(self):
-        receipt = self.prior_receipt()
-        receipt["evidence"] = {
-            "corporate_actions": [
-                {
-                    "id": "rename",
-                    "action_type": "name_change",
-                    "effective_date": "2024-01-02",
-                    "process_date": "2024-01-02",
-                    "old_symbol": "OLD",
-                    "old_cusip": "old-cusip",
-                    "new_symbol": "NEW",
-                    "new_cusip": "new-cusip",
-                }
-            ],
-            "identities": [
-                {"id": "old-id", "symbol": "OLD"},
-                {"id": "live-id", "symbol": "NEW"},
-            ],
-            "symbol_occupancy_evidence": [
-                {"asset_id": "old-id", "symbol": "OLD", "cusip": "old-cusip"},
-                {"asset_id": "live-id", "symbol": "NEW", "cusip": "new-cusip"},
-            ],
-            "asset_lookups": [],
-        }
-        self.assertFalse(can_promote_observation_decision(receipt))
-
-    def test_incomplete_active_request_horizon_requires_recorrelation(self):
-        receipt = self.prior_receipt()
+    def test_empty_identity_decision_needs_no_evidence_replay(self):
+        receipt = self.receipt()
         receipt.update(
-            symbol="LIVE",
-            asset_ids=["live-id"],
+            asset_ids=[],
             unresolved_rows=8,
-            assignment_summary={"raw": {"last_session": "2026-10-22"}},
-            pricing_request={"end_exclusive": "2026-10-24T00:00:00Z"},
+            evidence={
+                "corporate_actions": [],
+                "identities": [],
+                "symbol_occupancy_evidence": [],
+                "asset_lookups": [],
+            },
         )
-        receipt["evidence"] = {
-            "corporate_actions": [],
-            "identities": [{"id": "live-id", "symbol": "LIVE", "status": "active"}],
-            "symbol_occupancy_evidence": [],
-            "asset_lookups": [
-                {
-                    "lookup_kind": "symbol",
-                    "lookup": "LIVE",
-                    "found": True,
-                    "asset": {"id": "live-id", "symbol": "LIVE", "status": "active"},
-                }
-            ],
-        }
+        self.assertTrue(can_promote_observation_decision(receipt))
+
+    def test_action_anchored_current_suffix_requires_group_recorrelation(self):
+        receipt = self.receipt()
+        receipt.update(
+            asset_ids=["old-id", "current-id"],
+            unresolved_rows=8,
+            evidence=self.reused_label_evidence(),
+        )
         self.assertFalse(can_promote_observation_decision(receipt))
-        receipt["pricing_request"]["end_exclusive"] = "2026-10-23T00:00:00Z"
+
+    def test_completed_decision_with_suffix_shape_is_promoted_unchanged(self):
+        receipt = self.receipt()
+        receipt.update(
+            asset_ids=["old-id", "current-id"],
+            evidence=self.reused_label_evidence(),
+        )
+        self.assertTrue(can_promote_observation_decision(receipt))
+
+    def test_possible_foreign_occupancy_duplicate_requires_group_recorrelation(self):
+        receipt = self.receipt()
+        evidence = self.reused_label_evidence()
+        evidence["corporate_actions"] = [
+            self.dividend("current-before", "222222222", "2024-01-02"),
+            self.dividend("foreign-copy", "111111111", "2024-01-03"),
+            self.dividend("current-after", "222222222", "2024-01-08"),
+        ]
+        evidence["symbol_occupancy_evidence"] = [
+            {
+                "symbol": "TEST",
+                "cusip": "222222222",
+                "asset_id": "current-id",
+                "evidence": [
+                    {"action_id": "current-before"},
+                    {"action_id": "current-after"},
+                ],
+            }
+        ]
+        receipt.update(
+            asset_ids=["old-id", "current-id"],
+            unresolved_rows=8,
+            evidence=evidence,
+        )
+        self.assertFalse(can_promote_observation_decision(receipt))
+
+    def test_unaffected_multi_uuid_shape_is_promotable(self):
+        receipt = self.receipt()
+        receipt.update(
+            asset_ids=["old-id", "current-id"],
+            unresolved_rows=8,
+            evidence={
+                "corporate_actions": [],
+                "identities": [],
+                "symbol_occupancy_evidence": [],
+                "asset_lookups": [],
+            },
+        )
         self.assertTrue(can_promote_observation_decision(receipt))
 
     def test_proof_is_specific_to_one_complete_version_transition(self):
         for field, value in (
-            ("lineage", 29),
-            ("correlation", 55),
+            ("lineage", 31),
+            ("correlation", 57),
             ("identity_report", -1),
             ("calendar_sha256", "different"),
         ):
@@ -122,16 +192,16 @@ class RuleMigrationProofTests(TestCase):
                 receipt["versions"][field] = value
                 self.assertFalse(can_promote_observation_decision(receipt))
         receipt = self.receipt()
-        receipt["schema_version"] = 29
+        receipt["schema_version"] = 31
         self.assertFalse(can_promote_observation_decision(receipt))
-        with patch("libs.alpaca_lineage_build.migration.versions", return_value={**versions(), "lineage": 31}):
+        with patch("libs.alpaca_lineage_build.migration.versions", return_value={**versions(), "lineage": 32}):
             self.assertFalse(can_promote_observation_decision(self.receipt()))
 
 
 class RuleMigrationPublicationTests(NativeCase):
     def downgrade(self):
         def change(receipt, _):
-            receipt.update(schema_version=30, versions={**versions(), "lineage": 30, "correlation": 56})
+            receipt.update(schema_version=32, versions={**versions(), "lineage": 32, "correlation": 58})
 
         self.publish_change(change)
 

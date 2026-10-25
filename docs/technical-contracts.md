@@ -156,6 +156,14 @@ The producer preserves all accepted dated labels independently, including ambigu
 these decisions without repeating selection or activity checks. Prior lineage versions require one selected-group
 rebuild using retained evidence and prices; subsequent unchanged groups reuse the completed decisions.
 
+Complete established correlation is evaluated before either occupancy fallback. For a source that remains
+unresolved, a reused active label may be bounded from its first positive provider action after all competing UUID
+actions, provided exact active symbol and CUSIP lookups agree; the unsupported prefix remains ambiguous. A foreign-
+label distribution may be ignored for occupancy only when the same completed group contains the exact own-label
+action, its source assigns that session to the exact UUID in all eight views, current-label actions bracket it, and
+no related structural action exists. These rules preserve provider evidence and do not derive identity from equal
+prices, returned-bar timing or external research.
+
 When overlapping bundles disagree in any numerical view and the selected request's mapping date lies outside
 its accepted occupancy, lineage requests only that source's full retained span with an observed own-label mapping
 date. Accepted departures across CUSIP/UUID changes within the same public identity also bound this route.

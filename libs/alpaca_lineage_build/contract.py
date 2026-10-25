@@ -8,7 +8,7 @@ from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 32
+VERSION = 33
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -37,9 +37,7 @@ def reusable_versions(published: dict) -> bool:
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # Older assignments have no producer-owned numerical source choice. They
     # need one explicit migration; subsequent compatible decisions remain reusable.
-    return published == current or (
-        (current["lineage"], current["correlation"]) == (32, 58) and published == {**current, "lineage": 31}
-    )
+    return published == current
 
 
 def reusable_metadata_versions(published: dict) -> bool:

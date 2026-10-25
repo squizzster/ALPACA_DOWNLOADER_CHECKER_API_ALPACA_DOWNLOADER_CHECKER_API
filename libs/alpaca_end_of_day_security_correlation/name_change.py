@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.common.us_equity_market_session_calendar import MarketCalendarError, expected_market_session_coverage
 
-from .occupancy_anchor import _action_anchor
+from .occupancy_anchor import positive_occupancy_action_date
 
 if TYPE_CHECKING:
     from .ownership_interval_rules import TickerOwnershipInterval
@@ -35,7 +35,7 @@ def name_change_dates(action, actions=()):
         if other.get("action_type") != "unit_split":
             continue
         try:
-            effective = _action_anchor(other, action.get("new_symbol"), action.get("new_cusip"))
+            effective = positive_occupancy_action_date(other, action.get("new_symbol"), action.get("new_cusip"))
         except (KeyError, TypeError, ValueError, InvalidOperation):
             continue
         if effective is not None:

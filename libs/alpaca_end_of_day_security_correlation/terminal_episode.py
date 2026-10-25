@@ -10,7 +10,7 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 
 from .action_identity import exact_cusip_lookup_asset
 from .current_symbol_reuse import _complete_corporate_action_query, _current_identity
-from .occupancy_anchor import _action_anchor
+from .occupancy_anchor import positive_occupancy_action_date
 from .ownership_interval_rules import TickerOwnershipInterval
 from .security_identity import security_identity_for_alpaca_assets
 from .ticker_reuse_gap import adjustment_session_consensus, assess_ticker_reuse_gap
@@ -252,7 +252,7 @@ def _dividend_backed_current_reuse(
         if action.get("action_type") != "cash_dividend" or action.get("cusip") != cusip:
             return False  # A return, structural change or another issue needs its own dated allocation.
         try:
-            anchored |= _action_anchor(action, symbol, cusip) == when
+            anchored |= positive_occupancy_action_date(action, symbol, cusip) == when
         except (KeyError, TypeError, ValueError, InvalidOperation):
             return False
     # A conflicting dated occupant may not have produced an ownership interval.

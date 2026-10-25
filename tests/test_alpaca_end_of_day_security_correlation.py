@@ -3085,6 +3085,7 @@ class RowCorrelationTests(unittest.TestCase):
                 {"order": 1, "name": "name_change_ticker_transition"},
                 {"order": 2, "name": "same_ticker_stock_merger_uuid_transition"},
                 {"order": 3, "name": "cash_merger_acquiree_terminal_boundary"},
+                {"order": 4, "name": "action_anchored_current_ticker_occupancy"},
             ],
             ownership_interval_rule_order(),
         )

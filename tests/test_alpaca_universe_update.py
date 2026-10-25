@@ -166,7 +166,7 @@ class UniverseUpdateTests(unittest.TestCase):
         index = storage.read_index(root)
         receipt = storage.read_receipt(root, "AAA", index)
         boundaries = storage.read_boundaries(root, receipt)
-        receipt.update(schema_version=31, versions={**versions(), "lineage": 31, "correlation": 57})
+        receipt.update(schema_version=31, versions={**versions(), "lineage": 31, "correlation": 58})
         with storage.pricing_locks(self.store, receipt["input_sources"]):
             storage.publish(self.store, root, index, {"AAA": receipt}, {"AAA": boundaries}, {})
         pricing_before = snapshot(self.store / "end_of_day/pricing/AAA")

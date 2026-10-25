@@ -227,13 +227,16 @@ class CorrelationCache:
             (download, download.manifest, self.session_dates(download.rows)) for download in downloads
         )
 
-    def name_change_assessment(self, lineage):
-        self.lineage_analysis(lineage)
-        return self._name_changes[id(lineage)]
+    def name_change_assessment(self, lineage, *, include_action_anchored_current_suffix=False):
+        self.lineage_analysis(
+            lineage,
+            include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+        )
+        return self._name_changes[(id(lineage), include_action_anchored_current_suffix)]
 
-    def lineage_analysis(self, lineage):
+    def lineage_analysis(self, lineage, *, include_action_anchored_current_suffix=False):
         """Build immutable evidence structure once for the complete rule group."""
-        key = id(lineage)
+        key = (id(lineage), include_action_anchored_current_suffix)
         cached = self._lineage.get(key)
         if cached is None:
             candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
@@ -241,7 +244,11 @@ class CorrelationCache:
             # Build each evidence authority once. Interval construction consumes
             # accepted split edges; cross-UUID name candidates still require the
             # subsequent full-group history certificate before membership use.
-            intervals, interval_issues = build_ticker_ownership_intervals(lineage, uuid_lineage_edges=candidates)
+            intervals, interval_issues = build_ticker_ownership_intervals(
+                lineage,
+                uuid_lineage_edges=candidates,
+                include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+            )
             assessment = assess_name_change_history(lineage, intervals, candidates, self._name_change_sources)
             self._name_changes[key] = assessment
             edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)

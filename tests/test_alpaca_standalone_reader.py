@@ -476,7 +476,7 @@ class StandaloneReaderTests(unittest.TestCase):
     def test_v2_compatibility_does_not_accept_other_changed_versions(self):
         current = versions()
         self.assertTrue(reusable_versions(current))
-        self.assertTrue(reusable_versions({**current, "lineage": 31}))
+        self.assertFalse(reusable_versions({**current, "lineage": 31}))
         self.assertFalse(reusable_versions({**current, "lineage": 2}))
         for name in current:
             self.assertFalse(reusable_versions({**current, name: "changed"}))
