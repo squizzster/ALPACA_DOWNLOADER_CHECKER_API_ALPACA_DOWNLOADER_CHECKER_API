@@ -17,6 +17,13 @@ Tickers are dated labels: resolution preserves multiple matches, and date filter
 identity. A 64-hex `public_id` is stable for fixed resolved provider-UUID membership; membership changes can
 change it, with no old-ID crosswalk promised.
 
+For finalized-data consumers, `public_id` is the durable reference. Use ticker resolution or catalogue search
+only to discover a candidate identity, then retain its `public_id` for history reads, exports, joins and cache
+keys. Do not persist a ticker as an identity key or re-resolve it for each read: the same ticker can name
+different securities at different dates, while one public identity can retain several dated ticker labels.
+If accepted UUID membership changes, the old `public_id` becomes unavailable and the consumer must make an
+explicit new catalogue selection.
+
 Dates accept `datetime.date`, ISO date strings or `None`, as inclusive New York session bounds. Valid empty
 ranges return empty histories. [ADJUSTMENTS](../libs/alpaca_pricing_download/contract.py) defines the eight names;
 `all` means fully adjusted, not every view. Numeric values stay exact.
