@@ -13,8 +13,9 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VERSION = 30
-# Existing boundary payloads/receipts remain valid after an explicit directory move.
+VERSION = 31
+# Version 31 retains the pricing representation. Sources may still select older
+# unchanged boundary receipts; accept those independently of the source version.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 VALIDATOR_FILE = "validator_first_last_sessions.json"
 ADJUSTMENTS = (

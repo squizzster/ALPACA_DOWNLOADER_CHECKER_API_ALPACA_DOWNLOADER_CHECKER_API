@@ -165,5 +165,10 @@
     "modifications": [
       "Publish completed observation coverage separately from entity mapping dates in the compact pricing summary. Plan and validate appends from the covered exclusive end while retaining explicitly historical mappings and continuing ordinary current-label mappings with the new cutoff."
     ]
+  },
+  {
+    "modifications": [
+      "Accept existing version-31 pricing sources, endpoint validators and boundary receipts using their unchanged representation. Preserve support for retained older receipts selected by newer sources, without rewriting stored data, repeating upstream authentication or weakening rejection of unknown future formats."
+    ]
   }
 ]

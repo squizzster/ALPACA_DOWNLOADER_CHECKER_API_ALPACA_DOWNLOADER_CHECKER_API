@@ -404,6 +404,84 @@ class PricingDownloadTests(unittest.TestCase):
             if relative not in ("source.manifest.json", VALIDATOR_FILE) and not relative.startswith("2026/Oct/"):
                 self.assertEqual(before[relative], after[relative])
 
+    def set_publication_versions(self, source_version, boundary_versions):
+        source_path = self.root / "source.manifest.json"
+        source = storage.read_document(source_path)
+        for kind, version in boundary_versions.items():
+            reference = source["boundaries"][kind]
+            path = self.root / reference["manifest"]
+            document = storage.read_document(path)
+            document["schema_version"] = version
+            content = json_bytes(document)
+            path.write_bytes(content)
+            reference["sha256"] = digest(content)
+        validator_path = self.root / VALIDATOR_FILE
+        validator = storage.read_document(validator_path)
+        validator["schema_version"] = source_version
+        content = json_bytes(validator)
+        validator_path.write_bytes(content)
+        source["validator"]["sha256"] = digest(content)
+        source["schema_version"] = source_version
+        source_path.write_bytes(json_bytes(source))
+
+    def test_v31_publication_is_read_and_reused_without_rewriting_or_authenticating_files(self):
+        self.run_download()
+        expected = read_pricing_views(self.store, "GOOG")
+        self.set_publication_versions(
+            31, {kind: 31 for kind in ("completed_years", "current_year", "current_month")}
+        )
+        before = snapshot(self.store)
+        with patch.object(storage, "digest", side_effect=AssertionError("repeated authentication")):
+            source = storage.load_source(self.root, "GOOG")
+            endpoints = storage.read_validator(self.root, source)
+            self.assertEqual(endpoints["raw"], (expected["raw"][0], expected["raw"][-1]))
+            for kind, reference in source["boundaries"].items():
+                storage.boundary_document(self.root, reference, "GOOG", kind)
+            self.assertEqual(read_pricing_views(self.store, "GOOG"), expected)
+        client, result = self.run_download()
+        self.assertFalse(client.calls)
+        self.assertEqual(result["files_written"], 0)
+        self.assertEqual(before, snapshot(self.store))
+
+    def test_v28_source_keeps_reading_retained_year_receipts_without_rewriting_them(self):
+        self.run_download()
+        expected = read_pricing_views(self.store, "GOOG")
+        for retained_version in (6, 22, 26):
+            with self.subTest(retained_version=retained_version):
+                self.set_publication_versions(
+                    28,
+                    {"completed_years": retained_version, "current_year": retained_version, "current_month": 28},
+                )
+                before = snapshot(self.store)
+                self.assertEqual(read_pricing_views(self.store, "GOOG"), expected)
+                self.assertEqual(before, snapshot(self.store))
+
+    def test_unrecognized_future_pricing_versions_still_fail_closed(self):
+        self.run_download()
+        future = VERSION + 1
+        for artifact in ("source", "current_month", "validator"):
+            with self.subTest(artifact=artifact):
+                self.set_publication_versions(
+                    31, {kind: 31 for kind in ("completed_years", "current_year", "current_month")}
+                )
+                source = storage.read_document(self.root / "source.manifest.json")
+                relative = {
+                    "source": "source.manifest.json",
+                    "current_month": source["boundaries"]["current_month"]["manifest"],
+                    "validator": VALIDATOR_FILE,
+                }[artifact]
+                path = self.root / relative
+                document = storage.read_document(path)
+                document["schema_version"] = future
+                path.write_bytes(json_bytes(document))
+                before = snapshot(self.store)
+                with self.assertRaises(DownloadError):
+                    if artifact == "validator":
+                        storage.read_validator(self.root, source)
+                    else:
+                        read_pricing_views(self.store, "GOOG")
+                self.assertEqual(before, snapshot(self.store))
+
     def test_repeating_identical_request_does_not_rewrite_any_files(self):
         self.run_download()
         before = snapshot(self.root)

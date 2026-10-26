@@ -37,6 +37,10 @@ exact strings without binary-float arithmetic. Structural validation rejects wro
 duplicate/out-of-range timestamps and incomplete pagination; it does not establish market validity or identity.
 See [pricing schemas](../libs/alpaca_pricing_download/contract.py) and [storage](../libs/alpaca_pricing_download/storage.py).
 
+Pricing version 31 retains the existing representation and is readable in place. A supported source may
+select older unchanged boundary receipts; their version need not equal the source version. Reading compatible
+publications requires no migration, relabeling or price rewrite. Unknown future versions fail closed.
+
 Ordinary updates compare every view's first/last endpoints; mismatch requires full replacement.
 The integrated live check compares only the summary's last `all` row; any changed field requires all-view
 retained-span replacement before append. These checks do not detect every possible interior historical correction.
