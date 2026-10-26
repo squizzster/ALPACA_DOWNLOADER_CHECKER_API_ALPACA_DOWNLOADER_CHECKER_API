@@ -853,7 +853,7 @@ class StandaloneReaderTests(unittest.TestCase):
 
     def test_real_cli_needs_no_credentials_and_writes_no_files(self):
         before = snapshot(self.store)
-        script = Path(__file__).resolve().parents[1] / "alpaca-eod"
+        script = Path(__file__).resolve().parents[1] / "alpaca-cli-eod"
         result = subprocess.run(
             [sys.executable, "-B", str(script), "read", "--store", str(self.store), "--symbol", "TEST"],
             env={key: value for key, value in os.environ.items() if not key.startswith("ALPACA_")},

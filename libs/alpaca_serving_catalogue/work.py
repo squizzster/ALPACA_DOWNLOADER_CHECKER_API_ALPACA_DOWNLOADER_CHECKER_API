@@ -34,12 +34,12 @@ def read(store):
             state = connection.execute("SELECT version, complete FROM serving_work_state WHERE id=1").fetchone()
             if state is None or state[0] != WORK_VERSION or not state[1]:
                 raise CatalogueError(
-                    "serving work coverage incomplete; run alpaca-eod catalogue bootstrap --store PATH"
+                    "serving work coverage incomplete; run alpaca-cli-eod catalogue bootstrap --store PATH"
                 )
             return dict(connection.execute("SELECT symbol, generation FROM serving_work ORDER BY symbol"))
     except sqlite3.Error as error:
         raise CatalogueError(
-            "serving work missing or incompatible; run alpaca-eod catalogue bootstrap --store PATH"
+            "serving work missing or incompatible; run alpaca-cli-eod catalogue bootstrap --store PATH"
         ) from error
 
 

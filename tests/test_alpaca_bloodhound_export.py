@@ -758,7 +758,7 @@ class BloodhoundParquetTests(unittest.TestCase):
 
 class BloodhoundCliHelpTests(unittest.TestCase):
     def test_standalone_help_has_output_selection_and_include_all_passed(self):
-        command = ROOT / "alpaca-eod"
+        command = ROOT / "alpaca-cli-eod"
         result = subprocess.run(
             [sys.executable, "-B", str(command), "export", "bloodhound", "--help"],
             capture_output=True,

@@ -96,5 +96,10 @@
     "modifications": [
       "Add a dedicated offline lineage policy-migration command that promotes only the exact completed policy transition without constructing provider clients or entering live lineage evaluation."
     ]
+  },
+  {
+    "modifications": [
+      "Rename the canonical executable to alpaca-cli-eod, preserving required subcommands and operation behavior. Update help and recovery-command guidance to the new name, and describe the existing initial 10-second CSV heartbeat in help."
+    ]
   }
 ]

@@ -58,7 +58,7 @@ def read_state(store):
             revision = connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
     except (sqlite3.Error, ValueError) as error:
         raise LineageError(
-            "universe work state unavailable; run alpaca-eod universe rebuild explicitly"
+            "universe work state unavailable; run alpaca-cli-eod universe rebuild explicitly"
         ) from error
     return {
         "schema_version": STATE_VERSION,

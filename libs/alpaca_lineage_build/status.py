@@ -40,7 +40,7 @@ def inspect_status(store):
     def lineage_status():
         root = store / "end_of_day/lineage"
         if not (root / "index.sqlite3").exists():
-            raise LineageError("lineage index missing; run alpaca-eod lineage update")
+            raise LineageError("lineage index missing; run alpaca-cli-eod lineage update")
         with storage.publication_lock(root, wait=False):
             pending = (root / ".pending.json").exists()
             index = storage.read_index(root)
@@ -72,12 +72,12 @@ def inspect_status(store):
     lineage = read("lineage", lineage_status)
     summary = read("summary", lambda: summary_status(store))
     if summary is not None and not summary["coverage_complete"]:
-        result["blockers"].append("summary coverage incomplete; run alpaca-eod summary rebuild")
+        result["blockers"].append("summary coverage incomplete; run alpaca-cli-eod summary rebuild")
     # Read scheduling after publications: producers queue before changing inputs.
     scheduling = read("scheduling", lambda: read_checks(store, readonly=True))
     if scheduling is not None and not scheduling["complete"]:
         result["blockers"].append(
-            "lineage scheduling coverage missing or incomplete; run alpaca-eod lineage update"
+            "lineage scheduling coverage missing or incomplete; run alpaca-cli-eod lineage update"
         )
 
     def universe_status():
@@ -93,7 +93,7 @@ def inspect_status(store):
 
     serving = read("serving_catalogue", lambda: serving_status(store))
     if serving is not None and not serving["coverage_complete"]:
-        result["blockers"].append("serving catalogue incomplete; run alpaca-eod catalogue bootstrap")
+        result["blockers"].append("serving catalogue incomplete; run alpaca-cli-eod catalogue bootstrap")
     selected = set(scheduling["checks"] if scheduling else ())
     if summary:
         selected.update(item["symbol"] for item in summary["pending_inputs"])

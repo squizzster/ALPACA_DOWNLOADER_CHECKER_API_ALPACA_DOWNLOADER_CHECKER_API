@@ -1,157 +1,146 @@
 # Operations
 
-Run from repository root with the [requirements](../README.md) installed. Default standalone store:
-`data_pricing/`; select another with `--store PATH`. Options and dispatch:
-[canonical CLI](../libs/alpaca_cli/__init__.py), `./alpaca-eod --help`, then command `--help`.
-Progress goes to stderr; final reports are JSON stdout. No argument abbreviation.
+## Prerequisites
+
+Run from repository root with Python 3.11, Unix `flock` and `America/New_York` timezone data.
+Install [production dependencies](../requirements.txt):
+
+```bash
+python3.11 -m pip install -r requirements.txt
+./alpaca-cli-eod --help
+./alpaca-cli-eod update --help
+```
+
+Provider acquisition requires `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` and Alpaca SIP access. Local readers
+and offline catalogue maintenance require compatible publications, not credentials/network. Parquet additionally
+requires [PyArrow](../requirements-bloodhound.txt). Default store: repository `data_pricing/`; override with
+`--store PATH`. [build_parser / dispatch](../libs/alpaca_cli/__init__.py) own commands/options; no abbreviation.
+See [CLI reports](cli-reporting.md) for streams, exit codes and monitoring.
 
 ## Daily update
 
+For an initialized store:
+
 ```bash
-./alpaca-eod update --plan
-./alpaca-eod update
-./alpaca-eod status
+./alpaca-cli-eod update
+./alpaca-cli-eod status
 ```
 
 Update observes one complete all-status US-equity catalogue. New discovery accepts active
 OTC/NYSE/NASDAQ/AMEX/TXSE labels regardless of tradability; other-exchange histories/dependencies remain.
-Catalogue omission does not remove history or prove inactivity. Known active empty/partial histories also
-advance outside the live-check summary. SIP acquisition does not promise a separate OTC feed.
+Omission proves neither inactivity nor removable history. Known active empty/partial histories also advance
+outside the live-check summary. SIP acquisition does not promise a separate OTC feed.
 
-Execution: [daily owner](ARCHITECTURE.md#daily-update). Failed history checks block append, while independent
-successful publications remain recoverable. Every invocation checks live; saved experiments are not inputs.
-Published unresolved identity is completed processing, distinct from acquisition failure or public eligibility.
+Every invocation checks live; saved experiments are not inputs. Failed history checks block append;
+independent successes remain recoverable. Published unresolved identity is completed processing, distinct
+from acquisition failure or public eligibility. [Execution ownership](ARCHITECTURE.md#daily-update).
 
-`--plan` may fetch metadata but never registers, initializes, recovers or publishes. It reports selected work,
-reasons, additions, actions/pages, metadata reads and conditional dependencies. Sparse histories, pagination
-and producer checks alter actual requests. Missing boundaries/pending publications are explicit blockers;
-execution independently reselects, so a plan is not an execution token.
+Optional `update --plan` may fetch metadata but never registers, initializes, recovers or publishes. It reports
+work/reasons, additions, actions/pages, metadata reads and conditional dependencies. Sparse histories,
+pagination and producer checks change actual requests. Missing boundaries/pending publications are blockers;
+execution reselects independently, so a plan is not an execution token.
 
 ### Session cutoff
 
-`--through YYYY-MM-DD` is inclusive and rounds back to the last exchange session on/before it. Default:
-last session strictly before today's New York date, frozen once per invocation. Friday is eligible after
-Saturday midnight New York, not UTC midnight. Explicit cutoffs must also precede today's New York date;
+Producer `--through YYYY-MM-DD` is inclusive, rounded back to the last exchange session on/before it.
+Default: last session strictly before today's New York date, frozen per invocation. Friday becomes eligible
+after Saturday midnight New York, not UTC. Explicit cutoffs must also precede today's New York date;
 unsupported calendar ranges fail before selection/registration/requests.
 
-For example, October 16–18, 2026 select October 16, with exclusive boundary `2026-10-17T00:00:00Z`.
+A permitted explicit cutoff of October 16–18, 2026 selects October 16, exclusive end `2026-10-17T00:00:00Z`.
 Closed days alone cause no advancement/publication. `pricing_cutoff` reports requested/effective dates.
 Recovery retains accepted exclusive bounds; initial/dependency acquisitions share the target. Newer sources
-are preserved and reported separately without checking/rewinding; reconciliation needing a later target stays
-incomplete. Coverage is not a historical knowledge snapshot: observation time, request coverage, last bar
-and mapping `asof` differ, and a final-session bar need not exist. Reader/export dates remain inclusive
-calendar filters. Authority: [pricing_session_end](../libs/alpaca_pricing_download/download.py#L120).
+are reported/preserved without checking or rewinding; reconciliation needing a later target stays incomplete.
+Observation time, request coverage, last bar and mapping `asof` differ: coverage is not a historical knowledge
+snapshot, and a final-session bar need not exist. Reader/export bounds remain inclusive calendar filters.
+Authority: [download.py](../libs/alpaca_pricing_download/download.py), `pricing_session_end`.
 
 ## Inspect local progress
 
-`./alpaca-eod status`: offline, read-only boundary/work inspection. Missing/incomplete boundaries name blockers
-and reconstruction commands; status never performs recovery.
-
-- `ready_for_update`: required boundaries exist.
-- `processing_complete`: also no outstanding local work/publications.
-
-Either false produces a nonzero exit. Neither claims a fresh provider check or future coverage. Counts
-separate empty/nonempty history, unresolved rows and complete assignment; exclusive coverage ends differ from
-last observed bars. [Read scope and consistency](technical-contracts.md#universe-observation-and-work-state).
+`./alpaca-cli-eod status` reads local boundaries/work without recovery. Missing/incomplete boundaries report
+blockers and reconstruction commands. [Status fields and limits](cli-reporting.md#completion-and-status);
+[read scope](technical-contracts.md#universe-observation-and-work-state).
 
 ## Adopt or reconstruct an existing store
 
-Finish pending publications through their owner first. Then establish missing boundaries explicitly:
+Finish pending publications through their owner first. Establish only the missing/incompatible boundaries
+named by status; these commands have distinct scopes:
 
-```bash
-./alpaca-eod lineage migrate-index --store data_pricing
-./alpaca-eod lineage migrate-policy --store data_pricing
-./alpaca-eod universe rebuild --store data_pricing
-./alpaca-eod summary rebuild --store data_pricing
-./alpaca-eod catalogue bootstrap --store data_pricing --plan
-./alpaca-eod catalogue bootstrap --store data_pricing
-./alpaca-eod status --store data_pricing
-```
+| Command | Scope |
+|---|---|
+| `universe rebuild` | Initialize/preserve compatible registration/work state, including an empty store; does not finish work or establish lineage/summary. Examine incompatible state; do not erase it. |
+| `lineage migrate-index` | Project used lookup evidence and complete membership from indexed receipts in resumable batches; no price reads/recalculation. Schema upgrade alone does not establish coverage. |
+| `lineage migrate-policy` | Exact offline policy promotion; [conditions and serving follow-up](lineage.md#policy-migration). |
+| `lineage update` | Restore missing scheduling coverage explicitly; may census source generations once. Daily update never reconstructs it implicitly. |
+| `summary rebuild` | Rebuild from indexed status/validators offline; no history/provider reads. |
+| `catalogue bootstrap --plan`, then `catalogue bootstrap` | Establish serving coverage after lineage publication. |
 
-`migrate-index` projects used lookup evidence and complete membership from indexed receipts in resumable
-batches; no price reads/recalculation. Schema upgrade alone does not establish coverage.
-`migrate-policy` is the dedicated offline promotion for the exact policy-less lineage-33/correlation-59 to
-lineage-34/correlation-60 transition. It first recovers its own frozen journal, then requires a complete empty
-lineage update-check queue and a complete compact selector. It promotes each complete group atomically only when
-every available member and selected source generation still match. It constructs no provider client, reads no
-pricing payload or assignment boundary, and executes no correlation or observation rule. Other versions, mixed
-groups, pending notices and changed sources fail closed. Rerunning is idempotent; interrupted publication rolls
-forward through the lineage journal. The command reads the compact durable serving-work queue after promotion
-and reports `serving_catalogue_action: pending_update` until `catalogue update` acknowledges it; an
-absent/incomplete serving-work boundary reports `bootstrap_required` instead. Finish that independent offline
-stage with `catalogue update` or the reported bootstrap action.
-`universe rebuild` initializes or preserves compatible registration/work state, including an empty store;
-it neither finishes work nor establishes lineage/summary. Incompatible state requires examination, not erasure.
-`summary rebuild` uses indexed status/validators offline, without histories/provider requests.
-Missing scheduling coverage requires explicit `lineage update`, which may census source generations once;
-daily update never silently reconstructs it. New stores first need [pricing and lineage](#focused-standalone-work).
+Append `--store PATH` to select a store. New stores first need [pricing and lineage](#focused-standalone-work).
+Recheck `status` after owner maintenance; success at one boundary does not establish the others.
 
 ## Serving catalogue maintenance
 
 ```bash
-./alpaca-eod catalogue status --store data_pricing
-./alpaca-eod catalogue update --store data_pricing --plan
-./alpaca-eod catalogue update --store data_pricing
+./alpaca-cli-eod catalogue status
+./alpaca-cli-eod catalogue update --plan
+./alpaca-cli-eod catalogue update
 ```
 
-Bootstrap after lineage publication; rerun after interruption. Its offline preview reads compact boundaries
-and reports selected symbols, legacy membership-projection reads, receipt/payload bounds and derived
-publications. Execution establishes eligibility from full selected histories, possibly reread per identity
-within the bounded cache; narrow date filters cannot avoid coverage-dependent source selection. No provider
-requests, identity-rule execution, redownloads, pricing copies or rewrites.
+Bootstrap follows lineage; rerun after interruption. Offline preview reports compact selection, legacy
+membership-projection reads, receipt/payload bounds and derived publications. Execution evaluates full selected
+histories, possibly reread per identity within bounded cache; narrow date filters cannot avoid coverage checks.
+No provider requests, identity-rule replay, redownloads, pricing copies or rewrites.
 
-Daily execution and preview require a complete serving selector even with an empty queue. Focused lineage
-commands maintain only selected complete groups in an existing catalogue; they never bootstrap implicitly.
-Direct pricing writes need lineage next. Ordinary application reads never maintain the store.
+Daily execution/preview require a complete serving selector even with an empty queue. Focused lineage maintains
+only selected complete groups in an existing catalogue; it never bootstraps implicitly. Direct pricing writes
+need lineage next; readers never maintain stores.
 
-`catalogue update` consumes obligations and reuses compatible decisions; reports include
-`reused_history_prefixes`, `full_history_evaluations`, `checked_bars`. [Reuse and recovery rules](technical-contracts.md#serving-catalogue)
-distinguish ineligibility from unfinished work. Resume pending pricing/lineage owners before serving maintenance.
-Changed policy requires explicit `catalogue rebuild --plan`, then `catalogue rebuild`, with the same store;
-rebuild preserves completed upstream identity decisions.
+`catalogue update` consumes obligations/reuses compatible decisions; reports include `reused_history_prefixes`,
+`full_history_evaluations`, `checked_bars`. Finish pending pricing/lineage owners first. Policy changes require
+`catalogue rebuild --plan`, then `catalogue rebuild` on the same store, preserving upstream identity decisions.
+[Eligibility, reuse and recovery](technical-contracts.md#serving-catalogue).
 
 ## Recovery registry and retries
 
 [resources/ticker.csv](../resources/ticker.csv) is one sorted unique CSV record, atomically unioned under a
-stable shared lock. Accepted labels only accumulate; omission, inactivity, exchange changes, emptiness and
-failure never remove them. Retention preserves opportunities, not guaranteed provider history; today's
-catalogue cannot reconstruct every historical priceable label.
+stable shared lock. Accepted labels accumulate: omission, inactivity, exchange changes, emptiness and failure
+never remove them. Retention preserves opportunities, not guaranteed history; today's catalogue cannot
+reconstruct every historically priceable label.
 
-`universe reconcile` observes/registers without price acquisition. Daily and standalone producers share
-registration, durable work and a store update lock. Initialize work state first; recover registration before
-requests. `--symbols-file` accepts headerless CSV or one label per line; selection is frozen for that command.
+`universe reconcile` observes/registers without price acquisition. Daily/standalone producers share durable work,
+registration and a store update lock. Initialize work state first; recover registration before requests.
+`--symbols-file` accepts headerless CSV or one label per line, frozen for the invocation.
 `--recovery-universe` is explicitly additive and may select full acquisition.
 
 Accepted targets and explicit `pricing acquire --from` starts survive interruption, omission, inactivity and
-narrower retries. Keep the earliest unfinished start and required end; completion needs both, even for empty
-history. Later-than-invocation extensions defer. Identical completed empty requests reuse coverage; later targets
-acquire only increments. Successful empty acquisition is neither rejection nor failure.
-Identity changes or explicit refresh can invalidate coverage. Disabling acquisition
-leaves obligations pending. [Exact work contracts](technical-contracts.md#universe-observation-and-work-state).
+narrower retries. Completion requires the earliest unfinished start and required end, even for empty history.
+Later-than-invocation extensions defer. Identical completed empty requests reuse coverage; later targets acquire
+increments. Successful emptiness is neither rejection nor failure. Identity changes/explicit refresh can
+invalidate coverage; disabling acquisition leaves obligations pending. [Work contracts](technical-contracts.md#universe-observation-and-work-state).
 
-Transport failure stays pending with a five-minute delay. Access denial/exact rejection stays blocked until
-`update --retry-blocked`, which also bypasses transport delays, never accepted cutoff restrictions. These
-restrictions span complete groups and daily/standalone phases; switching commands grants no retry. Independent
-groups may finish. Standalone lineage reports unsatisfied coverage/check work; daily update finishes it.
-Correction approval remains generation-bound even after summary removal. [Rejected auxiliary exception](technical-contracts.md#lineage-reuse).
+Transport failures stay pending with a five-minute delay. Access denial/exact rejection stays blocked until
+`update --retry-blocked`, which also bypasses transport delays, never cutoff restrictions. Restrictions span
+complete groups and daily/standalone phases; changing commands grants no retry. Independent groups may finish.
+Standalone lineage reports unsatisfied coverage/check work; daily update finishes it. Correction approval stays
+generation-bound after summary removal. [Rejected auxiliary exception](lineage.md#missing-auxiliary-prices).
 
-After interruption rerun the owning producer; never delete selected artifacts, locks or journals manually.
+After interruption, rerun the owning producer; never manually delete selected artifacts, locks or journals.
 Older targets cannot restart larger unfinished acquisition. Only after authorized out-of-band restore/import,
-with producers stopped, may disposable hints be discarded and explicitly reconstructed. Retain receipts,
-locks, journals and `universe_updates.sqlite3`; rebuild summary separately. Never test restoration over a live store.
+with producers stopped, may disposable hints be discarded/reconstructed. Retain receipts, locks, journals and
+`universe_updates.sqlite3`; rebuild summary separately. Never test restoration over a live store.
 
 ## Focused standalone work
 
 ```bash
-./alpaca-eod universe rebuild --store data_pricing
-./alpaca-eod pricing acquire --store data_pricing --symbol DELL --symbol HPE
-./alpaca-eod lineage update --store data_pricing
-./alpaca-eod lineage inspect --store data_pricing --symbol DELL
+./alpaca-cli-eod universe rebuild --store data_pricing
+./alpaca-cli-eod pricing acquire --store data_pricing --symbol DELL --symbol HPE
+./alpaca-cli-eod lineage update --store data_pricing
+./alpaca-cli-eod lineage inspect --store data_pricing --symbol DELL
 ```
 
-Initialize once. Acquisition requires an explicit compatible/empty store and publishes prices only.
-Initial start is 2016 unless later `--from`; before registration/requests, reject starts before 2016, after
-the resolved final session or excluding held observations. Finish missing boundaries using [setup](#adopt-or-reconstruct-an-existing-store).
+Initialize once. Acquisition requires an explicit compatible/empty store and publishes prices only. Initial
+start is 2016 unless later `--from`; reject starts before 2016, after the resolved final session or excluding
+held observations before registration/requests. Finish missing boundaries through [setup](#adopt-or-reconstruct-an-existing-store).
 
 | Command | Scope |
 |---|---|
@@ -159,97 +148,22 @@ the resolved final session or excluding held observations. Finish missing bounda
 | `pricing refresh` | Check eligible histories, replace differences, finish lineage. |
 | `pricing refresh --symbol TICKER` | Explicit retained-span replacement; follow with lineage. |
 | `lineage update --symbol TICKER` | Complete selected group; may acquire dependency prices. |
-| `lineage update` | Pending/incompatible work; explicit hint reconstruction if needed. |
 | `lineage refresh` | Full selected-group evidence, including older corrections. |
-| `lineage inspect --symbol TICKER` | Offline evidence, no rule replay. |
-| `lineage migrate-policy` | Exact offline 33/59→34/60 receipt promotion; no provider or price/rule execution. |
+| `lineage inspect --symbol TICKER` | Offline published evidence; no rule replay. |
 | `lineage update/refresh --no-pricing-acquisition` | Metadata requests remain possible. |
 
-Pricing has up to three workers sharing one 199-request/minute invocation budget, not an account-wide limit.
-Lineage has one writer/store; others wait. Failed batches retain independent successes. Approved append is
-internal; there is no public append shortcut. [Lock/publication contract](technical-contracts.md#publication-and-recovery).
+Pricing uses up to three workers sharing a 199-request/minute invocation budget, not an account-wide limit.
+Lineage has one writer/store; others wait at its owner lock. The CLI's outer operation gate fails immediately
+when busy. Failed batches retain independent successes. Approved append is internal, with no public shortcut.
+[Lock order and recovery](technical-contracts.md#publication-and-recovery).
 
 ## Read and export
 
 ```bash
-./alpaca-eod resolve --store data_pricing --symbol DELL
-./alpaca-eod read --store data_pricing --symbol DELL --adjustment raw all
-./alpaca-eod catalogue search --store data_pricing DELL
-./alpaca-eod catalogue export --store data_pricing --output ./online.csv
-./alpaca-eod export csv --store data_pricing --plan
-./alpaca-eod export csv --store data_pricing
-./alpaca-eod export csv --store data_pricing --workers 2
-./alpaca-eod export csv --store data_pricing --workers 4
-./alpaca-eod export bloodhound --output ./alpaca.parquet --symbol DELL
+./alpaca-cli-eod resolve --symbol DELL
+./alpaca-cli-eod read --symbol DELL --adjustment raw all
+./alpaca-cli-eod catalogue search DELL
 ```
 
-[Public API](public-api.md) owns identity/date/output semantics. Exit codes: 0 success; 1 failure/incomplete
-work; 2 invalid arguments; standalone reader 3 busy (`--wait` waits).
-
-`export csv` defaults to `exports/csv/` and all online public IDs. Repeat `--public-id ID` for a selected
-trial; `--output DIR` selects another export root. `--from`/`--through` are inclusive date filters.
-`--plan` reads the opened catalogue only and reports selected work without opening pricing payloads or
-creating output. See the [per-identity CSV contract](public-api.md#per-identity-csv-export) for file layout,
-column mappings and publication guarantees.
-
-`--workers` accepts 1 through 4 concurrent complete groups, defaulting to 2. CSV export has no `--wait` option;
-busy source, destination or store operation locks exit immediately with code 3. An export holds the shared
-store operation lock for its whole snapshot; every store-writing CLI command holds the exclusive side for
-its whole operation, so updates exclude exports and other updates. Kernel process exit releases the lock.
-The library uses the same nonblocking CSV behavior. Planning reports the configured workers and maximum
-active groups without opening payloads.
-
-CSV execution and `--plan` emit compact, versioned JSONL on stderr; stdout remains the final JSON result.
-Reporting begins after argument parsing, before CLI contract checks and catalogue access. An `INIT` record
-is flushed immediately. Heartbeat intervals are 10, 60, 120, 180, 240 and then 300 seconds repeatedly: records
-fall at elapsed **10, 70, 190, 370, 610, 910, 1210… seconds**. `--heartbeat-seconds N` selects a fixed interval instead
-(integer seconds, 1–86400). Whole `elapsed_seconds` use the monotonic clock from reporting activation.
-
-The reporter holds one status in memory. Work updates replace it without printing, queuing or resetting
-the timer; a separate timer samples it even while work is waiting. A heartbeat retains the status, so
-unchanged work repeats with a new elapsed time. Every update replaces its context as well, preventing
-values from an earlier phase or work scope from leaking into the next. Invalid or oversized updates leave
-the last valid status unchanged. Brief phases may occur between heartbeats and never appear in the output.
-
-Progress schema `alpaca.lifecycle.progress`, version 4, contains `schema`, `schema_version`,
-`elapsed_seconds`, `next_heart_beat_in_seconds`, `phase` and `message`. The next-heartbeat field reports
-seconds until the next scheduled heartbeat, rounded up to a whole second; it is `null` in terminal error
-and `FINAL_EXIT` records because no further heartbeat is scheduled.
-Only the initial `INIT` envelope includes `ai_agent_read_this`, which directs agents to monitor heartbeats,
-use other monitoring checks only when a heartbeat is more than 10 seconds late, and derive reports from
-heartbeat messages. It also directs agents to update the user only at each heartbeat unless the user
-directs otherwise. Later heartbeats omit this field even if the held phase is still `INIT`.
-During `EXPORT`, `context.estimated_remaining_seconds` is `"TBD"` until completion progress supplies a
-numeric estimate; subsequent estimates remain whole seconds. The initial 10-second heartbeat always
-displays `"TBD"`, regardless of phase or an already available estimate. This display override does not
-replace the held estimate for subsequent heartbeats. Fixed intervals other than 10 seconds are unchanged.
-Optional `current` and `total` always occur together and satisfy
-`0 <= current <= total`; `context` contains only fields registered for the phase. CSV `current`/`total`
-count selected public identities. Phase messages and typed field registrations live in
-[csv_progress.py](../libs/alpaca_cli/csv_progress.py):
-
-| Phase | Work and permitted context |
-|---|---|
-| `INIT` | Reporting activation; no context. |
-| `CATALOGUE` | Open the published online catalogue; no context. |
-| `PLAN` | Select work; catalogue generation, identity/group/source counts, workers/maximum active groups and planned metadata/payload/output bounds. |
-| `EXPORT` | Write CSVs and digests; plan fields, configured workers, completed counts, CSV bytes, column counts and estimated seconds remaining. |
-| `PUBLISH` | Publish the final manifest inside the run directory; completed identity/group/row counts, CSV bytes and column counts. |
-| `FINAL_EXIT` | Immediate termination record with `status`, `exit_code` and `last_phase`. |
-
-On success, reporting stops and flushes one `FINAL_EXIT` with `status: success`, exit code 0. A caught
-failure flushes a separate `alpaca.lifecycle.error` schema, version 4, with `error_type`, `message`, latest
-accepted `phase`, elapsed seconds and available causes/traceback, then `FINAL_EXIT` with `status: error`.
-Busy destinations exit 3; other CSV failures exit 1. Keyboard interruption emits `status: aborted` and
-exits 130. Finalization never waits for the next heartbeat, and no heartbeat follows the final record.
-Writes are serialized and flushed; progress/final records are limited to 4 KiB and errors to 16 KiB,
-including the newline. Oversized error diagnostics are shortened with `truncated: true`.
-Reporting failures do not change the export outcome; abrupt termination or failed stderr writes can
-prevent delivery. This lifecycle currently applies to `export csv`; other commands keep their existing
-progress formats. The reusable reporter is owned by [alpaca_cli](ARCHITECTURE.md#code-ownership).
-
-Parquet needs [PyArrow](../requirements-bloodhound.txt) and an existing output parent outside the source store.
-Default selection is all indexed lineage groups; any rejected identity aborts by default.
-`--include-all-passed` allows output despite rejected identities;
-diagnostics remain stderr. `--replace` permits replacement after successful conversion. Parquet is the sole
-persistent output. [Conversion guarantees and failure modes](technical-contracts.md#parquet-conversion).
+[Public API](public-api.md) owns identity/date semantics. [Exports](exports.md) distinguishes single-history CSV,
+flat online CSV, per-identity CSV runs and standalone Parquet; these selections and guarantees differ.

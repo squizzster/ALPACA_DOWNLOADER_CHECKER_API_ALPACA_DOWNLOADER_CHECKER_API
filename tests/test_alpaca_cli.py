@@ -85,7 +85,7 @@ class CanonicalCliTests(unittest.TestCase):
             check=False,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("alpaca-eod pricing check", result.stderr)
+        self.assertIn("alpaca-cli-eod pricing check", result.stderr)
 
     def test_every_command_help_and_removed_abbreviations(self):
         parser = build_parser()

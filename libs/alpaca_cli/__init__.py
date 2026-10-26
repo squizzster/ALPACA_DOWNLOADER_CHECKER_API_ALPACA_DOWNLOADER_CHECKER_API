@@ -17,7 +17,7 @@ from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 from libs.common.store_lock import StoreBusyError, operation_lock
 
-VERSION = 19
+VERSION = 20
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -71,7 +71,7 @@ def _workers(parser):
 
 def build_parser():
     parser = Parser(
-        prog="alpaca-eod", description="Maintain and read Alpaca EOD pricing and dated security identities."
+        prog="alpaca-cli-eod", description="Maintain and read Alpaca EOD pricing and dated security identities."
     )
     commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
     update = commands.add_parser(
@@ -124,7 +124,7 @@ def build_parser():
     p.add_argument(
         "--heartbeat-seconds",
         type=bounded_integer(1, 86400),
-        help="fixed STDERR heartbeat interval; default intervals are 60,120,180,240,300 then 300 seconds",
+        help="fixed STDERR heartbeat interval; default intervals are 10,60,120,180,240,300 then 300 seconds",
     )
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"

@@ -25,7 +25,9 @@ def _state(connection, *, incomplete=False, old_policy=False):
         raise CatalogueError("incompatible serving catalogue schema; explicit schema migration required")
     row = connection.execute("SELECT body FROM state WHERE id=1").fetchone()
     if row is None:
-        raise CatalogueError("missing serving catalogue state; run alpaca-eod catalogue bootstrap --store PATH")
+        raise CatalogueError(
+            "missing serving catalogue state; run alpaca-cli-eod catalogue bootstrap --store PATH"
+        )
     state = json.loads(row[0])
     if (
         state.get("boundary") != "alpaca_standalone_serving_catalogue"
@@ -35,9 +37,11 @@ def _state(connection, *, incomplete=False, old_policy=False):
     if not isinstance(state.get("generation"), str) or not state["generation"] or not state.get("published_at"):
         raise CatalogueError("invalid serving catalogue selector")
     if not old_policy and state.get("policy") != policy():
-        raise CatalogueError("serving policy changed; run alpaca-eod catalogue rebuild --store PATH")
+        raise CatalogueError("serving policy changed; run alpaca-cli-eod catalogue rebuild --store PATH")
     if not incomplete and state.get("complete") is not True:
-        raise CatalogueError("serving catalogue incomplete; resume alpaca-eod catalogue bootstrap --store PATH")
+        raise CatalogueError(
+            "serving catalogue incomplete; resume alpaca-cli-eod catalogue bootstrap --store PATH"
+        )
     return state
 
 
@@ -107,7 +111,7 @@ def controls(store, *, incomplete=False, recover=False, old_policy=False):
             return {"state": state, "groups": groups, "members": members}
     except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
         raise CatalogueError(
-            "cannot read serving catalogue; run alpaca-eod catalogue bootstrap --store PATH"
+            "cannot read serving catalogue; run alpaca-cli-eod catalogue bootstrap --store PATH"
         ) from error
 
 
@@ -169,7 +173,7 @@ def snapshot(store):
             return {"state": state, "records": records, "groups": groups}
     except (sqlite3.Error, ValueError, KeyError, TypeError) as error:
         raise CatalogueError(
-            "cannot open serving catalogue; run alpaca-eod catalogue bootstrap --store PATH"
+            "cannot open serving catalogue; run alpaca-cli-eod catalogue bootstrap --store PATH"
         ) from error
 
 

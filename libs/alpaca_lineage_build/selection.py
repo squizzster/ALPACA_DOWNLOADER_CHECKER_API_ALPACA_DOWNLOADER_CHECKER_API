@@ -16,7 +16,9 @@ class DependencyGraph:
     def update(self, entries):
         for symbol, entry in entries.items():
             if "sha256" in entry and "group_members" not in entry:
-                raise LineageError("lineage group membership incomplete; run alpaca-eod lineage migrate-index")
+                raise LineageError(
+                    "lineage group membership incomplete; run alpaca-cli-eod lineage migrate-index"
+                )
             for label in self.dependencies.get(symbol, ()):
                 self.dependants[label].discard(symbol)
             for asset in self.assets.get(symbol, ()):

@@ -60,7 +60,7 @@ def _connection(store, *, create=False, readonly=False):
                         db.execute("UPDATE state SET complete=0, revision=revision+1 WHERE singleton=1")
                         db.execute(f"PRAGMA user_version={FORMAT}")
             if db.execute("PRAGMA user_version").fetchone()[0] != FORMAT:
-                raise DownloadError("unsupported pricing check summary; run alpaca-eod summary rebuild")
+                raise DownloadError("unsupported pricing check summary; run alpaca-cli-eod summary rebuild")
             with db:
                 db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
                 yield db
@@ -233,7 +233,7 @@ def refresh_snapshot(store, snapshot=None):
 def read_status(store):
     """Inspect coverage and pending owners without requiring a ready handoff."""
     if not summary_path(store).exists():
-        raise DownloadError("pricing check summary is missing; run alpaca-eod summary rebuild")
+        raise DownloadError("pricing check summary is missing; run alpaca-cli-eod summary rebuild")
     with _connection(store, readonly=True) as db:
         complete = bool(db.execute("SELECT complete FROM state WHERE singleton=1").fetchone()[0])
         token = _token(db)

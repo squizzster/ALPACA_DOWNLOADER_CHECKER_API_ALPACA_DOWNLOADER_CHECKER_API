@@ -61,7 +61,7 @@ def require_complete(index):
             for entry in index["symbols"].values()
         )
     ):
-        raise LineageError("lineage lookup projection incomplete; run alpaca-eod lineage migrate-index")
+        raise LineageError("lineage lookup projection incomplete; run alpaca-cli-eod lineage migrate-index")
 
 
 def migrate_index(store, *, batch_size=128, progress=None):
