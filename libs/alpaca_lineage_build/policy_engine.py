@@ -450,6 +450,7 @@ def correlate_schema_four(
     unavailable_pricing: list[str],
     evidence_generations: dict[str, str],
     pricing_generations: dict[str, str],
+    include_trace: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Execute the schema-v4 frozen-baseline/two-phase contract in memory."""
     cache = CorrelationCache(
@@ -457,7 +458,7 @@ def correlate_schema_four(
         row_correlation_rules=policy.row_rules,
     )
     _register_sources(cache, inputs)
-    phase_one_passes = []
+    phase_one_passes = [] if include_trace else None
     baseline = _correlate_until_stable(
         store,
         inputs,
@@ -472,7 +473,7 @@ def correlate_schema_four(
         symbol for symbol in unresolved if may_have_action_anchored_current_suffix(evidence[symbol])
     )
     rate_evaluations: list[dict[str, Any]] = []
-    quality_report = _unchanged_evidence_report(evidence)
+    quality_report = _unchanged_evidence_report(evidence) if include_trace else {}
     certificates: tuple[ActiveSuffixCertificate, ...] = ()
     certificate_trace: dict[str, Any] = {
         "fact_producers": [],
@@ -525,7 +526,7 @@ def correlate_schema_four(
     else:
         raise CorrelationPolicyError(f"unknown schema-v4 fallback profile {policy.fallback_profile!r}")
 
-    phase_two_passes = []
+    phase_two_passes = [] if include_trace else None
     if not reconciliations and not suffix_sources:
         reports = baseline
     else:
@@ -543,6 +544,9 @@ def correlate_schema_four(
     phase_invariants = _validate_phase_monotonicity(baseline, reports)
     if policy.fallback_profile == CORRECTED_PROFILE and certificates:
         _validate_corrected_certificate_effect(baseline, reports, inputs, certificates)
+
+    if not include_trace:
+        return reports, {}
 
     reconciliation_items = [
         {"symbol": symbol, **decision}
@@ -646,7 +650,7 @@ def evaluate_policy(
             row_correlation_rules=policy.row_rules,
         )
         _register_sources(cache, inputs)
-        phase = []
+        phase = [] if execution_trace is not None else None
         reports = _correlate_until_stable(
             store,
             inputs,
@@ -686,17 +690,21 @@ def evaluate_policy(
                 policy=candidate_policy,
             )
             validate_active_suffix_effect(reports, certificates)
-        trace = {
-            "profile": policy.execution_profile,
-            "single_fixed_point": True,
-            "evidence_quality": evidence_quality,
-            "active_suffix": active_suffix,
-            "phase_one": {
-                "pass_count": len(phase),
-                "passes": phase,
-                "result_sha256": _digest(reports),
-            },
-        }
+        trace = (
+            {
+                "profile": policy.execution_profile,
+                "single_fixed_point": True,
+                "evidence_quality": evidence_quality,
+                "active_suffix": active_suffix,
+                "phase_one": {
+                    "pass_count": len(phase),
+                    "passes": phase,
+                    "result_sha256": _digest(reports),
+                },
+            }
+            if execution_trace is not None
+            else {}
+        )
         projected = candidate_evidence
     else:
         reports, trace = correlate_schema_four(
@@ -708,6 +716,7 @@ def evaluate_policy(
             unavailable_pricing=unavailable_pricing or [],
             evidence_generations=evidence_generations or {},
             pricing_generations=pricing_generations or {},
+            include_trace=execution_trace is not None,
         )
         projected = evidence
 

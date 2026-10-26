@@ -13,7 +13,8 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VERSION = 31
+RUNTIME_VERSION = 32
+VERSION = 31  # Persisted publication and completed-request contract, independent of runtime releases.
 # Version 31 retains the pricing representation. Sources may still select older
 # unchanged boundary receipts; accept those independently of the source version.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
@@ -65,11 +66,15 @@ class InitialPricingUnavailable(DownloadError):
 
 def failure_outcome(error):
     """Keep access denials distinct from exhausted transport/provider failures."""
+    from .failures import RetainedAcquisitionError
+
     cause = error
     status = None
     seen = set()
     while cause is not None and id(cause) not in seen:
         seen.add(id(cause))
+        if isinstance(cause, RetainedAcquisitionError):
+            return {**cause.failure.to_outcome(), "error": str(error)}
         if isinstance(cause, InitialPricingUnavailable):
             return {**cause.evidence, **({"error": str(error)} if cause is not error else {})}
         if isinstance(cause, BarsSymbolUnavailable):
@@ -96,7 +101,7 @@ def failure_outcome(error):
 def validate_version() -> None:
     path = Path(__file__).resolve().parents[2] / "resources/alpaca_pricing_download_change_log.json"
     entries = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(entries, list) or len(entries) != VERSION:
+    if not isinstance(entries, list) or len(entries) != RUNTIME_VERSION:
         raise DownloadError("pricing-download changelog length differs from its version")
     for entry in entries:
         if (

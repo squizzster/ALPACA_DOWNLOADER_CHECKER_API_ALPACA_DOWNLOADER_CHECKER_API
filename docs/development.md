@@ -33,6 +33,8 @@ ambiguity unresolved. Standalone resolution does not establish online availabili
 Behavior/serialized changes require an owning constant bump and exactly one JSON changelog entry with
 `modifications`, no `version` field. One-based array position is the runtime-checked version; readable schemas
 need not be reusable. Documentation-only changes leave versions/changelogs unchanged.
+Pricing and lineage use `RUNTIME_VERSION` for this release bookkeeping; their `VERSION` constants retain the
+[persisted publication contracts](technical-contracts.md#standalone-artifacts).
 
 Constants, compatibility and changelog paths live with their owners: [public API](../alpaca_end_of_day/__init__.py),
 [pricing](../libs/alpaca_pricing_download/contract.py), [lineage](../libs/alpaca_lineage_build/contract.py),

@@ -202,5 +202,10 @@
       "Promote only the exact lineage-33/correlation-59 handoff to lineage 34/correlation 60 when unchanged selected inputs and the pinned policy semantic identity prove identical decisions; otherwise recalculate the complete group.",
       "Expose that exact promotion as a dedicated offline complete-group migration which requires an empty completed update queue, loads no pricing payloads and executes no identity rules, while leaving durable serving-catalogue work for its owning offline command."
     ]
+  },
+  {
+    "modifications": [
+      "Pass completed pricing evidence directly to symbol disposition, including empty views and retained counts during partial reads, without filesystem authentication. Construct detailed policy traces only on request while preserving mandatory phase checks and traced digest semantics. Separate the runtime release from the unchanged lineage-34 publication and correlation-policy identity; existing completed decisions remain authoritative."
+    ]
   }
 ]

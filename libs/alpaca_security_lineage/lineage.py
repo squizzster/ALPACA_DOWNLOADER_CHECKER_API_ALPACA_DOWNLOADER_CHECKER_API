@@ -317,7 +317,7 @@ def build_identity_report(
     warnings = [
         "Alpaca bar rows remain symbol-keyed; this report does not bind individual rows to an asset UUID."
     ]
-    if local_report["downloads"]:
+    if local_report["downloads"] and "published_pricing" not in local_report:
         warnings.append(
             "Local gzip SHA-256 authentication was not performed; stat_matches_sidecar is only a metadata check."
         )
@@ -327,7 +327,9 @@ def build_identity_report(
         )
     if not local_report["present"]:
         warnings.append(f"No local end-of-day directory exists for {symbol}.")
-    if any(not item["stat_matches_sidecar"] for item in local_report["downloads"]):
+    if "published_pricing" not in local_report and any(
+        not item["stat_matches_sidecar"] for item in local_report["downloads"]
+    ):
         warnings.append("At least one local gzip/sidecar pair is missing, unreadable, or stat-inconsistent.")
 
     symbol_disposition = classify_symbol_disposition(

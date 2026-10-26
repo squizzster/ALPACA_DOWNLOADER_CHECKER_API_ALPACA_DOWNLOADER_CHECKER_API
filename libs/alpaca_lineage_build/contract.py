@@ -20,7 +20,8 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-VERSION = 34
+RUNTIME_VERSION = 35
+VERSION = 34  # Persisted publication and policy contract, independent of runtime releases.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -101,7 +102,7 @@ def validate_version() -> None:
 
     path = Path(__file__).resolve().parents[2] / "resources/alpaca_lineage_build_change_log.json"
     entries = json.loads(path.read_bytes())
-    if not isinstance(entries, list) or len(entries) != VERSION:
+    if not isinstance(entries, list) or len(entries) != RUNTIME_VERSION:
         raise LineageError("standalone lineage changelog/version mismatch")
     for entry in entries:
         if (

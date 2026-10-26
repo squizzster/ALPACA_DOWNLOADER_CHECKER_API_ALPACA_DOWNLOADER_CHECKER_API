@@ -10,11 +10,13 @@ import unittest
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cli_support import export_main as main
 
 from alpaca_end_of_day import StandaloneReaderError
+from libs.alpaca_bloodhound_export import VERSION
 from libs.alpaca_bloodhound_export.command_line import SnapshotChangedError, export, schema
 from libs.alpaca_bloodhound_export.factors import ADJUSTMENTS
 from libs.alpaca_bloodhound_export.memory import ExportMemoryError, OutputMemory
@@ -252,6 +254,103 @@ class BloodhoundParquetTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertEqual(list(self.root.iterdir()), [self.store])
 
+    def test_progress_failure_after_each_publication_mode_returns_committed_success(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                if replace:
+                    self.output.write_bytes(b"previous export")
+
+                def progress(message):
+                    if message.startswith("published "):
+                        raise BrokenPipeError("progress sink closed")
+
+                result = export(self.reader, self.output, replace=replace, progress=progress)
+                table, metadata = self.read_file()
+                self.assertEqual(table.num_rows, result["rows"])
+                self.assertEqual(metadata["rows"], 2)
+                self.assertEqual(
+                    result["diagnostic_errors"],
+                    [
+                        {
+                            "stage": "publication_progress",
+                            "error_type": "BrokenPipeError",
+                            "message": "progress sink closed",
+                        }
+                    ],
+                )
+                self.assertFalse(list(self.root.glob("*.tmp")))
+                self.output.unlink()
+
+    def test_temporary_cleanup_failure_after_commit_is_a_diagnostic(self):
+        original = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.suffix == ".tmp":
+                raise OSError("temporary cleanup failed")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", unlink):
+            result = export(self.reader, self.output)
+        self.assertEqual(self.read_file()[0].num_rows, 2)
+        self.assertEqual(
+            result["diagnostic_errors"],
+            [{"stage": "temporary_cleanup", "error_type": "OSError", "message": "temporary cleanup failed"}],
+        )
+
+    def test_progress_failure_before_commit_preserves_the_previous_output(self):
+        original = b"previous export"
+        self.output.write_bytes(original)
+
+        def progress(message):
+            if message.startswith("serializing "):
+                raise BrokenPipeError("pre-publication failure")
+
+        with self.assertRaisesRegex(BrokenPipeError, "pre-publication failure"):
+            export(self.reader, self.output, replace=True, progress=progress)
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_cli_post_commit_reporting_failures_keep_success_status(self):
+        from io import StringIO
+
+        from libs.alpaca_bloodhound_export.command_line import run_arguments
+
+        class DiagnosticSink:
+            def write(self, text):
+                if text.startswith(("published ", "cache ", "peak_rss_mib=")):
+                    raise BrokenPipeError("diagnostic sink closed")
+                return len(text)
+
+            def flush(self):
+                pass
+
+        stdout = StringIO()
+        args = SimpleNamespace(
+            cache_mib=0,
+            memory_mib=256,
+            store=self.store,
+            wait=False,
+            output=self.output,
+            symbol=[],
+            public_id=None,
+            start=None,
+            end=None,
+            include_all_passed=False,
+            replace=False,
+        )
+        with (
+            patch("libs.alpaca_bloodhound_export.command_line.StandaloneReader", return_value=self.reader),
+            patch("sys.stderr", DiagnosticSink()),
+            patch("sys.stdout", stdout),
+        ):
+            code = run_arguments(args)
+        self.assertEqual(code, 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(self.read_file()[0].num_rows, 2)
+        self.assertEqual(
+            [item["stage"] for item in result["diagnostic_errors"]],
+            ["publication_progress", "cache_reporting", "memory_reporting"],
+        )
+
     def test_acquisition_creates_no_output_and_serialization_is_one_packed_write(self):
         import pyarrow.parquet as pq
 
@@ -329,7 +428,7 @@ class BloodhoundParquetTests(unittest.TestCase):
         self.assertEqual(result["rows"], 2)
         self.assertEqual(metadata["identities"][0]["public_id"], public_id(2**53))
         self.assertNotIn("partial", metadata)
-        self.assertEqual(metadata["converter_version"], 7)
+        self.assertEqual(metadata["converter_version"], VERSION)
         self.assertEqual(metadata["price_basis"], "alpaca_all_preserved")
         self.assertEqual(metadata["volume_basis"], "alpaca_raw_as_traded")
         self.assertEqual(metadata["dated_type_and_exchange"], "UNKNOWN")
@@ -570,7 +669,10 @@ class BloodhoundParquetTests(unittest.TestCase):
         ):
             status = main(["--output", str(self.output), "--include-all-passed"])
         self.assertEqual(status, 0)
-        self.assertEqual(json.loads(stdout.getvalue()), {"output": str(self.output), "rows": 2, "identities": 1})
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {"output": str(self.output), "rows": 2, "identities": 1, "diagnostic_errors": []},
+        )
         self.assertIn(f"rejected source=BAD public_id={public_id(200)}", stderr.getvalue())
         self.assertIn("conflicting source observations", stderr.getvalue())
         _, metadata = self.read_file()

@@ -7,6 +7,7 @@ The source symbol scopes a published dependency group; it never becomes an ID.
 import re
 from collections import defaultdict
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import date
 from pathlib import Path, PurePosixPath
 
@@ -184,12 +185,14 @@ def _group_evidence(assignments, sources, receipts, generations, generation):
             "evidence": receipts[symbol]["evidence"],
             "assignments": list(compact.values()),
         }
-    return {
-        "generation": generation,
-        "source_symbols": sorted(sources),
-        "securities": securities,
-        "sources": projected,
-    }
+    return deepcopy(
+        {
+            "generation": generation,
+            "source_symbols": sorted(sources),
+            "securities": securities,
+            "sources": projected,
+        }
+    )
 
 
 def _selected_path(cache, root, relative):

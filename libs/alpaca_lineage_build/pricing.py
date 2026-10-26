@@ -18,6 +18,7 @@ from libs.alpaca_pricing_download.contract import (
     month_of,
     timestamp,
 )
+from libs.alpaca_pricing_download.evidence import PublishedPricingEvidence
 from libs.alpaca_pricing_download.handoff import load_published_boundary, load_published_views
 from libs.alpaca_pricing_download.storage import load_source, regular_path
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
@@ -112,11 +113,6 @@ def load_pricing(
                 "sessions": len(values),
                 "from": values[0][0] if values else None,
                 "to": values[-1][0] if values else None,
-                "sidecar_present": True,
-                "sidecar_readable": True,
-                "gzip_present": bool(values),
-                "stat_matches_sidecar": True,
-                "pipeline_receipt_matches": False,
                 "integrity_failure": None,
             }
         )
@@ -124,7 +120,6 @@ def load_pricing(
             prior = prior_summary[adjustment]
             descriptors[-1]["rows"] += prior["rows"]
             descriptors[-1]["sessions"] = descriptors[-1]["rows"]
-            descriptors[-1]["gzip_present"] = bool(descriptors[-1]["rows"])
             descriptors[-1]["from"] = prior["first_timestamp"] or descriptors[-1]["from"]
             descriptors[-1]["to"] = descriptors[-1]["to"] or prior["last_timestamp"]
         elif active_only:
@@ -138,7 +133,6 @@ def load_pricing(
             ]
             descriptors[-1]["rows"] += sum(item["row_count"] for item in earlier)
             descriptors[-1]["sessions"] = descriptors[-1]["rows"]
-            descriptors[-1]["gzip_present"] = bool(descriptors[-1]["rows"])
             if earlier:
                 descriptors[-1]["from"] = earlier[0]["first_timestamp"]
                 if not values:
@@ -149,6 +143,12 @@ def load_pricing(
         "download_count": len(descriptors),
         "download_sha256_authentication_performed": False,
         "published_source_trusted": True,
+        "published_pricing": PublishedPricingEvidence(
+            symbol=symbol,
+            generation=generation,
+            **context,
+            row_counts=tuple((item["adjustment"], item["rows"]) for item in descriptors),
+        ).to_report(),
         "downloads": descriptors,
         "manifest_errors": [],
     }

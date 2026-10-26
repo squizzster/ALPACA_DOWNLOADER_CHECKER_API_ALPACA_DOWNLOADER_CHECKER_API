@@ -252,7 +252,8 @@ class PricingCliTests(unittest.TestCase):
         initialize_store(self.store)
         before = begin_checks(self.store)
         symbols = [f"T{number}" for number in range(6000)]
-        request = request_key(symbols, "2026-10-14", None)
+        # Runtime repairs must not invalidate the existing completed request contract.
+        request = {"version": 31, "symbols": symbols, "end_exclusive": "2026-10-14", "from": None}
         remember_batch(self.store, request, before, [])
         with (
             patch.object(command_line, "selected_symbols", return_value=symbols),

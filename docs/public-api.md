@@ -55,6 +55,9 @@ with reader.open_group("DELL") as group:
 group.check_current()  # Optional freshness check before downstream publication.
 ```
 
+Public summary, history and evidence projections are independent nested values. Mutating a returned projection
+cannot change the open group's later reads or its captured metadata.
+
 Separate calls may select different generations. Busy groups raise `ReaderBusyError`, or wait with `wait=True`;
 stale/incomplete/incompatible publications raise `StandaloneReaderError`. `cache_bytes` defaults to zero;
 `cache_info()` reports bounded RAM retention, and group `set_cache_limit` stays within that cap, not a total-process

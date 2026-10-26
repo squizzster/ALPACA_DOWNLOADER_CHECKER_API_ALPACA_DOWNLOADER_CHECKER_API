@@ -170,5 +170,10 @@
     "modifications": [
       "Accept existing version-31 pricing sources, endpoint validators and boundary receipts using their unchanged representation. Preserve support for retained older receipts selected by newer sources, without rewriting stored data, repeating upstream authentication or weakening rejection of unknown future formats."
     ]
+  },
+  {
+    "modifications": [
+      "Expose a compact, generation-bound completed-pricing evidence handoff with request scope and all eight row counts. Retain immutable acquisition failure facts across cohorts and reconstruct fresh exceptions without holding response buffers or tracebacks. Separate runtime release numbering from the unchanged pricing-31 publication format and preserve all supported retained receipts."
+    ]
   }
 ]

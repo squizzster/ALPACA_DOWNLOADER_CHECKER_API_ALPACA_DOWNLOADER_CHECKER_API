@@ -41,6 +41,16 @@ Pricing version 31 retains the existing representation and is readable in place.
 select older unchanged boundary receipts; their version need not equal the source version. Reading compatible
 publications requires no migration, relabeling or price rewrite. Unknown future versions fail closed.
 
+Pricing and lineage runtime releases are separate from their persisted publication versions. Implementation
+repairs preserve the pricing-31 and lineage-34 formats and the accepted correlation-policy identity; a release
+bump alone does not invalidate completed decisions or authorize reconstruction.
+
+The pricing adapter supplies disposition with a compact completed-publication handoff: selected generation,
+symbol, request scope and exact row counts for all eight views, including zero. Counts cover retained history
+even when correlation consumes only an added range. The classifier checks this handoff's schema and scope;
+it does not reopen payloads, inspect sidecars or repeat authentication. Invalid handoffs remain unresolved.
+Existing completed lineage evidence stays authoritative; refreshed selected work receives the corrected projection.
+
 Ordinary updates compare every view's first/last endpoints; mismatch requires full replacement.
 The integrated live check compares only the summary's last `all` row; any changed field requires all-view
 retained-span replacement before append. These checks do not detect every possible interior historical correction.
@@ -55,6 +65,8 @@ A full replacement that empties a previously nonempty view needs a bounded fresh
 producer. Ordinary empty appends and initial empty histories retain batched acquisition.
 Completed request executors release response bodies with their consumer; request-size splits preserve ordered
 pagination without retaining earlier acquisition cohorts through recursive closures or handled tracebacks.
+Failures retained across cohorts contain immutable scalar facts. Consumers reconstruct fresh exceptions from
+those facts, preserving outcome and retry classification without retaining completed response buffers.
 
 [Append approval](../libs/alpaca_pricing_download/append.py) binds checked source generations to selected missing
 intervals. Publication rechecks generations under ticker locks even when the last row is unchanged.
@@ -170,6 +182,10 @@ The producer preserves all accepted dated labels independently, including ambigu
 these decisions without repeating selection or activity checks. Versions outside the one exact compatible
 33/59 transition require a selected-group rebuild using retained evidence and prices; subsequent unchanged groups
 reuse the completed policy-bound decisions.
+
+Policy evaluation builds detailed row traces, pass digests and audit summaries only when the caller requests
+an execution trace. Mandatory phase and certificate checks still run without tracing. This changes neither
+published decision digests nor the content of an explicitly requested trace.
 
 Complete established correlation is evaluated before either occupancy fallback. For a source that remains
 unresolved, a reused active label may be bounded from its first positive provider action after all competing UUID
@@ -375,4 +391,7 @@ Convert full histories before filtering. Ambiguous labels or incompatible factor
 ID collisions, snapshot changes, memory exhaustion or writer failures abort the export.
 Accepted output stays within the RAM allowance, serializes
 once, checks source freshness and installs atomically; no spill, diagnostic sidecar or Bloodhound registration.
+Successful installation is authoritative. Later progress, temporary-cleanup or CLI-reporting failures are
+returned in `diagnostic_errors` without changing committed export success. Failures before installation still
+abort publication and preserve an existing destination.
 [Commands and output constraints](operations.md#read-and-export).

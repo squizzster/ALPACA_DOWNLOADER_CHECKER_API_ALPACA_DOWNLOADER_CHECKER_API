@@ -112,6 +112,23 @@ class StandaloneGroupTests(unittest.TestCase):
             )
         group.check_current()
 
+    def test_mutating_nested_evidence_cannot_change_histories_or_snapshot_metadata(self):
+        before = snapshot(self.store)
+        with self.reader.open_group("TEST") as group:
+            summary = group.summary
+            identifier = summary["securities"][0]["public_id"]
+            expected = group.get_histories(public_id=identifier)
+            evidence = group.evidence
+            expected_evidence = group.evidence
+            for assignment in evidence["sources"]["TEST"]["assignments"]:
+                assignment["security_identity"]["security_id"] = "a" * 64
+            evidence["sources"]["TEST"]["pricing_request"]["asof"] = "2000-01-01"
+            evidence["sources"]["TEST"]["evidence"]["identities"].clear()
+            self.assertEqual(group.summary, summary)
+            self.assertEqual(group.get_histories(public_id=identifier), expected)
+            self.assertEqual(group.evidence, expected_evidence)
+        self.assertEqual(snapshot(self.store), before)
+
     def test_freshness_after_close_never_opens_lineage_receipts_boundaries_or_prices(self):
         with self.reader.open_group("TEST") as group:
             pass

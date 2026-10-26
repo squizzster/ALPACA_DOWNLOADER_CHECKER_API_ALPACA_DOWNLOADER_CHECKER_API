@@ -1,8 +1,10 @@
 """Retained acquisitions share requests without changing the ordinary producer checks."""
 
 import copy
+import gc
 import tempfile
 import unittest
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -10,9 +12,16 @@ from urllib.error import HTTPError
 
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
-from libs.alpaca_pricing_download import acquire, append, storage
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS, BarsSymbolUnavailable, timestamp
+from libs.alpaca_pricing_download import acquire, append, http, refresh, storage
+from libs.alpaca_pricing_download.contract import (
+    ADJUSTMENTS,
+    BarsSymbolUnavailable,
+    DownloadError,
+    failure_outcome,
+    timestamp,
+)
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
+from libs.alpaca_pricing_download.failures import AcquisitionFailure
 from libs.alpaca_pricing_download.http import BarsClient
 
 
@@ -63,6 +72,82 @@ class RetainedBatchTests(unittest.TestCase):
             client=self.client,
             progress=self.observe,
         )
+
+    def test_retained_failures_do_not_keep_completed_responses_across_cohorts(self):
+        selected = {}
+        for symbol in ("AAA", "BBB"):
+            root = self.store / "end_of_day/pricing" / symbol
+            source = storage.load_source(root, symbol)
+            selected[symbol] = source, storage.read_validator(root, source)
+        observations, second_batch_alive = [], []
+        original_completed = http.CompletedBars
+        acquisition_pages = 0
+
+        def completed(*args, **kwargs):
+            value = original_completed(*args, **kwargs)
+            if self.phase == "retained_history_acquisition" and value.symbol == "AAA":
+                observations.append(weakref.ref(value))
+            return value
+
+        def page(params):
+            nonlocal acquisition_pages
+            if self.phase == "retained_history_acquisition":
+                if params["symbols"] == "AAA":
+                    acquisition_pages += 1
+                    if acquisition_pages == 8:
+                        raise DownloadError("eighth view failed")
+                elif params["symbols"] == "BBB" and not second_batch_alive:
+                    gc.collect()
+                    second_batch_alive.append(sum(ref() is not None for ref in observations))
+            return self.page(params)
+
+        with (
+            patch.object(append, "MAX_SYMBOLS", 1),
+            patch.object(http, "CompletedBars", completed),
+            patch.object(self.client, "_get", page),
+        ):
+            batches = refresh.acquire_retained(
+                selected,
+                timestamp("2026-10-17T00:00:00Z"),
+                client=self.client,
+                metrics={},
+                progress=self.observe,
+            )
+            members, consumer, failures = next(batches)
+            self.assertEqual(members, ["AAA"])
+            failure = failures["AAA"][0]
+            self.assertIsInstance(failure, AcquisitionFailure)
+            self.assertEqual(failure_outcome(failure.exception())["error"], "eighth view failed")
+            del consumer
+            members, consumer, retained = next(batches)
+            self.assertEqual(members, ["BBB"])
+            self.assertIs(retained, failures)
+            del consumer, retained
+            batches.close()
+        gc.collect()
+        self.assertEqual(len(observations), 7)
+        self.assertEqual(second_batch_alive, [0])
+        self.assertTrue(all(ref() is None for ref in observations))
+        self.assertIn("AAA", failures)  # Failure facts remain useful after buffers are released.
+
+    def test_failure_records_preserve_outcomes_and_create_fresh_exceptions(self):
+        for error in (
+            DownloadError("transport exhausted"),
+            HTTPError("fixture", 403, "denied", {}, None),
+            BarsSymbolUnavailable("AAA", 400),
+        ):
+            with self.subTest(error=type(error).__name__):
+                expected = failure_outcome(error)
+                record = AcquisitionFailure.from_error(error)
+                first, second = record.exception(), record.exception()
+                self.assertIsNot(first, second)
+                self.assertEqual(failure_outcome(first), expected)
+                try:
+                    raise first
+                except DownloadError:
+                    pass
+                self.assertIsNone(second.__traceback__)
+                self.assertEqual(failure_outcome(record.exception()), expected)
 
     def test_four_histories_use_32_shared_requests_instead_of_128_and_keep_cold_payloads(self):
         before = snapshot(self.store)

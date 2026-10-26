@@ -42,5 +42,10 @@
       "Share an explicit memory allowance between retained output and dynamically limited decoded-data caches with reserved working headroom; memory exhaustion aborts the entire export without omissions or disk spill.",
       "Defer all output-file creation until collection succeeds, then retain post-serialization freshness checks and atomic publication; progress and memory diagnostics remain stderr-only."
     ]
+  },
+  {
+    "modifications": [
+      "Treat successful Parquet installation as the authoritative result. Return post-publication progress, temporary-cleanup and CLI-reporting failures as diagnostic_errors without changing committed export success; preserve pre-publication failures and the existing output on failed replacement."
+    ]
   }
 ]

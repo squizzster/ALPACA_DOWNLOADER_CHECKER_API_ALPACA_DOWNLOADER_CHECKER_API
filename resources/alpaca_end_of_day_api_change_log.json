@@ -106,5 +106,10 @@
     "modifications": [
       "Consume the lineage producer's published numerical source selections across all views without repeating source authority decisions; retain dated ticker identity and window-independent history."
     ]
+  },
+  {
+    "modifications": [
+      "Return independent nested evidence projections from group snapshots so consumer mutations cannot alter later histories, metadata, or the retained snapshot."
+    ]
   }
 ]

@@ -272,7 +272,7 @@ def acquire_selected(
                     try:
                         failure, exact_fallback = failures.get(symbol, (None, False))
                         if failure is not None and not exact_fallback:
-                            raise failure
+                            raise failure.exception()
                         value = download_pricing(
                             store,
                             symbol,

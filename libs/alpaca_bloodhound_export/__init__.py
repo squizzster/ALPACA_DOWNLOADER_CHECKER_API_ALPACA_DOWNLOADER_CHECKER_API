@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-VERSION = 7
+VERSION = 8
 
 
 def validate_version():

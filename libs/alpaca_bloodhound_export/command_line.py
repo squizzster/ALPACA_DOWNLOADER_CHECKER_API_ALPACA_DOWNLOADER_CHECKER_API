@@ -25,6 +25,14 @@ def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _diagnose(errors, stage, callback):
+    """A diagnostic cannot undo a completed publication."""
+    try:
+        callback()
+    except Exception as error:
+        errors.append({"stage": stage, "error_type": type(error).__name__, "message": str(error)})
+
+
 def schema():
     import pyarrow as pa
 
@@ -101,6 +109,8 @@ def export(
     configured_cache = reader.cache_info().get("maximum_bytes", 0)
     output_schema = schema()
     temporary = None
+    published = False
+    diagnostic_errors = []
     mappings, row_count = [], 0
     try:
         with collected:
@@ -255,20 +265,28 @@ def export(
         else:
             # Atomic no-clobber publication; the temporary name is then removed.
             os.link(temporary, output)
-            temporary.unlink()
+        published = True
         if progress:
-            progress(
-                f"published {len(mappings)} identities; {row_count} rows; "
-                f"{failure_count} source/identity checks rejected"
+            _diagnose(
+                diagnostic_errors,
+                "publication_progress",
+                lambda: progress(
+                    f"published {len(mappings)} identities; {row_count} rows; "
+                    f"{failure_count} source/identity checks rejected"
+                ),
             )
         return {
             "output": str(output),
             "rows": row_count,
             "identities": len(mappings),
+            "diagnostic_errors": diagnostic_errors,
         }
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            if published:
+                _diagnose(diagnostic_errors, "temporary_cleanup", lambda: temporary.unlink(missing_ok=True))
+            else:
+                temporary.unlink(missing_ok=True)
 
 
 def run_arguments(args):
@@ -292,9 +310,18 @@ def run_arguments(args):
             progress=lambda value: print(value, file=sys.stderr, flush=True),
             memory_bytes=args.memory_mib * 1024**2,
         )
-        print("cache " + _json(reader.cache_info()), file=sys.stderr)
-        print(f"peak_rss_mib={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.2f}", file=sys.stderr)
-        print(_json(result))
+        errors = result["diagnostic_errors"]
+        _diagnose(
+            errors, "cache_reporting", lambda: print("cache " + _json(reader.cache_info()), file=sys.stderr)
+        )
+        _diagnose(
+            errors,
+            "memory_reporting",
+            lambda: print(
+                f"peak_rss_mib={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.2f}", file=sys.stderr
+            ),
+        )
+        _diagnose(errors, "result_reporting", lambda: print(_json(result)))
         return 0
     except ImportError as error:
         print(f"error: install requirements-bloodhound.txt with Python 3.11: {error}", file=sys.stderr)

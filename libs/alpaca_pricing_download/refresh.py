@@ -27,6 +27,7 @@ from .download import (
     established_pricing_rejection,
 )
 from .endpoints import endpoints_of
+from .failures import AcquisitionFailure
 from .responses import completed_bars
 from .storage import load_source, read_validator, regular_path, ticker_lock
 
@@ -252,7 +253,7 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
                         and isinstance(error, BarsSymbolUnavailable)
                         else error
                     )
-                    failures[symbol] = (failure, exact_fallback)
+                    failures[symbol] = (AcquisitionFailure.from_error(failure), exact_fallback)
 
     for symbol, (source, endpoints) in selected.items():
         asof = acquisition_asof(source, end)

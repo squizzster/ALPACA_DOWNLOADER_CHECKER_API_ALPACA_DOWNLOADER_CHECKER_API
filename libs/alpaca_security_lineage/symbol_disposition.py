@@ -1,6 +1,9 @@
 from hashlib import sha256
 from typing import Any
 
+from libs.alpaca_pricing_download.contract import DownloadError
+from libs.alpaca_pricing_download.evidence import PublishedPricingEvidence
+
 MARKET_DATA_SERIES_ID_SCHEME_VERSION = 1
 
 ALPACA_ASSET_IDENTITY_AVAILABLE = "alpaca_asset_identity_available"
@@ -144,7 +147,27 @@ def _input_symbol_asset(
     return matches[0] if len(matches) == 1 else None
 
 
-def _local_market_data_evidence(local_report: dict[str, Any]) -> dict[str, Any]:
+def _local_market_data_evidence(local_report: dict[str, Any], symbol: str) -> dict[str, Any]:
+    if "published_pricing" in local_report:
+        try:
+            published = PublishedPricingEvidence.from_report(local_report["published_pricing"])
+            if published.symbol != symbol:
+                raise ValueError("published pricing belongs to another symbol")
+        except (ValueError, DownloadError):
+            # An invalid current handoff cannot fall back to legacy filesystem flags.
+            return _local_market_data_evidence({}, symbol)
+        counts = dict(published.row_counts)
+        return {
+            "download_count": len(counts),
+            "complete_row_count_evidence": True,
+            "complete_request_scope_evidence": True,
+            "complete_adjustment_coverage": True,
+            "nonempty_download_count": sum(count > 0 for count in counts.values()),
+            "maximum_rows": max(counts.values()),
+            "feeds": [published.feed],
+            "timeframes": [published.timeframe],
+            "adjustments": sorted(counts),
+        }
     downloads = local_report.get("downloads")
     if not isinstance(downloads, list):
         downloads = []
@@ -209,7 +232,7 @@ def classify_symbol_disposition(
     """Classify recurring treatment without inventing missing asset identity."""
     lookup_evidence = _input_symbol_asset_lookup(symbol, asset_lookups)
     input_asset = _input_symbol_asset(symbol, asset_lookups)
-    local_evidence = _local_market_data_evidence(local_report)
+    local_evidence = _local_market_data_evidence(local_report, symbol)
     usable_asset_ids = sorted(
         {
             identity["id"]
