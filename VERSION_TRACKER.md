@@ -10,6 +10,7 @@ Runtime validators check one-based changelog array position against the owning c
 |---|---|
 | [Public API](alpaca_end_of_day/__init__.py): `API_VERSION` | [API history](resources/alpaca_end_of_day_api_change_log.json) |
 | [CLI](libs/alpaca_cli/__init__.py): `VERSION` | [CLI history](resources/alpaca_cli_change_log.json) |
+| [Heartbeat reporting](libs/alpaca_heartbeat/__init__.py): `VERSION` | [Heartbeat history](resources/alpaca_heartbeat_change_log.json) |
 | [Pricing](libs/alpaca_pricing_download/contract.py): `RUNTIME_VERSION` | [Pricing history](resources/alpaca_pricing_download_change_log.json) |
 | [Live check](libs/alpaca_pricing_download/live_check.py): `VERSION` | [Live-check history](resources/alpaca_live_check_experiment_change_log.json) |
 | [Lineage](libs/alpaca_lineage_build/contract.py): `RUNTIME_VERSION` | [Lineage history](resources/alpaca_lineage_build_change_log.json) |
@@ -35,7 +36,7 @@ to make numbers agree.
 - [Policy provenance](libs/alpaca_lineage_build/correlation_policy_contract.py): serialized identity of the
   [canonical YAML](resources/alpaca_security_correlation_policy.yaml).
 - Independent schemas remain with their owners: [CSV](alpaca_end_of_day/_csv_export.py) `SCHEMA_VERSION`,
-  [lifecycle](libs/alpaca_cli/lifecycle.py) `SCHEMA_VERSION`,
+  [lifecycle](libs/alpaca_heartbeat/__init__.py) `SCHEMA_VERSION`,
   [identity evidence](libs/alpaca_security_lineage/settings.py) `REPORT_VERSION`.
 
 Dependency pins: [production](requirements.txt), [Parquet](requirements-bloodhound.txt),

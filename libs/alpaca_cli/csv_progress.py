@@ -1,6 +1,11 @@
 """CSV operation phases and the translation of producer progress into status."""
 
-from .lifecycle import Phase
+from libs.alpaca_heartbeat import Phase
+
+INITIAL_MESSAGE = (
+    "The CSV Exporter system has successfully started, typically report this back to the user "
+    "where relevant to do so."
+)
 
 _COUNTS = {
     name: int for name in ("identities", "groups", "rows", "csv_bytes", "physical_columns", "logical_columns")

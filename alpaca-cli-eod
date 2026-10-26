@@ -6,6 +6,7 @@ import sys
 sys.dont_write_bytecode = True
 
 from libs.alpaca_cli import main  # noqa: E402
+from libs.alpaca_heartbeat import run_cli  # noqa: E402
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_cli(main))

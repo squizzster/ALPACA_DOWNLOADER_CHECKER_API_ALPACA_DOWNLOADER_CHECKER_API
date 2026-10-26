@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from libs.alpaca_cli.csv_progress import PHASES, progress_callback
-from libs.alpaca_cli.lifecycle import LifecycleReporter, Phase
+from libs.alpaca_heartbeat import LifecycleReporter, Phase
 
 
 class Clock:
@@ -77,8 +77,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(records[0]["elapsed_seconds"], 0)
         self.assertEqual(
             records[0]["message"],
-            "The CSV Exporter system has successfully started, typically report this back to the user "
-            "where relevant to do so.",
+            "Operation started.",
         )
         self.assertNotIn("current", records[0])
         self.assertNotIn("total", records[0])

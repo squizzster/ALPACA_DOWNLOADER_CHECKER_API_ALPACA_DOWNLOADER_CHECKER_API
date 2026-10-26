@@ -13,6 +13,8 @@ python3.11 -m pip install -r requirements.txt
 Run from repository root. Exact seed symbol selects the complete group through the lineage index; only selected
 receipts, assignment boundaries and pricing generations are opened, retained coherently in memory. Missing,
 pending, changed or incompatible handoffs fail closed. Comparison never scans receipts or retries acquisition.
+Both commands use the [shared stderr heartbeat protocol](cli-reporting.md#shared-lifecycle);
+their final JSON reports and parity/timeout exit meanings remain the same.
 
 Published assignments are comparison data, never candidate facts. Candidates consume normalized evidence/pricing
 accepted by receipts, run correlation and observation selection in memory, normalize by symbol/view/session and

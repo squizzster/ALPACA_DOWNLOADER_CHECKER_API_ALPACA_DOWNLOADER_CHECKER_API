@@ -4,6 +4,8 @@ import csv
 import json
 import sys
 
+from libs.alpaca_heartbeat import diagnostic
+
 from . import ADJUSTMENTS, ReaderBusyError, StandaloneReader, StandaloneReaderError
 
 
@@ -55,9 +57,9 @@ def run_arguments(args):
         else:
             print(json.dumps(result, indent=2, allow_nan=False))
     except ReaderBusyError as error:
-        print(f"busy: {error}", file=sys.stderr)
+        diagnostic(getattr(args, "_lifecycle", None), f"busy: {error}", level="error")
         return 3
     except (StandaloneReaderError, RuntimeError, OSError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        diagnostic(getattr(args, "_lifecycle", None), f"error: {error}", level="error")
         return 1
     return 0

@@ -612,7 +612,11 @@ class BloodhoundParquetTests(unittest.TestCase):
         reader.assert_called_once_with(self.store, wait=False, cache_bytes=2048 * 1024**2)
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(stdout.getvalue())["rows"], 2)
-        self.assertIn("processed 1/1 source locators; converted 1 identities", stderr.getvalue())
+        records = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        self.assertEqual(records[0]["phase"], "INIT")
+        self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
+        self.assertEqual(records[-1]["status"], "success")
+        self.assertEqual(records[-1]["last_phase"], "EXPORT")
         table, metadata = self.read_file()
         self.assertEqual(table.num_rows, 2)
         self.assertNotIn("partial", metadata)

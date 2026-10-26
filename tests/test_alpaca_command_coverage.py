@@ -304,7 +304,11 @@ class CommandCoverageTests(unittest.TestCase):
                 guards.enter_context(patch.object(module, "connect_sqlite", side_effect=readonly))
             code, report, errors = self.invoke(case, "status")
         self.assertEqual(snapshot(case.store), before)
-        self.assertFalse(errors, errors)
+        records = [json.loads(line) for line in errors.splitlines()]
+        self.assertEqual(records[0]["phase"], "INIT")
+        self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
+        self.assertEqual(records[-1]["exit_code"], code)
+        self.assertEqual(records[-1]["last_phase"], "STATUS")
         self.assertLessEqual(len(calls), 4)
         return code, report
 

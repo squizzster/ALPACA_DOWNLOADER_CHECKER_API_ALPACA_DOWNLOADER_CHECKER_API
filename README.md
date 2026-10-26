@@ -14,7 +14,7 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Operations](docs/operations.md): setup, `./alpaca-cli-eod update`, cutoffs, recovery and focused commands.
 - [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
 - [Exports](docs/exports.md): CSV/Parquet selection, formats, memory, locks and publication guarantees.
-- [CLI reports](docs/cli-reporting.md): completion, exit codes, progress and CSV heartbeats.
+- [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.
 
 ## Understand the system
 

@@ -7,6 +7,8 @@ import sys
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
+from libs.alpaca_heartbeat import diagnostic
+
 from .completion import completed_batch, remember_batch, request_key
 from .context import accept_context
 from .contract import DownloadError, failure_outcome, symbol_label
@@ -33,9 +35,9 @@ def selected_symbols(arguments) -> list[str]:
     return symbols
 
 
-def run_arguments(arguments, *, registration_context=None):
+def run_arguments(arguments, *, registration_context=None, progress=None):
     if registration_context is None:
-        return _run_arguments(arguments)
+        return _run_arguments(arguments, progress=progress)
     try:
         selected = tuple(selected_symbols(arguments))
         request_start(arguments.from_date, request_end(arguments.request_end))
@@ -57,13 +59,15 @@ def run_arguments(arguments, *, registration_context=None):
                     )
                     allowed.append(symbol)
             register(allowed)
-            return _run_arguments(arguments, work_policy=policy, selected=selected, context=context)
+            return _run_arguments(
+                arguments, work_policy=policy, selected=selected, context=context, progress=progress
+            )
     except (RuntimeError, OSError, ValueError, csv.Error) as error:
-        print(f"error: {error}", file=sys.stderr)
+        diagnostic(getattr(arguments, "_lifecycle", None), f"error: {error}", level="error")
         return 1
 
 
-def _run_arguments(arguments, *, work_policy=None, selected=None, context=None):
+def _run_arguments(arguments, *, work_policy=None, selected=None, context=None, progress=None):
     try:
         end = arguments.request_end
         # The registration handoff owns this selection, including file inputs.
@@ -86,7 +90,7 @@ def _run_arguments(arguments, *, work_policy=None, selected=None, context=None):
         if before["epoch"] is None and arguments.store.is_dir():
             before = begin_checks(arguments.store.absolute())
     except (RuntimeError, OSError, ValueError, OverflowError, csv.Error) as error:
-        print(f"error: {error}", file=sys.stderr)
+        diagnostic(getattr(arguments, "_lifecycle", None), f"error: {error}", level="error")
         return 1
 
     events = []
@@ -162,11 +166,28 @@ def _run_arguments(arguments, *, work_policy=None, selected=None, context=None):
                         work_policy.fail({symbols[index]}, result, stage="acquisition")
                 results[index] = result  # Keep the final summary in the deduplicated input order.
                 completed += 1
-                print(
-                    f"[{completed}/{len(symbols)}] {symbols[index]}: {result['status']}"
-                    + (f" — {result['error']}" if "error" in result else ""),
-                    file=sys.stderr,
-                )
+                if progress:
+                    progress(
+                        "pricing_acquisition",
+                        {
+                            "done": completed,
+                            "total": len(symbols),
+                            "symbol": symbols[index],
+                            "status": result["status"],
+                        },
+                    )
+                    if "error" in result:
+                        diagnostic(
+                            getattr(arguments, "_lifecycle", None),
+                            f"{symbols[index]}: {result['error']}",
+                            level="error",
+                        )
+                else:
+                    print(
+                        f"[{completed}/{len(symbols)}] {symbols[index]}: {result['status']}"
+                        + (f" — {result['error']}" if "error" in result else ""),
+                        file=sys.stderr,
+                    )
                 following = next(remaining, None)
                 if following is not None:
                     index, symbol = following
@@ -177,7 +198,11 @@ def _run_arguments(arguments, *, work_policy=None, selected=None, context=None):
             remember_batch(arguments.store, request, before, events)
         except (DownloadError, OSError, ValueError) as error:
             # This optional memo never changes the completed per-ticker outcomes.
-            print(f"completed-batch memo unavailable: {error}", file=sys.stderr)
+            diagnostic(
+                getattr(arguments, "_lifecycle", None),
+                f"completed-batch memo unavailable: {error}",
+                level="warning",
+            )
     print(
         json.dumps(
             {

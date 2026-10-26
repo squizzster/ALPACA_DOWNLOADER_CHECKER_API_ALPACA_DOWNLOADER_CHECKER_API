@@ -3,13 +3,13 @@
 import json
 import os
 import resource
-import sys
 import tempfile
 from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
 
 from alpaca_end_of_day import StandaloneReader, StandaloneReaderError
+from libs.alpaca_heartbeat import diagnostic
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from . import VERSION, validate_version
@@ -289,6 +289,16 @@ def export(
                 temporary.unlink(missing_ok=True)
 
 
+def _progress_callback(reporter):
+    def progress(message):
+        if reporter is None or message.startswith(("rejected ", "not selected ")):
+            diagnostic(reporter, message, level="warning" if message.startswith("rejected ") else "info")
+        else:
+            reporter.update("EXPORT", message=message, context={"estimated_remaining_seconds": "TBD"})
+
+    return progress
+
+
 def run_arguments(args):
     if args.cache_mib < 0 or args.cache_mib > 6144:
         raise ValueError(
@@ -307,24 +317,31 @@ def run_arguments(args):
             end=args.end,
             include_all_passed=args.include_all_passed,
             replace=args.replace,
-            progress=lambda value: print(value, file=sys.stderr, flush=True),
+            progress=_progress_callback(getattr(args, "_lifecycle", None)),
             memory_bytes=args.memory_mib * 1024**2,
         )
         errors = result["diagnostic_errors"]
         _diagnose(
-            errors, "cache_reporting", lambda: print("cache " + _json(reader.cache_info()), file=sys.stderr)
+            errors,
+            "cache_reporting",
+            lambda: diagnostic(getattr(args, "_lifecycle", None), "cache " + _json(reader.cache_info())),
         )
         _diagnose(
             errors,
             "memory_reporting",
-            lambda: print(
-                f"peak_rss_mib={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.2f}", file=sys.stderr
+            lambda: diagnostic(
+                getattr(args, "_lifecycle", None),
+                f"peak_rss_mib={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.2f}",
             ),
         )
         _diagnose(errors, "result_reporting", lambda: print(_json(result)))
         return 0
     except ImportError as error:
-        print(f"error: install requirements-bloodhound.txt with Python 3.11: {error}", file=sys.stderr)
+        diagnostic(
+            getattr(args, "_lifecycle", None),
+            f"error: install requirements-bloodhound.txt with Python 3.11: {error}",
+            level="error",
+        )
     except (StandaloneReaderError, ExportError, OSError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        diagnostic(getattr(args, "_lifecycle", None), f"error: {error}", level="error")
     return 1

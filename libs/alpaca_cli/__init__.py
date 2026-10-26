@@ -4,20 +4,24 @@ import argparse
 import csv
 import json
 import os
-import sys
-import time
 from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 
 from alpaca_end_of_day import ADJUSTMENTS, ReaderBusyError
+from libs.alpaca_heartbeat import (
+    DEFAULT_HEARTBEAT_INTERVALS,
+    LifecycleReporter,
+    add_heartbeat_argument,
+    diagnostic,
+)
 from libs.alpaca_pricing_download.download import parse_date, pricing_session_end
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 from libs.common.store_lock import StoreBusyError, operation_lock
 
-VERSION = 20
+VERSION = 21
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -26,6 +30,7 @@ DEFAULT_STORE = REPOSITORY / "data_pricing"
 class Parser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, allow_abbrev=False)
+        add_heartbeat_argument(self)
 
 
 def _store(parser, default=DEFAULT_STORE, *, required=False):
@@ -120,11 +125,6 @@ def build_parser():
     p.add_argument("--public-id", action="append", help="online public identity; repeatable; default all")
     p.add_argument(
         "--workers", type=int, choices=(1, 2, 3, 4), default=2, help="concurrent complete groups; default 2"
-    )
-    p.add_argument(
-        "--heartbeat-seconds",
-        type=bounded_integer(1, 86400),
-        help="fixed STDERR heartbeat interval; default intervals are 10,60,120,180,240,300 then 300 seconds",
     )
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
@@ -225,7 +225,10 @@ def _pricing_end(args):
         "pricing_through_session": (parse_date(end) - timedelta(days=1)).isoformat(),
         "end_exclusive": end,
     }
-    print("pricing cutoff: " + json.dumps(args.pricing_cutoff, separators=(",", ":")), file=sys.stderr)
+    diagnostic(
+        getattr(args, "_lifecycle", None),
+        "pricing cutoff: " + json.dumps(args.pricing_cutoff, separators=(",", ":")),
+    )
     return end
 
 
@@ -234,24 +237,6 @@ def clients():
     if not key or not secret:
         raise ValueError("ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY are required")
     return BarsClient(key, secret), AlpacaIdentityClient(key, secret)
-
-
-def progress_reporter():
-    last_time, last_stage = 0.0, None
-
-    def progress(stage, values):
-        nonlocal last_time, last_stage
-        now = time.monotonic()
-        if (
-            stage != last_stage
-            or now - last_time >= 10
-            or values.get("done", -1) == values.get("total")
-            or values.get("state") in {"completed", "failed"}
-        ):
-            print(stage + ": " + json.dumps(values, separators=(",", ":")), file=sys.stderr, flush=True)
-            last_time, last_stage = now, stage
-
-    return progress
 
 
 def _store_operation_mode(args):
@@ -281,6 +266,10 @@ def _store_operation(args):
 
 
 def dispatch(args):
+    from .command_progress import count_callback, progress_callback
+
+    reporter = getattr(args, "_lifecycle", None)
+    progress = progress_callback(reporter)
     command, operation = args.command, getattr(args, "operation", None)
     if command in {"read", "resolve"}:
         from alpaca_end_of_day.standalone_cli import run_arguments
@@ -321,7 +310,7 @@ def dispatch(args):
 
         return rebuild(
             args.store,
-            progress=lambda done, total: print(f"summary: {done}/{total}", file=sys.stderr, flush=True),
+            progress=count_callback(reporter, "summary", "symbols"),
         )
     if command == "universe":
         from libs.alpaca_lineage_build.universe_update import rebuild_universe, reconcile_universe
@@ -337,9 +326,7 @@ def dispatch(args):
 
             return migrate_correlation_policy(
                 args.store,
-                progress=lambda done, total: print(
-                    f"policy migration: {done}/{total} groups", file=sys.stderr, flush=True
-                ),
+                progress=count_callback(reporter, "policy_migration", "groups"),
             )
         if operation == "migrate-index":
             from libs.alpaca_lineage_build.projection import migrate_index
@@ -347,9 +334,7 @@ def dispatch(args):
             return migrate_index(
                 args.store,
                 batch_size=args.batch_size,
-                progress=lambda done, total: print(
-                    f"migration: {done}/{total} receipts", file=sys.stderr, flush=True
-                ),
+                progress=count_callback(reporter, "index_migration", "receipts"),
             )
         if operation == "inspect":
             from libs.alpaca_lineage_build.evidence import output_evidence
@@ -370,6 +355,8 @@ def dispatch(args):
                 end_date=end,
                 register_discoveries=register,
                 work_policy=policy,
+                progress=progress,
+                on_pricing=progress,
             )
         selected = {
             symbol
@@ -382,7 +369,7 @@ def dispatch(args):
         from libs.alpaca_serving_catalogue.storage import path as catalogue_path
 
         if catalogue_path(Path(args.store)).exists():
-            serving = maintain(args.store, symbols=selected)
+            serving = maintain(args.store, symbols=selected, progress=progress)
             return {
                 **result,
                 "serving_catalogue": serving,
@@ -405,7 +392,7 @@ def dispatch(args):
             identity_client=identity,
             workers=args.workers,
             retry_blocked=args.retry_blocked,
-            progress=progress_reporter(),
+            progress=progress,
         )
     if command == "pricing":
         if operation == "acquire":
@@ -417,6 +404,7 @@ def dispatch(args):
             args.all_symbols, args.file = args.recovery_universe, args.symbols_file
             return run_arguments(
                 args,
+                progress=progress,
                 registration_context=lambda: standalone_registration(
                     args.store, args.request_end, registry=DEFAULT_REGISTRY
                 ),
@@ -437,7 +425,12 @@ def dispatch(args):
 
             policy = command_policy(args.store, end_exclusive(None))
             policy.check(e["symbol"] for e in snapshot["entries"])
-            result = verify(snapshot, pricing._get, batch_size=args.batch_size)
+            result = verify(
+                snapshot,
+                pricing._get,
+                batch_size=args.batch_size,
+                progress=count_callback(reporter, "pricing_check", "symbols"),
+            )
             assert_current(args.store, snapshot["token"])
             return result
         from libs.alpaca_lineage_build.registration import standalone_registration
@@ -453,7 +446,7 @@ def dispatch(args):
                     args.store,
                     pricing_client=pricing,
                     identity_client=identity,
-                    progress=progress_reporter(),
+                    progress=progress,
                     register_discoveries=register,
                     work_policy=policy,
                 )
@@ -466,7 +459,7 @@ def dispatch(args):
             prepared = prepare_refresh(args.store, selected)
             policy.require_correction(prepared, require_check=False)
             register(selected)
-            result = replace_prepared(args.store, prepared, client=pricing, progress=progress_reporter())
+            result = replace_prepared(args.store, prepared, client=pricing, progress=progress)
             policy.record_results(result, stage="history_correction")
             return result
     if command == "catalogue":
@@ -475,6 +468,8 @@ def dispatch(args):
 
 
 def catalogue_command(args):
+    from .command_progress import progress_callback
+
     if args.operation in {"read", "export"}:
         from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
 
@@ -489,7 +484,7 @@ def catalogue_command(args):
         options = {"bootstrap": args.operation == "bootstrap", "rebuild": args.operation == "rebuild"}
         if args.plan:
             return preview(args.store, **options)
-        return maintain(args.store, **options, progress=progress_reporter())
+        return maintain(args.store, **options, progress=progress_callback(getattr(args, "_lifecycle", None)))
     from alpaca_end_of_day import DataLibrary
 
     data = DataLibrary(store=args.store)
@@ -504,21 +499,25 @@ def catalogue_command(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    reporter = None
-    if args.command == "export" and args.operation == "csv":
-        from .csv_progress import PHASES
-        from .lifecycle import DEFAULT_HEARTBEAT_INTERVALS, LifecycleReporter
+    from .command_progress import PHASES, hold_operation
+    from .csv_progress import INITIAL_MESSAGE
+    from .csv_progress import PHASES as CSV_PHASES
 
-        intervals = (args.heartbeat_seconds,) if args.heartbeat_seconds else DEFAULT_HEARTBEAT_INTERVALS
-        reporter = LifecycleReporter(
-            PHASES,
-            heartbeat_intervals=intervals,
-            first_heartbeat_context={"estimated_remaining_seconds": "TBD"} if intervals[0] == 10 else None,
-        )
-        args._lifecycle = reporter
+    csv_export = args.command == "export" and args.operation == "csv"
+    fixed_interval = getattr(args, "heartbeat_seconds", None)
+    intervals = (fixed_interval,) if fixed_interval else DEFAULT_HEARTBEAT_INTERVALS
+    command_name = " ".join(filter(None, (args.command, getattr(args, "operation", None))))
+    reporter = LifecycleReporter(
+        CSV_PHASES if csv_export else PHASES,
+        heartbeat_intervals=intervals,
+        initial_message=INITIAL_MESSAGE if csv_export else f"Starting {command_name}.",
+        first_heartbeat_context={"estimated_remaining_seconds": "TBD"} if intervals[0] == 10 else None,
+    )
+    args._lifecycle = reporter
     try:
-        if reporter is not None:
-            reporter.start()
+        reporter.start()
+        if not csv_export:
+            hold_operation(reporter, args)
         changelog = json.loads((REPOSITORY / "resources/alpaca_cli_change_log.json").read_bytes())
         if len(changelog) != VERSION or any(
             "version" in item or not item.get("modifications") for item in changelog
@@ -537,37 +536,35 @@ def main(argv=None):
                 if args.command == "status"
                 else int(bool(result.get("failed") or result.get("blockers") or result.get("complete") is False))
             )
-        if reporter is not None:
-            reporter.finish(
-                "success" if code == 0 else "error",
-                code,
-                error=RuntimeError("CSV export did not complete") if code else None,
+        reporter.finish(
+            "success" if code == 0 else "error",
+            code,
+            error=RuntimeError(
+                "CSV export did not complete" if csv_export else f"{command_name} did not complete"
             )
+            if code
+            else None,
+        )
         return code
     except (ReaderBusyError, StoreBusyError) as error:
-        if reporter is not None:
-            reporter.finish("error", 3, error=error)
-        else:
-            print(f"busy: {error}", file=sys.stderr)
+        reporter.finish("error", 3, error=error)
         return 3
     except (RuntimeError, OSError, ValueError, csv.Error) as error:
-        if reporter is not None:
-            reporter.finish("error", 1, error=error)
-        else:
-            print(f"error: {error}", file=sys.stderr)
+        reporter.finish("error", 1, error=error)
         return 1
     except KeyboardInterrupt:
-        if reporter is None:
-            raise
         reporter.finish("aborted", 130)
+        if not csv_export:
+            raise
         return 130
     except SystemExit as error:
-        if reporter is not None:
-            code = error.code if type(error.code) is int else 0 if error.code is None else 1
-            reporter.finish("success" if code == 0 else "aborted", code)
+        code = error.code if type(error.code) is int else 0 if error.code is None else 1
+        if error.code is not None and type(error.code) is not int:
+            reporter.diagnostic(str(error.code), level="error")
+        reporter.finish("success" if code == 0 else "aborted", code)
         raise
     except Exception as error:
-        if reporter is None:
-            raise
         reporter.finish("error", 1, error=error)
+        if not csv_export:
+            raise
         return 1

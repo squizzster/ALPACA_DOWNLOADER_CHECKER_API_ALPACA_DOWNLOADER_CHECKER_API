@@ -1,0 +1,7 @@
+[
+  {
+    "modifications": [
+      "Extract the CSV lifecycle timer and bounded version-4 stderr protocol into a shared opt-in heartbeat library, with configurable startup messages and immediate bounded diagnostic records."
+    ]
+  }
+]

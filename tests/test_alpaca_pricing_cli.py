@@ -101,7 +101,11 @@ class PricingCliTests(unittest.TestCase):
                 self.assertEqual(peak, count)
                 self.assertEqual([value["symbol"] for value in result["results"]], list(symbols))
                 self.assertTrue(all(client is self.client for client in clients))
-                self.assertIn("[6/6]", progress)
+                records = [json.loads(line) for line in progress.splitlines()]
+                self.assertEqual(records[0]["phase"], "INIT")
+                self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
+                self.assertEqual(records[-1]["status"], "success")
+                self.assertEqual(records[-1]["last_phase"], "PRICING")
 
     def test_one_worker_owns_every_request_for_its_ticker_through_publication(self):
         barrier = threading.Barrier(3, timeout=5)
