@@ -8,6 +8,7 @@ Runtime validators check one-based changelog array position against the owning c
 
 | Owner and constant | Changelog |
 |---|---|
+| [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/__init__.py): `VERSION` | [Baseline history](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/change_log.json) |
 | [Public API](alpaca_end_of_day/__init__.py): `API_VERSION` | [API history](resources/alpaca_end_of_day_api_change_log.json) |
 | [CLI](libs/alpaca_cli/__init__.py): `VERSION` | [CLI history](resources/alpaca_cli_change_log.json) |
 | [Heartbeat reporting](libs/alpaca_heartbeat/__init__.py): `VERSION` | [Heartbeat history](resources/alpaca_heartbeat_change_log.json) |

@@ -1,0 +1,39 @@
+definition_id: IS_ELIGIBLE_LISTED_BUSINESS_EQUITY
+applies_to: public_id
+meaning: >-
+  Whether current evidence establishes a NYSE-, Nasdaq- or NYSE American-listed,
+  unbundled common-equity security—including equivalent partnership/trust
+  interests and equity ADRs/ADSs—whose enterprise, directly or through controlled
+  subsidiaries, actively performs or commissions operating or development work,
+  excluding investment funds, passive investment products, inactive shells and
+  SPACs awaiting their initial business combination.
+outcome_meanings:
+  "TRUE": Eligibility is established.
+  "FALSE": Includes both ineligibility and insufficient evidence.
+
+# Reusable definitions only; no public_id assessments are recorded here.
+# Quote outcome labels so YAML readers preserve them as strings.
+definitions:
+  "TRUE": >-
+    At the assessment date, current evidence confirms a security listed on
+    NYSE, Nasdaq or NYSE American representing unbundled common/ordinary equity,
+    equivalent partnership/trust common equity, or an ADR/ADS representing that
+    equity, whose enterprise or controlled subsidiaries actively perform or
+    commission documented work to develop, produce, provide, license or operate
+    products, services, technology, intellectual property or productive assets.
+    Research, engineering, exploration and clinical trials qualify. Investment
+    funds, passive investment products, inactive shells and SPACs awaiting their
+    initial business combination are excluded. Revenue, customers, completed
+    products, profit, minimum size and minimum employee count are unnecessary.
+  "FALSE": >-
+    At the assessment date, the security is not listed on NYSE, Nasdaq or
+    NYSE American; does not represent unbundled common/ordinary equity,
+    equivalent partnership/trust common equity or an ADR/ADS representing that
+    equity; represents an investment fund, passive investment product, inactive
+    shell or SPAC awaiting its initial business combination; or its enterprise
+    and controlled subsidiaries lack actual operating or development work,
+    including research, engineering, exploration or clinical trials.
+    Incorporation, business plans, cash holdings, fundraising, listing maintenance
+    or acquisition searches alone do not qualify. Insufficient current evidence
+    to establish eligible listing, ownership, activity or absence of exclusions
+    also yields FALSE.

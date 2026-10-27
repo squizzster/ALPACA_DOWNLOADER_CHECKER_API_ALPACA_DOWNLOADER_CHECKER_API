@@ -67,6 +67,39 @@ Reader CLI defaults to `raw`; `--all-adjustments` selects eight. Ambiguity needs
 Compound adjustment names are single arguments; `raw,all` is invalid. Multiple-view CSV adds `adjustment`;
 output is prepared before printing. [Commands](operations.md#read-and-export).
 
+## Published lineage metadata
+
+```python
+from alpaca_end_of_day import StandaloneReader
+
+reader = StandaloneReader("data_pricing")
+with reader.open_published_evidence() as selected:
+    roster = selected.roster  # Index-only plan: sources, generations and group count.
+    for group in selected.iter_groups():
+        print(group["securities"], group["sources"])
+```
+
+This metadata-only boundary consumes completed lineage publications, including
+historical resolved identities. It selects membership and recorded generations
+from the lineage index once, after its own schema/completeness checks. Missing
+membership/projection coverage fails into explicit `lineage migrate-index`;
+there is no receipt census or fallback reconstruction.
+
+One shared lineage publication gate keeps the accepted view stable throughout
+the context; lineage publication waits until it closes. Each selected receipt and
+assignment document is read once when its body is consumed. The iterator retains
+one group's bodies, not a universe of manifests. It does not consult pricing
+manifests, locks, notices or payloads, rehash upstream data, replay rules or perform
+a later freshness pass. The context releases its gate on failure/interruption.
+
+`roster` is an independent projection. A closed snapshot cannot be consumed.
+Group `generation` uses its first source's recorded receipt generation as a
+reference; the roster's generation describes the recorded index revision. Prices
+may have advanced since lineage publication: this API returns the accepted
+lineage evidence, not a claim of current pricing or online availability. Group
+actions remain unassigned evidence; observation dates keep their original meaning.
+[_published_evidence.py](../alpaca_end_of_day/_published_evidence.py) owns this path.
+
 ## Online catalogue reader
 
 ```python

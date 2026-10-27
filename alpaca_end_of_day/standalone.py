@@ -34,6 +34,7 @@ from libs.alpaca_pricing_download.contract import (
     NEW_YORK,
     SUPPORTED_VERSIONS,
     decode_csv,
+    json_bytes,
     symbol_label,
     timestamp,
 )
@@ -171,7 +172,7 @@ def _group_evidence(assignments, sources, receipts, generations, generation):
                     "ticker_ownership_interval",
                 )
             }
-            key = document_digest(value)
+            key = json_bytes(value)
             if key not in compact:
                 compact[key] = {**value, "adjustments": []}
             if adjustment not in compact[key]["adjustments"]:
@@ -179,8 +180,14 @@ def _group_evidence(assignments, sources, receipts, generations, generation):
         projected[symbol] = {
             "lineage_generation": generations[symbol],
             "pricing_generation": receipts[symbol]["source_sha256"],
-            "pricing_request": sources[symbol]["latest_request"],
-            "history_start": sources[symbol]["history_start"],
+            **(
+                {
+                    "pricing_request": sources[symbol]["latest_request"],
+                    "history_start": sources[symbol]["history_start"],
+                }
+                if sources is not None
+                else {"pricing_request": receipts[symbol].get("pricing_request")}
+            ),
             "processed_through": receipts[symbol]["processed_through"],
             "evidence": receipts[symbol]["evidence"],
             "assignments": list(compact.values()),
@@ -188,7 +195,7 @@ def _group_evidence(assignments, sources, receipts, generations, generation):
     return deepcopy(
         {
             "generation": generation,
-            "source_symbols": sorted(sources),
+            "source_symbols": sorted(receipts),
             "securities": securities,
             "sources": projected,
         }
@@ -643,6 +650,17 @@ class StandaloneReader:
                 "symbol": symbol,
                 **_group_evidence(assignments, sources, receipts, generations, generation),
             }
+
+    def open_published_evidence(self):
+        """Select completed lineage metadata once, without consulting pricing.
+
+        The context holds the lineage publication gate while the caller consumes
+        its selected groups. No freshness pass, upstream verification, pricing
+        locks, source manifests or directory discovery are involved.
+        """
+        from ._published_evidence import open_published_evidence
+
+        return open_published_evidence(self.store, wait=self.wait)
 
     def get_generation(self, symbol: str) -> str:
         """Check current receipts/pricing/pending work without loading assignment boundaries.

@@ -111,5 +111,10 @@
     "modifications": [
       "Return independent nested evidence projections from group snapshots so consumer mutations cannot alter later histories, metadata, or the retained snapshot."
     ]
+  },
+  {
+    "modifications": [
+      "Add a metadata-only published-lineage evidence snapshot that selects the completed index once, trusts its recorded membership and generations, and streams selected receipts and assignments under one lineage publication gate without pricing access, upstream authentication, rule replay or a later freshness pass."
+    ]
   }
 ]

@@ -15,6 +15,8 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
 - [Exports](docs/exports.md): CSV/Parquet selection, formats, memory, locks and publication guarantees.
 - [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.
+- [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md): independent metadata and lineage export
+  without pricing, with the definition retained for later assessments.
 
 ## Understand the system
 
