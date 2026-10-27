@@ -39,13 +39,22 @@ After a successful non-plan update, the CLI automatically commits a changed `res
 current Git branch with message `Update recovery ticker registry`. This includes outstanding registry changes
 from earlier runs. The registry lock pins the file during the check/commit; Git selects only that path and
 preserves unrelated staged/unstaged work. An unchanged registry produces no commit. Other commands, plans
-and unsuccessful updates do not auto-commit. No push or branch switch occurs.
+and unsuccessful updates do not auto-commit or push. No branch switch occurs.
 
-The `COMMIT` phase and immediate diagnostics report checking, committing, the resulting commit ID, unchanged
-registry or Git failure through the [heartbeat protocol](cli-reporting.md#shared-lifecycle). Git output is
-captured, so stdout remains the data update report. A Git failure leaves the successful data result and exit
-code intact; its warning means the registry still needs a commit. Git identity, hooks and signing settings
-remain those of the checkout. Automatic commits require the tracked registry in this exact Git checkout.
+After releasing the registry lock, the CLI checks the current branch's configured upstream and its single
+push destination. It pushes exactly one registry-only commit when that commit's sole parent matches the
+remote branch's advertised tip. The explicit source commit ID and destination ref exclude later local work,
+other branches, tags and submodules. It does not force, merge, rebase or create a missing upstream branch.
+Unrelated pending commits, multiple pending commits or divergent history defer automatic pushing to the normal
+Git synchronization workflow. An already-current remote needs no push. An eligible pending registry commit
+is retried on the next successful update even when the file is unchanged.
+
+The `COMMIT` and `PUSH` phases and immediate diagnostics report checking, committing, commit IDs, unchanged/
+already-current outcomes, pushing and Git failures through the [heartbeat protocol](cli-reporting.md#shared-lifecycle).
+Git output is captured, so stdout remains the data update report. A commit/push failure leaves the successful
+data result and exit code intact; the warning identifies the Git work still outstanding. Git identity, hooks
+and signing settings remain those of the checkout. Automatic commits require the tracked registry in this
+exact Git checkout; automatic pushing additionally requires one configured upstream remote branch.
 
 Optional `update --plan` may fetch metadata but never registers, initializes, recovers or publishes. It reports
 work/reasons, additions, actions/pages, metadata reads and conditional dependencies. Sparse histories,

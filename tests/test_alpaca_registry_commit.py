@@ -17,7 +17,10 @@ class RegistryCommitTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(dir=alpaca_cli.REPOSITORY / ".git")
         self.addCleanup(temporary.cleanup)
-        self.repository = Path(temporary.name)
+        self.directory = Path(temporary.name)
+        self.repository = self.directory / "checkout"
+        self.repository.mkdir()
+        self.remote = self.directory / "remote.git"
         self.registry = self.repository / "resources/ticker.csv"
         self.registry.parent.mkdir()
         self.registry.write_text("AAA\n")
@@ -33,6 +36,11 @@ class RegistryCommitTests(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-qm", "Initial fixture")
         self.initial = self.git("rev-parse", "HEAD")
+        self.branch = self.git("symbolic-ref", "--short", "HEAD")
+        self.target = f"refs/heads/{self.branch}"
+        self.git("init", "--bare", "-q", str(self.remote))
+        self.git("remote", "add", "origin", str(self.remote))
+        self.git("push", "--set-upstream", "origin", f"HEAD:{self.target}")
         self.enterContext(patch.object(alpaca_cli, "REPOSITORY", self.repository))
         self.enterContext(patch.object(alpaca_cli, "DEFAULT_REGISTRY", self.registry))
 
@@ -97,19 +105,24 @@ class RegistryCommitTests(unittest.TestCase):
         self.assertEqual(self.other.read_text(), "unstaged\n")
         self.assertEqual(self.git("diff", "HEAD", "--", "resources/ticker.csv"), "")
         diagnostics = [r for r in records if r["schema"] == "alpaca.lifecycle.diagnostic"]
-        self.assertTrue(all(r["phase"] == "COMMIT" for r in diagnostics))
+        self.assertEqual({r["phase"] for r in diagnostics}, {"COMMIT", "PUSH"})
         self.assertIn(self.git("rev-parse", "HEAD"), diagnostics[-1]["message"])
-        self.assertEqual(records[-1]["last_phase"], "COMMIT")
+        self.assertEqual(records[-1]["last_phase"], "PUSH")
         self.assertEqual(records[-1]["status"], "success")
         self.assertEqual(records[-1]["exit_code"], 0)
+        self.assertEqual(self.remote_tip(), self.git("rev-parse", "HEAD"))
 
     def test_unchanged_registry_makes_no_empty_commit(self):
         code, output, records, _ = self.invoke()
         self.assertEqual(code, 0)
         self.assertEqual(output, '{"complete":true}\n')
         self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
-        self.assertIn("unchanged", records[-2]["message"])
+        self.assertTrue(any("unchanged" in r["message"] for r in records))
+        self.assertIn("already current", records[-2]["message"])
         self.assertEqual(records[-1]["status"], "success")
+
+    def remote_tip(self):
+        return self.git("--git-dir=" + str(self.remote), "rev-parse", self.target)
 
     def test_git_hook_failure_warns_in_protocol_and_keeps_successful_data_result(self):
         self.registry.write_text("AAA,BBB\n")
@@ -138,6 +151,113 @@ class RegistryCommitTests(unittest.TestCase):
         self.assertEqual(records[-2]["level"], "warning")
         self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
 
+    def test_failed_push_is_retried_without_a_second_commit_when_registry_unchanged(self):
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\necho 'fixture rejects push' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        self.registry.write_text("AAA,BBB\n")
+        code, output, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(output, '{"complete":true}\n')
+        pending = self.git("rev-parse", "HEAD")
+        self.assertNotEqual(pending, self.initial)
+        self.assertEqual(self.remote_tip(), self.initial)
+        self.assertEqual((records[-2]["phase"], records[-2]["level"]), ("PUSH", "warning"))
+        self.assertIn("fixture rejects push", records[-2]["message"])
+        self.assertEqual(records[-1]["status"], "success")
+        hook.unlink()
+        code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.git("rev-parse", "HEAD"), pending)
+        self.assertEqual(self.remote_tip(), pending)
+        self.assertTrue(any("unchanged" in r["message"] for r in records))
+        self.assertIn("pushed successfully", records[-2]["message"])
+
+    def test_unpublished_code_below_registry_commit_is_not_pushed(self):
+        self.other.write_text("unpublished code\n")
+        self.git("add", "other.txt")
+        self.git("commit", "-qm", "Unpublished code")
+        self.registry.write_text("AAA,BBB\n")
+        code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.remote_tip(), self.initial)
+        self.assertEqual(self.git("show", "HEAD:resources/ticker.csv"), "AAA,BBB")
+        self.assertEqual(records[-2]["level"], "warning")
+        self.assertIn("push deferred", records[-2]["message"])
+
+    def test_unchanged_registry_does_not_publish_an_unrelated_tip(self):
+        self.other.write_text("unpublished code\n")
+        self.git("add", "other.txt")
+        self.git("commit", "-qm", "Unpublished code")
+        code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.remote_tip(), self.initial)
+        self.assertEqual(records[-2]["level"], "warning")
+        self.assertIn("push deferred", records[-2]["message"])
+
+    def test_divergent_remote_is_not_overwritten_or_merged(self):
+        self.git("checkout", "-qb", "remote-work")
+        self.other.write_text("remote work\n")
+        self.git("add", "other.txt")
+        self.git("commit", "-qm", "Remote work")
+        remote_tip = self.git("rev-parse", "HEAD")
+        self.git("push", "origin", f"HEAD:{self.target}")
+        self.git("checkout", "-q", self.branch)
+        self.registry.write_text("AAA,BBB\n")
+        code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.remote_tip(), remote_tip)
+        self.assertEqual(self.git("show", "HEAD:other.txt"), "original")
+        self.assertEqual(self.git("show", "HEAD:resources/ticker.csv"), "AAA,BBB")
+        self.assertIn("push deferred", records[-2]["message"])
+
+    def test_push_does_not_follow_tags_or_configured_extra_refspecs(self):
+        self.git("config", "push.followTags", "true")
+        self.git("config", "tag.gpgsign", "false")
+        self.git("tag", "-am", "Unpublished tag", "unpublished")
+        self.git("branch", "unpublished-branch")
+        self.git("config", "remote.origin.push", "refs/heads/*:refs/heads/*")
+        self.registry.write_text("AAA,BBB\n")
+        self.assertEqual(self.invoke()[0], 0)
+        self.assertEqual(self.remote_tip(), self.git("rev-parse", "HEAD"))
+        refs = self.git("--git-dir=" + str(self.remote), "for-each-ref", "--format=%(refname)")
+        self.assertEqual(refs, self.target)
+
+    def test_missing_upstream_or_multiple_push_destinations_preserve_local_commit(self):
+        self.git("config", "--unset", f"branch.{self.branch}.remote")
+        self.registry.write_text("AAA,BBB\n")
+        code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.remote_tip(), self.initial)
+        self.assertIn("configured remote branch", records[-2]["message"])
+        self.git("config", f"branch.{self.branch}.remote", "origin")
+        self.git("remote", "set-url", "--add", "--push", "origin", str(self.remote))
+        self.git("remote", "set-url", "--add", "--push", "origin", str(self.directory / "another.git"))
+        code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.remote_tip(), self.initial)
+        self.assertIn("exactly one push destination", records[-2]["message"])
+
+    def test_push_uses_pinned_registry_commit_if_an_unrelated_local_commit_arrives(self):
+        actual_git = registry_commit._git
+        registry_commit_id = []
+
+        def concurrent(repository, *args, **kwargs):
+            if args[0] == "push":
+                registry_commit_id.append(self.git("rev-parse", "HEAD"))
+                self.other.write_text("later local work\n")
+                self.git("add", "other.txt")
+                self.git("commit", "-qm", "Later local work")
+            return actual_git(repository, *args, **kwargs)
+
+        self.registry.write_text("AAA,BBB\n")
+        with patch.object(registry_commit, "_git", side_effect=concurrent):
+            code, _, records, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.remote_tip(), registry_commit_id[0])
+        self.assertNotEqual(self.remote_tip(), self.git("rev-parse", "HEAD"))
+        self.assertIn("pushed successfully", records[-2]["message"])
+
     def test_plans_failures_and_other_commands_do_not_attempt_git(self):
         self.registry.write_text("AAA,BBB\n")
         for arguments, result, error, expected in (
@@ -164,7 +284,7 @@ class RegistryCommitTests(unittest.TestCase):
         self.assertEqual(records[-2]["level"], "warning")
         self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
 
-    def test_commit_phase_is_held_for_timer_samples(self):
+    def test_commit_and_push_phases_are_held_for_timer_samples(self):
         self.registry.write_text("AAA,BBB\n")
         actual_git = registry_commit._git
         clock = [0.0]
@@ -185,6 +305,9 @@ class RegistryCommitTests(unittest.TestCase):
                         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 clock[0] = 10.0
                 reporters[0]._emit_due()
+            if args[0] == "push":
+                clock[0] = 70.0
+                reporters[0]._emit_due()
             return actual_git(repository, *args, **kwargs)
 
         with (
@@ -199,3 +322,8 @@ class RegistryCommitTests(unittest.TestCase):
         )
         self.assertEqual(sample["context"]["status"], "committing")
         self.assertEqual(sample["context"]["path"], "resources/ticker.csv")
+        push_sample = next(
+            r for r in records if r["schema"] == "alpaca.lifecycle.progress" and r["phase"] == "PUSH"
+        )
+        self.assertEqual(push_sample["context"]["status"], "pushing")
+        self.assertEqual(push_sample["context"]["commit"], self.remote_tip())

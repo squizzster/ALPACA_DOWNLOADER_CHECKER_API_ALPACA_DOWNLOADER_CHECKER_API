@@ -111,5 +111,10 @@
     "modifications": [
       "After a successful non-plan daily update, automatically commit only the changed tracked recovery registry in the current checkout. Report commit progress, unchanged outcomes, commit IDs and nonfatal Git failures through the stderr heartbeat protocol, preserving data results, stdout and unrelated working/index changes."
     ]
+  },
+  {
+    "modifications": [
+      "After a successful non-plan update, push only a single recovery-registry-only commit directly above the configured upstream push destination. Retry a pending eligible commit even when the file is unchanged; report push progress, current remotes, success and nonfatal deferrals/failures through the stderr heartbeat protocol, without publishing unrelated commits or tags."
+    ]
   }
 ]
