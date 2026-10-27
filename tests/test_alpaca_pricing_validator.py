@@ -311,14 +311,14 @@ class PricingValidatorTests(unittest.TestCase):
         self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), 1)
         self.assertEqual(storage.read_update(self.root), {"from": "2016-01-04", "to": "2026-10-01"})
 
-    def test_force_can_replace_corrupt_owned_gzip_without_decoding_it(self):
+    def test_explicit_repair_can_replace_corrupt_owned_gzip_without_decoding_it(self):
         self.run_download()
         (self.root / "completed_years.raw.csv.gz").write_bytes(b"damaged")
-        result = self.run_download(refresh_all=True)
+        result = self.run_download(refresh_all=True, repair_payloads=True)
         self.assertEqual(result["mode"], "full_refresh")
         self.assert_validator()
 
-    def test_legacy_force_uses_receipt_extent_without_decoding_corrupt_payload(self):
+    def test_legacy_repair_uses_receipt_extent_without_decoding_corrupt_payload(self):
         self.run_download()
         source = storage.read_document(self.root / "source.manifest.json")
         source["schema_version"] = 3
@@ -327,7 +327,7 @@ class PricingValidatorTests(unittest.TestCase):
         (self.root / "source.manifest.json").write_bytes(json_bytes(source))
         (self.root / VALIDATOR_FILE).unlink()
         (self.root / "completed_years.raw.csv.gz").write_bytes(b"damaged")
-        self.run_download(refresh_all=True)
+        self.run_download(refresh_all=True, repair_payloads=True)
         self.assert_validator()
 
     def test_force_retires_damaged_owned_payload_when_it_becomes_an_alias(self):

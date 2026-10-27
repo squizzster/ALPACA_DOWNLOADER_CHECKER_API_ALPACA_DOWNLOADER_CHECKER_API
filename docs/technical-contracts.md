@@ -176,6 +176,10 @@ reconstructs durable inputs; owners clean abandoned staging under ticker locks. 
 blocks readers until owner recovery. Authorities: [pricing storage](../libs/alpaca_pricing_download/storage.py),
 [lineage storage](../libs/alpaca_lineage_build/storage.py).
 
+History replacements retain payload files when newly produced bytes match their recorded digests; matching
+files are not reopened, checked or rewritten. Changed payloads, receipt changes and required update notices
+still use the normal publication journal. Physical repair is a separate explicit pricing-owner option.
+
 [connect_sqlite](../libs/common/sqlite_connections.py) uses transactions, disk rollback journals and write
 `synchronous=OFF`. Producers own native recovery; readers/previews fail closed when it is needed. No forced
 synchronization: process interruption is covered, machine/power failure is not.

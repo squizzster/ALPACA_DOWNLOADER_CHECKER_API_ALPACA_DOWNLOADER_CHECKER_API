@@ -375,6 +375,7 @@ def download_pricing(
     *,
     client,
     refresh_all: bool = False,
+    repair_payloads: bool = False,
     from_date: str | None = None,
     on_check=None,
     expected_source_sha256: str | None = None,
@@ -388,7 +389,8 @@ def download_pricing(
 
     A selected digest binds buffered acquisition to that source; explicit None
     binds it to absence. The separate refresh expectation also preserves the
-    complete original request span.
+    complete original request span. History refresh trusts recorded payload
+    digests; only explicit payload repair forces identical output to be rewritten.
     """
     symbol = symbol_label(symbol)
     end = request_end(end_date)
@@ -567,7 +569,7 @@ def download_pricing(
             selected_endpoints,
             changed_views,
             update,
-            repair_payloads=refresh_all,
+            repair_payloads=repair_payloads,
             on_check=on_check,
             acquisition_evidence_sha256=acquisition_evidence_sha256,
             history_correction_id=history_correction_id,

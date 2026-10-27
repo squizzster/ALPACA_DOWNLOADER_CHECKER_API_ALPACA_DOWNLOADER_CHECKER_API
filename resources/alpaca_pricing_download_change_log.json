@@ -175,5 +175,10 @@
     "modifications": [
       "Expose a compact, generation-bound completed-pricing evidence handoff with request scope and all eight row counts. Retain immutable acquisition failure facts across cohorts and reconstruct fresh exceptions without holding response buffers or tracebacks. Separate runtime release numbering from the unchanged pricing-31 publication format and preserve all supported retained receipts."
     ]
+  },
+  {
+    "modifications": [
+      "Separate history refresh from explicit physical payload repair. Replacements preserve files whose newly produced bytes match their recorded digests, without reopening, checking or rewriting those payloads. Continue publishing changed outputs and required notices through the existing journal and selector-last recovery contract; retain pricing-31 compatibility."
+    ]
   }
 ]
