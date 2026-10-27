@@ -32,7 +32,9 @@ FIELDS = {
         "identities",
     )
 }
-FIELDS.update({name: str for name in ("stage", "state", "symbol", "status", "unit", "end_exclusive")})
+FIELDS.update(
+    {name: str for name in ("stage", "state", "symbol", "status", "unit", "end_exclusive", "path", "commit")}
+)
 FIELDS.update(seconds=(int, float), complete=bool, estimated_remaining_seconds=(int, str))
 PHASES = {
     name: Phase(message, FIELDS)
@@ -50,6 +52,7 @@ PHASES = {
         "READ": "Reading selected published histories.",
         "RESOLVE": "Resolving dated security identities.",
         "EXPORT": "Converting and publishing selected histories.",
+        "COMMIT": "Committing the completed update's recovery registry changes.",
     }.items()
 }
 

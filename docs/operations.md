@@ -35,6 +35,18 @@ Every invocation checks live; saved experiments are not inputs. Failed history c
 independent successes remain recoverable. Published unresolved identity is completed processing, distinct
 from acquisition failure or public eligibility. [Execution ownership](ARCHITECTURE.md#daily-update).
 
+After a successful non-plan update, the CLI automatically commits a changed `resources/ticker.csv` to the
+current Git branch with message `Update recovery ticker registry`. This includes outstanding registry changes
+from earlier runs. The registry lock pins the file during the check/commit; Git selects only that path and
+preserves unrelated staged/unstaged work. An unchanged registry produces no commit. Other commands, plans
+and unsuccessful updates do not auto-commit. No push or branch switch occurs.
+
+The `COMMIT` phase and immediate diagnostics report checking, committing, the resulting commit ID, unchanged
+registry or Git failure through the [heartbeat protocol](cli-reporting.md#shared-lifecycle). Git output is
+captured, so stdout remains the data update report. A Git failure leaves the successful data result and exit
+code intact; its warning means the registry still needs a commit. Git identity, hooks and signing settings
+remain those of the checkout. Automatic commits require the tracked registry in this exact Git checkout.
+
 Optional `update --plan` may fetch metadata but never registers, initializes, recovers or publishes. It reports
 work/reasons, additions, actions/pages, metadata reads and conditional dependencies. Sparse histories,
 pagination and producer checks change actual requests. Missing boundaries/pending publications are blockers;

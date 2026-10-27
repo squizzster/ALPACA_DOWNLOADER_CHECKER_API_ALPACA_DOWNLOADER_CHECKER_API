@@ -51,6 +51,7 @@ class HeartbeatCommandTests(unittest.TestCase):
                 with (
                     patch.object(alpaca_cli, "_store_operation", return_value=nullcontext()),
                     patch.object(alpaca_cli, "dispatch", return_value=result) as dispatch,
+                    patch.object(alpaca_cli, "commit_registry"),
                     redirect_stdout(output),
                     redirect_stderr(errors),
                 ):

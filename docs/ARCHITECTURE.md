@@ -50,7 +50,7 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | Owner | Responsibility |
 |---|---|
 | [alpaca_end_of_day](../alpaca_end_of_day/) | Public API, shared history assembly, CSV exports, reader adapters. |
-| [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch and command-specific progress adapters. |
+| [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch, progress adapters and post-update recovery-registry Git commits. |
 | [alpaca_heartbeat](../libs/alpaca_heartbeat/) | Shared opt-in stderr lifecycle timer, protocol encoding and consumption. |
 | [alpaca_recovery_registry](../libs/alpaca_recovery_registry/) | Locked, atomic recovery-label union. |
 | [alpaca_pricing_download](../libs/alpaca_pricing_download/) | Acquisition, pricing publication, endpoint validation, summary storage. |

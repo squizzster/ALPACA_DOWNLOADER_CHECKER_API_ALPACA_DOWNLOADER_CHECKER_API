@@ -106,5 +106,10 @@
     "modifications": [
       "Apply the shared CSV-style stderr heartbeat protocol to every canonical command, with common cadence overrides, existing progress callbacks, bounded diagnostics and unchanged data operations, stdout formats and exit behavior."
     ]
+  },
+  {
+    "modifications": [
+      "After a successful non-plan daily update, automatically commit only the changed tracked recovery registry in the current checkout. Report commit progress, unchanged outcomes, commit IDs and nonfatal Git failures through the stderr heartbeat protocol, preserving data results, stdout and unrelated working/index changes."
+    ]
   }
 ]

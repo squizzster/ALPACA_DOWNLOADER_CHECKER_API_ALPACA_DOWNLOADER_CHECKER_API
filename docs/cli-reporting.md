@@ -67,10 +67,13 @@ than 10 seconds are unaffected.
 
 Canonical phase definitions and adapters live in
 [command_progress.py](../libs/alpaca_cli/command_progress.py): `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,
-`PRICING`, `LINEAGE`, `MIGRATE`, `SUMMARY`, `UNIVERSE`, `STATUS`, `READ`, `RESOLVE`, `EXPORT`.
+`PRICING`, `LINEAGE`, `MIGRATE`, `SUMMARY`, `UNIVERSE`, `STATUS`, `READ`, `RESOLVE`, `EXPORT`, `COMMIT`.
 Existing callbacks replace held status with their stage, supported scalar counters and available counts.
 Commands without callbacks repeat their operation and elapsed time. The policy lab reports `POLICY` followed by
 `COMPARE` or `AUDIT`, without additional group inspection or invented progress counts.
+The final update `COMMIT` phase holds `path`, `status` and, after success, `commit`; immediate diagnostics
+also preserve fast commit outcomes between timer samples. Its `status: failed` warning describes Git only;
+the terminal record still reflects the completed data update. See [automatic registry commits](operations.md#daily-update).
 
 Success stops reporting and flushes one `FINAL_EXIT` (`status: success`, code 0). Caught failure first flushes
 `alpaca.lifecycle.error`, version 4: error type/message, latest accepted phase, elapsed seconds, available

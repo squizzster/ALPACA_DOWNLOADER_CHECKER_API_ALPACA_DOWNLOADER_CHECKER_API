@@ -377,6 +377,7 @@ class UpdateEverythingTests(unittest.TestCase):
         from libs.alpaca_cli import main
 
         with (
+            patch("libs.alpaca_cli.commit_registry"),
             patch("libs.alpaca_cli.clients", return_value=(self.client, self.identity)),
             patch(
                 "libs.alpaca_lineage_build.universe_update.run_update", return_value={"complete": True}
