@@ -18,7 +18,7 @@ Runtime validators check one-based changelog array position against the owning c
 | [Operator evidence](libs/alpaca_lineage_build/evidence.py): `EVIDENCE_VERSION` | [Evidence history](resources/alpaca_lineage_evidence_change_log.json) |
 | [Correlation](libs/alpaca_end_of_day_security_correlation/correlation_version.py): `CORRELATION_VERSION` | [Correlation history](resources/alpaca_end_of_day_security_correlation_change_log.json) |
 | [Pipeline report](libs/alpaca_end_of_day_pipeline/pipeline_version.py): `PIPELINE_VERSION` | [Pipeline history](resources/alpaca_end_of_day_pipeline_change_log.json) |
-| [Serving](libs/alpaca_serving_catalogue/contract.py): `VERSION` | [Serving history](resources/alpaca_serving_catalogue_change_log.json) |
+| [Serving](libs/alpaca_serving_catalogue/contract.py): `RUNTIME_VERSION` | [Serving history](resources/alpaca_serving_catalogue_change_log.json) |
 | [API solver](libs/alpaca_data_api_solver/__init__.py): `VERSION` | [Solver history](resources/alpaca_data_api_solver_change_log.json) |
 | [Recovery registry](libs/alpaca_recovery_registry/__init__.py): `VERSION` | [Registry history](resources/alpaca_recovery_registry_change_log.json) |
 | [Policy lab](libs/alpaca_lineage_policy_lab/contract.py): `LAB_VERSION` | [Lab history](resources/alpaca_lineage_policy_lab_change_log.json) |
@@ -26,7 +26,7 @@ Runtime validators check one-based changelog array position against the owning c
 
 ## Compatibility
 
-Pricing/lineage `RUNTIME_VERSION` tracks releases; their `VERSION` constants retain persisted publication
+Pricing/lineage/serving `RUNTIME_VERSION` tracks releases; their `VERSION` constants retain persisted publication
 contracts. A runtime bump alone neither invalidates completed decisions nor authorizes reconstruction.
 Readable schemas need not be reusable. Owner compatibility gates decide reuse; do not relabel stored artifacts
 to make numbers agree.

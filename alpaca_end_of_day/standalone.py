@@ -486,8 +486,11 @@ class StandaloneReader:
         include_unresolved=False,
         before_payloads=None,
         wait=None,
+        writer_view=None,
     ):
         try:
+            if writer_view is not None and expected is None:
+                raise StandaloneReaderError("accepted lineage view requires selected generation references")
             loader = self._cache.document if self._cache.maximum_bytes else None
             if reuse_documents:
                 # Private to this lock handshake: parse each selected document
@@ -507,7 +510,11 @@ class StandaloneReader:
             def select(root):
                 if expected is None:
                     return select_inputs(root, symbol, selected_loader=loader)
-                selected = {name: read_index(root, name)["symbols"].get(name) for name in expected["lineage"]}
+                selected = (
+                    {name: read_index(root, name)["symbols"].get(name) for name in expected["lineage"]}
+                    if writer_view is None
+                    else writer_view.select(self.store, expected["lineage"])
+                )
                 if any(
                     (entry["sha256"] if entry is not None else None) != expected["lineage"][name]
                     for name, entry in selected.items()
@@ -521,6 +528,7 @@ class StandaloneReader:
                 wait=self.wait if wait is None else wait,
                 selected_loader=loader,
                 include_boundaries=False,
+                writer_view=writer_view,
             ) as snap:
                 seed = snap["receipts"][symbol]
                 selected_sources = seed["input_sources"]
@@ -693,12 +701,15 @@ class StandaloneReader:
         shared_cache=False,
         before_payloads=None,
         wait=None,
+        writer_view=None,
     ):
         """Shared locked consumption for inspection, serving production and reads."""
         from ._standalone_group import GroupSnapshot
 
         symbol = _symbol(symbol)
         options = {"reuse_documents": True}
+        if writer_view is not None:
+            options["writer_view"] = writer_view
         if wait is not None:
             options["wait"] = wait
         if expected is not None:

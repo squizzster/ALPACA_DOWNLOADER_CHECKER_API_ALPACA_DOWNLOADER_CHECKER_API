@@ -20,7 +20,7 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 35
+RUNTIME_VERSION = 37
 VERSION = 34  # Persisted publication and policy contract, independent of runtime releases.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100

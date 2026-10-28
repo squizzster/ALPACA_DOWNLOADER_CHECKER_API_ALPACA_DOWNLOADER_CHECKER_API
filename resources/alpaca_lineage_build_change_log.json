@@ -207,5 +207,15 @@
     "modifications": [
       "Pass completed pricing evidence directly to symbol disposition, including empty views and retained counts during partial reads, without filesystem authentication. Construct detailed policy traces only on request while preserving mandatory phase checks and traced digest semantics. Separate the runtime release from the unchanged lineage-34 publication and correlation-policy identity; existing completed decisions remain authoritative."
     ]
+  },
+  {
+    "modifications": [
+      "Lend accepted store compatibility and the coherent lineage index to selected consumers for the owning writer lock's process/thread lifetime, avoiding repeated store checks, index opens and lineage selection handshakes while retaining pricing locks and generation checks. Preserve lineage-34 publications and policy identity."
+    ]
+  },
+  {
+    "modifications": [
+      "Acknowledge unchanged retry work from accepted lineage generations and fresh source-bound history approvals without republishing lineage or serving. Carry complete-group producer approvals in memory across stages, preserve changed-input and interruption handling, and retain lineage-34 publication compatibility."
+    ]
   }
 ]

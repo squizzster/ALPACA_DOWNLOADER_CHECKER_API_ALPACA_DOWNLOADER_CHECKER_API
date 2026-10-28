@@ -5,7 +5,7 @@ from uuid import uuid4
 from libs.alpaca_pricing_download.contract import HISTORY_START, failure_outcome
 from libs.alpaca_security_lineage.lineage import compact_asset
 
-from .contract import LineageError, document_digest
+from .contract import LineageError, document_digest, reusable_decision
 from .selection import DependencyGraph
 
 
@@ -99,7 +99,7 @@ def work_graph(entries, work):
     return DependencyGraph(selected)
 
 
-def satisfied(item, entry, pending):
+def satisfied(item, entry, pending, *, approved=False):
     if not entry or not item.get("obligation_id"):
         return False
     projection = entry.get("projection") or {}
@@ -107,7 +107,7 @@ def satisfied(item, entry, pending):
         not pending
         and covers_pricing_start(item, projection.get("pricing_request"))
         and projection.get("processed_through", "")[:10] >= pricing_target(item)
-        and projection.get("update_obligation_id") == item["obligation_id"]
+        and (approved or projection.get("update_obligation_id") == item["obligation_id"])
         and (
             not item.get("invalidate_pricing")
             or projection.get("acquisition_evidence_sha256") == acquisition_fingerprint(item)
@@ -124,10 +124,10 @@ def auxiliary_work(item):
     )
 
 
-def satisfying_entry(symbol, item, entries, pending):
+def satisfying_entry(symbol, item, entries, pending, *, approved=False):
     """Select completion from either the own receipt or its published auxiliary outcome."""
     entry = entries.get(symbol)
-    if satisfied(item, entry, symbol in pending):
+    if satisfied(item, entry, symbol in pending, approved=approved):
         return entry
     if entry or not item.get("obligation_id") or not auxiliary_work(item):
         return None
@@ -182,6 +182,7 @@ class WorkPolicy:
         self.blocked = {item["symbol"] for item in deferred}
         self.failures = []
         self.history_approved = {}
+        self.completed_decisions = {}
         self.restricted_identifiers = {
             identifier
             for symbol in self.blocked
@@ -192,6 +193,50 @@ class WorkPolicy:
     def update_index(self, entries):
         self.index["symbols"].update(entries)
         self.graph.update(self._group_entries(entries))
+
+    def satisfying_entry(self, symbol, entries, pending):
+        """Consume published facts and this operation's producer approvals, without I/O."""
+        item = self.work[symbol]
+        if not self.allowed({symbol}):
+            return None
+        completed = self.completed_decisions.get(symbol)
+        if completed is not None:
+            obligation_id, owner, references = completed
+            if (
+                obligation_id == item["obligation_id"]
+                and not pending.keys() & references.keys()
+                and all((entries.get(s) or {}).get("sha256") == token for s, token in references.items())
+                and (
+                    not item.get("required_history_check")
+                    or symbol in entries
+                    and self.history_approved.get(symbol) == entries[symbol]["source_sha256"]
+                )
+            ):
+                return entries[owner]
+        entry = entries.get(symbol)
+        # DO NOT restore approval-only republication. A successful check of the
+        # selected pricing generation changes workflow state, not lineage data.
+        # Selection already owns whether metadata needs refreshing; the index
+        # owns coverage/group membership. Consume those handoffs in memory, not
+        # by reopening receipts or repeating upstream checks. A crash before the
+        # workflow acknowledgement leaves the obligation pending for a fresh check.
+        approved = bool(
+            entry
+            and item.get("required_history_check")
+            and not item.get("refresh_metadata")
+            and self.history_approved.get(symbol) == entry["source_sha256"]
+            and reusable_decision(entry)
+            and set(item.get("required_group", ())) <= set(entry["group_members"])
+            and not pending.keys() & set(entry["group_members"])
+        )
+        return satisfying_entry(symbol, item, entries, pending, approved=approved)
+
+    def accept_completion(self, receipts, entries, completed):
+        """Keep the producer's input approval bound to its selected complete group."""
+        unavailable = next(iter(receipts.values())).get("unavailable_pricing", {})
+        references = {s: (entries.get(s) or {}).get("sha256") for s in receipts.keys() | unavailable.keys()}
+        for symbol, owner in completed.items():
+            self.completed_decisions[symbol] = (self.work[symbol]["obligation_id"], owner, references)
 
     def _group_entries(self, symbols):
         return {
@@ -264,7 +309,7 @@ class WorkPolicy:
                 self.require(entry["symbol"], target, reason="advance_summary_coverage", history_check=True)
 
     def acknowledge(self):
-        """Only the lineage publisher's stamped projection can satisfy intentions."""
+        """Acknowledge selected publications or fresh producer approvals, never workflow status alone."""
         from libs.alpaca_pricing_download.update_checks import read_checks
 
         from . import storage, universe_state
@@ -283,7 +328,7 @@ class WorkPolicy:
             )
             pending = read_checks(self.store)["checks"]
         for symbol, item in self.work.items():
-            entry = satisfying_entry(symbol, item, index["symbols"], pending)
+            entry = self.satisfying_entry(symbol, index["symbols"], pending)
             if symbol not in self.blocked and entry:
                 universe_state.record_outcome(
                     self.store,
@@ -443,7 +488,7 @@ class WorkPolicy:
         }
 
     def stamp(self, receipts, sources):
-        """Called under group pricing locks, before the lineage owner publishes."""
+        """Check new completion once under group locks; return its owning receipts."""
         self.check(receipts)
         unavailable = next(iter(receipts.values())).get("unavailable_pricing", {}) if receipts else {}
         observed = symbol_lookups(
@@ -458,6 +503,7 @@ class WorkPolicy:
                 for label, expected in item.get("required_lookups", {}).items()
             ):
                 raise WorkDeferred(f"{symbol}: lineage evidence differs from its accepted obligation")
+        accepted = {}
         for symbol, receipt in receipts.items():
             item = self.work.get(symbol)
             if item is None:
@@ -473,11 +519,13 @@ class WorkPolicy:
                 :10
             ] < pricing_target(item):
                 continue  # Maintenance still owes the remaining interval.
-            if item.get("required_history_check") and self.history_approved.get(symbol) != document_digest(
-                source
-            ):
-                continue
             if item.get("correction_id") and source.get("history_correction_id") != item["correction_id"]:
+                continue
+            accepted[symbol] = symbol
+            if (
+                item.get("required_history_check")
+                and self.history_approved.get(symbol) != receipt["source_sha256"]
+            ):
                 continue
             receipt["update_obligation_id"] = item["obligation_id"]
         # Record only accepted refresh requirements, independently of pricing and
@@ -500,7 +548,7 @@ class WorkPolicy:
             s in self.work and receipt.get("update_obligation_id") != self.work[s]["obligation_id"]
             for s, receipt in receipts.items()
         ):
-            return
+            return accepted
         completed = {}
         for symbol, value in unavailable.items():
             item = self.work.get(symbol)
@@ -516,6 +564,8 @@ class WorkPolicy:
         if completed:
             for receipt in receipts.values():
                 receipt["unavailable_obligations"] = completed
+            accepted.update({s: next(iter(receipts)) for s in completed})
+        return accepted
 
     def require_correction(self, prepared, *, require_check=True):
         """Persist a discovered retained-span correction before its acquisition."""

@@ -48,7 +48,16 @@ class AuxiliaryWorkTests(unittest.TestCase):
         self.assertNotIn("DEP", index["symbols"])
         receipt = storage.read_receipt(root, "AAA", index)
         self.assertEqual(receipt["unavailable_pricing"]["DEP"]["outcome"], "invalid_symbol")
-        self.assertEqual(receipt["unavailable_obligations"]["DEP"], work["DEP"]["obligation_id"])
+        if receipt["unavailable_obligations"]["DEP"] != work["DEP"]["obligation_id"]:
+            # A new workflow obligation may acknowledge the identical published
+            # rejection without replacing the owning lineage generation.
+            self.assertEqual(
+                work["DEP"]["outcome"],
+                {
+                    "lineage_generation": index["symbols"]["AAA"]["sha256"],
+                    "outcome": "unavailable_auxiliary_pricing",
+                },
+            )
         self.assertFalse((case.store / "end_of_day/pricing/DEP/source.manifest.json").exists())
 
     def test_daily_and_standalone_publish_before_acknowledging_exact_auxiliary_rejection(self):
@@ -122,6 +131,7 @@ class AuxiliaryWorkTests(unittest.TestCase):
         with fixture() as case:
             attempts = prepare(case)
             self.assertTrue(case.update()["complete"])
+            before = storage.read_index(case.store / "end_of_day/lineage")
             prior = universe_state.read_state(case.store)["work"]["DEP"]
             item = obligation(
                 {
@@ -152,6 +162,7 @@ class AuxiliaryWorkTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, (result, errors))
             self.assert_published(case)
+            self.assertEqual(storage.read_index(case.store / "end_of_day/lineage"), before)
 
     def test_blocked_dependency_requires_explicit_retry_then_finishes_in_group_context(self):
         from urllib.error import HTTPError

@@ -6,7 +6,8 @@ from pathlib import Path
 
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-VERSION = 6
+RUNTIME_VERSION = 7
+VERSION = 6  # Persisted eligibility policy; runtime-only handoffs preserve its checkpoints.
 SCHEMA_VERSION = 2
 
 
@@ -24,7 +25,7 @@ def validate_version():
     entries = json.loads(path.read_bytes())
     if (
         not isinstance(entries, list)
-        or len(entries) != VERSION
+        or len(entries) != RUNTIME_VERSION
         or any(
             not isinstance(e, dict)
             or "version" in e

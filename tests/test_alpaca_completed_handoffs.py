@@ -91,34 +91,39 @@ class CompletedDecisionTests(unittest.TestCase):
             policy.acknowledge()
             self.assertEqual(policy.pending_work, {"AAA"})
 
-    def test_approval_publication_recovers_before_and_after_index_selection(self):
-        for boundary in ("finish_publication", "_acknowledge"):
-            with self.subTest(boundary=boundary), fixture() as case:
-                policy = self.pending_approval(case)
-                policy.history_approved["AAA"] = policy.index["symbols"]["AAA"]["source_sha256"]
-                with (
-                    patch.object(storage, boundary, side_effect=ProcessInterrupted()),
-                    self.assertRaises(ProcessInterrupted),
-                ):
-                    pipeline.run_lineage(case.store, ["AAA"], identity_client=case.identity, work_policy=policy)
-                restarted = WorkPolicy(
-                    case.store,
-                    storage.read_index(case.store / "end_of_day/lineage"),
-                    universe_state.read_state(case.store)["work"],
-                    [],
-                    "2026-10-17",
+    def test_approval_completion_recovers_without_republishing_data(self):
+        with fixture() as case:
+            policy = self.pending_approval(case)
+            before = storage.read_index(case.store / "end_of_day/lineage")
+            policy.history_approved["AAA"] = before["symbols"]["AAA"]["source_sha256"]
+            with (
+                patch.object(storage, "publish", side_effect=AssertionError("unchanged data republished")),
+                patch.object(universe_state, "record_outcome", side_effect=ProcessInterrupted()),
+                self.assertRaises(ProcessInterrupted),
+            ):
+                policy.acknowledge()
+            restarted = WorkPolicy(
+                case.store,
+                before,
+                universe_state.read_state(case.store)["work"],
+                [],
+                "2026-10-17",
+            )
+            with (
+                patch.object(storage, "publish", side_effect=AssertionError("unchanged data republished")),
+                patch.object(pipeline, "load_pricing", side_effect=AssertionError("pricing decoded again")),
+                patch.object(pipeline, "correlate", side_effect=AssertionError("decision recalculated")),
+            ):
+                result = pipeline.run_lineage(
+                    case.store, ["AAA"], identity_client=case.identity, work_policy=restarted
                 )
-                with (
-                    patch.object(pipeline, "load_pricing", side_effect=AssertionError("pricing decoded again")),
-                    patch.object(pipeline, "correlate", side_effect=AssertionError("decision recalculated")),
-                ):
-                    result = pipeline.run_lineage(
-                        case.store, ["AAA"], identity_client=case.identity, work_policy=restarted
-                    )
-                    self.assertTrue(result["recovered"], result)
-                    self.assertEqual(result["failed"], 0, result)
-                    restarted.acknowledge()
-                self.assertEqual(restarted.pending_work, set())
+                self.assertEqual(result["failed"], 0, result)
+                restarted.acknowledge()
+                self.assertEqual(restarted.pending_work, {"AAA"})
+                restarted.history_approved["AAA"] = before["symbols"]["AAA"]["source_sha256"]
+                restarted.acknowledge()
+            self.assertEqual(restarted.pending_work, set())
+            self.assertEqual(storage.read_index(case.store / "end_of_day/lineage"), before)
 
     def test_daily_restart_reuses_evidence_while_finishing_history_approval(self):
         with fixture() as case:
@@ -132,8 +137,8 @@ class CompletedDecisionTests(unittest.TestCase):
                 result = case.update()
             self.assertTrue(result["complete"], result)
             self.assertEqual(len(case.pages), 1)
-            self.assertEqual(len(result["stages"]["approval"]), 1)
-            self.assertTrue(result["stages"]["approval"][0]["results"][0]["reused_decision"])
+            self.assertNotIn("approval", result["stages"])
+            self.assertTrue(result["stages"]["discovery_lineage"][0]["results"][0]["reused_decision"])
 
     def test_changed_source_or_explicit_refresh_invalidates_completed_evidence(self):
         for change in ("source", "refresh"):

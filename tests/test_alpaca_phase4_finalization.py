@@ -113,7 +113,9 @@ class Phase4FinalizationTests(unittest.TestCase):
                 self.assertEqual(work["status"], "complete")
                 self.assertEqual(source(case)["history_correction_id"], work["correction_id"])
                 entry = storage.read_index(case.store / "end_of_day/lineage")["symbols"]["AAA"]
-                self.assertEqual(entry["projection"]["update_obligation_id"], work["obligation_id"])
+                self.assertEqual(work["outcome"]["lineage_generation"], entry["sha256"])
+                self.assertEqual(work["outcome"]["source_generation"], entry["source_sha256"])
+                self.assertEqual(entry["projection"]["history_correction_id"], work["correction_id"])
                 self.assertEqual(
                     entry["projection"]["last_observed_symbol_lookup"]["asset"]["status"], "inactive"
                 )

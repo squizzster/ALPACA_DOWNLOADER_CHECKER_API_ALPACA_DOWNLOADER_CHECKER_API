@@ -116,5 +116,10 @@
     "modifications": [
       "Add a metadata-only published-lineage evidence snapshot that selects the completed index once, trusts its recorded membership and generations, and streams selected receipts and assignments under one lineage publication gate without pricing access, upstream authentication, rule replay or a later freshness pass."
     ]
+  },
+  {
+    "modifications": [
+      "Consume an owning serving writer's accepted lineage-index view in private group reads without reopening lineage selectors or repeating store checks; retain ordinary public-reader locking, pricing freshness checks and public result semantics."
+    ]
   }
 ]

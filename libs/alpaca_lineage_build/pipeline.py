@@ -390,8 +390,21 @@ def process_group(
                     for symbol, prior in previous.items()
                 }
                 if work_policy is not None:
-                    work_policy.stamp(receipts, sources)
-                published = receipts != previous
+                    completed = work_policy.stamp(receipts, sources)
+                # DO NOT restore publication for workflow acknowledgement alone.
+                # stamp() has checked the selected inputs under their owning locks;
+                # its approval belongs in durable work state, not a new data
+                # generation that forces serving to reopen unchanged assignments.
+                # Only these acknowledgement fields are excluded: evidence,
+                # pricing, ownership, versions and policy still require publication.
+                acknowledgements = {"update_obligation_id", "evidence_requirements", "unavailable_obligations"}
+                published = any(
+                    {k: v for k, v in receipt.items() if k not in acknowledgements}
+                    != {k: v for k, v in previous[symbol].items() if k not in acknowledgements}
+                    for symbol, receipt in receipts.items()
+                )
+                if not published:
+                    receipts = previous
                 if published:
                     if progress:
                         progress("lineage_publication", {"symbols": sorted(receipts), "reused_decision": True})
@@ -409,6 +422,8 @@ def process_group(
                     receipt_cache.published(receipts)
                     if work_policy is not None:
                         work_policy.update_index({s: index["symbols"][s] for s in receipts})
+                if work_policy is not None:
+                    work_policy.accept_completion(receipts, index["symbols"], completed)
                 if observer is not None:
                     observer(
                         store=store,
@@ -680,7 +695,7 @@ def process_group(
                             if unavailable:
                                 receipts[symbol]["unavailable_pricing"] = unavailable
                         if work_policy is not None:
-                            work_policy.stamp(receipts, sources)
+                            completed = work_policy.stamp(receipts, sources)
                         if progress:
                             progress(
                                 "lineage_publication",
@@ -700,6 +715,7 @@ def process_group(
                         receipt_cache.published(receipts)
                         if work_policy is not None:
                             work_policy.update_index({symbol: index["symbols"][symbol] for symbol in receipts})
+                            work_policy.accept_completion(receipts, index["symbols"], completed)
                         else:
                             graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
                         # Inspection observes the actual publication while the same

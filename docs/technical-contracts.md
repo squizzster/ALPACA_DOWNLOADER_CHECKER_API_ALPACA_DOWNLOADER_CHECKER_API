@@ -124,6 +124,14 @@ retain stable obligation IDs, accepted endpoints, evidence fingerprints, complet
 requirements and retry state. Persist dependency/correction requirements before requests. Lineage stamps only
 satisfied locked inputs: coverage cannot erase unperformed refresh/correction or failed checks. Completed
 replacements/extensions survive interrupted acknowledgement; a matching last row alone proves neither.
+Workflow acknowledgement alone does not create a lineage or serving generation. Unchanged retry completion
+uses the accepted index's coverage and group, together with a fresh check bound to its pricing generation.
+The lineage producer passes already-checked input completion in memory, bound to the obligation and every
+selected group generation; a later history approval consumes that handoff without reopening the group.
+Pending work, renewed obligations or changed group generations invalidate that handoff. Durable work records
+acknowledge the selected publication; they never replace it as data authority. Interruption before acknowledgement
+leaves retry work pending, while interruption afterward does not require republication. Changed evidence,
+pricing, assignments or policy still follow the owning publication path.
 Recovery reselects acquisition from accepted requirements/completed summary; a saved `acquire` flag cannot divert
 a summarized maintained source from live check → approved append.
 
@@ -238,6 +246,13 @@ including absent dependencies, without rediscovering evidence closure. Lineage t
 [serving obligations](../libs/alpaca_serving_catalogue/work.py) before upstream acknowledgement. Catalogue commit
 precedes obligation deletion; retries reuse committed work without history reads. The lineage worker serializes
 maintenance; selected pricing locks span publication. Failures/focused commands leave unrelated obligations pending.
+
+Serving retains the accepted store compatibility and lineage index in a view owned by its held lineage writer
+lock. Selected readers consume those entries without reopening the index, rechecking its protocol or repeating
+store path checks. The view is restricted to the owning process/thread and expires before the writer lock is
+released. Pricing locks, source-generation checks and pending-publication checks still protect each selected
+group. Ordinary readers without this writer-owned view retain selection, locking and reselection. Runtime-only
+changes to this handoff preserve the serving policy and its completed checkpoints.
 
 Explicit bootstrap covers indexed groups and may project missing membership from receipts in bounded batches,
 preserving digests/identity decisions. It may read full selected histories; ordinary maintenance/readers never

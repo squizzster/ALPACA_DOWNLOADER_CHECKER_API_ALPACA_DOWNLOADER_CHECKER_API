@@ -123,7 +123,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
     # This is an offline lineage consumer. Holding the worker serializes selection,
     # work seeding and acknowledgement with lineage without a universe file crawl.
     # Shared pricing locks still protect each newly evaluated group through commit.
-    lineage.check_store(store)
+    accepted_store = lineage.accept_store(store)
     result = {
         "complete": False,
         "failed": 0,
@@ -147,7 +147,8 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
         )
     elif not (store / "end_of_day/lineage/index.sqlite3").exists():
         raise CatalogueError("lineage index missing; publish lineage before catalogue bootstrap")
-    with lineage.writer_lock(store) as root:
+    with lineage.writer_snapshot(store, accepted_store=accepted_store, context=context) as writer_view:
+        root = writer_view.root
         if (root / ".pending.json").exists():
             raise CatalogueError("lineage publication pending; resume its owner first")
         if controls is not None:
@@ -163,8 +164,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                     "pending_symbols": [],
                     "generation": controls["state"]["generation"],
                 }
-        with lineage.publication_lock(root):
-            index = lineage.read_index(root) if context is None else context.select_index(root)
+        index = writer_view.index()
         entries = index["symbols"]
         if bootstrap or rebuild:
             storage.initialize(store, rebuild=rebuild)
@@ -216,7 +216,11 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                         }
                         group = locks.enter_context(
                             reader._open_group(
-                                symbol, expected=references, include_unresolved=True, shared_cache=True
+                                symbol,
+                                expected=references,
+                                include_unresolved=True,
+                                shared_cache=True,
+                                writer_view=writer_view,
                             )
                         )
                         if not set(group.references["lineage"]) <= component:

@@ -18,7 +18,7 @@ from .pipeline import run_lineage
 from .refresh import refresh_required_history
 from .registration import command_policy
 from .update import update_everything
-from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target, satisfying_entry
+from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target
 
 
 def recover_publications(store, *, context=None):
@@ -369,16 +369,17 @@ def run_update(
         if boundary is None:
             return result
         index, pending = boundary
-        # A recovered maintenance failure cannot be acknowledged by a receipt
-        # published before its new history check. Already stamped append results
-        # satisfy this from the projection without reopening their complete groups.
+        # Fresh source-bound approval can complete unchanged published work here.
+        # DO NOT route a retry through lineage merely to stamp its workflow ID:
+        # that changes every downstream generation despite unchanged data.
+        completed = {s: policy.satisfying_entry(s, index["symbols"], pending) for s in policy.work}
         finish = [
             s
             for s, item in policy.work.items()
             if item.get("required_history_check")
             and s in policy.history_approved
             and policy.allowed({s})
-            and not satisfying_entry(s, item, index["symbols"], pending)
+            and not completed[s]
         ]
         if finish:
             lineage_phase("approval", finish)
@@ -386,10 +387,11 @@ def run_update(
             if boundary is None:
                 return result
             index, pending = boundary
+            completed = {s: policy.satisfying_entry(s, index["symbols"], pending) for s in policy.work}
         for symbol, item in policy.work.items():
             if symbol in policy.blocked:
                 continue
-            entry = satisfying_entry(symbol, item, index["symbols"], pending)
+            entry = completed[symbol]
             if entry:
                 universe_state.record_outcome(
                     store,

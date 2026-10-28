@@ -4,8 +4,10 @@ import fcntl
 import json
 import os
 import sqlite3
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, nullcontext
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import get_ident
 
 from libs.alpaca_pricing_download.contract import json_bytes, symbol_label
 from libs.alpaca_pricing_download.storage import (
@@ -73,6 +75,51 @@ def check_store(store: Path) -> None:
         raise LineageError("lineage requires a standalone pricing store; no migration is performed")
 
 
+@dataclass(frozen=True)
+class AcceptedStore:
+    store: Path
+    root: Path
+
+
+def accept_store(store):
+    """Accept immutable store compatibility once for the owning operation."""
+    store = Path(store).absolute()
+    check_store(store)
+    return AcceptedStore(store, regular_path(store, "end_of_day/lineage"))
+
+
+class WriterIndexView:
+    """A selected index whose writer lock remains held by this thread."""
+
+    def __init__(self, accepted, context):
+        self.store, self.root = accepted.store, accepted.root
+        self._context, self._index = context, None
+        self._process, self._thread, self._active = os.getpid(), get_ident(), True
+
+    def require_active(self, store):
+        if not self._active or self._process != os.getpid() or self._thread != get_ident():
+            raise LineageError("accepted lineage view requires its active writer lock")
+        if Path(store).absolute() != self.store:
+            raise LineageError("accepted lineage view belongs to another store")
+
+    def index(self):
+        self.require_active(self.store)
+        if self._index is None:
+            with publication_lock(self.root):
+                if (self.root / ".pending.json").exists():
+                    raise LineageError("lineage publication incomplete; resume lineage first")
+                self._index = (
+                    read_index(self.root) if self._context is None else self._context.select_index(self.root)
+                )
+        return self._index
+
+    def select(self, store, symbols):
+        self.require_active(store)
+        if self._index is None:
+            raise LineageError("lineage index has not been accepted")
+        return {name: self._index["symbols"].get(name) for name in symbols}
+
+
 @contextmanager
 def publication_lock(root: Path, *, exclusive=False, wait=True):
     """Protect only receipt/index installation or a short selection handshake."""
@@ -101,9 +148,11 @@ def _index_version(root: Path, *, readonly=True) -> int | None:
 
 
 @contextmanager
-def writer_lock(store: Path):
-    check_store(store)
-    root = regular_path(store, "end_of_day/lineage")
+def writer_lock(store: Path, *, accepted_store=None):
+    accepted = accept_store(store) if accepted_store is None else accepted_store
+    if accepted.store != Path(store).absolute():
+        raise LineageError("accepted lineage store belongs to another store")
+    root = accepted.root
     root.mkdir(parents=True, exist_ok=True)
     # One permanent inode per store, not per ticker. Readers never take it.
     with path_at(root, ".worker.lock").open("a+b") as worker:
@@ -118,6 +167,22 @@ def writer_lock(store: Path):
             if existing != VERSION:
                 _update_index(root, {})
         yield root
+
+
+@contextmanager
+def writer_snapshot(store, *, accepted_store=None, context=None):
+    """Own the writer lock and lend its coherent index only for that lifetime."""
+    accepted = accept_store(store) if accepted_store is None else accepted_store
+    if context is not None and context.store != accepted.store:
+        raise LineageError("lineage context belongs to another store")
+    with writer_lock(store, accepted_store=accepted):
+        view = WriterIndexView(accepted, context)
+        try:
+            yield view
+        finally:
+            view._active = False
+            view._index = None
+            view._context = None
 
 
 def select_inputs(root: Path, symbol: str, *, selected_loader=None) -> dict:
@@ -142,7 +207,14 @@ def select_inputs(root: Path, symbol: str, *, selected_loader=None) -> dict:
 
 @contextmanager
 def reader_snapshot(
-    store: Path, select, *, wait=True, selected_loader=None, include_boundaries=True, include_receipts=True
+    store: Path,
+    select,
+    *,
+    wait=True,
+    selected_loader=None,
+    include_boundaries=True,
+    include_receipts=True,
+    writer_view=None,
 ):
     """Snapshot selection, release gate, lock prices, reselect; never invert locks.
 
@@ -150,10 +222,20 @@ def reader_snapshot(
     Selected metadata is loaded under the brief gate, then pricing SH locks alone
     protect it throughout consumption. Unrelated groups can publish during reads.
     """
-    check_store(store)
-    root = regular_path(store, "end_of_day/lineage")
+    if writer_view is None:
+        check_store(store)
+        root = regular_path(store, "end_of_day/lineage")
+    else:
+        writer_view.require_active(store)
+        root = writer_view.root
+
+    def gate():
+        return publication_lock(root, wait=wait) if writer_view is None else nullcontext()
 
     def selection():
+        if writer_view is not None:
+            writer_view.require_active(store)
+            return select(root)
         # New lock order must not overlap an executable using the old order.
         # The worker upgrades this header under the old shared/exclusive gate.
         if _index_version(root) not in {None, *range(6, VERSION + 1)}:
@@ -163,7 +245,7 @@ def reader_snapshot(
         return select(root)
 
     for _ in range(3):
-        with publication_lock(root, wait=wait):
+        with gate():
             selected = selection()
         with ExitStack() as locks:
             locked = set()
@@ -181,8 +263,10 @@ def reader_snapshot(
                 except BlockingIOError as error:
                     raise LineageBusyError("pricing group is busy; retry later or use --wait") from error
                 locked.add(symbol)
-            with publication_lock(root, wait=wait):
-                if selection() != selected:
+            with gate():
+                if writer_view is not None:
+                    writer_view.require_active(store)
+                elif selection() != selected:
                     continue  # Release every price lock before retrying a changed closure.
                 index = {"symbols": {name: entry for name, entry in selected.items() if entry is not None}}
                 receipts = (

@@ -28,5 +28,10 @@
     "modifications": [
       "Preserve producer-selected observation sources and the full accepted dated-label set in serving checkpoints; rebuild prior checkpoints without repeating upstream decisions, reusing completed history facts when the complete published history is unchanged."
     ]
+  },
+  {
+    "modifications": [
+      "Pass the writer-protected accepted lineage index and store compatibility through serving group reads, eliminating per-group upstream selector reauthentication. Separate runtime releases from unchanged eligibility policy 6 and schema 2 so completed checkpoints remain reusable."
+    ]
   }
 ]
