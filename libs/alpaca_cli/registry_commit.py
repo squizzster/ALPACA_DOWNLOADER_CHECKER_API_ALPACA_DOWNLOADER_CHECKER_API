@@ -25,6 +25,9 @@ def _failure(error):
 
 
 def _push_registry(repository, commit, report):
+    # Git publication is a separate, narrowly scoped external side effect. Only
+    # the verified registry-only commit may advance its configured upstream;
+    # DO NOT broaden this to push unrelated work, force, merge or change branches.
     """An exact source commit and one explicit refspec cannot publish later work."""
     remote, push_url = "upstream", None
     report("checking", "Checking the registry commit against its upstream branch.", phase="PUSH", commit=commit)

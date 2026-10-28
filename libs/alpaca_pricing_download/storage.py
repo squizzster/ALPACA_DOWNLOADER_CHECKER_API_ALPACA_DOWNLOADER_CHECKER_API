@@ -45,6 +45,9 @@ STORE_DOCUMENT = {
 
 def regular_path(root: Path, relative: str, *, published=False) -> Path:
     """Confine names lexically; only unselected paths need filesystem inspection."""
+    # The producer checks destinations before publication. published=True is
+    # for names selected by that completed boundary: keep lexical confinement,
+    # but DO NOT add exists/stat/symlink walks that re-prove upstream ownership.
     parts = PurePosixPath(relative).parts
     if (
         not parts
@@ -67,6 +70,9 @@ def published_path(root: Path, relative: str) -> Path:
 
 
 def write_file(path: Path, data: bytes) -> None:
+    # Closed staging files, atomic replacement and the owner journal cover
+    # process interruption. DO NOT add fsync/fdatasync: power-loss durability is
+    # outside this contract and would add a stall to every publication.
     with path.open("xb") as stream:
         stream.write(data)
 
@@ -111,6 +117,7 @@ def initialize_store(root: Path) -> None:
 @contextmanager
 def ticker_lock(root: Path, *, exclusive: bool, create=False):
     # Downloader and update consumer both take EX. Never unlink the stable inode.
+    # Kernel flock owns exclusion; an existing lock file does not mean it is held.
     lock = regular_path(root, ".download.lock", published=not create)
     with lock.open("a+b" if create else "rb") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
@@ -158,6 +165,9 @@ def read_update(root: Path, *, published=True) -> dict | None:
 
 def acknowledge_update(root: Path, expected: dict, *, selected=False) -> None:
     """Remove only a successfully consumed range, under the same exclusive lock."""
+    # selected means the same owner already accepted this notice while keeping
+    # the exclusive lock. Re-reading it would repeat that unchanged handoff;
+    # callers that released the lock must establish the current notice instead.
     if not selected and read_update(root) != expected:
         raise DownloadError("pending update changed during consumption")
     path = update_path(root, published=selected)
@@ -178,6 +188,9 @@ def boundary_paths(anchor: str) -> dict[str, str]:
 
 def load_source(root: Path, symbol: str) -> dict | None:
     """Read the selecting receipt directly; do not inspect its published files."""
+    # This selector owns the three boundary references and any endpoint sidecar.
+    # Validate its own contract below, then read only selected work. DO NOT
+    # replace acceptance with a payload inventory or authenticate_* calls.
     path = regular_path(root, "source.manifest.json", published=True)
     try:
         data = path.read_bytes()
@@ -233,6 +246,9 @@ def load_source(root: Path, symbol: str) -> dict | None:
 
 
 def read_validator(root: Path, source: dict, *, published=True) -> dict | None:
+    # The selected source identifies this completed sidecar. Ordinary reads
+    # consume its rows; explicit authenticate_validator owns physical auditing.
+    # DO NOT promote audit hashing into the normal handoff path.
     reference = source.get("validator")
     if reference is None:
         return None
@@ -446,6 +462,9 @@ def _finish_publication(
         event = queue_check(store, root.name)
         if on_check is not None:
             on_check(event)
+    # These are this producer's new or interrupted outputs, not accepted upstream
+    # payloads. Verification belongs here, with the source selector installed
+    # last; downstream consumers must not repeat it after journal completion.
     for index, entry in enumerate(writes):
         target = regular_path(root, entry["path"])
         staged = regular_path(root, f".staging/write-{index:03d}")
@@ -485,6 +504,9 @@ def _finish_publication(
             raise DownloadError("installed update manifest failed verification")
     from .check_summary import refresh_prices
 
+    # Live publication lends accepted in-memory outputs; recovery may reconstruct
+    # them from its now-installed selector. Summary completion precedes removal
+    # of the owning journal, so interrupted work cannot look fully published.
     refresh_prices(root, source=source, endpoints=endpoints)
     _discard_staging(root)
     regular_path(root, ".pending.json").unlink()
@@ -519,6 +541,9 @@ def _check_publication_entry(relative, checksum) -> None:
 
 
 def recover(root: Path, *, on_check=None) -> bool:
+    # Only the pricing owner, under its selected ticker lock, recovers this
+    # bounded journal/staging area. Readers fail closed on pending publication;
+    # recovery is not permission to discover or inspect unrelated store paths.
     pending = regular_path(root, ".pending.json")
     if pending.exists():
         _finish_publication(root, read_document(pending), on_check=on_check)
@@ -591,6 +616,9 @@ def publish(
             notice = json_bytes(update)
     if handoff is not None:
         handoff["pending_update"] = update if update is not None else existing
+    # A completed equal output is already authoritative. DO NOT publish again
+    # merely to acknowledge a retry or refresh a cache: that creates needless
+    # downstream generations and work without changing data or its notice.
     if not changed and notice is None:
         return 0
     # Source receipt is also staged for an otherwise byte-identical selection.

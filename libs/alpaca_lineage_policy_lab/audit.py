@@ -131,6 +131,9 @@ def _canonical_digest(value: Any) -> str:
 
 
 def _selector_groups(index: dict[str, Any]) -> tuple[list[tuple[str, ...]], int]:
+    # The completed index owns membership. An explicit audit may inspect its
+    # declared scope; missing/invalid projections fail here, never trigger a
+    # directory census or receipt crawl to reconstruct membership implicitly.
     entries = index.get("symbols")
     state = index.get("projection_state")
     if not isinstance(entries, dict) or not entries:
@@ -622,6 +625,9 @@ def _run_audit(
     progress: dict[str, Any],
 ) -> dict[str, Any]:
     deadline.check("selector read")
+    # This broad read is authorized by the explicit audit command, not a daily
+    # update fallback. Prefilter from the selector, then load only selected groups;
+    # the audit reports pending publication and never recovers or writes it.
     check_store(store)
     root = regular_path(store, "end_of_day/lineage")
     with publication_lock(root, wait=False):
@@ -688,6 +694,8 @@ def _run_audit(
     with _shared_pricing_locks(store, lock_symbols) as locked:
         deadline.check("selector token recheck")
         with publication_lock(root, wait=False):
+            # Locks were acquired after selection: compare the compact revision
+            # once, rather than authenticating every upstream publication again.
             assert_index_current(root, index)
 
         for symbol in lock_symbols:

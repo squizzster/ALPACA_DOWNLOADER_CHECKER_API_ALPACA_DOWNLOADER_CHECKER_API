@@ -108,6 +108,8 @@ def select_append_sources(store, entries, end_date, *, required_symbols=()):
     """Select generations for the append subset before its history check begins."""
     needs, _ = append_needs(entries, request_end(end_date))
     result = {}
+    # The summary supplies membership. Open sources only for actual appends or
+    # explicit history obligations; DO NOT authenticate every covered ticker.
     selected = {need["symbols"][0] for need in needs} | set(required_symbols)
     for symbol in sorted(selected):
         root = regular_path(Path(store), f"end_of_day/pricing/{symbol}", published=True)
@@ -134,6 +136,9 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
         previous = load_source(root, symbol)
         if entry["last_all"] is not None and approved_source_sha256 is None:
             raise DownloadError(f"{symbol}: nonempty append requires a completed history-check approval")
+        # The history-check owner approved one generation before this lock was
+        # acquired. Recheck that generation, not historical payload correctness:
+        # the same last row alone cannot detect an intervening history replacement.
         if approved_source_sha256 is not None and digest(json_bytes(previous)) != approved_source_sha256:
             raise DownloadError(f"{symbol}: source generation changed after the approved handoff")
         if (
@@ -310,6 +315,8 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
     Publication checks its covered end and last row under the normal ticker lock.
     Any new lineage/CUSIP work is still owned by the unchanged lineage consumer.
     """
+    # Approval covers only the supplied members/generations. DO NOT enlarge the
+    # handoff with newly eligible symbols or repeat the completed live check.
     store = Path(store).absolute()
     assert_current(store, snapshot["token"])
     return append_entries(

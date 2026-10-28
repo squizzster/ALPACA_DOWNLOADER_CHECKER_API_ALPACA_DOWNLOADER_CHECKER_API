@@ -360,6 +360,10 @@ def _exclude_adopted_target_joins(edges, lineage):
 
 def certify_name_change_edges(edges, certified_name_changes):
     """Accept only independently certified cross-UUID rename candidates."""
+    # This is the candidate-to-membership boundary. A provider rename candidate
+    # alone cannot join UUIDs; the independent continuity owner supplies the
+    # accepted action IDs. Consume those certificates rather than proving them
+    # again from prices or from assignments that already depend on the edge.
     evidence_issues = []
     retained = []
     for edge in edges:

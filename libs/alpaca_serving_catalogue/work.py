@@ -12,6 +12,9 @@ WORK_VERSION = 1
 
 
 def record_publication(connection, entries, *, empty):
+    # Called inside the lineage index transaction: selecting a changed receipt
+    # and recording its serving obligation become visible together. Queue state
+    # selects work; the committed catalogue decides whether it is already done.
     connection.execute(
         "CREATE TABLE IF NOT EXISTS serving_work (symbol TEXT PRIMARY KEY, generation TEXT NOT NULL)"
     )
@@ -28,6 +31,9 @@ def record_publication(connection, entries, *, empty):
 
 
 def read(store):
+    # Complete queue coverage is its own boundary guarantee. Missing coverage
+    # requires explicit bootstrap; DO NOT infer an empty queue or inspect every
+    # receipt to reconstruct ordinary maintenance work.
     try:
         with closing(connect_sqlite(store / "end_of_day/lineage/index.sqlite3", readonly=True)) as connection:
             connection.execute("BEGIN")
@@ -56,6 +62,9 @@ def seed(store, entries):
 
 def acknowledge(store, targets):
     """Only after catalogue commit; a newer lineage obligation cannot be consumed."""
+    # Interruption before this transaction leaves replayable work. The next
+    # maintainer trusts a matching committed catalogue and only acknowledges it;
+    # DO NOT republish unchanged decisions to make bookkeeping look complete.
     with closing(connect_sqlite(store / "end_of_day/lineage/index.sqlite3")) as connection, connection:
         connection.executemany(
             "DELETE FROM serving_work WHERE symbol=? AND generation=?", sorted(targets.items())

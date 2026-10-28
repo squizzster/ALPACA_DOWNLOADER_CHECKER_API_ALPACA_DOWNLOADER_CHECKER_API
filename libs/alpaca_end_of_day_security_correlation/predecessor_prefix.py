@@ -695,6 +695,9 @@ def assess_independent_donor_prefixes(
 def assess_predecessor_prefixes(
     symbol, lineage, intervals, edges, work_items, *, correlation_loader, source_rows_loader
 ) -> tuple[PredecessorPrefix, ...]:
+    # The caller supplies readers for selected independent successor evidence.
+    # This producer proves only the returned prefix; consumers must retain its
+    # bounds rather than reopen histories to extend it into an unobserved past.
     if correlation_loader is None or source_rows_loader is None:
         return ()
     candidates = predecessor_prefix_candidates(symbol, lineage, intervals, edges)

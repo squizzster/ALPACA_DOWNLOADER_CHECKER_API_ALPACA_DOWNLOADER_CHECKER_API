@@ -66,6 +66,9 @@ def project_history(history, identifier, *, start=None, end=None):
     Labels come from the full identity history. Unknown dated type/exchange and
     optional identifiers are not invented from present-day asset lookups.
     """
+    # The reader owns identity, dated labels and selected observations. Conversion
+    # owns the new int64 mapping, numeric representation and factor fields; those
+    # output requirements do not authorize new identity rules or provider reads.
     public_id = history["security"]["public_id"]
     if identifier != series_id(public_id):
         raise ExportError("series ID differs from the checked identity mapping")

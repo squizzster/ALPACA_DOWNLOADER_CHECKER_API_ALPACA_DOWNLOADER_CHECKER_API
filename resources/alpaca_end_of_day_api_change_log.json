@@ -121,5 +121,10 @@
     "modifications": [
       "Consume an owning serving writer's accepted lineage-index view in private group reads without reopening lineage selectors or repeating store checks; retain ordinary public-reader locking, pricing freshness checks and public result semantics."
     ]
+  },
+  {
+    "modifications": [
+      "Consume generation-bound online raw and fully adjusted histories directly in flat CSV export, trusting their completed unique aligned session grids instead of rebuilding session maps, sorting histories or repeating upstream checks. Preserve selected-generation failures, dated metadata ambiguity, output ordering and atomic publication."
+    ]
   }
 ]

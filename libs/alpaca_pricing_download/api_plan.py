@@ -14,6 +14,9 @@ def execute_plan(plan, *, bars=None, metadata=None):
     Results retain step/action positions. Routing and requested slices are in each
     action's deliver array. Clients own HTTP, pagination and exact response parsing.
     """
+    # The solver owns request selection and delivery ranges; transport clients
+    # own pagination/normalization. Dispatch validates the plan contract without
+    # independently expanding symbols, ranges or dependent requests.
     if plan.get("schema_version") != VERSION:
         raise DownloadError("unsupported API action-plan version")
     clients = {strategy: bars for strategy in BAR_STRATEGIES}

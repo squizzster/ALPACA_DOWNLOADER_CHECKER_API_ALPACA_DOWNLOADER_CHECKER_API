@@ -106,6 +106,9 @@ def acquire_selected(
                 and (requested_start is None or requested_start >= stored_start)
                 and (covered > end or covered == end and (symbol not in invalidate or accepted_evidence))
             ):
+                # The selected source already satisfies the accepted scope and
+                # mapping requirement. A missing workflow acknowledgement must
+                # not trigger another download, endpoint probe or publication.
                 results.append(
                     {
                         "symbol": symbol,

@@ -57,6 +57,10 @@ def action_requests(symbol, start, end, previous=None, *, refresh=False):
 class EvidenceClient:
     """One run's coherent lookup cache. Conflicting action IDs fail before publication."""
 
+    # DO NOT turn cache hits into provider rechecks. Completed observations are
+    # authoritative within this operation; failed requests remain failures, and
+    # conflicting/new evidence is handled by its owning acquisition path below.
+
     def __init__(self, client, *, observation=None):
         self.client = client
         self.assets = {}
@@ -110,6 +114,8 @@ class EvidenceClient:
         return self._value(self.assets[identifier])
 
     def get_symbol_lookup(self, symbol):
+        # A unique catalogue label can supply a symbol lookup. This permission
+        # does not extend to ambiguous labels or exact CUSIP-to-ID mappings.
         if self.work_policy is not None:
             self.work_policy.check({symbol})
         if symbol not in self.assets and self.catalogue is not None and self.catalogue.get(symbol):
@@ -276,6 +282,8 @@ class EvidenceClient:
         self.action_intervals[symbol][(start, end)] = checked
 
     def _covered(self, key):
+        # A successfully completed containing action interval already proves
+        # coverage of its subset. DO NOT request the subset again to confirm it.
         if key in self.actions:
             return True
         symbol, start, end = key
@@ -339,6 +347,10 @@ class _CompletedLookupChanged(RuntimeError):
 
 
 class WindowClient:
+    # Retained evidence owns the earlier completed window. Exact-lookup reuse also
+    # requires a positive retained result and identical, unambiguous current asset
+    # facts; negative/missing/changed facts or new actions can require acquisition.
+    # Moving the cutoff alone does not invalidate all historical lookup evidence.
     def __init__(self, client, symbol, previous, refresh):
         self.client, self.symbol = client, symbol
         self.previous = previous

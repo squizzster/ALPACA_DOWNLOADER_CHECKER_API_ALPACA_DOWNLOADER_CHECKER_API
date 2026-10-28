@@ -425,6 +425,10 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
 
 def build_plan(document, *, max_symbols=4000, max_url_bytes=60000, merge_ranges=True):
     """Optimize independently within each ordered step; never across steps."""
+    # TRUST BOUNDARY: owners supply reasoned needs; this pure solver emits actions.
+    # It neither reads stores nor proves requests completed. Executors exhaust
+    # each action's pagination; dependent needs belong in a later step, never
+    # folded into an earlier batch using an assumed response.
     if not isinstance(document, dict) or set(document) != {"steps"} or not isinstance(document["steps"], list):
         raise ValueError("expected an ordered steps array")
     return {

@@ -25,6 +25,9 @@ def last_observed_symbol_lookup(receipt):
 
 
 def project_receipt(receipt):
+    # Producer-owned compact facts for selection/status. Consumers must use this
+    # projection instead of opening all lineage receipts to reconstruct it.
+    # Observation time and last-positive status are not historical ownership proof.
     evidence = [receipt["evidence"]]
     evidence.extend(
         item["evidence"] for item in receipt.get("unavailable_pricing", {}).values() if "evidence" in item
@@ -51,6 +54,8 @@ def project_receipt(receipt):
 
 
 def require_complete(index):
+    # Missing coverage is an explicit migration boundary, never permission for a
+    # hidden receipt crawl during planning, status or an ordinary daily update.
     state = index.get("projection_state")
     if (
         not state

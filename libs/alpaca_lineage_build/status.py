@@ -13,6 +13,9 @@ from .projection import PROJECTION_VERSION, require_complete
 
 
 def inspect_status(store):
+    # Read-only control-plane boundary: report compact owner state and only named
+    # pending journals. DO NOT add repair, receipt/payload verification or a ticker
+    # census to make status look more certain; those are separate owner operations.
     store = Path(store).absolute()
     result = {
         "store": str(store),

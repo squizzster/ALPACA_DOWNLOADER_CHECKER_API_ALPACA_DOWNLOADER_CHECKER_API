@@ -212,6 +212,10 @@ def infer_split_factors(views):
     No actions or external prices enter; no full-factor/OHLC smoothing occurs.
     The factor is provider-implied, not an independently verified share ledger.
     """
+    # This exporter produces a new factor interpretation from accepted full
+    # histories. Its grid/model checks validate that interpretation, not lineage
+    # or stored-byte authenticity. DO NOT clip first, fetch action evidence, or
+    # silently replace a published adjustment view to satisfy this output model.
     if set(views) != set(ADJUSTMENTS):
         raise FactorError("all eight adjustment views are required")
     bars = {name: views[name]["bars"] for name in ADJUSTMENTS}

@@ -6,6 +6,9 @@ from typing import Any
 
 
 def exact_cusip_lookup_asset(lineage: dict[str, Any], cusip: str) -> dict[str, Any] | None:
+    # Consume the evidence owner's completed exact lookup, including its outcome.
+    # This selector performs no HTTP request; a symbol observation cannot stand
+    # in for missing/ambiguous CUSIP evidence or establish historical ownership.
     lookups = lineage.get("asset_lookups")
     if not isinstance(lookups, list):
         return None
@@ -33,6 +36,8 @@ def exact_cusip_lookup_asset(lineage: dict[str, Any], cusip: str) -> dict[str, A
 
 def exact_symbol_lookup_asset(lineage: dict[str, Any], symbol: str) -> dict[str, Any] | None:
     """Return one completed exact symbol lookup, without projecting it backwards."""
+    # The observation is authoritative for the observed lookup only. Dated
+    # ownership still belongs to the interval rules, not today's ticker spelling.
     lookups = lineage.get("asset_lookups")
     if not isinstance(lookups, list):
         return None

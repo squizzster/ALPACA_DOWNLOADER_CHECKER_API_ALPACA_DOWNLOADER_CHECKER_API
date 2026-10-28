@@ -11,6 +11,8 @@ from .contract import LineageError
 
 
 def stored_active(receipt):
+    # This is stored live-check membership, not serving eligibility or current
+    # provider status. DO NOT query the API to re-prove an accepted receipt here.
     symbol = receipt["symbol"]
     lookups = [
         item
@@ -24,6 +26,9 @@ def stored_active(receipt):
 
 
 def project(store, receipt, *, source=None):
+    # Lineage owns membership and pricing owns the exact endpoint. An already
+    # selected source is the handoff; DO NOT reload it or decode history to build
+    # a summary whose endpoint has already been validated by pricing.
     if not stored_active(receipt):
         return None
     symbol = receipt["symbol"]
@@ -50,6 +55,9 @@ def refresh(store, receipts, *, sources=None):
 
 def rebuild(store, *, progress=None):
     """One explicit offline pass over the existing index; no asset queries or history reads."""
+    # This explicitly requested rebuild may cover indexed membership. DO NOT
+    # call it as an automatic fallback from ordinary selection or status; missing
+    # coverage must remain a visible owner-recovery/rebuild requirement.
     store = Path(store).absolute()
     # Do not recover or alter authoritative publications during this derived-only operation.
     storage.check_store(store)

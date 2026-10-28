@@ -12,6 +12,9 @@ from .work_contract import RegistrationIncomplete, WorkPolicy, restriction, sati
 
 def command_policy(store, end_date, *, state=None, context=None, retry_blocked=False):
     """Read compact authorities only; command choice does not override restrictions."""
+    # Standalone entrypoints share the same accepted obligations as daily update.
+    # DO NOT bypass failed dependencies by changing commands, or treat registry
+    # membership as proof that pricing/lineage publication completed.
     from libs.alpaca_pricing_download.update_checks import read_checks
 
     store = Path(store).absolute()

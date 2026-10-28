@@ -100,6 +100,9 @@ def work_graph(entries, work):
 
 
 def satisfied(item, entry, pending, *, approved=False):
+    # A matching publication stamp is one proof of completion. approved is only
+    # supplied by the operation's generation-bound producer handoff below; it
+    # must never be inferred from work.status, elapsed time or matching last rows.
     if not entry or not item.get("obligation_id"):
         return False
     projection = entry.get("projection") or {}
@@ -233,6 +236,11 @@ class WorkPolicy:
 
     def accept_completion(self, receipts, entries, completed):
         """Keep the producer's input approval bound to its selected complete group."""
+        # The caller already checked inputs under group locks and selected any
+        # changed outputs. Keep that proof, including absent auxiliary members;
+        # DO NOT reopen their receipts when a later live approval arrives.
+        # This is operation-local: a crash before durable acknowledgement leaves
+        # work pending, and no persisted cache is allowed to bypass a fresh check.
         unavailable = next(iter(receipts.values())).get("unavailable_pricing", {})
         references = {s: (entries.get(s) or {}).get("sha256") for s in receipts.keys() | unavailable.keys()}
         for symbol, owner in completed.items():
@@ -522,6 +530,9 @@ class WorkPolicy:
             if item.get("correction_id") and source.get("history_correction_id") != item["correction_id"]:
                 continue
             accepted[symbol] = symbol
+            # Input acceptance is not history approval. The latter is a separate
+            # source-bound handoff; keep the receipt's producer token, do not hash
+            # the already accepted source document again to manufacture one.
             if (
                 item.get("required_history_check")
                 and self.history_approved.get(symbol) != receipt["source_sha256"]

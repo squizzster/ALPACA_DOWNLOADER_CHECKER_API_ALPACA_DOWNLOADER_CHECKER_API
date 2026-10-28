@@ -88,8 +88,11 @@ remain unselected. Kernel process exit releases locks.
 ```
 
 `DataLibrary.write_flat_online_csv` orders date → public ID, with separate raw/fully adjusted columns.
-Mismatched sessions, duplicates or ambiguous dated metadata fail; undated descriptions yield empty historical
-cells. Path destinations use disk spool and atomic replacement; streams (`--output -`) lack replacement
+The generation-bound online reader supplies unique, ordered, matching raw/fully adjusted session grids:
+history assembly owns uniqueness and the selected serving decision owns cross-view compatibility. Flat export
+consumes those rows without rebuilding session maps, resorting each history or repeating those checks.
+It still rejects ambiguous dated metadata and duplicate date/public-ID output keys; undated descriptions yield
+empty historical cells. Path destinations use disk spool and atomic replacement; streams (`--output -`) lack replacement
 guarantees. One opened catalogue snapshot and matching consumed-group generations are declared, without a
 store-wide promise that every group remains latest at installation.
 

@@ -22,6 +22,10 @@ from libs.alpaca_security_lineage.symbol_disposition import classify_symbol_disp
 from .contract import CorrelationPolicyError
 
 FACT_PRODUCER = "cross_receipt_cash_dividend_pair_v1"
+# This owner derives candidate facts from the selected complete evidence group.
+# Projections may alter candidate evaluation, never the retained provider evidence.
+# Downstream certificates must cite these inputs, not repeat provider acquisition
+# or silently replace missing facts with external research.
 FACT_TYPES = {
     "quality.cash_dividend_pair": "boolean",
     "quality.query_coverage_complete": "boolean",

@@ -38,6 +38,8 @@ def _check(connection):
 
 
 def read_state(store):
+    # TRUST BOUNDARY: this database owns intentions/retry outcomes, not market
+    # data validity. A saved status cannot substitute for a producer selector.
     try:
         with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
             connection.execute("BEGIN")
@@ -93,6 +95,8 @@ def initialize(store):
 
 
 def accept(store, observation, additions, work):
+    # Persist the accepted obligation before delegated work can publish. A crash
+    # may leave unfinished work, but must not lose the requirement or its group.
     """One transaction persists all intentions before registry or pricing writes."""
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         _check(connection)
@@ -149,6 +153,9 @@ def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
 
 
 def record_outcome(store, symbol, *, status, outcome, attempts=0):
+    # Workflow completion references already accepted publications. DO NOT mint
+    # a new lineage/pricing generation just to make this acknowledgement durable;
+    # its SQLite transaction owns that durability independently of data publication.
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         row = connection.execute("SELECT body FROM work WHERE symbol=?", (symbol,)).fetchone()
         if row is None:

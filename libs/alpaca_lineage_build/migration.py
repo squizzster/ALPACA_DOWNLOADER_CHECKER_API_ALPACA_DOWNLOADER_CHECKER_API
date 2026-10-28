@@ -17,6 +17,9 @@ MIGRATION_TO_CORRELATION_VERSION = 60
 
 
 def can_promote_observation_decision(receipt, policy):
+    # This narrowly authorized transition reuses a completed decision, not a
+    # general license to relabel old policies. DO NOT extend it to other versions
+    # or open prices to re-prove the exact handoff it was designed to preserve.
     """Prove only the completed lineage-33/correlation-59 to 34/60 transition.
 
     The caller already owns a coherent selected complete group with unchanged
@@ -169,6 +172,9 @@ def _locked_sources_for_migration(store, group, input_sources, unavailable, lock
 
 
 def migrate_correlation_policy(store: str | Path, *, progress=None) -> dict[str, Any]:
+    # Explicit offline migration owns this broad selector pass. Ordinary update
+    # and reader paths must fail closed or use supported compatibility, not invoke
+    # a hidden universe migration when a boundary is missing/incompatible.
     """Offline, group-atomic promotion of exact 33/59 decisions to 34/60.
 
     This dedicated path never imports the live lineage pipeline, constructs a

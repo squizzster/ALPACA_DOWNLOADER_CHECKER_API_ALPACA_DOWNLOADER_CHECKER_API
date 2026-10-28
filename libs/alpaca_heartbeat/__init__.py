@@ -151,6 +151,9 @@ class Phase:
 
 
 class LifecycleReporter:
+    # Reporting owns held status only. DO NOT add filesystem/network polling or
+    # validation to heartbeat emission: it must not become an independent data
+    # consumer, change work selection, or turn a slow log stream into work I/O.
     """Sample a held status independently of work; reporting failures stay local.
 
     Intervals are anchored at activation; the last interval repeats indefinitely.

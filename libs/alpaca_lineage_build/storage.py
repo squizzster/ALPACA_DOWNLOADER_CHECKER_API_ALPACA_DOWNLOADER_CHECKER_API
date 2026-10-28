@@ -38,6 +38,9 @@ from .correlation_policy_contract import POLICY_PROVENANCE_LINEAGE_VERSION
 
 
 def path_at(root: Path, relative: str, *, published=False) -> Path:
+    # Producer destinations need path validation. A published selector already
+    # vouches for its paths: keep lexical containment, but DO NOT add filesystem
+    # authentication to published=True reads. That would repeat the producer's job.
     parts = PurePosixPath(relative).parts
     if (
         not parts
@@ -77,6 +80,8 @@ def check_store(store: Path) -> None:
 
 @dataclass(frozen=True)
 class AcceptedStore:
+    # Immutable format/path acceptance may be lent inside the owning operation;
+    # it does not certify a pricing generation or permit unlocked payload reads.
     store: Path
     root: Path
 
@@ -97,6 +102,9 @@ class WriterIndexView:
         self._process, self._thread, self._active = os.getpid(), get_ident(), True
 
     def require_active(self, store):
+        # These lifetime/store guards replace a new selection handshake only
+        # while the writer lock still excludes lineage changes. Keep them;
+        # DO NOT replace them with repeated store/index authentication.
         if not self._active or self._process != os.getpid() or self._thread != get_ident():
             raise LineageError("accepted lineage view requires its active writer lock")
         if Path(store).absolute() != self.store:
@@ -316,6 +324,9 @@ def empty_index() -> dict:
 
 
 def read_index(root: Path, symbol: str | None = None) -> dict:
+    # The transaction selects membership and generations together. Schema/shape
+    # checks belong here; enumerating ticker directories or opening every receipt
+    # does not strengthen this completed selector and must not be added here.
     path = path_at(root, "index.sqlite3")
     if not path.exists():
         return empty_index()
@@ -447,6 +458,9 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False) -> di
 
 
 def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) -> dict | None:
+    # Read a selected body's contents only when the consumer needs them. Its
+    # recorded digest identifies the generation; selected_document intentionally
+    # does not rehash bytes or audit upstream pricing/assignment files.
     entry = index["symbols"].get(symbol)
     if entry is None:
         return None
@@ -476,6 +490,8 @@ class ReceiptCache:
             self.receipts.pop(next(iter(self.receipts)))
 
     def read(self, symbol):
+        # The index token is the cache identity. A stat/mtime/hash cache key would
+        # reauthenticate files on every hit instead of trusting the publisher.
         entry = self.index["symbols"].get(symbol)
         if entry is None:
             self.receipts.pop(symbol, None)
@@ -493,6 +509,8 @@ class ReceiptCache:
 
 
 def read_boundaries(root: Path, receipt: dict, *, selected_loader=None, kinds=None) -> dict:
+    # The receipt selects these assignment documents. Consume only required
+    # kinds; do not rerun correlation or pricing validation to trust their rows.
     return {
         kind: (selected_loader or selected_document)(
             path_at(root, f"{receipt['symbol']}/{entry['manifest']}", published=True), entry["sha256"]
@@ -629,6 +647,8 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
 
 
 def recover(store: Path, root: Path) -> bool:
+    # Recovery scope comes from this owner's durable journal, never a ticker
+    # census. Reacquire its named locks because the interrupted process lost them.
     pending = path_at(root, ".pending.json")
     if not pending.exists():
         return False

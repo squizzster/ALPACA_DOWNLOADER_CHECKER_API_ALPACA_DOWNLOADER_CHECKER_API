@@ -633,6 +633,9 @@ def evaluate_policy(
     evidence_projection: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Execute one compiled policy; there is no implicit Python-rule fallback."""
+    # Mandatory phase/certificate checks establish this NEW decision at its owner.
+    # They are not a reader-side audit of completed decisions. Detailed traces and
+    # trace digests are opt-in; DO NOT add them to ordinary reuse for reassurance.
     if policy is None or not callable(getattr(policy, "provenance", None)):
         raise CorrelationPolicyError("correlation requires an explicit compiled policy")
     if set(inputs) != set(evidence):

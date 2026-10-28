@@ -7,5 +7,8 @@ from .contract import validate_change_log
 
 
 def load_policy(path):
+    # Compilation supplies executable policy meaning, not production authority.
+    # The lab may compare a candidate; only the production owner's authorization
+    # path can select policy for new stored lineage publications.
     validate_change_log()
     return _load_policy(path)

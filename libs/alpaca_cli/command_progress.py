@@ -2,6 +2,10 @@
 
 from libs.alpaca_heartbeat import Phase
 
+# Progress is a projection of producer callbacks, not a new observation pass.
+# DO NOT read stores or repeat work to improve counters/ETA. A sampled component's
+# "completed" state is not authoritative completion of the whole command.
+
 FIELDS = {
     name: int
     for name in (

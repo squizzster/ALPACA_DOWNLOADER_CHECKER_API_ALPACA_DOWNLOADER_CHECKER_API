@@ -168,6 +168,9 @@ def decode_csv(data: bytes) -> tuple[Row, ...]:
 
 
 def transform(bars: list[dict], start: datetime, end: datetime) -> tuple[Row, ...]:
+    # Raw provider data becomes a completed exact-row handoff here. These checks
+    # establish representation/order/scope, not identity or serving eligibility;
+    # consumers must not replay them over already normalized/published rows.
     rows = []
     previous = None
     for bar in bars:
@@ -209,6 +212,8 @@ def build_boundary(
             # This is the transform's publication check, not a later lineage rule.
             if decode_csv(packed) != rows:
                 raise DownloadError("gzip/CSV transformation changed provider values")
+            # Exact-copy aliases are established by the producer from new bytes.
+            # Readers follow the selected alias; they do not compare files again.
             earlier = canonical.get(packed)
             filename = prefix + adjustment.replace(",", "_") + ".csv.gz"
             if earlier is None:

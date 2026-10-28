@@ -17,6 +17,9 @@ def accept_context(store, context=None):
     if context is not None:
         if context.store != store:
             raise DownloadError("pricing context belongs to another store")
+        # This operation already accepted this store and package contract.
+        # DO NOT rerun initialization or ancestor-path checks in each worker;
+        # publication generation checks remain with the selected ticker owner.
         return context
     validate_version()
     initialize_store(store)

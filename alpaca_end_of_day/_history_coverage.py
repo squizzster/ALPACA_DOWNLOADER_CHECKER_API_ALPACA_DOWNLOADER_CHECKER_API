@@ -2,6 +2,9 @@
 
 
 def extend_coverage(coverage, previous=None):
+    # The serving checkpoint already owns the historical subset/overlap facts.
+    # Extend them from newly selected observations only; DO NOT reopen retained
+    # history to reconstruct the old coverage sets.
     previous = previous or {"subsets": {}, "overlaps": []}
     old = previous["subsets"]
     names = sorted(set(old) | set(coverage))

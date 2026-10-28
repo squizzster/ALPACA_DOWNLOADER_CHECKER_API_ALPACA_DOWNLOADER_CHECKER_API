@@ -63,6 +63,9 @@ def plan_baseline(reader, roster):
 
 def _records(group):
     """Project published membership; never assign actions or infer effective dates."""
+    # Published assignments already own row-to-identity membership. This consumer
+    # only projects metadata: group action evidence is not an assigned security
+    # event, and exported resolved identity is not an eligibility decision.
     assignments = {}
     for symbol, source in group["sources"].items():
         for assignment in source["assignments"]:
@@ -193,6 +196,9 @@ def write_baseline(reader, snapshot, destination, *, progress=None):
             },
         }
         (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        # Exporter-owned completion boundary: all selected records precede this
+        # manifest and final directory publication. This writes derived output
+        # only; DO NOT acknowledge, repair or modify the source store here.
         # Runs are immutable. The final directory is visible only after success.
         # mkdir rejects even an empty destination claimed by another exporter.
         destination.mkdir()

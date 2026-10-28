@@ -50,6 +50,8 @@ def market_session_dates_sha256(session_dates: Iterable[str]) -> str:
 
 @lru_cache(maxsize=1)
 def _load_us_market_session_dates_and_sha256() -> tuple[tuple[str, ...], str]:
+    # This owner validates and hashes the immutable calendar once per process.
+    # Consumers use its cached dates/digest; per-group file rechecks add no facts.
     try:
         calendar_file_bytes = US_MARKET_HOURS_FILE_PATH.read_bytes()
         market_session_records = json.loads(calendar_file_bytes)

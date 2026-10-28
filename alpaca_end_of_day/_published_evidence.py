@@ -20,6 +20,8 @@ class PublishedEvidenceSnapshot:
         self._consumed = False
         self._groups = []
         seen = set()
+        # The accepted index owns complete group membership. Missing membership
+        # is a migration error, not permission to discover groups from receipts.
         for symbol, entry in sorted(index["symbols"].items()):
             members = entry.get("group_members")
             if not isinstance(members, list) or not members or symbol not in members:
@@ -96,6 +98,10 @@ def open_published_evidence(store, *, wait=False):
             require_complete(index)
             snapshot = PublishedEvidenceSnapshot(root, index)
         try:
+            # The publication gate pins this index until close. This is a lineage
+            # evidence handoff, not a promise about current pricing or eligibility.
+            # DO NOT add a pricing freshness pass, notice census or receipt hash
+            # audit: only the selected bodies requested by iter_groups are read.
             yield snapshot
         finally:
             snapshot.close()

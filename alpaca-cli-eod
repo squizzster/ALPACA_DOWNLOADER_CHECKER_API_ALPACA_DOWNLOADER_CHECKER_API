@@ -3,6 +3,9 @@
 
 import sys
 
+# Keep this executable an adapter. DO NOT add store discovery, validation or
+# recovery here; the command's owning package establishes those boundaries once.
+
 sys.dont_write_bytecode = True
 
 from libs.alpaca_cli import main  # noqa: E402

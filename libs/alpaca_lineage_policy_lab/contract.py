@@ -17,6 +17,9 @@ LAB_CHANGE_LOG_PATH = (
 
 
 def replayable_lineage_versions(published):
+    # Replay readability is deliberately separate from production reuse approval.
+    # Accepting the historical baseline here does not migrate/relabel its receipts
+    # or permit a candidate policy to publish over them.
     from libs.alpaca_lineage_build.contract import versions
 
     current = versions()

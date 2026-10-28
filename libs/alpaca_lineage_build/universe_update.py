@@ -23,6 +23,8 @@ from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, 
 
 def recover_publications(store, *, context=None):
     """Roll forward known journals only; retry selection owns subsequent network work."""
+    # Named owner controls bound recovery. DO NOT replace missing controls with
+    # an implicit filesystem census or use recovery to acquire fresh evidence.
     selected = set(pending_symbols(store)) | set(read_checks(store)["checks"])
     recovered = []
     for symbol in sorted(selected):
@@ -222,6 +224,9 @@ def run_update(
                 store, symbol, status="complete", outcome={"published_before_acknowledgement": True}
             )
         work = selection["work"]
+        # Selection has already accepted catalogue facts, restrictions and group
+        # membership. Delegate those exact requirements; later stages must not
+        # reconstruct them by reading the whole store again.
         policy = WorkPolicy(
             store,
             accepted["index"],
@@ -373,6 +378,8 @@ def run_update(
         # DO NOT route a retry through lineage merely to stamp its workflow ID:
         # that changes every downstream generation despite unchanged data.
         completed = {s: policy.satisfying_entry(s, index["symbols"], pending) for s in policy.work}
+        # Keep this coherent result until a publication changes the boundary.
+        # DO NOT rerun completion checks once per acknowledgement for reassurance.
         finish = [
             s
             for s, item in policy.work.items()

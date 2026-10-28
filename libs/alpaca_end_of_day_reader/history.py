@@ -18,6 +18,11 @@ def _resolve_bar_candidates(
     *,
     allow_strict_superset_selection: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    # The caller has already selected identity assignments and filtered published
+    # superseded/conflicting observations. This helper only assembles remaining
+    # numerical overlaps; it cannot restore a discarded source or infer identity.
+    # Its coverage must describe the complete selected history (or an accepted
+    # prefix plus suffix), never just a caller's requested display window.
     bars = []
     resolution_groups: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]] = {}
     resolved_differing_overlap_count = 0

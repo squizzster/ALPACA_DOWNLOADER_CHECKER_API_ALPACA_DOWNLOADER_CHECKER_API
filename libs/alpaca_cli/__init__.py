@@ -243,6 +243,9 @@ def clients():
 
 def _store_operation_mode(args):
     """Classify the complete command before any store or provider work begins."""
+    # Keep the outer store gate ahead of owner locks and provider side effects.
+    # Read-only selection/status must not acquire write authority by silently
+    # repairing missing controls or bootstrapping a store.
     command, operation = args.command, getattr(args, "operation", None)
     if command == "export" and operation == "csv" and not args.plan:
         return "shared"
@@ -268,6 +271,8 @@ def _store_operation(args):
 
 
 def dispatch(args):
+    # CLI dispatch delegates to domain owners. DO NOT add receipt/payload audits
+    # or independent work selection here; accepted handoffs belong to those owners.
     from .command_progress import count_callback, progress_callback
 
     reporter = getattr(args, "_lifecycle", None)

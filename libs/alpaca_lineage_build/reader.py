@@ -11,6 +11,9 @@ from .storage import reader_snapshot, select_inputs
 
 
 def read_lineage(store, symbol):
+    # Reader freshness is selected generations under locks, not a new identity audit.
+    # DO NOT add pricing payload hashes, rule replay or repair to establish trust in
+    # the producer's already published assignments; changed inputs remain pending.
     """Select one completed publication. Not a public DataLibrary interface.
 
     Receipt identities prevent mixing generations; they are not a re-audit of

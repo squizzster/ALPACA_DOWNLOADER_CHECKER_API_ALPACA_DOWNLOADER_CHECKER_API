@@ -510,6 +510,10 @@ class StandaloneReader:
             def select(root):
                 if expected is None:
                     return select_inputs(root, symbol, selected_loader=loader)
+                # Serving passes its worker-owned index view through this boundary.
+                # That owner prevents lineage publication throughout consumption;
+                # DO NOT discard the view and reopen the index for each member.
+                # Ordinary readers instead select around the pricing-lock handshake.
                 selected = (
                     {name: read_index(root, name)["symbols"].get(name) for name in expected["lineage"]}
                     if writer_view is None
@@ -538,6 +542,10 @@ class StandaloneReader:
                 check_unavailable_pricing(self.store, absent, snap["locked"])
                 sources, assignments, generations, all_assignments = {}, {}, {}, {}
                 for name in sorted(selected_sources):
+                    # Lineage and pricing have separate publication owners. Even a
+                    # pinned lineage view cannot establish current pricing after
+                    # an independent downloader ran. Read the selected source
+                    # under its lock; do not authenticate its payloads or aliases.
                     pricing = published_path(self.store, f"end_of_day/pricing/{name}")
                     if name not in snap["locked"] or published_path(pricing, ".pending.json").exists():
                         raise StandaloneReaderError("pricing publication incomplete; resume downloader first")
@@ -625,6 +633,9 @@ class StandaloneReader:
                     raise StandaloneReaderError("lineage publication incomplete; resume lineage first")
                 index = read_index(root)
                 generations = {symbol: entry["sha256"] for symbol, entry in index["symbols"].items()}
+            # This roster certifies indexed publications only. Readability and
+            # freshness belong to a later selected-group read; DO NOT turn listing
+            # into a universe-wide receipt, pricing or pending-marker inspection.
             return {
                 "api_version": API_VERSION,
                 "boundary": "standalone_published_sources",

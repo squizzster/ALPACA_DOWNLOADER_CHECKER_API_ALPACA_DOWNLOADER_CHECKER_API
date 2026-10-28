@@ -17,6 +17,10 @@ def check_unavailable_pricing(store, symbols, locked, *, sources=None):
     A later source or interrupted publication invalidates this absence immediately.
     Identity candidates are never filtered by this pricing-only observation.
     """
+    # A passed locked selection has already checked absence and pending work.
+    # DO NOT probe those same paths again; the locks keep the selected fact valid.
+    # Without that handoff, this owner must establish freshness for these named
+    # inputs only. Pricing absence must never delete an identity candidate.
     for symbol in sorted(symbols):
         if symbol not in locked:
             raise LineageError(f"unavailable pricing input lost its lock: {symbol}")

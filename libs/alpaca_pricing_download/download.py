@@ -304,6 +304,8 @@ def publish_acquired(
     references = dict(previous["boundaries"]) if previous is not None else {}
     documents = {}
     payloads = {}
+    # New partitions are validated at this producer. Retained boundary
+    # references remain authoritative; DO NOT reopen them to extend this check.
     for kind, content in changed_views.items():
         validate_activity(content)
         document, files = build_boundary(symbol, kind, anchor, content, request)
@@ -359,6 +361,9 @@ def publish_acquired(
         old_documents=old_documents,
         handoff=handoff,
     )
+    # Publication has completed before returning these accepted outputs.
+    # Consumers must use the source/endpoints/notice handoff, not reload or
+    # re-authenticate the files the publisher just selected.
     return {
         "files_written": written,
         "source": source,
@@ -419,6 +424,9 @@ def download_pricing(
         parse_date(asof)
         if mapping_asof is not None and not refresh_all:
             raise DownloadError("changing a pricing mapping requires complete replacement")
+        # Acquisition may have run outside this lock. Its selected generation
+        # (including explicit absence) must still be current before publication;
+        # matching endpoints alone do not establish that concurrency guarantee.
         if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
             current_sha256 = digest(json_bytes(previous)) if previous is not None else None
             if current_sha256 != selected_source_sha256:

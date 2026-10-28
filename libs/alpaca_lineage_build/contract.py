@@ -21,6 +21,8 @@ from .correlation_policy_contract import (
 )
 
 RUNTIME_VERSION = 37
+# A runtime repair is not a new data policy. DO NOT force completed stores through
+# reconstruction merely to align runtime and persisted publication version numbers.
 VERSION = 34  # Persisted publication and policy contract, independent of runtime releases.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
@@ -122,6 +124,8 @@ def document_digest(value: dict) -> str:
 def selected_document(path: Path, expected: str) -> dict:
     # The producer checks outputs at publication. Consumers select its receipt;
     # they do not repeat that audit. expected identifies the selected generation.
+    # DO NOT replace this selector read with hash/stat/ancestor-path verification;
+    # physical authentication belongs to an explicitly requested owner audit.
     if not isinstance(expected, str) or len(expected) != 64:
         raise LineageError("invalid selected lineage generation")
     return read_document(path, published=True)

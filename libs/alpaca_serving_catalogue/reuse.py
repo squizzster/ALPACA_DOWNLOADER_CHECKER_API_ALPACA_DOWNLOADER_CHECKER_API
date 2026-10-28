@@ -78,6 +78,10 @@ def _identity_prefix(runs, count, public_id):
 
 
 def select_prefixes(group, previous, inputs, offsets):
+    # These bodies came from the accepted serving selector. Its producer already
+    # validated the checkpoint. Compare current input guarantees in memory; DO
+    # NOT revalidate old records or scan old prices to earn permission to reuse.
+    # Failed ancestry/ownership gates leave that identity to ordinary evaluation.
     prefixes = {}
     for prior_group in previous:
         if prior_group["policy"] == policy():

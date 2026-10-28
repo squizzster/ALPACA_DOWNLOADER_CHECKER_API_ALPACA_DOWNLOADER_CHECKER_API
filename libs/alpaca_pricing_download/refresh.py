@@ -73,6 +73,9 @@ def _refresh_request(symbol, source):
 
 def prepare_refresh(store, symbols):
     """Read only selected receipts; retain the complete original request coverage."""
+    # Selection is already owned by the live-check/correction caller. Read only
+    # those ticker receipts and carry their generation/scope into replacement;
+    # DO NOT widen an explicit correction into a retained-store inventory.
     store = Path(store).absolute()
     prepared = []
     for symbol in sorted({symbol_label(value) for value in symbols}):
@@ -212,6 +215,9 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
         views = {name: cache[key].rows for name, key in keys.items()}
         prior = (retained_endpoints or {}).get(symbol)
         endpoints = _incremental_endpoints(prior, views, start) if prior is not None else endpoints_of(views)
+        # These are fresh producer checks for newly acquired output, not a
+        # revalidation of completed stored history. Their independent responses
+        # must not be replaced with the acquisition body being checked.
         probes.extend(
             _endpoint_needs(
                 symbol,
@@ -359,6 +365,7 @@ def replace_prepared(
                     client=consumer,
                     refresh_all=True,
                     from_date=item["start"][:10],
+                    # Preserve the selected generation across network I/O.
                     expected_source_sha256=item["source_sha256"],
                     history_correction_id=item.get("required_correction_id"),
                     context=context,

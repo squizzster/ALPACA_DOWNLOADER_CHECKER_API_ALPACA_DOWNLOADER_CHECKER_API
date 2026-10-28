@@ -13,9 +13,9 @@ records exact YAML bytes; formatting is not reuse identity.
 
 Authorize the canonical policy once after journal recovery, before new selection/evaluation/network work.
 Recovery validates frozen journal provenance without reinterpreting it through newly installed policy.
-Evidence fingerprints are independent of history approval: missing approval republishes the completed decision
-through its journal before acknowledgement, without price decoding/correlation. Projected approval needs no group
-reopening. Rule-only changes reuse approved evidence.
+Evidence fingerprints are independent of history approval. [Workflow completion](technical-contracts.md#universe-observation-and-work-state)
+consumes fresh source-bound approval without republishing an unchanged decision. A completed producer handoff
+does not need its group reopened merely to acknowledge that approval. Rule-only changes reuse approved evidence.
 
 [policy_engine.py](../libs/alpaca_lineage_build/policy_engine.py), `evaluate_policy`, constructs detailed row traces,
 pass digests and audit summaries only when requested. Mandatory phase/certificate checks still run; published

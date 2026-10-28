@@ -75,6 +75,8 @@ class GroupSnapshot:
 
     @property
     def summary(self):
+        # Caller mutation must not alter the accepted private snapshot or the
+        # selectors subsequently passed to serving/export consumers.
         return deepcopy(self._summary)
 
     def close(self):
@@ -145,6 +147,9 @@ class GroupSnapshot:
         return inputs, offsets
 
     def preserves_pricing_prefix(self, symbol, previous, *, through=None):
+        # The pricing producer owns this change ancestry. Consume its compact
+        # changed-from guarantee; DO NOT compare old payload bytes or rebuild the
+        # history to prove it again. Missing ancestry cannot authorize reuse.
         source = self._sources[symbol]
         if previous["pricing_generation"] == self._expected[symbol]["pricing"]:
             return True
@@ -322,6 +327,10 @@ class GroupSnapshot:
     def check_current(self):
         """Check current selections and prices without reopening approved lineage."""
 
+        # Closing releases the original locks. This later check must acquire a
+        # fresh coherent selection, including formerly unavailable inputs; the
+        # retained token is not itself a lock. DO NOT reread accepted assignments
+        # or price payloads: only their current selectors can invalidate the token.
         def select(root):
             selected = {name: read_index(root, name)["symbols"].get(name) for name in self._expected}
             if any(

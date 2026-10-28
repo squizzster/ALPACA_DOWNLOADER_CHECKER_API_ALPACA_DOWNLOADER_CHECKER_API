@@ -246,6 +246,10 @@ def _rename_exclusions(group, members, observations, bars, missing, *, source_se
 def evaluate(group, previous=()):
     from alpaca_end_of_day.standalone import HistoryPrefixChanged, UnservableHistoryError
 
+    # The locked group owns identity assignments and numerical source choices;
+    # this producer owns serving eligibility. Consume those decisions as given,
+    # then validate only history work not covered by a reusable serving prefix.
+    # DO NOT acquire provider evidence or replay lineage rules to certify input.
     decisions, securities = [], []
     inputs, offsets = group.serving_inputs()
     prefixes = select_prefixes(group, previous, inputs, offsets)

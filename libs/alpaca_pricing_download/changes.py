@@ -17,6 +17,9 @@ def change_history(previous, update):
     """
     if previous is None:
         return []
+    # The pricing owner already determined this changed span. Consumers use
+    # these ancestor tokens to retain unaffected prefixes; DO NOT rescan bars
+    # to reconstruct ancestry. A missing/expired ancestor grants no reuse proof.
     changed = update["from"] if update else None
     result = [{"source_sha256": digest(json_bytes(previous)), "changed_from": changed}]
     for prior in previous.get("history_changes", ())[: MAX_ANCESTORS - 1]:

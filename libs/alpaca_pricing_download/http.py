@@ -232,6 +232,9 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                 parameters[pagination["parameter"]] = token
             start = timestamp(parameters["start"])
             end = timestamp(parameters["end"]) + timedelta(microseconds=1)
+            # Only complete pagination crosses into CompletedBars. Transform is
+            # the owner of exact-number/range/order validation; downstream slices
+            # trust this result rather than rerunning provider normalization.
             normalized = {
                 symbol: CompletedBars(
                     symbol,

@@ -73,6 +73,9 @@ def changed_fields(stored, live):
 
 def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
     """Consume the trusted snapshot through the API solver and bar executor."""
+    # The summary producer owns stored membership and last_all rows. This owner
+    # compares fresh provider observations only; it must not reopen local sources
+    # or imply that a matching endpoint validates every interior historical row.
     started = time.monotonic()
     action_plan = plan(snapshot, batch_size)
     metrics = {

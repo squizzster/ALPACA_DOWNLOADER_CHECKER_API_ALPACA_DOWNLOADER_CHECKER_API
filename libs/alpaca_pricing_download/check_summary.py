@@ -105,6 +105,9 @@ def invalidate(store, symbols, *, owner="pricing"):
 
 def replace_entries(store, entries, *, pricing_only=False):
     """Lineage supplies eligibility; None removes an ineligible or empty label."""
+    # Publication ownership is split: pricing owns comparison rows; lineage
+    # owns membership. Only their completed handoff may clear pending inputs;
+    # a newer pricing baseline cannot stand in for unfinished lineage work.
     if not summary_path(store).exists():
         return
     values = {symbol: None if entry is None else validate_entry(entry) for symbol, entry in entries.items()}
@@ -139,6 +142,8 @@ def price_entry(root, source, *, published=True, endpoints=None):
     request = source["latest_request"]
     if (request["timeframe"], request["feed"], request["currency"]) != ("1Day", "sip", "USD"):
         raise DownloadError("pricing check requires 1Day SIP USD inputs")
+    # A publisher can lend its accepted endpoints directly. DO NOT reload the
+    # validator or derive endpoints from prices when that handoff is supplied.
     if endpoints is None:
         endpoints = read_validator(root, source, published=published)
     if endpoints is None:
@@ -196,6 +201,8 @@ def _require_ready(db):
 
 def assert_current(store, token):
     """A resolver must reject results if publication changed its selected baseline."""
+    # Recheck this selector's revision across intervening work, not the ticker
+    # files that produced it. The token detects changed baselines/membership.
     with _connection(store, readonly=True) as db:
         _require_ready(db)
         if _token(db) != tuple(token):
@@ -204,6 +211,9 @@ def assert_current(store, token):
 
 def read_snapshot(store):
     """Read one small database, never ticker directories, receipts or bar files."""
+    # This completed selector is the live-check universe and last-row authority.
+    # DO NOT rediscover eligibility or verify each source path after accepting it.
+    # Missing/incomplete/pending selectors fail closed into their owning recovery.
     if not summary_path(store).exists():
         raise DownloadError("pricing check summary is missing; rebuild it from stored records")
     with _connection(store, readonly=True) as db:

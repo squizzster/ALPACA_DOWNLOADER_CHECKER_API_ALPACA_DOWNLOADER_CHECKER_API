@@ -142,6 +142,10 @@ def _own_interval(lineage, intervals, edge, sessions):
 
 def assess_name_change_history(lineage, intervals, candidates, sources):
     """Certify source bounds without reading reports produced by these edges."""
+    # This is the independent continuity producer. Its complete selected source
+    # inputs may prove a bounded rename; assignments derived from that same
+    # disputed edge cannot prove it. Downstream adapters consume the resulting
+    # certificate instead of repeating these comparisons per row or view.
     # Import here to keep the ownership/edge builders independent of price rules.
     from .terminal_episode import has_informative_trading, has_prolonged_carry_forward
 

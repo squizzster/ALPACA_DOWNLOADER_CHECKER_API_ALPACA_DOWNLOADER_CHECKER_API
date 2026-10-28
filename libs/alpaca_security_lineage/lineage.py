@@ -166,6 +166,9 @@ def build_identity_report(
 ) -> dict[str, Any]:
     # Metadata can exist for an entitlement which the bars endpoint rejects.
     # Explicit bounds avoid inventing a local download just to query that metadata.
+    # Evidence acquisition ends here; it does not establish row ownership or
+    # public identity membership. Consumers retain explicit lookup outcomes and
+    # provider dates; DO NOT turn a present-day symbol/CUSIP lookup into history.
     start_date, end_date = query_dates or local_query_dates(local_report)
     pending_symbols = deque([symbol])
     queued_symbols = {symbol}

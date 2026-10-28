@@ -255,6 +255,9 @@ def assess_one_session_distinct_uuid_transition(
     ],
 ) -> OneSessionDistinctUuidTransition | None:
     """Resolve one absent session between two exact, distinct ticker UUIDs."""
+    # Session authenticity belongs to the supplied reader. This owner establishes
+    # only the narrow transition from those sessions and dated evidence; the
+    # result neither merges the distinct UUIDs nor grants a general gap-fill rule.
     matches = []
     for candidate in _transition_candidates(lineage, evidence_issues=evidence_issues):
         sessions_by_symbol = {}

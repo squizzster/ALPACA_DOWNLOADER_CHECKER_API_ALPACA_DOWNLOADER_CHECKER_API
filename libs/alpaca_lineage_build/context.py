@@ -10,6 +10,9 @@ from .contract import LineageError, validate_version
 
 
 class OperationContext:
+    # TRUST BOUNDARY: these are accepted producer selectors for one operation,
+    # not a second source of truth. Refresh their compact revisions after a
+    # publication; DO NOT authenticate all receipts/payloads to refresh a view.
     def __init__(self, store):
         validate_version()
         self.store = Path(store).absolute()
@@ -31,6 +34,8 @@ class OperationContext:
         return authorize_production_policy(self._correlation_policy)
 
     def recover_lineage(self, root):
+        # Recovery belongs to the journal owner and precedes new policy work.
+        # Reusing this completed handoff must not reopen the journal per group.
         if self._lineage_recovery_complete:
             return False
         recovered = storage.recover(self.store, root)
@@ -49,6 +54,8 @@ class OperationContext:
         return self.index
 
     def select_summary(self):
+        # Pricing baselines and lineage membership are already joined by their
+        # owners; downstream code must not rediscover eligible ticker paths.
         self.summary = refresh_snapshot(self.store, self.summary)
         return self.summary
 
@@ -60,6 +67,8 @@ class OperationContext:
 
 
 def accept_context(store, context=None, work_policy=None):
+    # A caller-supplied context carries completed acceptance, not an invitation
+    # to rerun it. The store binding prevents lending facts across stores.
     if context is None and work_policy is not None:
         context = work_policy.context
     if context is None:

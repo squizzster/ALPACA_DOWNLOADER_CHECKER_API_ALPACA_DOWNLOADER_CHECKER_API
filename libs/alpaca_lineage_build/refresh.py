@@ -13,6 +13,9 @@ from .pipeline import run_lineage
 
 def refresh_required_history(store, *, pricing_client, work_policy, end_date, context=None, progress=None):
     """Accepted checks/corrections stay executable after summary removal."""
+    # This owner handles explicitly owed checks outside active summary membership.
+    # Absence from that summary does not erase a correction or authorize checking
+    # every other inactive ticker. Consume only the selected durable obligations.
     empty = {"results": [], "requests": {}, "failed": 0, "checked": []}
     if not any(item.get("required_history_check") for item in work_policy.work.values()):
         return empty
@@ -118,6 +121,8 @@ def refresh_existing(
         assert_current(store, snapshot["token"])
         if progress:
             progress("checking", {"tickers": len(candidates)})
+        # Live check owns remote comparison of this accepted summary snapshot.
+        # DO NOT reopen ticker histories to re-prove the stored baseline here.
         handoff = verify(selected_snapshot, pricing_client._get)
         assert_current(store, snapshot["token"])
         checks.append(handoff)
@@ -209,6 +214,8 @@ def refresh_existing(
                 generations[item["symbol"]] = item["source_sha256"]
         # Reconciliation may replace pricing again after observing a changed
         # identity. Only its completed producer handoff approves that generation.
+        # The replacement producer already validated these exact generations;
+        # a second endpoint request cannot strengthen its completed handoff.
         generations.update(lineage_replacements)
         snapshot = ready
         # Refresh membership only after publication. New members get a fresh comparison;

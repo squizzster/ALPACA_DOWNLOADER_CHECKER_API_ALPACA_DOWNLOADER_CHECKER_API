@@ -148,6 +148,10 @@ def _input_symbol_asset(
 
 
 def _local_market_data_evidence(local_report: dict[str, Any], symbol: str) -> dict[str, Any]:
+    # TRUST BOUNDARY: pricing owns publication, exact counts and request scope.
+    # This consumer checks the supplied handoff's own schema/symbol, then uses
+    # its counts (including zeroes). DO NOT reopen payloads, stat sidecars or
+    # reauthenticate files to rediscover facts the pricing producer completed.
     if "published_pricing" in local_report:
         try:
             published = PublishedPricingEvidence.from_report(local_report["published_pricing"])

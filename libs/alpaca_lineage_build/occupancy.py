@@ -14,6 +14,9 @@ from libs.alpaca_end_of_day_security_correlation.occupancy_anchor import (
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 
 _DISTRIBUTION_DATE_FIELDS = ("ex_date", "record_date", "payable_date", "process_date")
+# Occupancy refinement belongs inside the loaded-group producer. Existing dated
+# assignments remain authority; these evidence tests must not become a downstream
+# reader's second identity solver or use equal prices alone as ownership proof.
 
 
 def may_have_action_anchored_current_suffix(lineage: dict[str, Any]) -> bool:

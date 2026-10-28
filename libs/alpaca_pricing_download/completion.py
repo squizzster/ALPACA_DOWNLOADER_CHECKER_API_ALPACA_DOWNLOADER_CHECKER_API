@@ -16,6 +16,9 @@ def request_key(symbols, end, start):
 
 
 def completed_batch(store, request):
+    # This is scheduling acceleration for exactly this request and hint revision,
+    # not a replacement for pricing selectors or a saved live-check approval.
+    # Missing/stale memo means normal selected work, never a store-wide audit.
     path = regular_path(Path(store).absolute(), COMPLETION_FILE)
     if not path.exists():
         return False

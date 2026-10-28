@@ -53,6 +53,9 @@ def load_pricing(
     previous=None,
 ) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
+    # TRUST BOUNDARY: pricing already validated the selected source and payload
+    # map. Read the data needed for this correlation scope; DO NOT authenticate
+    # gzip hashes or enumerate unselected boundaries before accepting its facts.
     selected = source is not None
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     source = load_source(root, symbol) if source is None else source
@@ -137,6 +140,9 @@ def load_pricing(
                 descriptors[-1]["from"] = earlier[0]["first_timestamp"]
                 if not values:
                     descriptors[-1]["to"] = earlier[-1]["last_timestamp"]
+    # This handoff includes retained/empty view counts even when only a suffix
+    # was decoded. Disposition consumers must use it instead of reopening files
+    # to infer completeness from the amount of data loaded for this operation.
     local = {
         "directory": f"end_of_day/pricing/{symbol}",
         "present": True,

@@ -217,6 +217,9 @@ class EvidenceCapture:
 
 def inspect_offline(store, symbol, capture):
     """Observe existing publications under their locks; create or repair nothing."""
+    # Explicit inspection may read selected data for its report. It must not
+    # acquire new provider evidence, repair artifacts or replay rules and present
+    # those new results as the explanation of an existing publication.
 
     def select(root):
         index = storage.read_index(root)

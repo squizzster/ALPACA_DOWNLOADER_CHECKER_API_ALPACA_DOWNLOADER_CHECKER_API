@@ -516,6 +516,9 @@ def apply_terminal_continuous_ticker_fallback(
     rule_order=TERMINAL_FALLBACK_RULE_ORDER,
 ) -> dict[str, list[dict[str, Any]]]:
     """Promote only a fully unresolved, anchored, gapless ticker identity set."""
+    # Consume established row decisions first: this fallback is not authority to
+    # discard resolved history or reopen unrelated sources. Any new membership
+    # inference stays subject to the selected group's continuity/evidence gates.
     correlated_segments = branches[CORRELATED_BRANCH]
     uncorrelated_segments = branches[UNCORRELATED_BRANCH]
     requested_symbol = source["requested_symbol"]

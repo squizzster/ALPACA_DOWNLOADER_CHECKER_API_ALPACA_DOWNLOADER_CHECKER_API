@@ -317,6 +317,10 @@ def _migration_preserved_rule_order_provenance(
 
 @contextmanager
 def _load_group(store: Path, seed_symbol: str):
+    # Explicit comparison owns this selected complete-group replay. The snapshot
+    # selects and locks its publications; input generation checks bind the replay
+    # to those facts. DO NOT repair pending work, fetch replacement evidence or
+    # expand into unrelated groups when an input cannot be consumed.
     with reader_snapshot(store, lambda root: select_inputs(root, seed_symbol)) as snapshot:
         seed_receipt = snapshot["receipts"].get(seed_symbol)
         if not isinstance(seed_receipt, dict):
@@ -360,6 +364,8 @@ def _load_group(store: Path, seed_symbol: str):
             inputs[symbol] = load_pricing(store, symbol, source=source)
 
         boundaries = {symbol: snapshot["boundaries"][symbol] for symbol in sorted(expected_sources)}
+        # These are report provenance tokens, not instructions for a consumer to
+        # rehash upstream files or republish the compared production baseline.
         receipt_generations = {
             symbol: snapshot["entries"][symbol]["sha256"] for symbol in sorted(expected_sources)
         }

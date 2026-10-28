@@ -46,6 +46,9 @@ def _connect(store):
 
 def read_checks(store, symbols=None, *, readonly=False):
     """A missing list is an incomplete cache, never evidence that no work remains."""
+    # Published receipts own data facts; this database only names work to select.
+    # DO NOT turn missing/incomplete coverage into an implicit universe crawl.
+    # The owning explicit reconstruction command decides any broader scope.
     path = regular_path(Path(store).absolute(), CHECK_FILE)
     if not path.exists():
         return {"epoch": None, "revision": 0, "complete": False, "checks": {}}
@@ -106,6 +109,8 @@ def acknowledge_checks(store, expected, symbols):
             row = connection.execute("SELECT epoch FROM state WHERE singleton = 1").fetchone()
             if row is None or row[0] != expected["epoch"]:
                 return
+            # The accepted epoch/revision owns only the consumed hint. Deleting
+            # by symbol alone would erase a newer producer's outstanding work.
             connection.executemany(
                 "DELETE FROM checks WHERE symbol = ? AND revision = ?",
                 [(symbol, expected["checks"][symbol]) for symbol in symbols if symbol in expected["checks"]],

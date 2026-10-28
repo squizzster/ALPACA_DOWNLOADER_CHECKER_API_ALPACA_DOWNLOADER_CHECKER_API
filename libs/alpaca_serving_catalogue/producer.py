@@ -23,6 +23,9 @@ def _index(store):
 
 def _components(entries, pending, controls):
     """Use published current membership and previous contributions only."""
+    # Both membership projections are completed handoffs. Their union determines
+    # the complete replacement closure, including old contributions to remove.
+    # DO NOT rediscover dependencies by opening receipts or ticker directories.
     done = set()
     members, groups = controls["members"], controls["groups"]
     for seed in sorted(pending):
@@ -166,6 +169,10 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                 }
         index = writer_view.index()
         entries = index["symbols"]
+        # This accepted view remains pinned by the lineage worker and is passed
+        # intact to selected-group readers below. Bootstrap updates this same
+        # view after its explicit membership migration; steady state never scans
+        # receipt bodies to repair a missing membership projection.
         if bootstrap or rebuild:
             storage.initialize(store, rebuild=rebuild)
             result["membership_projection_receipts"] = _project_group_members(root, index)
@@ -190,6 +197,9 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                         # This completed selector already proves the published
                         # decision. Matching references need no receipt/payload
                         # audit, and a policy rebuild never reacquires pricing.
+                        # DO NOT CHANGE BACK: a durable queue entry alone is not
+                        # a data change. A completed matching decision needs only
+                        # acknowledgement, not evaluation or republication.
                         if _matches(prior, entries):
                             retained.add(key)
                             covered.update(prior["references"]["lineage"])

@@ -13,6 +13,10 @@ class StoreBusyError(RuntimeError):
 @contextmanager
 def operation_lock(store, *, exclusive):
     """Take the store-wide gate without waiting or interpreting path existence as state."""
+    # The kernel lock is authority, not the persistent pathname. DO NOT remove
+    # a supposedly stale lock file: replacing its inode lets two owners proceed.
+    # This outer gate orders writers/exports; selected owner locks still protect
+    # their publications and must not be replaced by per-ticker existence probes.
     store = Path(store).resolve()
     lock = store.parent / f".{store.name}.operation.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)

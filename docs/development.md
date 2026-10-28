@@ -7,6 +7,19 @@ Use synthetic stores/HTTP doubles, not production copies or ordinary live acquis
 and its nearest failure: interruption, acknowledgement order and repeated upstream authentication matter.
 Version/changelog rules and constants live in [VERSION_TRACKER.md](../VERSION_TRACKER.md).
 
+Before adding a boundary check, name the new fact it establishes and why the accepted producer handoff does not
+already guarantee it. Follow the [trust contract](../AGENTS.md#trust-before-touching-storage): a new caller, retry
+or workflow acknowledgement alone is not a new data fact. Keep the rationale beside the handoff: its owner,
+guarantee, scope/lifetime, actual invalidation condition and the upstream work consumers must not repeat.
+Do not justify an existing redundant check as necessary merely because it is already present.
+
+For behavioral changes, regression tests must reject forbidden work as well as incorrect results: unchanged
+maintenance inputs must not reopen upstream artifacts merely to repeat completed checks, replay decisions or
+republish data, while changed inputs must still take the owning update path. Selected payload reads needed to
+serve a new history or export request remain legitimate work. [Approval handoffs](../tests/test_alpaca_approval_handoffs.py) and
+[serving handoffs](../tests/test_alpaca_serving_handoffs.py) exercise this distinction, including generation changes,
+expired handoffs and interruption. Preserve those assertions when changing the mechanism of completion.
+
 ## Lineage research and rule-improvement loop
 
 Use generic evidence rules; the main agent owns implementation/acceptance.

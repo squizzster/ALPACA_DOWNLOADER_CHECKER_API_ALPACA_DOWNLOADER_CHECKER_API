@@ -42,6 +42,8 @@ LOGICAL_COLUMNS = ("date", *(column for columns in VIEW_COLUMNS.values() for col
 
 
 def _selection(data, public_ids, start, end):
+    # The opened DataLibrary owns eligibility and group references. Planning is
+    # an in-memory projection of that accepted catalogue, never a source census.
     start, end = _date(start, "start"), _date(end, "end")
     if start is not None and end is not None and start > end:
         raise ValueError("start must be on or before end")
@@ -228,6 +230,9 @@ def _export_group(data, directory, selected, groups, key, start, end, stopped):
         return
     expected = data._groups[key]
     try:
+        # Keep selected group locks and decoded payloads through its identity
+        # outputs. The worker returns compact completion records; the coordinator
+        # must not reread CSVs or reopen source groups to certify those records.
         with data._reader._open_group(
             expected["locator"],
             expected=expected["references"],
@@ -343,6 +348,10 @@ def _group_events(data, directory, selected, groups, start, end, workers):
 def write_export(data, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2):
     workers = _workers(workers)
     try:
+        # The catalogue transaction was released at DataLibrary construction.
+        # Compare its token once after acquiring the shared operation lock and
+        # retain that lock through final-manifest publication. This pins CLI
+        # maintenance; selected group reads retain their own generation checks.
         with operation_lock(data.store, exclusive=False):
             try:
                 current = catalogue_storage.selector_state(data.store)["generation"]

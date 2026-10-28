@@ -23,6 +23,9 @@ def validate_version():
 
 
 def load_labels(path=DEFAULT_REGISTRY):
+    # Registry labels are recovery/discovery input, not current identities, pricing
+    # membership or completed work. Freeze this selection for its operation; do not
+    # repeatedly reopen the CSV or substitute it for a producer's compact selector.
     with Path(path).open(encoding="utf-8", newline="") as stream:
         rows = list(csv.reader(stream, strict=True))
     if len(rows) != 1 or not rows[0]:
@@ -61,6 +64,9 @@ def registry_lock(path=DEFAULT_REGISTRY):
 
 
 def publish_union(labels, path=DEFAULT_REGISTRY):
+    # The exclusive stable lock owns additive union plus atomic replacement.
+    # DO NOT prune labels based on catalogue omission or infer publication from
+    # successful registration; downstream data owners complete their own work.
     validate_version()
     path = Path(path)
     additions = {symbol_label(value) for value in labels}

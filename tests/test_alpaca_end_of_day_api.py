@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -209,6 +210,61 @@ class AlpacaEndOfDayPublicApiTests(NativeCase):
         self.assertEqual(rows[0]["raw_volume"], "9007199254740993.5")
         for internal in ("TEST-id", "source_sha256", "online", str(self.store)):
             self.assertNotIn(internal, json.dumps(security.to_dict()))
+
+    def test_flat_csv_consumes_accepted_session_alignment_without_reinspection(self):
+        data = self.bootstrap()
+        history = data._history
+
+        class AcceptedAdjustedBar:
+            def __init__(self, bar):
+                self.bar = bar
+
+            def __getattr__(self, name):
+                if name == "session":
+                    raise AssertionError("export re-inspected the accepted adjusted session grid")
+                return getattr(self.bar, name)
+
+        def accepted_history(security, adjustment, view, start, end):
+            selected = history(security, adjustment, view, start, end)
+            # Keep real producer, serving and reader selection. Only guard the
+            # already accepted adjusted-session fact at the export handoff.
+            if adjustment == "all":
+                return replace(selected, bars=tuple(AcceptedAdjustedBar(bar) for bar in selected.bars))
+            return selected
+
+        for bounds in ({}, {"start": "2026-10-02", "end": "2026-10-06"}, {"start": "2027-01-01"}):
+            with self.subTest(bounds=bounds):
+                expected, actual = io.StringIO(), io.StringIO()
+                expected_receipt = data.write_flat_online_csv(expected, **bounds)
+                with patch.object(data, "_history", side_effect=accepted_history):
+                    receipt = data.write_flat_online_csv(actual, **bounds)
+                self.assertEqual(actual.getvalue(), expected.getvalue())
+                self.assertEqual(receipt, expected_receipt)
+                rows = list(csv.DictReader(io.StringIO(actual.getvalue())))
+                expected_dates = [
+                    bar["t"][:10]
+                    for bar in self.bars
+                    if bounds.get("start", "") <= bar["t"][:10] <= bounds.get("end", "9999-12-31")
+                ]
+                self.assertEqual([row["date"] for row in rows], expected_dates)
+
+    def test_flat_csv_rejects_changed_serving_selection_before_reading_payloads(self):
+        data = self.bootstrap()
+        destination = self.directory / "result.csv"
+        destination.write_text("original")
+        group = deepcopy(self.catalogue_groups("TEST")["TEST"])
+        group["decision_generation"] = "new-decision"
+        storage.commit(self.store, {"TEST"}, [group])
+        stream = io.StringIO()
+        with (
+            patch("alpaca_end_of_day.standalone.read_boundaries", side_effect=AssertionError("assignment read")),
+            patch("alpaca_end_of_day.standalone._rows", side_effect=AssertionError("pricing read")),
+        ):
+            for output in (destination, stream):
+                with self.subTest(output=type(output).__name__), self.assertRaises(CatalogChangedError):
+                    data.write_flat_online_csv(output)
+        self.assertEqual(destination.read_text(), "original")
+        self.assertEqual(stream.getvalue(), "")
 
     def test_missing_descriptive_metadata_and_inactive_security_can_serve(self):
         self.add_symbol(

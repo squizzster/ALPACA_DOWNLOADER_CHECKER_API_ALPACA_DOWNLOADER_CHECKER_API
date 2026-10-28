@@ -120,6 +120,10 @@ def build_security_correlation_report(
     include_action_anchored_current_suffix: bool = False,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
+    # TRUST BOUNDARY: the caller supplies selected input readers and one immutable
+    # group cache. This owner calculates new assignments; it does not reacquire
+    # provider evidence or authenticate the reader's upstream files. Keep the
+    # cache bound to its input group and rule policy, not a later publication.
     cache = (
         cache
         if cache is not None

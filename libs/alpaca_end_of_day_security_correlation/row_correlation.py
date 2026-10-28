@@ -238,6 +238,9 @@ class CorrelationCache:
 
     def lineage_analysis(self, lineage, *, include_action_anchored_current_suffix=False):
         """Build immutable evidence structure once for the complete rule group."""
+        # Cache identity is safe only while the caller retains these immutable
+        # inputs and the bound rules. DO NOT add filesystem freshness probes or
+        # replay the analysis for each adjustment view; discard on input reload.
         key = (id(lineage), include_action_anchored_current_suffix)
         cached = self._lineage.get(key)
         if cached is None:
@@ -1177,6 +1180,10 @@ def correlate_download_rows(
     name_change_assessment: NameChangeAssessment = NameChangeAssessment(),
     row_rules: tuple[RowCorrelationRule, ...] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
+    # This owner allocates rows from supplied intervals and bounded certificates.
+    # Those proofs belong to the same selected group; DO NOT reacquire evidence
+    # per row/view or promote a dependency link into identity membership. Output
+    # remains explicitly unresolved where the ordered rules cannot assign it.
     if cache is not None:
         if row_rules is None:
             row_rules = cache.row_correlation_rules

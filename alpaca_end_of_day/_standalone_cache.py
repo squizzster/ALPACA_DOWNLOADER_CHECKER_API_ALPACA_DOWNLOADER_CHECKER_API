@@ -48,6 +48,9 @@ class ReadLedger:
 
 def _file_key(kind, path, generation):
     # The producer's selected generation is authoritative, including on first use.
+    # Callers select it under the owning snapshot; this cache cannot select work.
+    # A changed generation selects a new entry. DO NOT stat/hash cached upstream
+    # files to authenticate an unchanged key or treat cache presence as freshness.
     return kind, str(path), generation
 
 

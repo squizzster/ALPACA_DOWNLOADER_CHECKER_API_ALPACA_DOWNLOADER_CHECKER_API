@@ -49,6 +49,9 @@ def certified_active_suffix_ownership_rule(
     rule_name: str,
 ) -> OwnershipIntervalRule:
     """Build a bounded ownership rule from already-proved certificates."""
+    # The lineage certificate producer owns the complete-group evidence proof.
+    # This adapter checks applicability to the current context, not that proof
+    # again. DO NOT fetch evidence or widen the certified interval here.
     by_symbol = _by_symbol(certificates)
 
     def apply(context, existing_intervals, rule_order, applied_rule_name):
@@ -87,6 +90,8 @@ def certified_active_suffix_row_rule(
     warning_code: str,
 ) -> RowCorrelationRule:
     """Build a per-session assignment rule from already-proved certificates."""
+    # Exact certified sessions delimit this handoff. Reusing the certificate
+    # cannot assign an unlisted session or authorize a separate UUID union.
     by_symbol = {
         symbol: (certificate, frozenset(certificate.session_dates))
         for symbol, certificate in _by_symbol(certificates).items()

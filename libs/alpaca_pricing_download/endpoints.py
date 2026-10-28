@@ -31,6 +31,9 @@ def validator_document(symbol: str, endpoints: dict) -> dict:
 
 
 def validator_endpoints(document: dict, symbol: str) -> dict:
+    # Check this compact handoff's owner/schema/shape. The pricing publisher
+    # already tied it to the selected source; DO NOT open full histories merely
+    # to reproduce their first/last rows. Endpoints are not an interior audit.
     if (
         type(document.get("schema_version")) is not int
         or document["schema_version"] not in SUPPORTED_VERSIONS

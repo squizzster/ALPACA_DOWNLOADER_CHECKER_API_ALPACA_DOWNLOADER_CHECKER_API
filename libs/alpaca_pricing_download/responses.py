@@ -16,6 +16,9 @@ class CompletedBars:
     rows: tuple[Row, ...]
 
     def select(self, symbol, adjustment, start, end, asof):
+        # The HTTP executor owns complete pagination and normalization. Match
+        # identity/mapping/range here, then slice its accepted rows; DO NOT
+        # normalize them again or reuse them for a different mapping date.
         if (symbol, adjustment, asof) != (
             self.symbol,
             self.adjustment,

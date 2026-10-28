@@ -89,6 +89,9 @@ class AlpacaIdentityClient:
         http_status: int,
     ) -> None:
         """Consume a prior provider lookup as this client's identical lookup result."""
+        # TRUST BOUNDARY: the caller supplies a completed exact provider lookup.
+        # Validate its outcome here, then consume it once; DO NOT issue another
+        # HTTP request merely to confirm the same observation.
         if identifier in self._seeded_asset_lookups:
             raise ValueError(f"asset lookup was seeded twice: {identifier}")
         if (asset is None and http_status != 404) or (asset is not None and http_status != 200):
@@ -179,6 +182,9 @@ class AlpacaIdentityClient:
 
     def execute_plan(self, plan):
         """Execute ordered metadata actions; results retain step/action positions."""
+        # The solver owns request construction, but this credential-bearing
+        # executor owns allowed strategies/targets and complete pagination.
+        # Plan validity is not permission to send credentials to an arbitrary URL.
         if plan.get("schema_version") != PLAN_VERSION:
             raise RuntimeError("unsupported API action-plan version")
         for step in plan["steps"]:
@@ -261,6 +267,8 @@ class AlpacaIdentityClient:
 
             next_page_token = response_document.get(api_action["pagination"]["response_field"])
             if not next_page_token:
+                # Only exhausted pagination hands off a complete action interval.
+                # A failed/partial request must not become evidence of no actions.
                 return normalized_actions
             if not isinstance(next_page_token, str):
                 raise RuntimeError("corporate-actions response has a non-string next_page_token")

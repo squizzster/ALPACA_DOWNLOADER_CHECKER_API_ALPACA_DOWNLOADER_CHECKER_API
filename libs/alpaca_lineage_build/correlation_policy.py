@@ -714,6 +714,9 @@ def _compile_schema_four(
 
 
 def load_policy(path: str | Path) -> CompiledPolicy:
+    # Compiler boundary: validate untrusted policy structure and bind executable
+    # rules once. Consumers receive the immutable compiled result; they must not
+    # reread YAML or hash its file on each group to accept that same result.
     """Load one bounded YAML document and resolve only in-process rule registries."""
     path = Path(path)
     try:
@@ -956,6 +959,9 @@ def _production_executable_profile(policy: CompiledPolicy) -> bool:
 
 
 def authorize_production_policy(policy: CompiledPolicy) -> CompiledPolicy:
+    # A compiled candidate is not automatically authorized for live publication.
+    # This in-memory identity/profile guard keeps lab experiments out of production;
+    # it does not authorize revalidating completed upstream data.
     if (
         not isinstance(policy, CompiledPolicy)
         or not reusable_policy(policy.provenance())

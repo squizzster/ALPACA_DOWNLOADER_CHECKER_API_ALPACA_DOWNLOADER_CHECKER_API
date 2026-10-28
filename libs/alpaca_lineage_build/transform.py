@@ -25,6 +25,9 @@ def correlate(
     evidence_projection=None,
 ):
     """Run the shared compiled policy against one already-loaded complete group."""
+    # Correlation owns NEW identity decisions. Inputs/evidence already crossed
+    # their producer boundaries; this adapter must not reopen paths to authenticate
+    # them, and readers must consume its published assignments instead of rerunning it.
     return evaluate_policy(
         store,
         inputs,
@@ -41,6 +44,8 @@ def correlate(
 
 def retained_decision_report(previous, *, policy):
     """Adapt an accepted decision to publication when there are no new rows."""
+    # Reuse has already been selected by the owning pipeline. Empty added rows
+    # do not erase retained assignments or justify recomputing historical rules.
     return {
         **{
             key: previous[key]
@@ -208,6 +213,9 @@ def _continued_documents(view, report, indexes, previous, old):
 
 
 def make_publication(view, evidence, report, deps, previous=None, old_boundaries=None, *, resume_closed=False):
+    # This producer joins accepted pricing and completed identity decisions into
+    # a new handoff. Preserve unchanged closed references; do not require consumers
+    # to reconstruct ownership, coverage or numerical selection from raw evidence.
     from .projection import last_observed_symbol_lookup
 
     anchor = view.source["anchor_month"]

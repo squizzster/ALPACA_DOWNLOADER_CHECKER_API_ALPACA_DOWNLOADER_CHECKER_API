@@ -88,6 +88,9 @@ def export(
         raise ExportError("--from must not be after --through")
     requested = set(public_ids or ())
     checked_ids(requested)
+    # This public roster selects completed lineage generations, not eligibility
+    # or current readability. Each selected group supplies its own locked body;
+    # DO NOT add a preliminary receipt/payload census to authenticate the roster.
     roster = reader.list_published_sources()
     frozen = {item["symbol"]: item["generation"] for item in roster["sources"]}
     selected = sorted(set(symbols or frozen))
@@ -244,6 +247,9 @@ def export(
                 if progress:
                     progress(f"checking {len(groups)} consumed groups before publication")
                 # One final locked freshness gate, after serialization. Never reopen prices.
+                # Group consumption released its locks, so old tokens alone do
+                # not establish freshness. Recheck selection, including omitted
+                # inputs, without replaying conversion or reopening price bodies.
                 current = {
                     item["symbol"]: item["generation"] for item in reader.list_published_sources()["sources"]
                 }
@@ -255,6 +261,9 @@ def export(
                 for group in groups.values():
                     group["snapshot"].check_current()
                 writer.add_key_value_metadata({"alpaca_bloodhound": _json(manifest)})
+        # This is validation of the exporter's newly serialized artifact, not
+        # authentication of upstream histories. Once atomically installed, the
+        # file is authoritative; diagnostic/cleanup failures cannot undo success.
         with pq.ParquetFile(temporary) as parquet:
             if parquet.metadata.num_rows != row_count or not parquet.schema_arrow.equals(
                 schema(), check_metadata=False

@@ -108,8 +108,9 @@ Recheck `status` after owner maintenance; success at one boundary does not estab
 ```
 
 Bootstrap follows lineage; rerun after interruption. Offline preview reports compact selection, legacy
-membership-projection reads, receipt/payload bounds and derived publications. Execution evaluates full selected
-histories, possibly reread per identity within bounded cache; narrow date filters cannot avoid coverage checks.
+membership-projection reads, receipt/payload bounds and derived publications. Ordinary maintenance skips matching
+groups and reuses completed history prefixes. Bootstrap, rebuild or invalidated history may require full selected
+histories, possibly reread per identity within bounded cache; narrow date filters cannot establish full-history eligibility.
 No provider requests, identity-rule replay, redownloads, pricing copies or rewrites.
 
 Daily execution/preview require a complete serving selector even with an empty queue. Focused lineage maintains
@@ -124,7 +125,7 @@ need lineage next; readers never maintain stores.
 ## Recovery registry and retries
 
 [resources/ticker.csv](../resources/ticker.csv) is one sorted unique CSV record, atomically unioned under a
-stable shared lock. Accepted labels accumulate: omission, inactivity, exchange changes, emptiness and failure
+stable exclusive registry lock. Accepted labels accumulate: omission, inactivity, exchange changes, emptiness and failure
 never remove them. Retention preserves opportunities, not guaranteed history; today's catalogue cannot
 reconstruct every historically priceable label.
 

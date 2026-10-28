@@ -25,6 +25,8 @@ def load_published_boundary(root: Path, source: dict, kind: str, *, selected=Fal
     completion under the continuously held lock. read_boundary uses this trusted
     consumption path; authenticate_boundary is the explicit audit.
     """
+    # selected is a caller-owned completion guarantee under a continuous ticker
+    # lock, not permission to carry a stale selection across lock lifetimes.
     if not selected and regular_path(root, ".pending.json").exists():
         raise DownloadError("pricing publication is incomplete; resume the downloader")
     reference = source["boundaries"][kind]
@@ -121,6 +123,8 @@ def consume_pricing_update(store: Path | str, symbol: str):
         if dates is None:
             yield None
             return
+        # The owning notice and lock delimit this consumption. DO NOT repair
+        # pricing or rediscover other tickers from inside the consumer context.
         batch = PricingUpdate(dict(dates), root)
         try:
             yield batch

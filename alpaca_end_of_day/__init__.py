@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 21
+API_VERSION = 22
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -497,6 +497,9 @@ class DataLibrary:
         self.store = Path(_DEFAULT_STORE if store is None else store).absolute()
         self._reader = StandaloneReader(self.store, wait=wait, cache_bytes=cache_bytes)
         try:
+            # The serving producer owns eligibility and public projections. Accept
+            # its transactional snapshot once; list/search/resolve must stay in
+            # memory. DO NOT reopen ticker receipts to certify online membership.
             selected = catalogue_storage.snapshot(self.store)
             self._generation = selected["state"]["generation"]
             self._published_at = datetime.fromisoformat(selected["state"]["published_at"])
@@ -542,6 +545,8 @@ class DataLibrary:
 
         security = self._securities.get(_public_id(public_id))
         if security is None:
+            # This public boundary deliberately exposes no internal/offline
+            # status. DO NOT consult another index to explain an unavailable ID.
             raise PublicIdUnavailableError("public ID is not available")
         return security
 
@@ -572,6 +577,11 @@ class DataLibrary:
         key = self._records[security.public_id]["group_key"]
         expected = self._groups[key]
         try:
+            # Catalogue selection outlives its read transaction. Before reading
+            # prices, bind this group's current decision and locked upstream
+            # generations to that selection; unrelated catalogue changes are OK.
+            # A mismatch invalidates the caller's snapshot, never triggers repair
+            # or a replay of serving eligibility in this consumer.
             with self._reader._open_group(
                 expected["locator"],
                 expected=expected["references"],
@@ -673,6 +683,9 @@ class DataLibrary:
         else:
             temporary_parent = None
 
+        # Flat export consumes the opened online catalogue and each selected
+        # group's matching history. It does not hold a store-wide lock through
+        # installation or promise every source is still latest at that instant.
         securities = self.list_securities()
         row_count = 0
         exported_security_count = 0
@@ -688,21 +701,16 @@ class DataLibrary:
                     raw_history = self._history(security, "raw", results["raw"], start_date, end_date)
                     adjusted_history = self._history(security, "all", results["all"], start_date, end_date)
                     ranges = self._records[security.public_id]["public"]["ticker_ranges"]
-                    raw_by_session = {bar.session: bar for bar in raw_history.bars}
-                    adjusted_by_session = {bar.session: bar for bar in adjusted_history.bars}
-                    if len(raw_by_session) != len(raw_history.bars) or len(adjusted_by_session) != len(
-                        adjusted_history.bars
-                    ):
-                        raise DataLibraryError(
-                            f"online security {security.public_id} has duplicate sessions in a CSV history"
-                        )
-                    if raw_by_session.keys() != adjusted_by_session.keys():
-                        raise DataLibraryError(
-                            f"online security {security.public_id} has different raw and all-adjusted sessions"
-                        )
-                    if raw_by_session:
+                    # DO NOT CHANGE BACK: serving owns the identical ordered
+                    # session grids, and history assembly owns unique sessions.
+                    # _read_views binds both to the selected serving/lineage/
+                    # pricing generations; identical date filters preserve them.
+                    # Consume that handoff directly, without rebuilding session
+                    # maps, sorting again or revalidating length/alignment.
+                    if raw_history.bars:
                         exported_security_count += 1
-                    for session in sorted(raw_by_session):
+                    for raw_bar, adjusted_bar in zip(raw_history.bars, adjusted_history.bars):
+                        session = raw_bar.session
                         tickers = sorted(
                             {
                                 r["ticker"]
@@ -720,8 +728,8 @@ class DataLibrary:
                                 security.public_id,
                                 tickers[0],
                                 *metadata,
-                                *_bar_csv_values(raw_by_session[session]),
-                                *_bar_csv_values(adjusted_by_session[session]),
+                                *_bar_csv_values(raw_bar),
+                                *_bar_csv_values(adjusted_bar),
                             )
                         )
                         row_count += 1
@@ -743,6 +751,9 @@ class DataLibrary:
                 spool.flush()
 
                 if destination_path is None:
+                    # Streams have no atomic replacement boundary. Path outputs
+                    # below publish only after the complete new document closes;
+                    # neither path authenticates upstream payloads again.
                     _write_flat_csv_text_document(destination, spool, segments_by_date)
                 else:
                     descriptor, temporary_name = tempfile.mkstemp(

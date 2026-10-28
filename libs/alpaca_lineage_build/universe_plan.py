@@ -32,6 +32,9 @@ from .work_contract import (
 
 
 def boundaries(store, registry, *, context=None):
+    # TRUST BOUNDARY: accept the compact owners below before choosing work.
+    # The index supplies membership/generations; the summary supplies live-check
+    # baselines. Neither registry labels nor directory contents can replace them.
     from libs.alpaca_serving_catalogue.producer import status as serving_status
     from libs.alpaca_serving_catalogue.storage import controls as serving_controls
 
@@ -107,6 +110,9 @@ def changed_evidence(index, observation, evidence_client, *, excluded=(), work=N
 
 
 def select_work(accepted, observation, evidence_client, end_date, *, retry_blocked=False):
+    # Selection consumes the accepted in-memory view. DO NOT turn this pass
+    # over compact entries into receipt, source-manifest, notice or lock reads
+    # for every ticker; only the resulting selected work may need those bodies.
     if accepted.get("summary") is None:
         raise LineageError("complete pricing check summary required before selecting update work")
     index = accepted["index"]
@@ -339,6 +345,8 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
 
 
 def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
+    # Estimates describe accepted work and conditional expansion, not permission
+    # to execute it or a reason to probe each ticker to improve an estimate.
     summary = accepted["summary"]
     deferred = {item["symbol"] for item in selection["deferred"]} | set(selection.get("selection_failures", {}))
     eligible = [

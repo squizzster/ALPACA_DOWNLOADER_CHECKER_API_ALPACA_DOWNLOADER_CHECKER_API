@@ -61,6 +61,9 @@ def _current_sources(store, locked, *, known=()):
 
 
 def _reuse_metadata(seed, group, selected, previous, notices, refresh):
+    # This is the complete-group reuse boundary: changed inputs, recorded
+    # absence, pending notices or explicit refresh defeat reuse. On success,
+    # DO NOT reacquire evidence merely because a later stage wants reassurance.
     unavailable = unavailable_pricing(previous.get(seed))
     return (
         not refresh
@@ -80,6 +83,9 @@ def _reuse_metadata(seed, group, selected, previous, notices, refresh):
 
 def _published_pricing_ranges(index, group, pricing_handoff):
     """Plan from completed publications and the accepted lineage projection."""
+    # Producer-returned requests and indexed coverage are already authoritative
+    # for planning. DO NOT reopen every group's manifests to derive the same API
+    # need; the execution owner still binds selected work under its pricing locks.
     if pricing_handoff is None:
         return None
     sources = {}
@@ -815,6 +821,8 @@ def process_group(
 
 
 def local_symbols(store: Path, *, pending: bool, known=()) -> list[str]:
+    # Explicit discovery/reconstruction only. Normal selected updates use compact
+    # membership/hints; DO NOT insert this census before useful steady-state work.
     directory = regular_path(store, "end_of_day/manifests" if pending else "end_of_day/pricing")
     if not directory.exists():
         return []

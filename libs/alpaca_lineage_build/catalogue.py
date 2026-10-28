@@ -12,6 +12,9 @@ DISCOVERY_EXCHANGES = ("OTC", "NYSE", "NASDAQ", "AMEX", "TXSE")
 
 
 def observe_catalogue(client):
+    # Validate the completed provider observation once at acquisition. Consumers
+    # retain duplicates and absence as evidence, never silently choose one identity
+    # or interpret an omitted ticker as proof of inactivity/deletion.
     plan = build_plan({"steps": [{"needs": [{"kind": "asset_catalogue", "why": "universe_discovery"}]}]})
     records = client.execute_plan(plan)[0][0]
     if not isinstance(records, list) or not records:

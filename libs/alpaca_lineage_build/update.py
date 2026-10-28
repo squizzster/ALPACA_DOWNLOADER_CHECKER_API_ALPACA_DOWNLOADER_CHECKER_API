@@ -171,6 +171,9 @@ def update_everything(
             current_stage = "append"
             if len(ready) != 1:
                 raise DownloadError("history refresh did not produce a ready append handoff")
+            # Refresh owns the live check/correction proof for this exact set of
+            # generations. DO NOT add another live check or reselect membership
+            # before append; newly admitted sources need their own later approval.
             snapshot = ready.pop()
             maintained_symbols.update(e["symbol"] for e in snapshot["entries"])
             appended = stage(

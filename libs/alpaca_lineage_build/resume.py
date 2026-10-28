@@ -14,6 +14,8 @@ from .contract import reusable_decision
 
 def unchanged_source(source, previous, *, selected=None):
     """The pricing producer's completed proof covers every retained row."""
+    # DO NOT compare historical rows to confirm an unchanged generation/ancestry
+    # handoff. Pricing owns that guarantee across all views, including removals.
     return (
         previous is not None
         and reusable_decision(previous)
@@ -105,6 +107,9 @@ def unique_assignment(segments, asset_id):
 
 
 def can_resume(view, previous, evidence):
+    # This owner checks changed evidence and the NEW suffix/seam only. Failure
+    # delegates the selected history to full reconciliation; it is not permission
+    # to authenticate unrelated stored groups or add checks to successful reuse.
     if not stable_evidence(previous["evidence"], evidence):
         return False
     if not any(view.views.values()):

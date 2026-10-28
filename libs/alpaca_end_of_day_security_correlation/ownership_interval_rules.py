@@ -1016,6 +1016,10 @@ def build_ticker_ownership_intervals(
     rules: tuple[OwnershipIntervalRule, ...] | None = None,
     include_action_anchored_current_suffix: bool = False,
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
+    # This owner translates dated evidence into ticker-ownership intervals.
+    # Intervals constrain row allocation; they do not themselves merge provider
+    # UUIDs. Supplied edges belong to the caller's same evidence group, so DO NOT
+    # reconstruct that graph when the completed analysis was already handed in.
     rules = OWNERSHIP_INTERVAL_RULES if rules is None else rules
     corporate_actions = lineage.get("corporate_actions")
     if not isinstance(corporate_actions, list):

@@ -15,6 +15,9 @@ class AcquisitionFailure:
 
     @classmethod
     def from_error(cls, error):
+        # Transfer only classified scalar failure facts to later cohorts.
+        # Retaining the exception would retain its traceback and response buffers;
+        # it would not provide stronger evidence about publication or identity.
         return cls(**failure_outcome(error))
 
     def to_outcome(self):

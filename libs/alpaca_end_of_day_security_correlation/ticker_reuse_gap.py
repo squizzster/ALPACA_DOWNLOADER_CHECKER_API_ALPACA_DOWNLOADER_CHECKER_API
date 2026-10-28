@@ -626,6 +626,10 @@ def assess_ticker_reuse_gap(
     evidence_issues: list[dict[str, Any]] | None = None,
 ) -> TickerReuseGapAssessment | None:
     """Describe the rightmost pricing run after the last qualifying ticker-reuse gap."""
+    # Request coverage and complete view consensus constrain this assessment;
+    # neither a requested cutoff nor a run of returned bars establishes identity.
+    # The row owner consumes the assessment's eligibility and exact bounds, not
+    # an unrestricted permission to assign all history under today's label.
     if len(session_dates) < 2:
         return None
     observed = tuple(session_date.isoformat() for session_date in session_dates)

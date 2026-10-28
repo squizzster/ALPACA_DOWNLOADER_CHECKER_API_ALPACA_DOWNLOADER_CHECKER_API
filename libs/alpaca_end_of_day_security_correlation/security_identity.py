@@ -50,6 +50,8 @@ def _validated_tickers(tickers: Iterable[str]) -> tuple[str, ...]:
 
 def security_id_for_alpaca_asset_ids(alpaca_asset_ids: Iterable[str]) -> str:
     """Hash a canonical Alpaca-ID set into this application's security ID."""
+    # This digest names accepted membership; it cannot prove that the members
+    # belong together. UUID-edge certification owns that decision upstream.
     # Member validation and canonical ordering are part of the stable ID contract.
     members = _validated_member_asset_ids(alpaca_asset_ids)
     return sha256("\n".join(members).encode("utf-8")).hexdigest()
@@ -87,6 +89,9 @@ def security_identity_for_alpaca_assets(
     tickers: Iterable[str],
     basis: str,
 ) -> SecurityIdentity:
+    # Membership follows accepted UUID edges, not the broader dependency graph,
+    # shared ticker text or equal prices. Readers consume the resulting public
+    # ID; DO NOT rerun these joins when opening a completed lineage publication.
     members, member_tickers = _connected_identity_data(
         alpaca_asset_ids,
         tickers,

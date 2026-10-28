@@ -9,6 +9,8 @@ from pathlib import Path
 
 from alpaca_end_of_day import ReaderBusyError, StandaloneReader, StandaloneReaderError
 
+# Consumer boundary: use the public reader, never libs/ storage or policy internals.
+# The evidence export's resolved IDs do not assert DataLibrary online eligibility.
 from . import ROOT, VERSION, validate_version
 from .baseline import BaselineError, plan_baseline, write_baseline
 
@@ -50,6 +52,8 @@ def main(argv=None):
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         output = args.output if args.output is not None else ROOT / "baselines" / stamp
+        # Keep this accepted public snapshot through the entire export. DO NOT
+        # select again per group or probe prices to reconfirm its roster.
         with reader.open_published_evidence() as snapshot:
             plan = plan_baseline(reader, snapshot.roster)
             if args.plan:

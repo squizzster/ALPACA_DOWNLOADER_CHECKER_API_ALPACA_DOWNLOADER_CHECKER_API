@@ -23,6 +23,10 @@ from libs.common.us_equity_market_session_calendar import (
 from .contract import CorrelationPolicyError
 
 FACT_PRODUCER = "active_cusip_dividend_suffix_v2"
+# This producer owns the bounded positive-evidence certificate. Consumers may
+# apply only its certified rows/identity within the selected group; a certificate
+# is not permission to extend ownership over unsupported history or rerun its
+# fact derivation merely to trust an already accepted result.
 ROW_RULE_NAME = "evidence_anchored_active_uuid_suffix"
 FACT_TYPES = {
     "suffix.single_receipt_complete_group": "boolean",

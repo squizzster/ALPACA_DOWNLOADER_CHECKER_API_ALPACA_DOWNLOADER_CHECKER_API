@@ -21,6 +21,9 @@ def encoded(value):
 
 
 def _state(connection, *, incomplete=False, old_policy=False):
+    # Validate this selector's own contract, not its producer's inputs. A missing
+    # or incompatible boundary fails into explicit maintenance; DO NOT rebuild
+    # it by crawling lineage receipts from a reader or a planning call.
     if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         raise CatalogueError("incompatible serving catalogue schema; explicit schema migration required")
     row = connection.execute("SELECT body FROM state WHERE id=1").fetchone()
@@ -120,6 +123,9 @@ def read_groups(store, keys, *, generation):
     try:
         with closing(connect_sqlite(path(store), readonly=True)) as connection:
             connection.execute("BEGIN")
+            # controls() released its earlier transaction. Pin selected bodies to
+            # the accepted catalogue token here; a mismatch invalidates that view
+            # rather than authorizing mixed old/new decisions or upstream audits.
             if _state(connection, incomplete=True)["generation"] != generation:
                 raise CatalogueError("selected serving catalogue changed")
             groups = {}
@@ -151,6 +157,9 @@ def refresh_controls(store, selected=None, *, recover=False):
 
 def snapshot(store):
     """Materialize public fields and selectors, then release the read transaction."""
+    # The serving producer already selected online identities. Read public rows
+    # and their references in one transaction; DO NOT inspect the private reasons
+    # or upstream ticker state to reconstruct eligibility at this boundary.
     validate_version()
     try:
         with closing(connect_sqlite(path(store), readonly=True)) as connection:
@@ -178,6 +187,9 @@ def snapshot(store):
 
 
 def assert_group(store, key, token):
+    # A public reader can outlive its catalogue transaction. Only this selected
+    # decision must still match; unrelated group publications do not invalidate
+    # it. Checking current selection is not a replay of the accepted decision.
     try:
         with closing(connect_sqlite(path(store), readonly=True)) as connection:
             connection.execute("BEGIN")
@@ -193,6 +205,10 @@ def assert_group(store, key, token):
 
 def commit(store, previous, groups):
     """Replace complete old contributions atomically. No public ID collision merges."""
+    # This producer validates newly computed serving outputs before one SQLite
+    # transaction installs bodies, public projections and its new selector.
+    # Consumers trust that commit; DO NOT move validation to every catalogue read
+    # or authenticate the already accepted lineage/pricing inputs again here.
     for group in groups:
         validate_group(group)
     with closing(connect_sqlite(path(store))) as connection, connection:

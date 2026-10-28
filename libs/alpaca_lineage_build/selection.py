@@ -6,6 +6,9 @@ from .contract import MAX_CLOSURE, LineageError
 
 
 class DependencyGraph:
+    # Indexed dependency/UUID links select the complete work group in memory.
+    # They are not identity merges. DO NOT discover the same membership by opening
+    # every receipt or infer a single public identity from graph connectivity.
     def __init__(self, entries):
         self.dependencies = {}
         self.assets = {}

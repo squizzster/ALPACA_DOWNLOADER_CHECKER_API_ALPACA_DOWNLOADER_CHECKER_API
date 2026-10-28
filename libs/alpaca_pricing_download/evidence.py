@@ -29,6 +29,10 @@ class PublishedPricingEvidence:
             or value["schema_version"] != 1
         ):
             raise ValueError("unsupported published-pricing evidence")
+        # This is the evidence envelope contract, not authentication of its
+        # source or CSVs. Counts describe the producer's complete selected scope,
+        # including retained/empty views when the consumer reads only a suffix.
+        # DO NOT reopen payloads or validators to prove these counts again.
         generation = value.get("generation")
         if (
             not isinstance(generation, str)
