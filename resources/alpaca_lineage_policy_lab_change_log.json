@@ -38,5 +38,10 @@
     "modifications": [
       "Factor exact snapshot parity from decision parity and narrowly classify inert ownership-rule-order provenance preserved before or after the exact lineage-33/correlation-59 to lineage-34/correlation-60 migration as compatible without changing strict comparison or CLI exit behavior."
     ]
+  },
+  {
+    "modifications": [
+      "Remove --heartbeat-seconds from compare and audit commands and use the fixed shared lifecycle cadence without changing report schemas or policy behavior."
+    ]
   }
 ]

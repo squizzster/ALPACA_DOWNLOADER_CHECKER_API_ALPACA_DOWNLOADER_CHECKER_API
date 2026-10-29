@@ -84,7 +84,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn(": ", self.stream.getvalue())
 
     def test_monitoring_guidance_appears_only_in_initial_record(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(1,))
+        reporter = self.reporter()
         guidance = self.stream.records()[0]["ai_agent_read_this"]
         self.assertIn("more than 10 seconds late", guidance)
         self.assertIn("autonomously", guidance)
@@ -92,11 +92,11 @@ class LifecycleTests(unittest.TestCase):
             "You should update the user **only** at each heartbeat unless the user has directed you otherwise.",
             guidance,
         )
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["phase"], "INIT")
         reporter.update("EXPORT", current=0, total=1)
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         reporter.finish("error", 1, error=ValueError("export failed"))
         for record in self.stream.records()[1:]:
@@ -168,26 +168,26 @@ class LifecycleTests(unittest.TestCase):
                 self.assertNotIn("context", self.stream.records()[-1])
 
     def test_updates_hold_only_latest_status_and_heartbeats_repeat_it(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(10,))
+        reporter = self.reporter()
         self.clock.advance(9.75)
         self.assertTrue(reporter.update("EXPORT", current=1, total=5))
         self.assertTrue(reporter.update("EXPORT", current=2, total=5))
         self.assertEqual(len(self.stream.records()), 1)
         self.clock.advance(0.25)
         reporter._emit_due()
-        self.clock.advance(10.9)
+        self.clock.advance(60.9)
         reporter._emit_due()
         first, second = self.stream.records()[1:]
         self.assertEqual(first["current"], 2)
         self.assertEqual(second["current"], 2)
         self.assertEqual(first["elapsed_seconds"], 10)
-        self.assertEqual(second["elapsed_seconds"], 20)
-        self.assertEqual(first["next_heart_beat_in_seconds"], 10)
-        self.assertEqual(second["next_heart_beat_in_seconds"], 10)
+        self.assertEqual(second["elapsed_seconds"], 70)
+        self.assertEqual(first["next_heart_beat_in_seconds"], 60)
+        self.assertEqual(second["next_heart_beat_in_seconds"], 120)
         self.assertEqual(first["message"], "Writing CSVs")
         self.assertEqual(
-            {k: v for k, v in first.items() if k != "elapsed_seconds"},
-            {k: v for k, v in second.items() if k != "elapsed_seconds"},
+            {k: v for k, v in first.items() if k not in {"elapsed_seconds", "next_heart_beat_in_seconds"}},
+            {k: v for k, v in second.items() if k not in {"elapsed_seconds", "next_heart_beat_in_seconds"}},
         )
 
     def test_delayed_heartbeat_samples_once_and_skips_missed_deadlines(self) -> None:
@@ -206,33 +206,33 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.stream.records()[-1]["elapsed_seconds"], 1210)
 
     def test_next_heartbeat_rounds_up_remaining_seconds(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(10,))
+        reporter = self.reporter()
         self.assertEqual(self.stream.records()[0]["next_heart_beat_in_seconds"], 10)
         self.clock.advance(12.25)
         reporter._emit_due()
-        self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], 8)
+        self.assertEqual(self.stream.records()[-1]["next_heart_beat_in_seconds"], 58)
 
     def test_context_is_copied_and_never_carried_to_other_work(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(1,))
+        reporter = self.reporter()
         context = {"public_id": "one", "rows": 12}
         self.assertTrue(reporter.update("EXPORT", current=1, total=2, context=context, scope="one"))
         context["public_id"] = "modified"
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["context"]["public_id"], "one")
         self.assertTrue(reporter.update("EXPORT", scope="two"))
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         self.assertNotIn("context", self.stream.records()[-1])
         self.assertNotIn("current", self.stream.records()[-1])
         self.assertTrue(reporter.update("PUBLISH", context={"path": "manifest"}))
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         self.assertNotIn("scope", self.stream.records()[-1])
         self.assertEqual(self.stream.records()[-1]["context"], {"path": "manifest"})
 
     def test_invalid_update_preserves_the_entire_accepted_status(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(1,))
+        reporter = self.reporter()
         self.assertTrue(reporter.update("EXPORT", current=1, total=3, context={"public_id": "accepted"}))
         invalid = [
             ("UNKNOWN", {}),
@@ -253,7 +253,7 @@ class LifecycleTests(unittest.TestCase):
         for phase, kwargs in invalid:
             with self.subTest(phase=phase, kwargs=kwargs):
                 self.assertFalse(reporter.update(phase, **kwargs))
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         held = self.stream.records()[-1]
         self.assertEqual(held["phase"], "EXPORT")
@@ -262,10 +262,10 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(held["context"], {"public_id": "accepted"})
 
     def test_size_limit_counts_utf8_bytes_not_characters(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(1,), progress_limit=1024)
+        reporter = self.reporter(progress_limit=1024)
         self.assertTrue(reporter.update("EXPORT", message="x" * 180))
         self.assertFalse(reporter.update("EXPORT", message="\U0001f434" * 180))
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["message"], "x" * 180)
         for line in self.stream.getvalue().splitlines():
@@ -332,11 +332,20 @@ class LifecycleTests(unittest.TestCase):
             self.assertLessEqual(len(line.encode("utf-8")), limit)
 
     def test_real_timer_reports_while_application_work_is_idle(self) -> None:
-        reporter = LifecycleReporter(self.phases, stream=self.stream, heartbeat_intervals=(0.01,))
+        # Keep the real timer/thread; accelerate only elapsed time, not its cadence.
+        import time
+
+        origin = time.monotonic()
+        reporter = LifecycleReporter(
+            self.phases, stream=self.stream, clock=lambda: (time.monotonic() - origin) * 1000
+        )
         self.addCleanup(reporter.finish, "aborted", None)
-        reporter.start()
-        reporter.update("EXPORT", current=0, total=1)
-        self.assertTrue(self.stream.heartbeat.wait(timeout=2))
+        stop = reporter._stop
+        real_wait = stop.wait
+        with mock.patch.object(stop, "wait", side_effect=lambda seconds: real_wait(seconds / 1000)):
+            reporter.start()
+            reporter.update("EXPORT", current=0, total=1)
+            self.assertTrue(self.stream.heartbeat.wait(timeout=2))
         reporter.finish("success", 0)
         records = self.stream.records()
         self.assertEqual(records[0]["phase"], "INIT")
@@ -345,9 +354,9 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.stream.write_count, self.stream.flush_count)
 
     def test_concurrent_finish_and_due_heartbeat_cannot_emit_after_final(self) -> None:
-        reporter = self.reporter(heartbeat_intervals=(1,))
+        reporter = self.reporter()
         reporter.update("EXPORT", current=0, total=1)
-        self.clock.advance(1)
+        self.clock.advance(10)
         barrier = threading.Barrier(4)
 
         def invoke(action) -> None:
@@ -376,9 +385,9 @@ class LifecycleTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 self.stream = RecordingStream()
                 with mock.patch.object(self.stream, operation, side_effect=OSError("broken stderr")):
-                    reporter = self.reporter(heartbeat_intervals=(1,))
+                    reporter = self.reporter()
                     reporter.update("EXPORT")
-                    self.clock.advance(1)
+                    self.clock.now = reporter._next_deadline
                     reporter._emit_due()
                     reporter.finish("error", 1, error=ValueError("actual failure"))
                 reporter.finish("success", 0)
@@ -406,22 +415,22 @@ class LifecycleTests(unittest.TestCase):
 
     def test_registered_context_types_reject_nonfinite_numbers(self) -> None:
         self.phases["RATE"] = Phase("Measuring rate", {"rate": float})
-        reporter = self.reporter(heartbeat_intervals=(1,))
+        reporter = self.reporter()
         self.assertTrue(reporter.update("RATE", context={"rate": 1.25}))
         for value in (float("inf"), float("-inf"), float("nan"), True, "1.25"):
             with self.subTest(value=value):
                 self.assertFalse(reporter.update("RATE", context={"rate": value}))
-        self.clock.advance(1)
+        self.clock.now = reporter._next_deadline
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["context"], {"rate": 1.25})
 
-    def test_configuration_rejects_invalid_schedule_and_limits(self) -> None:
+    def test_reporter_rejects_interval_override_even_matching_fixed_schedule(self) -> None:
+        for intervals in ((1,), (60,), (10, 60, 120, 180, 240, 300)):
+            with self.subTest(intervals=intervals), self.assertRaises(TypeError):
+                LifecycleReporter(self.phases, heartbeat_intervals=intervals)
+
+    def test_configuration_rejects_invalid_limits(self) -> None:
         for kwargs in (
-            {"heartbeat_intervals": ()},
-            {"heartbeat_intervals": (0,)},
-            {"heartbeat_intervals": (-1,)},
-            {"heartbeat_intervals": (float("nan"),)},
-            {"heartbeat_intervals": (True,)},
             {"progress_limit": 1},
             {"progress_limit": 512},
             {"error_limit": 1},

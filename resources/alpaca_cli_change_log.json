@@ -116,5 +116,10 @@
     "modifications": [
       "After a successful non-plan update, push only a single recovery-registry-only commit directly above the configured upstream push destination. Retry a pending eligible commit even when the file is unchanged; report push progress, current remotes, success and nonfatal deferrals/failures through the stderr heartbeat protocol, without publishing unrelated commits or tags."
     ]
+  },
+  {
+    "modifications": [
+      "Remove --heartbeat-seconds at every parser level and use the fixed shared lifecycle cadence for all commands, retaining the first-heartbeat TBD estimate."
+    ]
   }
 ]

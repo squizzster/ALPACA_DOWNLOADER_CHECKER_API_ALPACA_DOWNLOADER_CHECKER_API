@@ -3,5 +3,10 @@
     "modifications": [
       "Extract the CSV lifecycle timer and bounded version-4 stderr protocol into a shared opt-in heartbeat library, with configurable startup messages and immediate bounded diagnostic records."
     ]
+  },
+  {
+    "modifications": [
+      "Fix all reporter intervals at 10, 60, 120, 180, 240, then repeating 300 seconds; remove configurable cadence and CLI argument registration while preserving the version-4 wire format and memory-only reporting."
+    ]
   }
 ]

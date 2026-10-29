@@ -1,6 +1,5 @@
 """Shared opt-in stderr heartbeats, bounded diagnostics and JSONL consumption."""
 
-import argparse
 import json
 import math
 import sys
@@ -11,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-VERSION = 1
+VERSION = 2
 DEFAULT_HEARTBEAT_INTERVALS = (10, 60, 120, 180, 240, 300)
 PROGRESS_SCHEMA = "alpaca.lifecycle.progress"
 ERROR_SCHEMA = "alpaca.lifecycle.error"
@@ -32,26 +31,6 @@ _FINAL_MESSAGES = {
     "error": "Operation failed.",
     "aborted": "Operation interrupted.",
 }
-
-
-def add_heartbeat_argument(parser):
-    """Permit the same optional cadence override at any command parser level."""
-
-    def seconds(value):
-        try:
-            parsed = int(value)
-        except ValueError as error:
-            raise argparse.ArgumentTypeError("must be an integer") from error
-        if not 1 <= parsed <= 86400:
-            raise argparse.ArgumentTypeError("must be between 1 and 86400")
-        return parsed
-
-    parser.add_argument(
-        "--heartbeat-seconds",
-        type=seconds,
-        default=argparse.SUPPRESS,
-        help="fixed STDERR heartbeat interval; default intervals are 10,60,120,180,240,300 then 300 seconds",
-    )
 
 
 def diagnostic(reporter, message, *, level="info"):
@@ -167,18 +146,12 @@ class LifecycleReporter:
         phases,
         *,
         stream=None,
-        heartbeat_intervals=DEFAULT_HEARTBEAT_INTERVALS,
         first_heartbeat_context=None,
         progress_limit=4096,
         error_limit=16384,
         clock=time.monotonic,
         initial_message="Operation started.",
     ):
-        intervals = tuple(heartbeat_intervals)
-        if not intervals or any(
-            type(value) not in (int, float) or not math.isfinite(value) or value <= 0 for value in intervals
-        ):
-            raise ValueError("heartbeat intervals must be positive finite seconds")
         if any(type(value) is not int or value < 256 for value in (progress_limit, error_limit)):
             raise ValueError("record size limits must be integers of at least 256 bytes")
         if not callable(clock):
@@ -195,7 +168,9 @@ class LifecycleReporter:
         self._phases = dict(phases)
         self._phases["INIT"] = Phase(initial_message)
         self._stream = sys.stderr if stream is None else stream
-        self._intervals = intervals
+        # One shared cadence is the monitoring contract. DO NOT restore caller
+        # overrides: tests advance the clock; operators consume the advertised deadline.
+        self._intervals = DEFAULT_HEARTBEAT_INTERVALS
         self._first_heartbeat_context = dict(first_heartbeat_context or {})
         if any(
             not isinstance(name, str)

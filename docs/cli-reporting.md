@@ -37,9 +37,9 @@ One executable owns one reporter, including nested pricing/lineage/catalogue wor
 unless a caller explicitly attaches a reporter or progress callback. The reporter reads held memory only:
 no provider requests, store discovery, payload reads, locks, validation or work-selection decisions.
 
-Default heartbeat intervals: 10, 60, 120, 180, 240, then repeating 300 seconds—elapsed times
-10, 70, 190, 370, 610, 910, 1210… . `--heartbeat-seconds N` instead sets a fixed integer interval, 1–86400,
-on either executable. The option can precede the command or follow a subcommand.
+Fixed heartbeat intervals: 10, 60, 120, 180, 240, then repeating 300 seconds—elapsed times
+10, 70, 190, 370, 610, 910, 1210… . This cadence applies to every command and library reporter;
+there is no CLI or reporter interval override. Tests advance a controlled clock instead of changing the cadence.
 Whole `elapsed_seconds` use the monotonic clock from activation.
 
 One held status is sampled by a separate timer, including while work waits. Updates replace status/context
@@ -62,8 +62,7 @@ otherwise. Later records omit it even if the held phase remains `INIT`.
 `context.estimated_remaining_seconds` is `"TBD"` when there is no producer estimate. CSV export supplies an
 approximate estimate from completed identities; numeric estimates are whole seconds. Other commands do not
 recalculate estimates or infer completion from elapsed time. Initial 10-second heartbeat always displays
-`"TBD"`, regardless of phase or an available estimate. This overrides display only; later heartbeats retain the estimate. Fixed intervals other
-than 10 seconds are unaffected.
+`"TBD"`, regardless of phase or an available estimate. This overrides display only; later heartbeats retain the estimate.
 
 Canonical phase definitions and adapters live in
 [command_progress.py](../libs/alpaca_cli/command_progress.py): `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,

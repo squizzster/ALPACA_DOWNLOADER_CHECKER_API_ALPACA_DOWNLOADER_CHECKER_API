@@ -10,9 +10,7 @@ from pathlib import Path
 
 from alpaca_end_of_day import ADJUSTMENTS, ReaderBusyError
 from libs.alpaca_heartbeat import (
-    DEFAULT_HEARTBEAT_INTERVALS,
     LifecycleReporter,
-    add_heartbeat_argument,
     diagnostic,
 )
 from libs.alpaca_pricing_download.download import parse_date, pricing_session_end
@@ -23,7 +21,7 @@ from libs.common.store_lock import StoreBusyError, operation_lock
 
 from .registry_commit import commit_registry
 
-VERSION = 23
+VERSION = 24
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -32,7 +30,6 @@ DEFAULT_STORE = REPOSITORY / "data_pricing"
 class Parser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, allow_abbrev=False)
-        add_heartbeat_argument(self)
 
 
 def _store(parser, default=DEFAULT_STORE, *, required=False):
@@ -511,14 +508,11 @@ def main(argv=None):
     from .csv_progress import PHASES as CSV_PHASES
 
     csv_export = args.command == "export" and args.operation == "csv"
-    fixed_interval = getattr(args, "heartbeat_seconds", None)
-    intervals = (fixed_interval,) if fixed_interval else DEFAULT_HEARTBEAT_INTERVALS
     command_name = " ".join(filter(None, (args.command, getattr(args, "operation", None))))
     reporter = LifecycleReporter(
         CSV_PHASES if csv_export else PHASES,
-        heartbeat_intervals=intervals,
         initial_message=INITIAL_MESSAGE if csv_export else f"Starting {command_name}.",
-        first_heartbeat_context={"estimated_remaining_seconds": "TBD"} if intervals[0] == 10 else None,
+        first_heartbeat_context={"estimated_remaining_seconds": "TBD"},
     )
     args._lifecycle = reporter
     try:

@@ -55,26 +55,31 @@ class HeartbeatCommandTests(unittest.TestCase):
                     redirect_stdout(output),
                     redirect_stderr(errors),
                 ):
-                    code = alpaca_cli.main([*arguments, "--heartbeat-seconds", "86400"])
+                    code = alpaca_cli.main(arguments)
                 self.assertEqual(code, 0)
                 self.assertEqual(output.getvalue(), json.dumps(result, separators=(",", ":")) + "\n")
                 dispatch.assert_called_once()
                 records = self.records(errors)
                 self.assertEqual([r["phase"] for r in records], ["INIT", "FINAL_EXIT"])
                 self.assertEqual(records[-1]["status"], "success")
-                self.assertEqual(records[0]["next_heart_beat_in_seconds"], 86400)
+                self.assertEqual(records[0]["next_heart_beat_in_seconds"], 10)
 
-    def test_override_before_between_and_after_commands(self):
-        for arguments in (
-            ["--heartbeat-seconds", "7", "pricing", "check"],
-            ["pricing", "--heartbeat-seconds", "7", "check"],
-            ["pricing", "check", "--heartbeat-seconds", "7"],
-        ):
-            self.assertEqual(alpaca_cli.build_parser().parse_args(arguments).heartbeat_seconds, 7)
-        for value in ("0", "86401", "nan", "1.5"):
-            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-                alpaca_cli.main(["status", "--heartbeat-seconds", value])
-            self.assertEqual(raised.exception.code, 2)
+    def test_every_parser_rejects_cadence_overrides_before_work(self):
+        for module in (alpaca_cli, lab):
+            for arguments in self.leaves(module.build_parser()):
+                for position in range(len(arguments) + 1):
+                    overridden = arguments[:position] + ["--heartbeat-seconds", "60"] + arguments[position:]
+                    with (
+                        self.subTest(module=module.__name__, arguments=overridden),
+                        redirect_stderr(io.StringIO()) as errors,
+                        patch.object(
+                            module, "LifecycleReporter", side_effect=AssertionError("started lifecycle")
+                        ),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        module.main(overridden)
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertNotIn("alpaca.lifecycle", errors.getvalue())
 
     def test_existing_exit_decisions_and_exception_propagation(self):
         for arguments, result, expected in (
@@ -125,13 +130,13 @@ class HeartbeatCommandTests(unittest.TestCase):
 
         now = [0.0]
         errors = io.StringIO()
-        reporter = LifecycleReporter(PHASES, stream=errors, clock=lambda: now[0], heartbeat_intervals=(1,))
+        reporter = LifecycleReporter(PHASES, stream=errors, clock=lambda: now[0])
         with patch("threading.Thread.start"):
             reporter.start()
         progress = progress_callback(reporter)
         progress("lineage_publication", {"done": 2, "total": 5, "symbol": "AAA", "symbols": ["AAA"]})
         self.assertEqual(len(self.records(errors)), 1)
-        now[0] = 1.0
+        now[0] = 10.0
         reporter._emit_due()
         record = self.records(errors)[-1]
         self.assertEqual(record["phase"], "LINEAGE")
@@ -165,7 +170,7 @@ class HeartbeatCommandTests(unittest.TestCase):
             ("audit", {"status": "timed_out"}, 124),
         ):
             output, errors = io.StringIO(), io.StringIO()
-            arguments = [command, "--policy", "unused.yaml", "--heartbeat-seconds", "86400"]
+            arguments = [command, "--policy", "unused.yaml"]
             if command == "compare":
                 arguments.extend(["--symbol", "AAA"])
             with (

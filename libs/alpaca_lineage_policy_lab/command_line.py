@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
-from libs.alpaca_heartbeat import DEFAULT_HEARTBEAT_INTERVALS, LifecycleReporter, Phase, add_heartbeat_argument
+from libs.alpaca_heartbeat import LifecycleReporter, Phase
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_pricing_download.contract import DownloadError
 
@@ -29,7 +29,6 @@ PHASES = {
 class Parser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, allow_abbrev=False)
-        add_heartbeat_argument(self)
 
 
 def _bounded_differences(value):
@@ -76,13 +75,10 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    fixed_interval = getattr(args, "heartbeat_seconds", None)
-    intervals = (fixed_interval,) if fixed_interval else DEFAULT_HEARTBEAT_INTERVALS
     reporter = LifecycleReporter(
         PHASES,
-        heartbeat_intervals=intervals,
         initial_message=f"Starting policy {args.command}.",
-        first_heartbeat_context={"estimated_remaining_seconds": "TBD"} if intervals[0] == 10 else None,
+        first_heartbeat_context={"estimated_remaining_seconds": "TBD"},
     )
     try:
         reporter.start()

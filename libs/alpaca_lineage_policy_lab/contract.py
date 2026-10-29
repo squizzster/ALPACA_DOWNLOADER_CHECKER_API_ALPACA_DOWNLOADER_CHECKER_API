@@ -6,7 +6,7 @@ from pathlib import Path
 
 from libs.alpaca_lineage_build.contract import CorrelationPolicyError as PolicyLabError
 
-LAB_VERSION = 8
+LAB_VERSION = 9
 LAB_SCHEMA_VERSION = 8
 SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset((1, 2, 3, 4))
 LAB_REPORT_BOUNDARY = "alpaca_lineage_policy_lab_comparison"

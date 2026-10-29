@@ -530,7 +530,7 @@ class CsvExportTests(NativeCase):
 
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            self.assertEqual(main([*arguments, "--heartbeat-seconds", "86400"]), 0, stderr.getvalue())
+            self.assertEqual(main(arguments), 0, stderr.getvalue())
         result = json.loads(stdout.getvalue())
         self.assertEqual(result["identities"], 1)
         self.assertEqual(result["rows"], 2)
@@ -660,8 +660,8 @@ class CsvExportTests(NativeCase):
                 self.assertTrue((manifest_path.parent / entry["csv"]).is_file())
                 self.assertTrue((manifest_path.parent / entry["digest"]).is_file())
 
-    def test_cli_invalid_heartbeat_override_is_rejected_before_lifecycle_starts(self):
-        for interval in ("0", "-1", "86401", "abc"):
+    def test_cli_heartbeat_override_is_rejected_before_lifecycle_starts(self):
+        for interval in ("1", "60", "86400", "0", "-1", "86401", "abc"):
             with self.subTest(interval=interval):
                 stdout, stderr = io.StringIO(), io.StringIO()
                 with redirect_stdout(stdout), redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
