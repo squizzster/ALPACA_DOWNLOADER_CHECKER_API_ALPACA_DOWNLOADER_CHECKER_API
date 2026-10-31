@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 
+from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import (
     MarketCalendarError,
     expected_market_session_coverage,
@@ -279,6 +280,7 @@ def updated_boundaries(root, previous, anchor, views, *, full_history=False, rea
     return changed_views
 
 
+@traced("pricing_prepare_publication")
 def publish_acquired(
     root,
     previous,
@@ -373,6 +375,7 @@ def publish_acquired(
     }
 
 
+@traced("pricing_download")
 def download_pricing(
     store: Path | str,
     symbol: str,

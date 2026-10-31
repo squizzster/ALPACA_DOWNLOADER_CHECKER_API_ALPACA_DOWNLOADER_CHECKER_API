@@ -121,5 +121,16 @@
     "modifications": [
       "Remove --heartbeat-seconds at every parser level and use the fixed shared lifecycle cadence for all commands, retaining the first-heartbeat TBD estimate."
     ]
+  },
+  {
+    "modifications": [
+      "Add --debug FILE.jsonl to daily update/plan and focused lineage update/refresh. Record bounded paired spans, terminal outcomes, complete chunked GET targets/parameters, provider timings and existing progress observations without extra store reads or response logging; preserve stdout and heartbeat behavior."
+    ]
+  },
+  {
+    "modifications": ["Lend the focused lineage operation context to its serving stage so completed store and selector acceptance survives the command handoff."]
+  },
+  {
+    "modifications": ["Expose the same opt-in --debug FILE.jsonl tracing for focused pricing acquisition, including HTTP request targets and producer timings, so an incremental ticker acquisition and its subsequent lineage update can both be measured."]
   }
 ]

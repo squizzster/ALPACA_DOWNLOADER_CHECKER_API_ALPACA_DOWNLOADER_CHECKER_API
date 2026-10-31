@@ -12,6 +12,7 @@ from libs.alpaca_pricing_download.live_check import plan as check_plan
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import load_labels
 from libs.alpaca_security_lineage.lineage import compact_asset
+from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from . import storage, universe_state
@@ -31,6 +32,7 @@ from .work_contract import (
 )
 
 
+@traced("boundaries")
 def boundaries(store, registry, *, context=None):
     # TRUST BOUNDARY: accept the compact owners below before choosing work.
     # The index supplies membership/generations; the summary supplies live-check
@@ -39,7 +41,10 @@ def boundaries(store, registry, *, context=None):
     from libs.alpaca_serving_catalogue.storage import controls as serving_controls
 
     store = Path(store)
-    storage.check_store(store)
+    if context is None:
+        storage.check_store(store)
+    else:
+        context.accept_store()
     root = store / "end_of_day/lineage"
     with storage.publication_lock(root):
         if (root / ".pending.json").exists():
@@ -109,6 +114,7 @@ def changed_evidence(index, observation, evidence_client, *, excluded=(), work=N
     return changed, mapping, failures
 
 
+@traced("selection")
 def select_work(accepted, observation, evidence_client, end_date, *, retry_blocked=False):
     # Selection consumes the accepted in-memory view. DO NOT turn this pass
     # over compact entries into receipt, source-manifest, notice or lock reads
@@ -344,6 +350,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     }
 
 
+@traced("plan_estimates")
 def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     # Estimates describe accepted work and conditional expansion, not permission
     # to execute it or a reason to probe each ticker to improve an estimate.

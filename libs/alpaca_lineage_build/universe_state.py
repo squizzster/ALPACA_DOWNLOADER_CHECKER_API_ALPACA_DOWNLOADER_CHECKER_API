@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, publish_union
+from libs.common.debug_trace import traced, traced_context
 from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import LineageError
@@ -22,6 +23,7 @@ def now_utc():
     return datetime.now(timezone.utc).isoformat()
 
 
+@traced_context("universe_update_lock")
 @contextmanager
 def update_lock(store):
     with (Path(store) / ".universe-update.lock").open("a+b") as guard:
@@ -37,6 +39,7 @@ def _check(connection):
         raise LineageError("incomplete universe work state; explicit universe rebuild is required")
 
 
+@traced("universe_state_read")
 def read_state(store):
     # TRUST BOUNDARY: this database owns intentions/retry outcomes, not market
     # data validity. A saved status cannot substitute for a producer selector.
@@ -94,6 +97,7 @@ def initialize(store):
     return read_state(store)
 
 
+@traced("work_accept")
 def accept(store, observation, additions, work):
     # Persist the accepted obligation before delegated work can publish. A crash
     # may leave unfinished work, but must not lose the requirement or its group.
@@ -139,6 +143,7 @@ def put_work_group(store, work):
     return accepted
 
 
+@traced("registry_register")
 def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
     # New dependency discovery must use exactly this interruption-safe route too.
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
@@ -152,6 +157,7 @@ def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
     return result
 
 
+@traced("work_acknowledgement")
 def record_outcome(store, symbol, *, status, outcome, attempts=0):
     # Workflow completion references already accepted publications. DO NOT mint
     # a new lineage/pricing generation just to make this acknowledgement durable;

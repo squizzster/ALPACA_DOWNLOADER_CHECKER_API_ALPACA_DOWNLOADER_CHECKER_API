@@ -7,6 +7,7 @@ from contextlib import closing
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
+from libs.common.debug_trace import traced
 from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import SCHEMA_VERSION, CatalogueError, policy, validate_version
@@ -97,6 +98,7 @@ def initialize(store, *, rebuild=False):
         return _write_state(connection, complete=False)
 
 
+@traced("serving_controls_read")
 def controls(store, *, incomplete=False, recover=False, old_policy=False):
     """One compact control-plane view; no ticker files or histories."""
     validate_version()
@@ -203,6 +205,7 @@ def assert_group(store, key, token):
         raise CatalogueError("selected serving publication unavailable") from error
 
 
+@traced("serving_publish")
 def commit(store, previous, groups):
     """Replace complete old contributions atomically. No public ID collision merges."""
     # This producer validates newly computed serving outputs before one SQLite

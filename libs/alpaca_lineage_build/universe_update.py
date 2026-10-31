@@ -8,6 +8,7 @@ from libs.alpaca_pricing_download.check_summary import assert_current, pending_s
 from libs.alpaca_pricing_download.download import request_end
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY
+from libs.common.debug_trace import traced
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
@@ -21,10 +22,12 @@ from .update import update_everything
 from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target
 
 
+@traced("recovery")
 def recover_publications(store, *, context=None):
     """Roll forward known journals only; retry selection owns subsequent network work."""
     # Named owner controls bound recovery. DO NOT replace missing controls with
     # an implicit filesystem census or use recovery to acquire fresh evidence.
+    accepted_store = storage.accept_store(store) if context is None else context.accept_store()
     selected = set(pending_symbols(store)) | set(read_checks(store)["checks"])
     recovered = []
     for symbol in sorted(selected):
@@ -33,30 +36,36 @@ def recover_publications(store, *, context=None):
             with pricing_storage.ticker_lock(root, exclusive=True):
                 if pricing_storage.recover(root):
                     recovered.append(symbol)
-    with storage.writer_lock(store) as root:
+    with storage.writer_lock(store, accepted_store=accepted_store) as root:
         lineage = context.recover_lineage(root) if context is not None else storage.recover(store, root)
     return {"pricing_recovered": recovered, "lineage_recovered": lineage, "failed": 0}
 
 
+@traced("plan")
 def plan_update(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY, retry_blocked=False):
     end = request_end(end_date).date().isoformat()
     # Planning is read-only and does not recover journals, but it still uses
     # policy-bearing lineage projections. Reject an invalid live policy before
     # the catalogue client can issue a request.
-    accept_context(store).accept_correlation_policy()
-    metadata_before = identity_client.request_count
-    observation = observe_catalogue(identity_client)
+    context = accept_context(store)
+    context.accept_correlation_policy()
+    # Accept every local selector needed to derive work before observing the
+    # provider. A missing boundary is a blocker, not permission to perform an
+    # otherwise unbounded catalogue request and then discover that no plan can
+    # be built from it.
     try:
-        accepted = universe_plan.boundaries(store, registry)
+        accepted = universe_plan.boundaries(store, registry, context=context)
     except (RuntimeError, OSError, ValueError) as error:
         return {
             "mode": "plan",
             "end_exclusive": end,
             "blockers": [str(error)],
-            "catalogue_observed_at_utc": observation["catalogue_observed_at_utc"],
-            "catalogue_records": len(observation["records"]),
-            "selection_metadata_http_requests_observed": identity_client.request_count - metadata_before,
+            "catalogue_observed_at_utc": None,
+            "catalogue_records": 0,
+            "selection_metadata_http_requests_observed": 0,
         }
+    metadata_before = identity_client.request_count
+    observation = observe_catalogue(identity_client)
     evidence = EvidenceClient(identity_client, observation=observation)
     selection = universe_plan.select_work(accepted, observation, evidence, end, retry_blocked=retry_blocked)
     report = universe_plan.preview(
@@ -73,6 +82,7 @@ def plan_update(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY, 
     return report
 
 
+@traced("update")
 def run_update(
     store,
     end_date=None,
@@ -101,6 +111,7 @@ def run_update(
 
         registered = set()
 
+        @traced("registration")
         def register(symbols):
             additions = set(symbols) - registered
             if additions:
@@ -130,7 +141,7 @@ def run_update(
         # Recovery may have replaced the selector; accept its current boundary
         # only after authorizing the policy for all new work.
         context.index = None
-        with storage.writer_lock(store), storage.publication_lock(root):
+        with storage.writer_lock(store, accepted_store=context.accept_store()), storage.publication_lock(root):
             serving_work.read(store)
             context.index = storage.read_index(root)
             require_complete(context.index)
@@ -360,6 +371,7 @@ def run_update(
         )
         result["stages"]["maintenance"] = maintained
 
+        @traced("completion_boundary")
         def completion_boundary():
             with storage.publication_lock(root):
                 if (root / ".pending.json").exists():
@@ -471,14 +483,21 @@ def reconcile_universe(store, end_date, *, identity_client, registry=DEFAULT_REG
     context = accept_context(store)
     with universe_state.update_lock(store):
         recover_and_accept_correlation_policy(store, context)
-        accepted = universe_plan.boundaries(store, registry)
+        accepted = universe_plan.boundaries(store, registry, context=context)
         observation = observe_catalogue(identity_client)
         evidence = EvidenceClient(identity_client, observation=observation)
         selection = universe_plan.select_work(accepted, observation, evidence, end_date)
         assert_current(store, accepted["summary"]["token"])
         universe_state.accept(store, observation, selection["registration_additions"], selection["work"])
         registration = universe_state.register(store, registry=registry)
-        policy = WorkPolicy(store, accepted["index"], selection["work"], selection["deferred"], end_date)
+        policy = WorkPolicy(
+            store,
+            accepted["index"],
+            selection["work"],
+            selection["deferred"],
+            end_date,
+            context=context,
+        )
         for symbol, failure in selection["selection_failures"].items():
             policy.fail({symbol}, failure, stage="selection")
         return {

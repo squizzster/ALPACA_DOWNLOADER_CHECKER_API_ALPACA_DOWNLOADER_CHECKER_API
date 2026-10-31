@@ -10,6 +10,7 @@ from functools import partial
 from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
+from libs.common.debug_trace import in_context, traced
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .check_summary import assert_current, validate_entry
@@ -121,6 +122,7 @@ def select_append_sources(store, entries, end_date, *, required_symbols=()):
     return result
 
 
+@traced("pricing_publication")
 def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
     symbol = entry["symbol"]
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
@@ -202,6 +204,7 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
         }
 
 
+@traced("pricing_append_entries")
 def append_entries(
     store,
     entries,
@@ -291,7 +294,8 @@ def append_entries(
                 }
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pricing-append") as pool:
-            for result in pool.map(publish_one, enumerate(cohort)):
+            tasks = [(in_context(publish_one), item) for item in enumerate(cohort)]
+            for result in pool.map(lambda task: task[0](task[1]), tasks):
                 results.append(result)
                 if progress:
                     progress("pricing", {"done": len(results), "total": len(entries), **result})
@@ -308,6 +312,7 @@ def append_entries(
     }
 
 
+@traced("pricing_append")
 def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=None, context=None):
     """Consume the approved handoff directly; no disk discovery or history recheck.
 

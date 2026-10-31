@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-RUNTIME_VERSION = 33
+RUNTIME_VERSION = 34
 VERSION = 31  # Persisted publication and completed-request contract, independent of runtime releases.
 # Version 31 retains the pricing representation. Sources may still select older
 # unchanged boundary receipts; accept those independently of the source version.

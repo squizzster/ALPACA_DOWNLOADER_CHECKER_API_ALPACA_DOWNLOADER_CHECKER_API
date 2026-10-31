@@ -3,6 +3,8 @@
 from itertools import chain
 from pathlib import Path
 
+from libs.common.debug_trace import traced
+
 from . import append
 from .append import _cohorts, append_entries
 from .context import accept_context
@@ -58,6 +60,7 @@ def _endpoint_cohorts(retained):
         yield cohort
 
 
+@traced("pricing_acquisition")
 def acquire_selected(
     store,
     symbols,

@@ -21,6 +21,7 @@ from libs.alpaca_pricing_download.contract import (
 from libs.alpaca_pricing_download.evidence import PublishedPricingEvidence
 from libs.alpaca_pricing_download.handoff import load_published_boundary, load_published_views
 from libs.alpaca_pricing_download.storage import load_source, regular_path
+from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from .contract import LineageError, document_digest
@@ -42,6 +43,7 @@ class PricingInput:
         return self.downloads[descriptor["file"]]
 
 
+@traced("lineage_payload")
 def load_pricing(
     store: Path,
     symbol: str,

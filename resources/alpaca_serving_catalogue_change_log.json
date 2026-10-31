@@ -33,5 +33,13 @@
     "modifications": [
       "Pass the writer-protected accepted lineage index and store compatibility through serving group reads, eliminating per-group upstream selector reauthentication. Separate runtime releases from unchanged eligibility policy 6 and schema 2 so completed checkpoints remain reusable."
     ]
+  },
+  {
+    "modifications": [
+      "Consume operation-owned store acceptance and expose opt-in paired maintenance, evaluation and publication timing spans with held reuse/work counters, retaining the existing serving policy and publications."
+    ]
+  },
+  {
+    "modifications": ["Accept the compact catalogue state and authoritative serving queue before loading group memberships. Return from empty maintenance without decoding the catalogue-wide controls, while preserving recovery, incomplete-boundary rejection and selected-work publication."]
   }
 ]

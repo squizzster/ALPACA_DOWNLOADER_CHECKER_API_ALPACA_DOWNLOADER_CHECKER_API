@@ -21,6 +21,7 @@ from libs.alpaca_pricing_download.storage import (
     write_file,
 )
 from libs.alpaca_pricing_download.update_checks import acknowledge_checks, read_checks
+from libs.common.debug_trace import traced, traced_context
 from libs.common.sqlite_connections import connect_sqlite
 
 from .acquisition import unavailable_pricing
@@ -155,6 +156,7 @@ def _index_version(root: Path, *, readonly=True) -> int | None:
         raise LineageError("cannot load lineage dependency index") from error
 
 
+@traced_context("lineage_writer_lock")
 @contextmanager
 def writer_lock(store: Path, *, accepted_store=None):
     accepted = accept_store(store) if accepted_store is None else accepted_store
@@ -301,6 +303,7 @@ def reader_snapshot(
     raise LineageBusyError("lineage group changed during selection; retry later")
 
 
+@traced_context("group_pricing_locks")
 @contextmanager
 def pricing_locks(store: Path, symbols, *, known=()):
     # Never nest consume_pricing_update: acquire the complete known set in one order.
@@ -323,6 +326,7 @@ def empty_index() -> dict:
     return {"schema_version": VERSION, "boundary": "alpaca_standalone_lineage_index", "symbols": {}}
 
 
+@traced("lineage_index_read")
 def read_index(root: Path, symbol: str | None = None) -> dict:
     # The transaction selects membership and generations together. Schema/shape
     # checks belong here; enumerating ticker directories or opening every receipt
@@ -457,6 +461,7 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False) -> di
     return state
 
 
+@traced("lineage_receipt_read")
 def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) -> dict | None:
     # Read a selected body's contents only when the consumer needs them. Its
     # recorded digest identifies the generation; selected_document intentionally
@@ -508,6 +513,7 @@ class ReceiptCache:
             self._remember(symbol, (self.index["symbols"][symbol]["sha256"], receipt))
 
 
+@traced("lineage_boundary_read")
 def read_boundaries(root: Path, receipt: dict, *, selected_loader=None, kinds=None) -> dict:
     # The receipt selects these assignment documents. Consume only required
     # kinds; do not rerun correlation or pricing validation to trust their rows.
@@ -665,6 +671,7 @@ def recover(store: Path, root: Path) -> bool:
     return True
 
 
+@traced("lineage_publish")
 def publish(
     store: Path,
     root: Path,

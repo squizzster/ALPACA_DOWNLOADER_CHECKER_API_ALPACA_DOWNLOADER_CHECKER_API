@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from libs.alpaca_recovery_registry import registry_lock
+from libs.common.debug_trace import traced
 
 REGISTRY_PATH = "resources/ticker.csv"
 
@@ -24,6 +25,7 @@ def _failure(error):
     return str(error)
 
 
+@traced("registry_push")
 def _push_registry(repository, commit, report):
     # Git publication is a separate, narrowly scoped external side effect. Only
     # the verified registry-only commit may advance its configured upstream;
@@ -96,6 +98,7 @@ def _push_registry(repository, commit, report):
         )
 
 
+@traced("registry_commit")
 def commit_registry(repository, registry, reporter):
     """Keep Git outcomes on stderr and leave the data result authoritative.
 

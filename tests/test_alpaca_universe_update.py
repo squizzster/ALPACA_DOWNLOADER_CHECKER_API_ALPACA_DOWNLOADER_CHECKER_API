@@ -419,8 +419,12 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertFalse(state["coverage_complete"])
         self.assertEqual(state["pending_symbols"], [])
         before = snapshot(self.store)
+        requests_before = self.identity.request_count
         report = plan_update(self.store, "2026-10-17", identity_client=self.identity, registry=self.registry)
         self.assertTrue(any("serving catalogue incomplete" in value for value in report["blockers"]), report)
+        self.assertEqual(report["selection_metadata_http_requests_observed"], 0)
+        self.assertIsNone(report["catalogue_observed_at_utc"])
+        self.assertEqual(self.identity.request_count, requests_before)
         self.assertEqual(snapshot(self.store), before)
         requests = self.identity.request_count, len(self.pages)
         with self.assertRaisesRegex(RuntimeError, "serving catalogue incomplete"):
@@ -538,8 +542,12 @@ class UniverseUpdateTests(unittest.TestCase):
     def test_missing_work_state_is_not_silently_initialized(self):
         (self.store / universe_state.STATE_FILE).unlink()
         before = snapshot(self.directory)
+        requests_before = self.identity.request_count
         report = plan_update(self.store, "2026-10-17", identity_client=self.identity, registry=self.registry)
         self.assertTrue(report["blockers"])
+        self.assertEqual(report["selection_metadata_http_requests_observed"], 0)
+        self.assertIsNone(report["catalogue_observed_at_utc"])
+        self.assertEqual(self.identity.request_count, requests_before)
         self.assertEqual(before, snapshot(self.directory))
         with (
             patch("libs.alpaca_lineage_build.context.OperationContext.select_serving") as select_serving,

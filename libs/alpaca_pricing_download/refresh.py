@@ -5,6 +5,7 @@ from pathlib import Path
 from time import monotonic
 
 from libs.alpaca_data_api_solver import build_plan
+from libs.common.debug_trace import traced
 
 from .context import accept_context
 from .contract import (
@@ -32,6 +33,7 @@ from .responses import completed_bars
 from .storage import load_source, read_validator, regular_path, ticker_lock
 
 
+@traced("retained_history_check")
 def check_retained_source(store, symbol, end_date, *, client):
     """Check a selected source independently of active-summary eligibility."""
     root = regular_path(Path(store), f"end_of_day/pricing/{symbol}", published=True)
@@ -196,6 +198,7 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None):
     return cache, plan
 
 
+@traced("pricing_full_history")
 def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progress=None, on_failure=None):
     """Acquire shared ranges, then batch the resulting history's first-session checks.
 
@@ -313,6 +316,7 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
     return batches()
 
 
+@traced("pricing_correction")
 def replace_prepared(
     store, prepared, *, client, cohort_size=32, progress=None, before_publish=None, context=None
 ):

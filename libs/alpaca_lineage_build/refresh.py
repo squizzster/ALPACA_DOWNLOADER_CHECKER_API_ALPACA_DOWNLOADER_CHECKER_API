@@ -6,11 +6,13 @@ from libs.alpaca_pricing_download.check_summary import assert_current, describe
 from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.live_check import verify
 from libs.alpaca_pricing_download.refresh import check_retained_source, prepare_refresh, replace_prepared
+from libs.common.debug_trace import span, traced
 
 from .context import accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
 
 
+@traced("required_history")
 def refresh_required_history(store, *, pricing_client, work_policy, end_date, context=None, progress=None):
     """Accepted checks/corrections stay executable after summary removal."""
     # This owner handles explicitly owed checks outside active summary membership.
@@ -65,6 +67,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
     return {**replaced, "checked": sorted(checked), "requests": metrics or replaced["requests"]}
 
 
+@traced("live_check_and_correction")
 def refresh_existing(
     store,
     *,
@@ -123,7 +126,9 @@ def refresh_existing(
             progress("checking", {"tickers": len(candidates)})
         # Live check owns remote comparison of this accepted summary snapshot.
         # DO NOT reopen ticker histories to re-prove the stored baseline here.
-        handoff = verify(selected_snapshot, pricing_client._get)
+        with span("live_history_check", symbols=len(candidates)) as check_trace:
+            handoff = verify(selected_snapshot, pricing_client._get)
+            check_trace.update(complete=handoff["complete"], **handoff["stats"], requests=handoff["requests"])
         assert_current(store, snapshot["token"])
         checks.append(handoff)
         if progress:

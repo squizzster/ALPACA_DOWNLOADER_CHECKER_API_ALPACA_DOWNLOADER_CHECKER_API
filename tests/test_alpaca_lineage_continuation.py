@@ -206,6 +206,7 @@ class LineageContinuationTests(unittest.TestCase):
         case = self.case
         names = ("GOOG", "OTHER")
         client = fixture.IdentityClient(assets={name: fixture.asset(name, "shared-id") for name in names})
+        case.bars = fixture.calendar_bars("2025-12-01", "2026-10-14")
         for name in names:
             case.download(symbol=name)
         case.run_build(symbols=list(names), client=client)
@@ -229,10 +230,75 @@ class LineageContinuationTests(unittest.TestCase):
         for name in names:
             bars = case.bars + ([fixture.bar("2026-10-15")] if name == "GOOG" else [])
             case.download(symbol=name, end="2026-10-16", bars=bars)
-        with patch.object(pipeline, "correlate", wraps=pipeline.correlate) as correlate:
+        with (
+            patch.object(pipeline, "correlate", wraps=pipeline.correlate) as correlate,
+            patch.object(
+                pricing,
+                "load_published_views",
+                wraps=pricing.load_published_views,
+            ) as full_reads,
+        ):
             changed = case.run_build(symbols=["GOOG"], client=client)
         self.assertGreater(correlate.call_count, 0)
         self.assertFalse(changed["results"][0]["reused_decision"])
+        self.assertFalse(changed["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(full_reads.call_count, 2)
+
+    def test_resolved_dependency_append_reads_only_suffix_and_matches_full_reconciliation(self):
+        from libs.alpaca_lineage_build import pricing
+
+        def assigned_rows(name):
+            # Continuation may retain a segment seam that a full publication
+            # coalesces. Compare every row's accepted decisions, not run packing.
+            ignored = {"row_start", "row_end", "row_count", "first_timestamp", "last_timestamp", "from", "to"}
+            return [
+                {key: value for key, value in segment.items() if key not in ignored}
+                for segment in case.assignments(name)
+                for _ in range(segment["row_count"])
+            ]
+
+        case = self.case
+        names = ("GOOG", "OTHER")
+        client = fixture.IdentityClient(assets={name: fixture.asset(name, "shared-id") for name in names})
+        case.bars = fixture.calendar_bars("2025-12-01", "2026-10-14")
+        for name in names:
+            case.download(symbol=name)
+        case.run_build(symbols=list(names), client=client)
+        for name in names:
+            self.assertEqual(case.receipt(name)["unresolved_rows"], 0)
+            case.download(
+                symbol=name,
+                end="2026-10-15",
+                bars=case.bars + [fixture.bar("2026-10-14")],
+            )
+        with patch.object(
+            pricing, "load_published_views", side_effect=AssertionError("completed group prefix reopened")
+        ):
+            changed = case.run_build(symbols=["GOOG"], client=client)
+        self.assertTrue(changed["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(changed["results"][0]["pricing_rows_processed"], 16)
+        assignments = {name: assigned_rows(name) for name in names}
+        counts = {name: case.receipt(name)["source_rows"] for name in names}
+        case.run_build(symbols=["GOOG"], client=client, refresh=True)
+        self.assertEqual(assignments, {name: assigned_rows(name) for name in names})
+        self.assertEqual(counts, {name: case.receipt(name)["source_rows"] for name in names})
+        # An unequal advance changes the source priority even though every
+        # retained price and identity is unchanged. Reconcile the whole group.
+        for name in names:
+            case.download(
+                symbol=name,
+                end="2026-10-16",
+                bars=case.bars
+                + [fixture.bar("2026-10-14")]
+                + ([fixture.bar("2026-10-15")] if name == "OTHER" else []),
+            )
+        with patch.object(pricing, "load_published_views", wraps=pricing.load_published_views) as reads:
+            changed = case.run_build(symbols=["GOOG"], client=client)
+        self.assertFalse(changed["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(reads.call_count, 2)
+        assignments = {name: assigned_rows(name) for name in names}
+        case.run_build(symbols=["GOOG"], client=client, refresh=True)
+        self.assertEqual(assignments, {name: assigned_rows(name) for name in names})
 
     def test_empty_histories_advance_without_price_reads_or_rule_execution(self):
         from libs.alpaca_lineage_build import pricing

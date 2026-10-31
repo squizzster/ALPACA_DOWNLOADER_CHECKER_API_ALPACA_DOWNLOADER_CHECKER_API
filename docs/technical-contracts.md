@@ -246,6 +246,8 @@ including absent dependencies, without rediscovering evidence closure. Lineage t
 [serving obligations](../libs/alpaca_serving_catalogue/work.py) before upstream acknowledgement. Catalogue commit
 precedes obligation deletion; retries reuse committed work without history reads. The lineage worker serializes
 maintenance; selected pricing locks span publication. Failures/focused commands leave unrelated obligations pending.
+Maintenance first accepts the compact catalogue state and complete work queue. An empty queue returns without
+loading catalogue group/member maps or lineage membership; only selected work requires those maps.
 
 Serving retains the accepted store compatibility and lineage index in a view owned by its held lineage writer
 lock. Selected readers consume those entries without reopening the index, rechecking its protocol or repeating

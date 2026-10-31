@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from libs.alpaca_pricing_download.contract import HISTORY_START, failure_outcome
 from libs.alpaca_security_lineage.lineage import compact_asset
+from libs.common.debug_trace import traced
 
 from .contract import LineageError, document_digest, reusable_decision
 from .selection import DependencyGraph
@@ -234,6 +235,7 @@ class WorkPolicy:
         )
         return satisfying_entry(symbol, item, entries, pending, approved=approved)
 
+    @traced("lineage_completion")
     def accept_completion(self, receipts, entries, completed):
         """Keep the producer's input approval bound to its selected complete group."""
         # The caller already checked inputs under group locks and selected any
@@ -316,6 +318,7 @@ class WorkPolicy:
             if target and entry["end_exclusive"][:10] < target:
                 self.require(entry["symbol"], target, reason="advance_summary_coverage", history_check=True)
 
+    @traced("work_completion")
     def acknowledge(self):
         """Acknowledge selected publications or fresh producer approvals, never workflow status alone."""
         from libs.alpaca_pricing_download.update_checks import read_checks

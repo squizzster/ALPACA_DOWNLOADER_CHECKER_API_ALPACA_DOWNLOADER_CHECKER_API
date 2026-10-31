@@ -4,9 +4,10 @@ import argparse
 import csv
 import json
 import os
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
 from alpaca_end_of_day import ADJUSTMENTS, ReaderBusyError
 from libs.alpaca_heartbeat import (
@@ -17,11 +18,13 @@ from libs.alpaca_pricing_download.download import parse_date, pricing_session_en
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY, load_labels
 from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
+from libs.common.debug_trace import DebugTrace, enabled, event, span, trace_http, traced
+from libs.common.debug_trace import progress_callback as debug_progress
 from libs.common.store_lock import StoreBusyError, operation_lock
 
 from .registry_commit import commit_registry
 
-VERSION = 24
+VERSION = 27
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -84,6 +87,9 @@ def build_parser():
     _store(update)
     _dates(update, start=False, pricing=True)
     _workers(update)
+    update.add_argument(
+        "--debug", type=Path, metavar="FILE.jsonl", help="write compact execution trace to a new file"
+    )
     update.add_argument("--plan", action="store_true", help="read-only preview; may fetch current metadata")
     update.add_argument(
         "--retry-blocked", action="store_true", help="retry explicit rejections and access denials"
@@ -145,6 +151,9 @@ def build_parser():
         _store(p, required=name == "acquire")
         _selection(p, required=name == "acquire", recovery=name == "acquire")
         if name == "acquire":
+            p.add_argument(
+                "--debug", type=Path, metavar="FILE.jsonl", help="write compact execution trace to a new file"
+            )
             _dates(p, pricing=True)
             _workers(p)
         if name == "check":
@@ -154,6 +163,9 @@ def build_parser():
         p = lineage.add_parser(name)
         _store(p)
         if name in {"update", "refresh"}:
+            p.add_argument(
+                "--debug", type=Path, metavar="FILE.jsonl", help="write compact execution trace to a new file"
+            )
             _selection(p)
             _dates(p, start=False, pricing=True)
             p.add_argument("--no-pricing-acquisition", action="store_true")
@@ -235,7 +247,19 @@ def clients():
     key, secret = os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", "")
     if not key or not secret:
         raise ValueError("ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY are required")
-    return BarsClient(key, secret), AlpacaIdentityClient(key, secret)
+    pricing, identity = BarsClient(key, secret), AlpacaIdentityClient(key, secret)
+    # Wrap the provider boundary, never serialize URLs, headers or credentials.
+    if enabled():
+        from libs.alpaca_data_api_solver import BAR_URL
+
+        pricing._get = traced("pricing_http")(
+            trace_http(pricing._get, lambda params: BAR_URL + "?" + urlencode(params), pricing)
+        )
+        pricing.limiter.acquire = traced("pricing_rate_wait")(pricing.limiter.acquire)
+        identity.request_json = traced("metadata_http")(
+            trace_http(identity.request_json, lambda url, **kwargs: url, identity)
+        )
+    return pricing, identity
 
 
 def _store_operation_mode(args):
@@ -267,13 +291,14 @@ def _store_operation(args):
     return operation_lock(args.store, exclusive=mode == "exclusive")
 
 
+@traced("dispatch")
 def dispatch(args):
     # CLI dispatch delegates to domain owners. DO NOT add receipt/payload audits
     # or independent work selection here; accepted handoffs belong to those owners.
     from .command_progress import count_callback, progress_callback
 
     reporter = getattr(args, "_lifecycle", None)
-    progress = progress_callback(reporter)
+    progress = debug_progress(progress_callback(reporter))
     command, operation = args.command, getattr(args, "operation", None)
     if command in {"read", "resolve"}:
         from alpaca_end_of_day.standalone_cli import run_arguments
@@ -373,7 +398,7 @@ def dispatch(args):
         from libs.alpaca_serving_catalogue.storage import path as catalogue_path
 
         if catalogue_path(Path(args.store)).exists():
-            serving = maintain(args.store, symbols=selected, progress=progress)
+            serving = maintain(args.store, symbols=selected, progress=progress, context=policy.context)
             return {
                 **result,
                 "serving_catalogue": serving,
@@ -515,8 +540,38 @@ def main(argv=None):
         first_heartbeat_context={"estimated_remaining_seconds": "TBD"},
     )
     args._lifecycle = reporter
+    tracing = ExitStack()
+    trace = None
+    command_span = {}
+    trace_status, trace_code = "error", 1
+    trace_closed = False
+
+    def close_trace():
+        nonlocal trace_closed
+        if trace_closed:
+            return
+        trace_closed = True
+        command_span.update(status=trace_status, exit_code=trace_code)
+        event("command_outcome", status=trace_status, exit_code=trace_code)
+        tracing.close()
+        if trace is not None:
+            trace.close(trace_status, trace_code)
+
+    def finish(status, code, **kwargs):
+        nonlocal trace_status, trace_code
+        trace_status, trace_code = status, code
+        # Report trace delivery failures while the stderr lifecycle is active.
+        close_trace()
+        reporter.finish(status, code, **kwargs)
+
     try:
         reporter.start()
+        if getattr(args, "debug", None) is not None:
+            trace = DebugTrace(args.debug, warning=lambda message: reporter.diagnostic(message, level="warning"))
+            tracing.enter_context(trace.activate())
+            command_span = tracing.enter_context(
+                span("command", command=command_name, plan=getattr(args, "plan", False))
+            )
         if not csv_export:
             hold_operation(reporter, args)
         changelog = json.loads((REPOSITORY / "resources/alpaca_cli_change_log.json").read_bytes())
@@ -524,14 +579,17 @@ def main(argv=None):
             "version" in item or not item.get("modifications") for item in changelog
         ):
             raise ValueError("CLI changelog/version mismatch")
-        with _store_operation(args):
-            result = dispatch(args)
+        with span("store_operation"):
+            with _store_operation(args):
+                event("store_lock_acquired")
+                result = dispatch(args)
         if isinstance(result, int):
             code = result
         else:
             if hasattr(args, "pricing_cutoff"):
                 result = {**result, "pricing_cutoff": args.pricing_cutoff}
-            print(json.dumps(result, separators=(",", ":"), allow_nan=False))
+            with span("result_output"):
+                print(json.dumps(result, separators=(",", ":"), allow_nan=False))
             code = (
                 int(not result["processing_complete"])
                 if args.command == "status"
@@ -539,7 +597,7 @@ def main(argv=None):
             )
         if args.command == "update" and not args.plan and code == 0:
             commit_registry(REPOSITORY, DEFAULT_REGISTRY, reporter)
-        reporter.finish(
+        finish(
             "success" if code == 0 else "error",
             code,
             error=RuntimeError(
@@ -548,26 +606,35 @@ def main(argv=None):
             if code
             else None,
         )
+        trace_status, trace_code = ("success" if code == 0 else "error"), code
         return code
     except (ReaderBusyError, StoreBusyError) as error:
-        reporter.finish("error", 3, error=error)
+        trace_code = 3
+        event("command_error", error_type=type(error).__name__)
+        finish("error", 3, error=error)
         return 3
     except (RuntimeError, OSError, ValueError, csv.Error) as error:
-        reporter.finish("error", 1, error=error)
+        event("command_error", error_type=type(error).__name__)
+        finish("error", 1, error=error)
         return 1
     except KeyboardInterrupt:
-        reporter.finish("aborted", 130)
+        trace_status, trace_code = "aborted", 130
+        finish("aborted", 130)
         if not csv_export:
             raise
         return 130
     except SystemExit as error:
         code = error.code if type(error.code) is int else 0 if error.code is None else 1
+        trace_status, trace_code = ("success" if code == 0 else "aborted"), code
         if error.code is not None and type(error.code) is not int:
             reporter.diagnostic(str(error.code), level="error")
-        reporter.finish("success" if code == 0 else "aborted", code)
+        finish("success" if code == 0 else "aborted", code)
         raise
     except Exception as error:
-        reporter.finish("error", 1, error=error)
+        event("command_error", error_type=type(error).__name__)
+        finish("error", 1, error=error)
         if not csv_export:
             raise
         return 1
+    finally:
+        close_trace()

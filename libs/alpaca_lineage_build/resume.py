@@ -4,9 +4,11 @@ This is a cache gate, not an identity rule. When continuity or evidence can chan
 an earlier decision, the established complete-chronology transform owns that work.
 """
 
+from collections import defaultdict
 from datetime import date, timedelta
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
+from libs.common.debug_trace import event
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .contract import reusable_decision
@@ -31,21 +33,40 @@ def unchanged_source(source, previous, *, selected=None):
 
 
 def eligible_source(source, previous, *, refresh):
-    return (
-        not refresh
-        and previous is not None
-        and reusable_decision(previous)
-        and previous["processed_through"] <= source["latest_request"]["end_exclusive"]
-        and previous["source_rows"] > 0
-        and previous["unresolved_rows"] == 0
-        and not previous["dependencies"]
-        and len(previous["asset_ids"]) == 1
-        and any(
+    return eligible_prefix(source, previous, refresh=refresh) and not previous["dependencies"]
+
+
+def eligible_prefix(source, previous, *, refresh, selected=None):
+    """Pricing ancestry proves a resolved single-identity prefix is unchanged."""
+    # The completed lineage receipt owns the prefix decision. Pricing ancestry
+    # supplies its exact invalidation condition; a later generation is safe only
+    # when its earliest possible change is at/after the exclusive lineage cutoff.
+    reason = None
+    if refresh:
+        reason = "explicit_refresh"
+    elif previous is None:
+        reason = "no_prior_receipt"
+    elif not reusable_decision(previous):
+        reason = "incompatible_decision"
+    elif previous["processed_through"] > source["latest_request"]["end_exclusive"]:
+        reason = "coverage_regressed"
+    elif previous["source_rows"] == 0:
+        reason = "empty_prefix"
+    elif previous["unresolved_rows"]:
+        reason = "unresolved_prefix"
+    elif len(previous["asset_ids"]) != 1:
+        reason = "multiple_prefix_identities"
+    elif not (
+        selected == previous["source_sha256"]
+        or any(
             change["source_sha256"] == previous["source_sha256"]
             and (change["changed_from"] is None or change["changed_from"] >= previous["processed_through"][:10])
             for change in source.get("history_changes", ())
         )
-    )
+    ):
+        reason = "ancestry_missing_or_prefix_changed"
+    event("prefix_eligibility", symbol=source.get("symbol"), reason=reason or "accepted")
+    return reason is None
 
 
 def assignment_summary(previous, boundaries):
@@ -106,11 +127,57 @@ def unique_assignment(segments, asset_id):
     )
 
 
+def stable_observation_priority(inputs, previous, old_boundaries, reports):
+    """Consume accepted last assignments; a changed route rank needs full work.
+
+    Shared-identity sources can compete for older numerical observations even
+    when pricing ancestry is unchanged. Continue only an equal-ranked group
+    whose accepted own-label endpoints and new endpoints remain equal. Missing
+    endpoint assignments in the already-required bodies are not permission to
+    open additional history to prove this gate.
+    """
+    identities = defaultdict(list)
+    for name, prior in previous.items():
+        identities[prior["asset_ids"][0]].append(name)
+    for members in identities.values():
+        if len(members) < 2:
+            continue
+        old_last, new_last = set(), set()
+        for name in members:
+            summary = previous[name].get("assignment_summary", {}).get("raw", {})
+            last = summary.get("last_timestamp")
+            if not last:
+                return False
+            accepted = [
+                segment
+                for body in old_boundaries[name].values()
+                for adjustment in body["adjustments"]
+                if adjustment["adjustment"] == "raw"
+                for segment in adjustment["segments"]
+                if segment["last_timestamp"] == last and segment.get("historical_symbol") == name
+            ]
+            if not accepted:
+                return False
+            old_last.add(last)
+            added = inputs[name].views["raw"]
+            if added and any(
+                s.get("historical_symbol") != name
+                for s in reports[name]["correlated"]["segments"]
+                if s["adjustment"] == "raw"
+            ):
+                return False
+            new_last.add(added[-1][0] if added else last)
+        if len(old_last) != 1 or len(new_last) != 1:
+            return False
+    return True
+
+
 def can_resume(view, previous, evidence):
     # This owner checks changed evidence and the NEW suffix/seam only. Failure
     # delegates the selected history to full reconciliation; it is not permission
     # to authenticate unrelated stored groups or add checks to successful reuse.
     if not stable_evidence(previous["evidence"], evidence):
+        event("continuation_rejected", reason="evidence_changed")
         return False
     if not any(view.views.values()):
         return True
@@ -120,6 +187,7 @@ def can_resume(view, previous, evidence):
         rows = view.views[adjustment]
         last = summary[adjustment]["last_session"]
         if last is None:
+            event("continuation_rejected", reason="missing_assignment_seam", adjustment=adjustment)
             return False
         key = id(rows), last
         if key in checked:
@@ -137,5 +205,12 @@ def can_resume(view, previous, evidence):
             )
         expected = calendars[first]
         if sessions != expected.session_dates:
+            event(
+                "continuation_rejected",
+                reason="incomplete_session_seam",
+                adjustment=adjustment,
+                observed_sessions=len(sessions),
+                expected_sessions=len(expected.session_dates),
+            )
             return False
     return True

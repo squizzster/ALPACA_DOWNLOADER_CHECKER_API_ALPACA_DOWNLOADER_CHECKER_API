@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path, PurePosixPath
 
+from libs.common.debug_trace import traced
+
 from .contract import (
     ADJUSTMENTS,
     COLUMNS,
@@ -186,6 +188,7 @@ def boundary_paths(anchor: str) -> dict[str, str]:
     }
 
 
+@traced("pricing_source_read")
 def load_source(root: Path, symbol: str) -> dict | None:
     """Read the selecting receipt directly; do not inspect its published files."""
     # This selector owns the three boundary references and any endpoint sidecar.
@@ -540,6 +543,7 @@ def _check_publication_entry(relative, checksum) -> None:
         raise DownloadError("unsafe pricing publication or retirement entry")
 
 
+@traced("pricing_recovery")
 def recover(root: Path, *, on_check=None) -> bool:
     # Only the pricing owner, under its selected ticker lock, recovers this
     # bounded journal/staging area. Readers fail closed on pending publication;
@@ -552,6 +556,7 @@ def recover(root: Path, *, on_check=None) -> bool:
     return False
 
 
+@traced("pricing_publish")
 def publish(
     root: Path,
     previous: dict | None,

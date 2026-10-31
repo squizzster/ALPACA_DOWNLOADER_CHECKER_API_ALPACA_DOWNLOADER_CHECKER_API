@@ -217,5 +217,17 @@
     "modifications": [
       "Acknowledge unchanged retry work from accepted lineage generations and fresh source-bound history approvals without republishing lineage or serving. Carry complete-group producer approvals in memory across stages, preserve changed-input and interruption handling, and retain lineage-34 publication compatibility."
     ]
+  },
+  {
+    "modifications": [
+      "Accept the compact lineage, pricing-summary, durable-work and serving boundaries before a daily plan observes the provider catalogue. Report missing or incompatible local handoffs as zero-request blockers, while retaining the existing read-only planning and lineage-34 publication contracts.",
+      "Lend one accepted store-format and ancestor-path boundary through recovery, lineage writers, planning and serving maintenance for an operation context. Preserve store/root binding, writer lifetime, pricing-generation and publication-selector checks without repeating immutable store authentication at each stage.",
+      "Trust the canonical policy loader's completed authorization and retain that immutable evaluator for the operation. Authorize an explicitly injected compiled candidate exactly once, then pass the accepted object to every group without repeating the authorization guard.",
+      "Extend accepted-prefix continuation to complete resolved dependency groups when pricing ancestry proves every retained prefix unchanged, evidence remains identical, added session grids are complete and every new suffix remains assigned to its member's one accepted identity. Reopen the complete group on any failed gate, correction, ambiguity or missing proof.",
+      "Expose opt-in paired timing spans across recovery, boundary selection, planning, maintenance, dependency groups, payload reads, correlation and publication, with explicit reuse/fallback decisions derived from held producer facts. Require shared-identity groups to preserve accepted own-label endpoints and equal numerical-source priority before continuing their prefix."
+    ]
+  },
+  {
+    "modifications": ["Separate universe update-lock acquisition and durable work-state loading in opt-in debug timing spans, without changing selection, stored artifacts or non-debug output."]
   }
 ]

@@ -24,6 +24,49 @@ Canonical exit codes: 0 success; 1 failure/incomplete work; 2 invalid arguments;
 Standalone reads may wait with `--wait`; CSV exports always fail immediately when busy. Executable keyboard
 interruption exits 130. [Policy-lab exit codes](policy-lab.md#all-lineage-audit) differ.
 
+## Optional update debug trace
+
+Daily `update` (including `--plan`), `pricing acquire` and focused `lineage update` / `lineage refresh` accept
+`--debug FILE.jsonl`. The destination must be a new file in an existing directory; opening it fails before
+update work if it is unavailable or already exists. For example:
+
+```bash
+./alpaca-cli-eod update --debug /tmp/alpaca-update.jsonl
+./alpaca-cli-eod lineage update --symbol AAPL --no-pricing-acquisition --debug /tmp/alpaca-AAPL.jsonl
+```
+
+This separate compact JSONL stream records events as they occur, including phases too brief for a heartbeat.
+It uses only arguments, results and decisions already held by the producer. It does not inspect storage to
+improve diagnostics or repeat a completed validation. Implementation: [debug_trace.py](../libs/common/debug_trace.py).
+
+Each record carries schema `alpaca.update.debug`, schema version 1, run ID, sequence number, monotonic elapsed
+seconds, thread, event and stage. The run starts with UTC time and ends with status/exit code. Paired `enter` /
+`exit` records carry span and parent IDs; exits include duration and bounded result counters. Durations include
+child work: do not sum nested spans as independent elapsed time. Lock spans emit an acquired event to separate
+waiting from held work. `progress` records retain bounded existing observations; `decision` records identify
+prefix eligibility and fallback reasons. Lists carry counts and up to eight examples; nested values and strings
+are bounded and lines are at most 8 KiB. Records are serialized across workers and line-buffered without `fsync`.
+
+Coverage includes command/store-lock entry, universe-lock acquisition, durable work-state loading, owner recovery,
+accepted selectors, catalogue observation, selection and estimates, serving control-map loading,
+registration/work acceptance, initial pricing, live history checks, corrections, appends and
+worker publication, dependency catch-up/prefetch, complete lineage groups, receipt/boundary/payload reads,
+correlation/publication/acknowledgement, serving components/evaluation/publication, result output and automatic
+registry commit/push. CLI provider spans include pricing rate-limit waits and pricing/metadata HTTP calls;
+Full GET targets and parameters are recorded in ordered `http_target` chunks (join `url_part` by request ID and
+part number), including long symbol rosters and pagination tokens. Request headers, credentials and response
+bodies are not serialized. HTTP exits retain observed request-count changes and available failure status.
+Prefix decisions explain incompatible or
+unresolved histories, changed ancestry/evidence, incomplete session seams and changed suffix identity/source priority. Group
+exits report rows processed versus reused; serving exits report reused prefixes and full-history evaluations.
+
+Normal returns (including unchanged, blocked and incomplete results), exceptions and keyboard interruption
+close their started spans. A killed process leaves open spans identifying its last active work. A trace write
+failure disables tracing and emits a stderr warning while preserving the update outcome; missing records then
+must not be interpreted as successful completion. Argument-parser failures occur before tracing starts.
+Keep trace files outside Git. The synthetic trace tests exercise complete updates, append workers, failures,
+early exits and interruption; they do not establish production throughput.
+
 ## Shared lifecycle
 
 Both executables emit bounded, versioned compact JSONL on stderr for every successfully parsed command,

@@ -286,6 +286,11 @@ class ProductionPolicyOperationTests(TestCase):
                 "load_authorized_policy",
                 wraps=load_authorized_policy,
             ) as load,
+            patch.object(
+                sys.modules["libs.alpaca_lineage_build.correlation_policy"],
+                "authorize_production_policy",
+                wraps=authorize_production_policy,
+            ) as authorize,
             patch.object(storage, "recover", wraps=storage.recover) as recover,
             patch.object(pipeline, "correlate", side_effect=observe),
         ):
@@ -297,6 +302,7 @@ class ProductionPolicyOperationTests(TestCase):
 
         self.assertEqual(0, result["failed"], result)
         load.assert_called_once_with()
+        authorize.assert_called_once()
         recover.assert_called_once()
         self.assertEqual(2, len(seen))
         self.assertTrue(all(policy is seen[0] for policy in seen))

@@ -9,12 +9,14 @@ from libs.alpaca_pricing_download.check_summary import describe, pending_symbols
 from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.download import request_end
 from libs.alpaca_pricing_download.update_checks import read_checks
+from libs.common.debug_trace import traced
 
 from .context import accept_context
 from .pipeline import run_lineage
 from .refresh import refresh_existing
 
 
+@traced("pending_recovery")
 def finish_pending(
     store,
     *,
@@ -83,6 +85,7 @@ def finish_pending(
     return {"pricing_recovered": recovered, "lineage": lineage, "failed": lineage["failed"]}
 
 
+@traced("maintenance")
 def update_everything(
     store,
     end_date=None,

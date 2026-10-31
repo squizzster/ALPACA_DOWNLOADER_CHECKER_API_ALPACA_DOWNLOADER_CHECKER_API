@@ -16,6 +16,8 @@ and offline catalogue maintenance require compatible publications, not credentia
 requires [PyArrow](../requirements-bloodhound.txt). Default store: repository `data_pricing/`; override with
 `--store PATH`. [build_parser / dispatch](../libs/alpaca_cli/__init__.py) own commands/options; no abbreviation.
 See [CLI reports](cli-reporting.md) for streams, exit codes and monitoring.
+Use `--debug FILE.jsonl` on daily or focused lineage updates for the
+[paired execution trace](cli-reporting.md#optional-update-debug-trace), including reuse/fallback reasons.
 
 ## Daily update
 
@@ -56,10 +58,11 @@ data result and exit code intact; the warning identifies the Git work still outs
 and signing settings remain those of the checkout. Automatic commits require the tracked registry in this
 exact Git checkout; automatic pushing additionally requires one configured upstream remote branch.
 
-Optional `update --plan` may fetch metadata but never registers, initializes, recovers or publishes. It reports
-work/reasons, additions, actions/pages, metadata reads and conditional dependencies. Sparse histories,
-pagination and producer checks change actual requests. Missing boundaries/pending publications are blockers;
-execution reselects independently, so a plan is not an execution token.
+Optional `update --plan` accepts its compact local boundaries before it fetches metadata, and never registers,
+initializes, recovers or publishes. It reports work/reasons, additions, actions/pages, metadata reads and
+conditional dependencies. Sparse histories, pagination and producer checks change actual requests. Missing
+boundaries/pending publications are zero-request blockers; execution reselects independently, so a plan is not an
+execution token.
 
 ### Session cutoff
 

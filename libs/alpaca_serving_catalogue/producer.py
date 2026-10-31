@@ -1,12 +1,14 @@
 """Offline bootstrap and bounded recovery of complete affected serving groups."""
 
+import sqlite3
 from contextlib import ExitStack
 from pathlib import Path
 
 from libs.alpaca_lineage_build import storage as lineage
+from libs.common.debug_trace import span, traced
 
 from . import storage, work
-from .contract import CatalogueError, policy
+from .contract import CatalogueError, policy, validate_version
 from .policy import evaluate
 
 
@@ -116,6 +118,7 @@ def _project_group_members(root, index):
     return len(missing)
 
 
+@traced("serving")
 def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=None, context=None):
     from alpaca_end_of_day import StandaloneReader
 
@@ -126,7 +129,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
     # This is an offline lineage consumer. Holding the worker serializes selection,
     # work seeding and acknowledgement with lineage without a universe file crawl.
     # Shared pricing locks still protect each newly evaluated group through commit.
-    accepted_store = lineage.accept_store(store)
+    accepted_store = lineage.accept_store(store) if context is None else context.accept_store()
     result = {
         "complete": False,
         "failed": 0,
@@ -145,18 +148,21 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
     if not (bootstrap or rebuild):
         # Native rollback belongs to this owner. Missing/incompatible boundaries
         # still fail before creating anything or upgrading the lineage protocol.
-        controls = (
-            storage.controls(store, recover=True) if context is None else context.select_serving(recover=True)
-        )
+        validate_version()
+        try:
+            selected_state = storage.selector_state(store, recover=True)
+        except (RuntimeError, OSError, ValueError, sqlite3.Error) as error:
+            raise CatalogueError(
+                "cannot read serving catalogue; run alpaca-cli-eod catalogue bootstrap --store PATH"
+            ) from error
     elif not (store / "end_of_day/lineage/index.sqlite3").exists():
         raise CatalogueError("lineage index missing; publish lineage before catalogue bootstrap")
     with lineage.writer_snapshot(store, accepted_store=accepted_store, context=context) as writer_view:
         root = writer_view.root
         if (root / ".pending.json").exists():
             raise CatalogueError("lineage publication pending; resume its owner first")
-        if controls is not None:
-            if controls["state"]["generation"] != storage.selector_state(store)["generation"]:
-                controls = storage.controls(store)
+        if not (bootstrap or rebuild):
+            selected_state = storage.selector_state(store)
             # The worker opened the index for native transaction recovery before
             # this read. An empty queue needs no membership reload or payloads.
             pending = work.read(store)
@@ -165,8 +171,11 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                     **result,
                     "complete": True,
                     "pending_symbols": [],
-                    "generation": controls["state"]["generation"],
+                    "generation": selected_state["generation"],
                 }
+            # The complete empty queue is authoritative. Only selected work
+            # needs the catalogue's group/member map; do not load it for a no-op.
+            controls = storage.controls(store) if context is None else context.select_serving()
         index = writer_view.index()
         entries = index["symbols"]
         # This accepted view remains pinned by the lineage worker and is passed
@@ -189,6 +198,19 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             selected.update(component)
             previous = {controls["members"][n] for n in component if n in controls["members"]}
             groups, covered = [], set()
+            tracing = ExitStack()
+            details = tracing.enter_context(span("serving_component", symbols=sorted(component)))
+            before = {
+                key: result[key]
+                for key in (
+                    "reused_groups",
+                    "evaluated_groups",
+                    "reused_history_prefixes",
+                    "full_history_evaluations",
+                    "checked_bars",
+                    "published_components",
+                )
+            }
             try:
                 with ExitStack() as locks:
                     retained = set()
@@ -255,8 +277,15 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                 if progress:
                     progress("serving_catalogue", {"state": "completed", "symbols": sorted(component)})
             except (RuntimeError, OSError, ValueError) as error:
+                details.update(status="error", error_type=type(error).__name__)
                 result["failed"] += 1
                 result["failures"].append({"symbols": sorted(component), "error": str(error)})
+            except BaseException as error:
+                details.update(status="aborted", error_type=type(error).__name__)
+                raise
+            finally:
+                details.update({key: result[key] - before[key] for key in before})
+                tracing.close()
         remaining = work.read(store)
         result["pending_symbols"] = sorted(remaining.keys() & selected if scope is not None else remaining)
         if not result["pending_symbols"] and not result["failed"]:

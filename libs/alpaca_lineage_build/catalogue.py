@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 
 from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download.contract import symbol_label
+from libs.common.debug_trace import traced
 
 from .contract import LineageError, document_digest
 
 DISCOVERY_EXCHANGES = ("OTC", "NYSE", "NASDAQ", "AMEX", "TXSE")
 
 
+@traced("catalogue")
 def observe_catalogue(client):
     # Validate the completed provider observation once at acquisition. Consumers
     # retain duplicates and absence as evidence, never silently choose one identity

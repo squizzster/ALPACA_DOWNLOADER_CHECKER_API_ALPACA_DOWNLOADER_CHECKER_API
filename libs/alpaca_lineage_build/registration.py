@@ -41,7 +41,7 @@ def standalone_registration(store, end_date, *, registry=DEFAULT_REGISTRY):
     """Require explicit initialization; serialize with daily update orchestration."""
     context = accept_context(store)
     store = Path(store).absolute()
-    storage.check_store(store)
+    context.accept_store()
     with universe_state.update_lock(store):
         state = universe_state.read_state(store)
         policy = command_policy(store, end_date, state=state, context=context)

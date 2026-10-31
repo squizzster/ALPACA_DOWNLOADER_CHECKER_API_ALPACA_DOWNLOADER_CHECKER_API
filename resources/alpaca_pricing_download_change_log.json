@@ -180,5 +180,10 @@
     "modifications": [
       "Separate history refresh from explicit physical payload repair. Replacements preserve files whose newly produced bytes match their recorded digests, without reopening, checking or rewriting those payloads. Continue publishing changed outputs and required notices through the existing journal and selector-last recovery contract; retain pricing-31 compatibility."
     ]
+  },
+  {
+    "modifications": [
+      "Expose opt-in entry/exit timing spans for acquisition, append, correction and publication, carrying trace context into append workers without changing pricing publications or approvals."
+    ]
   }
 ]

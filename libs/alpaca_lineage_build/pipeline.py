@@ -17,6 +17,7 @@ from libs.alpaca_pricing_download.update_checks import (
     complete_checks,
     read_checks,
 )
+from libs.common.debug_trace import event, traced
 
 from . import storage
 from .acquisition import check_unavailable_pricing, unavailable_pricing
@@ -34,7 +35,7 @@ from .metadata import EvidenceClient, acquire, acquire_unpriced, action_requests
 from .migration import can_promote_observation_decision
 from .observations import select_observations
 from .pricing import load_pricing
-from .resume import can_resume, eligible_source, unchanged_source, unique_assignment
+from .resume import can_resume, eligible_prefix, stable_observation_priority, unchanged_source, unique_assignment
 from .selection import DependencyGraph
 from .transform import correlate, make_publication, retained_decision_report
 from .work_contract import acquisition_fingerprint, auxiliary_work, pricing_target
@@ -46,6 +47,7 @@ def closure(index, seeds, asset_ids=(), *, graph=None):
     return (graph or DependencyGraph(index["symbols"])).closure(seeds, asset_ids)
 
 
+@traced("pricing_selectors")
 def _current_sources(store, locked, *, known=()):
     result = {}
     for symbol in sorted(locked):
@@ -129,6 +131,7 @@ def _select_pending_pricing(store, members, index, pending, pricing_handoff):
             }
 
 
+@traced("metadata_prefetch")
 def _prefetch_metadata(
     store,
     selected,
@@ -207,6 +210,7 @@ def _prefetch_metadata(
     client.prefetch_symbols({symbol for symbol, _, _ in requests})
 
 
+@traced("dependency_catchup")
 def _catch_up_published_dependencies(
     store,
     selected,
@@ -288,6 +292,7 @@ def _catch_up_published_dependencies(
     return result
 
 
+@traced("lineage_group")
 def process_group(
     store,
     root,
@@ -451,6 +456,8 @@ def process_group(
                     "symbol": seed,
                     "status": "processed" if published else "unchanged",
                     "reused_decision": True,
+                    "pricing_rows_processed": 0,
+                    "historical_rows_reused": sum(item["source_rows"] for item in previous.values()),
                     "processed": sorted(sources),
                     "unavailable_pricing": sorted(unavailable),
                     "pricing_replacements": pricing_replacements,
@@ -475,7 +482,29 @@ def process_group(
                     )
                 )
                 resume = unchanged or (
-                    len(group) == 1 and eligible_source(sources[seed], previous[seed], refresh=refresh)
+                    group == sources.keys()
+                    and all(
+                        eligible_prefix(
+                            source,
+                            previous[symbol],
+                            refresh=refresh,
+                            selected=selected[symbol],
+                        )
+                        for symbol, source in sources.items()
+                    )
+                )
+                event(
+                    "lineage_reuse_gate",
+                    symbol=seed,
+                    members=len(group),
+                    mode="unchanged" if unchanged else "prefix" if resume else "full",
+                    reason="unchanged_pricing"
+                    if unchanged
+                    else "accepted_prefix"
+                    if resume
+                    else "missing_member"
+                    if group != sources.keys()
+                    else "prefix_not_eligible",
                 )
                 retained_kinds = {}
                 for symbol, prior in previous.items():
@@ -597,6 +626,7 @@ def process_group(
                     if resume and not all(
                         can_resume(view, previous[symbol], evidence[symbol]) for symbol, view in inputs.items()
                     ):
+                        event("lineage_fallback", symbol=seed, reason="evidence_or_session_seam_changed")
                         resume = False
                         inputs = {
                             symbol: load_pricing(store, symbol, source=source)
@@ -623,56 +653,65 @@ def process_group(
                             for symbol, facts in evidence.items()
                         }
                     )
-                    components, reports = {}, {}
-                    for symbol in sorted(inputs):
-                        if symbol in components:
-                            continue
-                        component = current_graph.closure({symbol})
-                        members = component & inputs.keys()
-                        components.update(dict.fromkeys(members, component))
-                        reports.update(
-                            {
-                                name: retained_decision_report(previous[name], policy=correlation_policy)
-                                for name in members
-                            }
-                            if no_new_rows
-                            else correlate(
-                                store,
-                                {name: inputs[name] for name in members},
-                                {name: evidence[name] for name in members},
-                                policy=correlation_policy,
-                                selected_group=sorted(component),
-                                unavailable_pricing=sorted(component & unavailable.keys()),
-                                evidence_generations={
-                                    name: storage.document_digest(evidence[name]) for name in members
-                                },
-                                pricing_generations={name: inputs[name].source_sha256 for name in members},
+
+                    def correlate_components(selected_inputs, *, retain=False):
+                        selected_components, selected_reports = {}, {}
+                        for name in sorted(selected_inputs):
+                            if name in selected_components:
+                                continue
+                            component = current_graph.closure({name})
+                            members = component & selected_inputs.keys()
+                            selected_components.update(dict.fromkeys(members, component))
+                            selected_reports.update(
+                                {
+                                    member: retained_decision_report(previous[member], policy=correlation_policy)
+                                    for member in members
+                                }
+                                if retain
+                                else correlate(
+                                    store,
+                                    {member: selected_inputs[member] for member in members},
+                                    {member: evidence[member] for member in members},
+                                    policy=correlation_policy,
+                                    selected_group=sorted(component),
+                                    unavailable_pricing=sorted(component & unavailable.keys()),
+                                    evidence_generations={
+                                        member: storage.document_digest(evidence[member]) for member in members
+                                    },
+                                    pricing_generations={
+                                        member: selected_inputs[member].source_sha256 for member in members
+                                    },
+                                )
                             )
-                        )
+                        return selected_components, selected_reports
+
+                    components, reports = correlate_components(inputs, retain=no_new_rows)
                     if (
                         resume
                         and not no_new_rows
                         and (
-                            reports[seed]["uncorrelated"]["row_count"]
-                            or not unique_assignment(
-                                reports[seed]["correlated"]["segments"], previous[seed]["asset_ids"][0]
+                            any(
+                                reports[name]["uncorrelated"]["row_count"]
+                                or not unique_assignment(
+                                    reports[name]["correlated"]["segments"],
+                                    previous[name]["asset_ids"][0],
+                                )
+                                for name, view in inputs.items()
+                                if any(view.views.values())
                             )
+                            or not stable_observation_priority(inputs, previous, old_boundaries, reports)
                         )
                     ):
-                        resume = False
-                        inputs[seed] = load_pricing(store, seed, source=sources[seed])
-                        reports = correlate(
-                            store,
-                            inputs,
-                            evidence,
-                            policy=correlation_policy,
-                            selected_group=sorted(set(inputs) | set(unavailable)),
-                            unavailable_pricing=sorted(unavailable),
-                            evidence_generations={
-                                name: storage.document_digest(document) for name, document in evidence.items()
-                            },
-                            pricing_generations={name: view.source_sha256 for name, view in inputs.items()},
+                        event(
+                            "lineage_fallback",
+                            symbol=seed,
+                            reason="suffix_identity_or_observation_priority_changed",
                         )
+                        resume = False
+                        inputs = {
+                            name: load_pricing(store, name, source=source) for name, source in sources.items()
+                        }
+                        components, reports = correlate_components(inputs)
                     # DO NOT REMOVE WITHOUT USER AUTH!#
                     # The complete group establishes one numerical source choice
                     # for all views. A required mapping correction must publish
@@ -878,6 +917,7 @@ def _cohorts(selected, graph, limit=PREFETCH_MEMBERS):
         yield cohort
 
 
+@traced("lineage")
 def run_lineage(
     store,
     symbols=None,
@@ -905,7 +945,7 @@ def run_lineage(
         pricing_client = MeasuredRequests(pricing_client, pricing_metrics)
     store = Path(store).absolute()
     results, processed = [], set()
-    with storage.writer_lock(store) as root:
+    with storage.writer_lock(store, accepted_store=context.accept_store()) as root:
         recovered = context.recover_lineage(root)
         context.accept_correlation_policy()
         with storage.publication_lock(root):

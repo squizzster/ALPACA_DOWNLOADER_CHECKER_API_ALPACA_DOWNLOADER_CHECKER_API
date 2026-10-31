@@ -6,11 +6,13 @@ from dataclasses import dataclass
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.alpaca_pricing_download.storage import boundary_paths
+from libs.common.debug_trace import traced
 
 from .contract import VERSION, LineageError, document_digest, versions
 from .policy_engine import evaluate_policy
 
 
+@traced("correlation")
 def correlate(
     store,
     inputs,
@@ -212,6 +214,7 @@ def _continued_documents(view, report, indexes, previous, old):
     return documents
 
 
+@traced("lineage_prepare_publication")
 def make_publication(view, evidence, report, deps, previous=None, old_boundaries=None, *, resume_closed=False):
     # This producer joins accepted pricing and completed identity decisions into
     # a new handoff. Preserve unchanged closed references; do not require consumers

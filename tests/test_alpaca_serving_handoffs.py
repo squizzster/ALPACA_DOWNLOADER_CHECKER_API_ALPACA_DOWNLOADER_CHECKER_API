@@ -44,7 +44,13 @@ class ServingHandoffTests(NativeCase):
 
     def test_empty_queue_does_not_load_the_index(self):
         self.bootstrap()
-        with patch.object(lineage, "read_index", side_effect=AssertionError("empty queue loaded membership")):
+        with (
+            patch.object(lineage, "read_index", side_effect=AssertionError("empty queue loaded membership")),
+            patch(
+                "libs.alpaca_serving_catalogue.storage.controls",
+                side_effect=AssertionError("empty queue loaded catalogue groups"),
+            ),
+        ):
             result = maintain(self.store)
         self.assertTrue(result["complete"])
         self.assertEqual(result["evaluated_groups"], 0)

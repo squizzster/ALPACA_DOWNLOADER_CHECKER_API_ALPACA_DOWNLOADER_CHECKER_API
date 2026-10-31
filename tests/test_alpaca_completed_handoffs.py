@@ -268,6 +268,7 @@ class AcceptedOperationTests(unittest.TestCase):
                 patch.object(
                     pricing_context, "validate_version", wraps=pricing_context.validate_version
                 ) as pricing_versions,
+                patch.object(storage, "check_store", wraps=storage.check_store) as store_acceptances,
                 patch.object(storage, "read_receipt", side_effect=AssertionError("receipt census")),
                 patch.object(pipeline, "load_pricing", side_effect=AssertionError("payload census")),
             ):
@@ -278,6 +279,7 @@ class AcceptedOperationTests(unittest.TestCase):
             self.assertEqual(catalogues.call_count, 1)
             self.assertEqual(lineage_versions.call_count, 1)
             self.assertEqual(pricing_versions.call_count, 1)
+            self.assertEqual(store_acceptances.call_count, 1)
             self.assertEqual(len(case.pages), 1)
 
     def test_publications_refresh_membership_without_reloading_unchanged_revisions(self):

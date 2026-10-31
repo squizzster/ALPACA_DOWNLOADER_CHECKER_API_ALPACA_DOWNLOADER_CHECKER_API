@@ -146,13 +146,17 @@ Expanded groups reselect under sorted enlarged locks; decoded reuse requires mat
 
 [resume.py](../libs/alpaca_lineage_build/resume.py), `can_resume`, combines pricing ancestry/change-range proof
 with single-identity gates. Compatible resolved assignments, unchanged evidence and a complete added session
-range permit correlation of added rows only. Receipt summaries supply accepted counts/endpoints without reopening
-closed assignments. Older receipts derive summaries from selected assignment bodies, without price reads or
-replaying old decisions.
+range permit correlation of added rows only, including a complete dependency group when every priced member's
+suffix remains assigned to its one accepted identity. Receipt summaries supply accepted counts/endpoints without
+reopening closed assignments. Older receipts derive summaries from selected assignment bodies, without price
+reads or replaying old decisions.
 
 Month/year rollover combines accepted assignments with new decisions, opening/publishing only required output
-bodies. Historical corrections, missing change proof, changed evidence, unresolved assignments and dependency
-groups retain complete-group reconciliation.
+bodies. Historical corrections, missing change proof, changed evidence, unresolved assignments and any dependency
+group that fails the complete resolved-prefix/suffix gates retain complete-group reconciliation.
+Shared-identity members also require accepted own-label endpoints and equal source priority to stay equal across
+the append; a changed or unproven numerical priority falls back to complete-group reconciliation. This consumes
+the assignment bodies already required for publication and does not reopen extra history to prove eligibility.
 
 If pricing proves every group input's rows unchanged and identity evidence is unchanged, carry assignments
 forward without pricing reads or rule execution—even unresolved assignments/empty histories. Advancing cutoff or

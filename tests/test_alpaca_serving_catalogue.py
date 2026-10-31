@@ -49,6 +49,8 @@ class ServingCatalogueTests(NativeCase):
         self.assertEqual(work.read(self.store), {})
 
     def test_focused_lineage_cli_maintains_only_its_completed_scope(self):
+        from libs.alpaca_lineage_build.context import OperationContext
+
         self.add_symbol("OTHER")
         self.bootstrap()
         for operation in ("update", "refresh"):
@@ -71,7 +73,9 @@ class ServingCatalogueTests(NativeCase):
                     patch("libs.alpaca_cli.clients", return_value=(None, None)),
                     patch(
                         "libs.alpaca_lineage_build.registration.standalone_registration",
-                        return_value=nullcontext((None, SimpleNamespace(pending_work={}))),
+                        return_value=nullcontext(
+                            (None, SimpleNamespace(pending_work={}, context=OperationContext(self.store)))
+                        ),
                     ),
                     patch(
                         "libs.alpaca_lineage_build.pipeline.run_lineage",

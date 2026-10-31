@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
+from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .contract import policy
@@ -243,6 +244,7 @@ def _rename_exclusions(group, members, observations, bars, missing, *, source_se
     return accepted
 
 
+@traced("serving_evaluation")
 def evaluate(group, previous=()):
     from alpaca_end_of_day.standalone import HistoryPrefixChanged, UnservableHistoryError
 
