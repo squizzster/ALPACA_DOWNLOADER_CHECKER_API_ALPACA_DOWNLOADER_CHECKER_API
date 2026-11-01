@@ -135,32 +135,50 @@ Transport/routing failure leaves affected requests incomplete. Conflicts remain 
 no winner is chosen.
 
 Ordinary action continuation starts at the prior active month; older corrections require explicit refresh.
-An unchanged action's completed positive CUSIP→ID lookup is reusable only when the fresh catalogue contains that
-exact asset ID with identical unambiguous facts. This consumes an accepted mapping, never infers CUSIP from ticker.
-New/changed actions, changed/missing/ambiguous asset facts, negative lookups and explicit refresh require exact
-acquisition. Replacing an already consumed lookup during traversal restarts metadata assembly from the now-
-authoritative exact cache. Known dependencies retain continuation/refresh obligations; new ones need full evidence.
+An unchanged action's completed CUSIP→ID lookup, including a negative result, remains authoritative. Current
+catalogue facts may join an already accepted UUID; name/status changes or absence from the catalogue do not
+invalidate the historical mapping. This never infers CUSIP from ticker. New/changed actions, a changed current
+endpoint UUID or explicit refresh require exact acquisition. Replacing an already consumed lookup during traversal
+restarts metadata assembly from the authoritative exact cache. Known dependencies retain continuation/refresh
+obligations; new ones need full evidence.
 Expanded groups reselect under sorted enlarged locks; decoded reuse requires matching generation/scope.
+Exact and catalogue endpoint observations have the same invalidation authority, including canonical endpoints
+recorded by retained CUSIP lookups. A late observation refreshes
+affected reports already assembled in the selected group from the operation's in-memory acquisition cache before
+publication. This also applies when a later symbol in one traversal changes an earlier retained dependency.
 
 ## Assignment continuation
 
-[resume.py](../libs/alpaca_lineage_build/resume.py), `can_resume`, combines pricing ancestry/change-range proof
-with single-identity gates. Compatible resolved assignments, unchanged evidence and a complete added session
-range permit correlation of added rows only, including a complete dependency group when every priced member's
-suffix remains assigned to its one accepted identity. Receipt summaries supply accepted counts/endpoints without
-reopening closed assignments. Older receipts derive summaries from selected assignment bodies, without price
-reads or replaying old decisions.
+[resume.py](../libs/alpaca_lineage_build/resume.py) is a yes/no input boundary. It does not map ownership rules,
+predict assignments or execute an alternate lineage algorithm. Completed pricing generations/ancestry establish
+row equality; the accepted pricing request (including mapping `asof`, range, feed and timeframe), complete evidence,
+group membership and policy establish the remaining inputs. Only acquisition counters, catalogue observation
+wall time and lookup transport provenance are excluded from evidence equality. New evidence fields participate
+automatically, including disposition changes.
 
-Month/year rollover combines accepted assignments with new decisions, opening/publishing only required output
-bodies. Historical corrections, missing change proof, changed evidence, unresolved assignments and any dependency
-group that fails the complete resolved-prefix/suffix gates retain complete-group reconciliation.
-Shared-identity members also require accepted own-label endpoints and equal source priority to stay equal across
-the append; a changed or unproven numerical priority falls back to complete-group reconciliation. This consumes
-the assignment bodies already required for publication and does not reopen extra history to prove eligibility.
+When the accepted inputs are unchanged, `lineage_required=false` carries completed decisions forward without
+pricing payload reads or rule execution, regardless of ambiguity or candidate count. The latest HTTP window's
+`start` is transport bookkeeping; the source's `history_start` supplies the effective retained start.
 
-If pricing proves every group input's rows unchanged and identity evidence is unchanged, carry assignments
-forward without pricing reads or rule execution—even unresolved assignments/empty histories. Advancing cutoff or
-crossing month/year alone does not invalidate decisions; rollover reads only assignment bodies needing regrouping.
+An isolated nonempty, fully resolved single-identity history with only cash distributions or forward/reverse
+splits may retain its completed prefix when pricing ancestry proves that prefix unchanged. Effective source
+context must match, allowing only advancing observation/mapping cutoffs. Fresh identity, action, disposition and
+coverage-quality facts must match; only this append scope excludes action-query bounds and the diagnostic maximum
+row count from equality. Validate the new session grids and their accepted seam, then send only added rows through
+the same compiled policy evaluator. No new rows means no rule execution. Closed pricing/assignment payloads stay
+closed except for assignment bodies needed to regroup publication at month/year rollover or project an older
+receipt without a summary. The active pricing partition supplies the added rows.
+
+Cross-label groups, unresolved or empty prefixes, structural or unknown events, changed facts/context/policy,
+historical corrections and missing equality proof select complete-group work. This selection precedes evaluation;
+the boundary never tries one set of rules and checks its outcome to choose another. The existing evaluator retains
+its normal evidence reconciliation and ownership fallback. There is no separate continuation executor or mandatory
+context preparation.
+
+The normal selector-last publication, unchanged output-reference reuse, pricing handoff and journal recovery
+contracts apply to both paths. Opt-in `--debug` records whether lineage is required, whether retained history is
+selected, its retained row count and the scope (`none`, `added_sessions` or `complete_group`); ordinary commands add
+no trace logging.
 
 ## Missing auxiliary prices
 

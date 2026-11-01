@@ -7,7 +7,9 @@ from unittest.mock import patch
 import test_alpaca_lineage_build as fixture
 
 from libs.alpaca_lineage_build import pipeline, policy_engine, storage
-from libs.alpaca_lineage_build.resume import eligible_source
+from libs.alpaca_lineage_build.resume import unchanged_source
+from libs.alpaca_lineage_build.transform import ASSIGNMENT_FIELDS
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 
 
 class LineageContinuationTests(unittest.TestCase):
@@ -15,6 +17,16 @@ class LineageContinuationTests(unittest.TestCase):
         self.case = fixture.LineageBuildTests()
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+
+    def decisions(self):
+        return {
+            adjustment: [
+                {key: value for key, value in segment.items() if key in ASSIGNMENT_FIELDS}
+                for segment in self.case.assignments(adjustment=adjustment)
+                for _ in range(segment["row_count"])
+            ]
+            for adjustment in ADJUSTMENTS
+        }
 
     def test_normal_handoff_and_restart_select_only_their_required_pricing_receipts(self):
         from test_alpaca_lineage_batching import Provider
@@ -51,7 +63,7 @@ class LineageContinuationTests(unittest.TestCase):
         self.assertFalse(result["results"][0]["reused_closed_boundaries"])
         self.assertEqual([params["start"] for kind, params in client.calls if kind == "actions"], ["2016-01-01"])
 
-    def test_only_added_sessions_are_resolved_across_days_months_and_years(self):
+    def test_only_added_rows_reach_the_owner_across_days_months_and_years(self):
         case = self.case
         start, end = "2025-12-01", "2026-09-29"
         case.download(end=end, bars=fixture.calendar_bars(start, end))
@@ -76,6 +88,8 @@ class LineageContinuationTests(unittest.TestCase):
                     result = case.run_build()
                 self.assertEqual(observed, added)
                 self.assertTrue(result["results"][0]["reused_closed_boundaries"])
+                self.assertEqual(result["results"][0]["historical_rows_reused"], previous["source_rows"])
+                self.assertEqual(result["results"][0]["pricing_rows_processed"], 8 * len(added))
                 receipt = case.receipt()
                 self.assertEqual(receipt["source_rows"], previous["source_rows"] + 8 * len(added))
                 self.assertEqual(receipt["unresolved_rows"], 0)
@@ -83,15 +97,17 @@ class LineageContinuationTests(unittest.TestCase):
                     sum(s["row_count"] for s in case.assignments()), len(fixture.calendar_bars(start, target))
                 )
                 self.assertEqual(receipt["assignment_summary"]["raw"]["rows"], receipt["source_rows"] // 8)
+                decisions = self.decisions()
+                case.run_build(refresh=True)
+                self.assertEqual(self.decisions(), decisions)
                 end = target
 
-    def test_same_month_does_not_open_approved_closed_assignments_or_prices(self):
+    def test_unchanged_inputs_do_not_open_approved_assignments_or_prices(self):
         case = self.case
         case.bars = fixture.calendar_bars("2025-12-01", "2026-10-14")
         case.download()
         case.run_build()
         before = case.receipt()
-        case.download(end="2026-10-15", bars=case.bars + [fixture.bar("2026-10-14")])
         read = Path.read_bytes
 
         def selected(path):
@@ -102,12 +118,12 @@ class LineageContinuationTests(unittest.TestCase):
             return read(path)
 
         with patch.object(Path, "read_bytes", selected):
-            case.run_build()
+            case.run_build(symbols=["GOOG"])
         after = case.receipt()
         for kind in ("completed_years", "current_year"):
             self.assertEqual(before["boundaries"][kind], after["boundaries"][kind])
 
-    def test_prior_receipt_without_summary_consumes_assignments_without_recalculating_them(self):
+    def test_prior_receipt_without_summary_projects_accepted_assignments_for_append(self):
         case = self.case
         case.bars = fixture.calendar_bars("2025-12-01", "2026-10-14")
         case.download()
@@ -123,7 +139,10 @@ class LineageContinuationTests(unittest.TestCase):
         def resolve(report, *args, **kwargs):
             for descriptor in report["local"]["downloads"]:
                 rows = kwargs["authenticated_download_reader"](None, None, descriptor).rows
-                self.assertEqual([row["t"] for row in rows], [fixture.bar("2026-10-14")["t"]])
+                self.assertEqual(
+                    [row["t"] for row in rows],
+                    [fixture.bar("2026-10-14")["t"]],
+                )
             return build(report, *args, **kwargs)
 
         with patch.object(policy_engine, "build_security_correlation_report", side_effect=resolve):
@@ -140,12 +159,12 @@ class LineageContinuationTests(unittest.TestCase):
 
         case.download(end="2026-10-15", bars=case.bars + [fixture.bar("2026-10-14")])
         source = load_source(case.store / "end_of_day/pricing/GOOG", "GOOG")
-        self.assertTrue(eligible_source(source, previous, refresh=False))
-        self.assertFalse(eligible_source(source, previous, refresh=True))
+        self.assertFalse(unchanged_source(source, previous))
+        self.assertFalse(unchanged_source(source, previous))
         for changes in ([], [{"source_sha256": previous["source_sha256"], "changed_from": "2026-09-01"}]):
-            self.assertFalse(eligible_source({**source, "history_changes": changes}, previous, refresh=False))
+            self.assertFalse(unchanged_source({**source, "history_changes": changes}, previous))
 
-    def test_unchanged_prices_advance_without_payload_reads_or_rule_execution(self):
+    def test_later_plain_request_with_equal_prices_reuses_history_without_payloads(self):
         from libs.alpaca_lineage_build import pricing
 
         case = self.case
@@ -165,18 +184,29 @@ class LineageContinuationTests(unittest.TestCase):
                 before = case.receipt()
                 case.download(end=target, bars=bars)
                 with (
-                    patch.object(pricing, "load_published_boundary", side_effect=AssertionError("price read")),
-                    patch.object(pricing, "load_published_views", side_effect=AssertionError("price read")),
-                    patch.object(pipeline, "correlate", side_effect=AssertionError("rule replay")),
+                    patch.object(
+                        pipeline, "correlate", side_effect=AssertionError("old lineage replay")
+                    ) as owner,
+                    patch.object(
+                        pricing, "load_published_views", side_effect=AssertionError("old pricing read")
+                    ),
+                    patch.object(
+                        pricing, "load_published_boundary", side_effect=AssertionError("old pricing read")
+                    ),
                 ):
                     result = case.run_build()
                 after = case.receipt()
                 self.assertTrue(result["results"][0]["reused_decision"])
+                self.assertEqual(owner.call_count, 0)
                 self.assertEqual(result["results"][0]["pricing_rows_processed"], 0)
+                self.assertEqual(result["results"][0]["historical_rows_reused"], before["source_rows"])
                 self.assertEqual(before["source_rows"], after["source_rows"])
                 self.assertEqual(before["assignment_summary"], after["assignment_summary"])
                 self.assertEqual(after["processed_through"][:10], target)
                 self.assertEqual(decisions(), expected)
+                accepted = self.decisions()
+                case.run_build(refresh=True)
+                self.assertEqual(self.decisions(), accepted)
 
     def test_unchanged_unresolved_history_keeps_its_accepted_decisions(self):
         from libs.alpaca_lineage_build import pricing
@@ -188,13 +218,12 @@ class LineageContinuationTests(unittest.TestCase):
         before = case.receipt()
         assignments = case.assignments()
         self.assertGreater(before["unresolved_rows"], 0)
-        case.download(end="2026-10-15")
         with (
             patch.object(pricing, "load_published_views", side_effect=AssertionError("price read")),
             patch.object(pricing, "load_published_boundary", side_effect=AssertionError("price read")),
             patch.object(pipeline, "correlate", side_effect=AssertionError("rule replay")),
         ):
-            case.run_build(client=client)
+            case.run_build(symbols=["GOOG"], client=client)
         after = case.receipt()
         for field in ("source_rows", "correlated_rows", "unresolved_rows", "boundaries", "assignment_summary"):
             self.assertEqual(before[field], after[field], field)
@@ -213,7 +242,7 @@ class LineageContinuationTests(unittest.TestCase):
         previous = {name: case.receipt(name) for name in names}
         self.assertEqual(set(previous["GOOG"]["input_sources"]), set(names))
         for name in names:
-            case.download(symbol=name, end="2026-10-15")
+            case.download(symbol=name, end="2026-10-14")
         with (
             patch.object(pricing, "load_published_views", side_effect=AssertionError("price read")),
             patch.object(pricing, "load_published_boundary", side_effect=AssertionError("price read")),
@@ -224,7 +253,7 @@ class LineageContinuationTests(unittest.TestCase):
         self.assertTrue(result["results"][0]["reused_decision"])
         for name in names:
             current = case.receipt(name)
-            self.assertEqual(current["processed_through"][:10], "2026-10-15")
+            self.assertEqual(current["processed_through"][:10], "2026-10-14")
             for field in ("source_rows", "correlated_rows", "unresolved_rows", "boundaries"):
                 self.assertEqual(previous[name][field], current[field], (name, field))
         for name in names:
@@ -244,7 +273,7 @@ class LineageContinuationTests(unittest.TestCase):
         self.assertFalse(changed["results"][0]["reused_closed_boundaries"])
         self.assertEqual(full_reads.call_count, 2)
 
-    def test_resolved_dependency_append_reads_only_suffix_and_matches_full_reconciliation(self):
+    def test_resolved_dependency_changes_use_the_single_pipeline_and_match_refresh(self):
         from libs.alpaca_lineage_build import pricing
 
         def assigned_rows(name):
@@ -271,12 +300,10 @@ class LineageContinuationTests(unittest.TestCase):
                 end="2026-10-15",
                 bars=case.bars + [fixture.bar("2026-10-14")],
             )
-        with patch.object(
-            pricing, "load_published_views", side_effect=AssertionError("completed group prefix reopened")
-        ):
+        with patch.object(pricing, "load_published_views", wraps=pricing.load_published_views):
             changed = case.run_build(symbols=["GOOG"], client=client)
-        self.assertTrue(changed["results"][0]["reused_closed_boundaries"])
-        self.assertEqual(changed["results"][0]["pricing_rows_processed"], 16)
+        self.assertFalse(changed["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(changed["results"][0]["pricing_rows_processed"], (len(case.bars) + 1) * 16)
         assignments = {name: assigned_rows(name) for name in names}
         counts = {name: case.receipt(name)["source_rows"] for name in names}
         case.run_build(symbols=["GOOG"], client=client, refresh=True)
@@ -300,20 +327,15 @@ class LineageContinuationTests(unittest.TestCase):
         case.run_build(symbols=["GOOG"], client=client, refresh=True)
         self.assertEqual(assignments, {name: assigned_rows(name) for name in names})
 
-    def test_empty_histories_advance_without_price_reads_or_rule_execution(self):
-        from libs.alpaca_lineage_build import pricing
-
+    def test_empty_histories_with_changed_context_still_reach_lineage(self):
         case = self.case
         case.download(bars=[])
         case.run_build()
         case.download(end="2027-01-06", bars=[])
-        with (
-            patch.object(pricing, "load_published_views", side_effect=AssertionError("price read")),
-            patch.object(pricing, "load_published_boundary", side_effect=AssertionError("price read")),
-            patch.object(pipeline, "correlate", side_effect=AssertionError("rule replay")),
-        ):
+        with patch.object(pipeline, "correlate", wraps=pipeline.correlate) as owner:
             result = case.run_build()
-        self.assertTrue(result["results"][0]["reused_decision"])
+        self.assertFalse(result["results"][0]["reused_decision"])
+        self.assertEqual(owner.call_count, 1)
         self.assertEqual(case.receipt()["source_rows"], 0)
         self.assertEqual(case.receipt()["processed_through"][:10], "2027-01-06")
 
@@ -357,4 +379,4 @@ class LineageContinuationTests(unittest.TestCase):
         provider, evidence = client()
         case.run_build(client=provider.client, evidence_client=evidence)
         self.assertEqual([kind for kind, _ in provider.calls], ["actions"])
-        self.assertTrue(stable_evidence(previous["evidence"], case.receipt()["evidence"]))
+        self.assertFalse(stable_evidence(previous["evidence"], case.receipt()["evidence"]))

@@ -229,5 +229,8 @@
   },
   {
     "modifications": ["Separate universe update-lock acquisition and durable work-state loading in opt-in debug timing spans, without changing selection, stored artifacts or non-debug output."]
+  },
+  {
+    "modifications": ["Use one input-selection boundary and the existing policy evaluator for both complete-group work and producer-proven isolated-prefix continuation. Retain fully resolved single-identity prefixes across ordinary distribution/split appends, compare all material evidence and effective pricing context, and exclude only scoped acquisition bookkeeping. Keep complex, empty, ambiguous, changed and unproven histories on complete-group evaluation before execution; remove alternate executors and outcome-based fallback. Preserve authoritative historical lookup mappings and invalidate dependent mappings on newly observed endpoint changes, including recorded canonical endpoints. Trace retained-history selection and actual work scope only with --debug; preserve lineage-34 compatibility and normal publication/recovery."]
   }
 ]

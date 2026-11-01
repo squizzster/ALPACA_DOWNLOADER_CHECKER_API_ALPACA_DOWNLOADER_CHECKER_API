@@ -364,7 +364,7 @@ class LineageBatchingTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in window.get_corporate_actions("B", START, END)], ["b"])
         self.assertEqual({p["start"] for kind, p in provider.calls}, {START, "2026-10-01"})
 
-    def test_completed_mapping_reuse_requires_unchanged_action_and_fresh_asset_facts(self):
+    def test_completed_mapping_is_reused_until_its_mapping_inputs_change(self):
         for scenario in (
             "unchanged",
             "new_action",
@@ -375,6 +375,7 @@ class LineageBatchingTests(unittest.TestCase):
             "negative_lookup",
             "explicit_refresh",
             "fresh_exact_lookup",
+            "new_endpoint_identity",
         ):
             with self.subTest(scenario=scenario):
                 accepted = event("A", "accepted", cusip="CUSIP")
@@ -406,6 +407,17 @@ class LineageBatchingTests(unittest.TestCase):
                     catalogue.append({**asset("A"), "symbol": "B"})
                 if scenario == "missing_asset":
                     catalogue = []
+                if scenario == "new_endpoint_identity":
+                    catalogue = [asset("A", "replacement-id")]
+                    previous["evidence"]["asset_lookups"].append(
+                        {
+                            "lookup": "A",
+                            "lookup_kind": "symbol",
+                            "outcome": "found",
+                            "http_status": 200,
+                            "asset": asset("A"),
+                        }
+                    )
                 if scenario == "negative_lookup":
                     previous["evidence"]["asset_lookups"][0].update(
                         outcome="not_found", http_status=404, asset=None
@@ -421,8 +433,21 @@ class LineageBatchingTests(unittest.TestCase):
                 window.get_corporate_actions("A", START, END)
                 result = window.get_asset_lookup("CUSIP")
                 calls = [value for kind, value in provider.calls if kind == "asset"]
-                self.assertEqual(calls, [] if scenario == "unchanged" else ["CUSIP"])
-                self.assertEqual(result["asset"]["id"], "A-id" if scenario == "unchanged" else "fresh-id")
+                retained = scenario in {
+                    "unchanged",
+                    "changed_asset",
+                    "ambiguous_asset",
+                    "missing_asset",
+                    "negative_lookup",
+                }
+                self.assertEqual(calls, [] if retained else ["CUSIP"])
+                if scenario == "negative_lookup":
+                    self.assertIsNone(result["asset"])
+                    self.assertEqual(result["outcome"], "not_found")
+                else:
+                    self.assertEqual(result["asset"]["id"], "A-id" if retained else "fresh-id")
+                if scenario == "changed_asset":
+                    self.assertEqual(result["asset"]["name"], "changed name")
 
     def test_newly_traversed_action_replaces_an_earlier_retained_mapping(self):
         from types import SimpleNamespace

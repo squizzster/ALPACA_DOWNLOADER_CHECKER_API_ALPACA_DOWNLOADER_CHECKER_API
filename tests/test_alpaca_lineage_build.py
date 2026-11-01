@@ -328,40 +328,33 @@ class LineageBuildTests(unittest.TestCase):
         ):
             self.run_build()
 
-    def test_simple_continuation_never_opens_cold_prices_or_recalculates_old_rows(self):
+    def test_unchanged_inputs_never_open_prices_or_recalculate_rows(self):
         self.bars = calendar_bars("2025-12-01", "2026-10-14")
         self.download()
         self.run_build()
         before = snapshot(self.root)
-        self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
         original = Path.read_bytes
 
         def read_bytes(path):
-            if path.suffix == ".gz" and path.parent.name != "Oct":
+            if path.suffix == ".gz":
                 self.fail("approved cold pricing was reopened")
             return original(path)
 
         from libs.alpaca_lineage_build import policy_engine
 
-        correlate = policy_engine.build_security_correlation_report
-
         def check_rows(*args, **kwargs):
-            reader = kwargs["authenticated_download_reader"]
-            for descriptor in args[0]["local"]["downloads"]:
-                rows = reader(None, None, descriptor).rows
-                self.assertTrue(all(row["t"].startswith("2026-10") for row in rows))
-            return correlate(*args, **kwargs)
+            self.fail("unchanged inputs entered the lineage evaluator")
 
         with (
             patch.object(Path, "read_bytes", read_bytes),
             patch.object(policy_engine, "build_security_correlation_report", side_effect=check_rows),
         ):
-            result = self.run_build()
-        self.assertTrue(result["results"][0]["reused_closed_boundaries"])
+            result = self.run_build(["GOOG"])
+        self.assertTrue(result["results"][0]["reused_decision"])
         after = snapshot(self.root)
         for name in ("GOOG/completed_years.manifest.json", "GOOG/2026/year.manifest.json"):
             self.assertTrue(before[name] == after[name], name)
-        self.assertEqual(sum(item["row_count"] for item in self.assignments()), len(self.bars) + 1)
+        self.assertEqual(sum(item["row_count"] for item in self.assignments()), len(self.bars))
 
     def test_month_and_year_rollover_retire_only_superseded_lineage_boundaries(self):
         self.download()

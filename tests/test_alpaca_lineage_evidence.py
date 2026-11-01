@@ -125,7 +125,7 @@ class LineageEvidenceTests(unittest.TestCase):
         self.assertEqual(result["receipt"]["versions"], receipt["versions"])
         self.assertEqual(before, snapshot(self.store))
 
-    def test_resume_identifies_reused_closed_decisions_and_current_calculation(self):
+    def test_append_reports_new_calculation_and_completed_prefix_reuse(self):
         self.bars = calendar_bars("2025-12-31", "2026-10-14")
         self.publish()
         self.download(self.bars + [bar("2026-10-14")], "2026-10-15")
@@ -135,21 +135,27 @@ class LineageEvidenceTests(unittest.TestCase):
         self.assertEqual(result["status"], "calculated_with_closed_reuse")
         self.assertEqual(result["actual_calculation_scope"], "added_sessions")
         self.assertEqual(result["actual_report"]["source_row_count"], 8)
+        # Explicit inspection exposes the selected complete history separately
+        # from the added-session scope actually sent through the evaluator.
         self.assertEqual(result["pricing"]["session_grids"][0]["rows"], len(self.bars) + 1)
-        for segment in result["assignments"]:
-            expected = "calculated" if segment["from"] >= "2026-10-14" else "reused_publication"
-            self.assertEqual(segment["decision_origin"], expected)
+        self.assertEqual(
+            sum(s["row_count"] for s in result["assignments"] if s["decision_origin"] == "calculated"), 8
+        )
+        self.assertEqual(
+            sum(s["row_count"] for s in result["assignments"] if s["decision_origin"] == "reused_publication"),
+            len(self.bars) * 8,
+        )
 
-    def test_empty_advance_reports_retained_decisions_without_an_actual_calculation(self):
+    def test_changed_request_context_reports_lineage_even_without_new_rows(self):
         self.publish()
         self.download(self.bars, "2026-10-15")
-        with patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=AssertionError("no replay")):
+        with patch("libs.alpaca_lineage_build.pipeline.correlate", wraps=correlate) as calculate:
             result = self.output(identity_client=IdentityClient())
-        self.assertEqual(result["status"], "reused_publication")
-        self.assertIsNone(result["actual_calculation_scope"])
-        self.assertIsNone(result["actual_report"])
-        self.assertEqual(result["calculation_paths"], [])
-        self.assertTrue(all(s["decision_origin"] == "reused_publication" for s in result["assignments"]))
+        self.assertEqual(calculate.call_count, 1)
+        self.assertEqual(result["status"], "calculated")
+        self.assertEqual(result["actual_calculation_scope"], "full_history")
+        self.assertEqual(result["actual_report"]["source_row_count"], len(self.bars) * 8)
+        self.assertTrue(all(s["decision_origin"] == "calculated" for s in result["assignments"]))
 
     def test_cli_runs_actual_missing_seed_and_dependency_downloads(self):
         from cli_support import initialize_command_registration

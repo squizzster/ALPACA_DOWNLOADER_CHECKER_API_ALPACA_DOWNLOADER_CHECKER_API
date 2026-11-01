@@ -18,6 +18,8 @@ from libs.alpaca_lineage_build import contract as lineage_contract
 from libs.alpaca_lineage_build import pipeline, update
 from libs.alpaca_lineage_build import storage as lineage_storage
 from libs.alpaca_lineage_build.pipeline import run_lineage
+from libs.alpaca_lineage_build.reader import read_lineage
+from libs.alpaca_lineage_build.transform import ASSIGNMENT_FIELDS
 from libs.alpaca_pricing_download import check_summary, storage
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
@@ -144,6 +146,59 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertEqual(rows[1][5], "42")
         self.assertEqual([row[0][:10] for row in rows], ["2016-01-04", "2026-10-14", "2026-10-15", "2026-10-16"])
         self.assert_finished()
+
+    def test_new_action_completes_lineage_and_pricing_keeps_advancing(self):
+        action = {
+            "action_type": "cash_dividend",
+            "id": "new-dividend",
+            "symbol": "AAA",
+            "cusip": "111111111",
+            "process_date": "2026-10-16",
+            "ex_date": "2026-10-16",
+        }
+        self.identity = IdentityClient({**self.assets, "111111111": self.assets["AAA"]}, [action])
+        retained = read_pricing_views(self.store, "AAA")
+        with patch.object(pipeline, "correlate", wraps=pipeline.correlate) as evaluate:
+            result = self.run_update()
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["failed"], 0)
+        evaluated = set().union(*(call.args[1].keys() for call in evaluate.call_args_list))
+        self.assertIn("AAA", evaluated, "new facts must reach the affected group's evaluator")
+        self.assertLessEqual(evaluated, {"AAA", "BBB"})
+        self.assert_finished()
+        for mode, rows in retained.items():
+            self.assertEqual(read_pricing_views(self.store, "AAA")[mode][: len(rows)], rows)
+        self.assertEqual(
+            [a["id"] for a in read_lineage(self.store, "AAA")["receipt"]["evidence"]["corporate_actions"]],
+            ["new-dividend"],
+        )
+        for symbol in self.live:
+            self.live[symbol].append(bar("2026-10-19"))
+        result = self.run_update("2026-10-20")
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["failed"], 0)
+        for symbol in ("AAA", "BBB"):
+            self.assertEqual(read_pricing_views(self.store, symbol)["all"][-1][0][:10], "2026-10-19")
+            self.assertEqual(read_lineage(self.store, symbol)["receipt"]["processed_through"][:10], "2026-10-20")
+            self.assertFalse((self.store / f"end_of_day/manifests/{symbol}/update.json").exists())
+
+        def decisions():
+            return {
+                symbol: {
+                    mode: [
+                        {key: value for key, value in segment.items() if key in ASSIGNMENT_FIELDS}
+                        for segment in segments
+                        for _ in range(segment["row_count"])
+                    ]
+                    for mode, segments in read_lineage(self.store, symbol)["adjustments"].items()
+                }
+                for symbol in ("AAA", "BBB")
+            }
+
+        accepted = decisions()
+        reference = run_lineage(self.store, ["AAA", "BBB"], identity_client=self.identity, refresh=True)
+        self.assertEqual(reference["failed"], 0, reference)
+        self.assertEqual(decisions(), accepted)
 
     def test_complete_empty_hints_still_catch_up_changed_rules_without_metadata_requests(self):
         checks = read_checks(self.store)

@@ -575,13 +575,12 @@ class StandaloneReaderTests(unittest.TestCase):
                 self.reader.resolve_ticker("TEST")
         self.assertEqual(before, snapshot(self.store))
 
-    def test_after_one_off_migration_month_resume_keeps_cold_payloads_closed(self):
+    def test_after_migration_unchanged_inputs_keep_all_payloads_closed(self):
         bars = [bar("2025-12-31")] + calendar_bars("2026-01-02", "2026-10-14")
         download_pricing(self.store, "TEST", "2026-10-14", client=FakeClient(bars), refresh_all=True)
         self.build(["TEST"], IdentityClient({"TEST": asset("TEST")}))
         self.v2_publication()
         self.build(["TEST"], IdentityClient({"TEST": asset("TEST")}))
-        self.download("TEST", bars + [bar("2026-10-14")], end="2026-10-15")
         original, opened = Path.read_bytes, []
 
         def observe(path):
@@ -591,8 +590,8 @@ class StandaloneReaderTests(unittest.TestCase):
 
         with patch.object(Path, "read_bytes", observe):
             self.build(["TEST"], IdentityClient({"TEST": asset("TEST")}))
-        self.assertTrue(opened)
-        self.assertTrue(all(path.parent.name == "Oct" for path in opened), opened)
+        self.assertEqual(opened, [])
+        self.assertEqual(self.reader.get_history("TEST")["bar_count"], len(bars))
 
     def test_month_append_overrides_snapshot_and_generation_changes(self):
         old = self.reader.get_history("TEST")

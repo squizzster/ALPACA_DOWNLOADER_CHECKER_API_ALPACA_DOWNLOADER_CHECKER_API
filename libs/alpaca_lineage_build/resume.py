@@ -1,10 +1,6 @@
-"""Conservative reuse of approved, single-identity history.
+"""A yes/no boundary over accepted lineage inputs, without identity rules."""
 
-This is a cache gate, not an identity rule. When continuity or evidence can change
-an earlier decision, the established complete-chronology transform owns that work.
-"""
-
-from collections import defaultdict
+from copy import deepcopy
 from datetime import date, timedelta
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
@@ -14,59 +10,104 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 from .contract import reusable_decision
 
 
+def request_context(request):
+    # The latest HTTP page/window start is not the source's retained start.
+    # history_start is the producer's effective request_from handoff.
+    return {key: value for key, value in request.items() if key != "start"}
+
+
 def unchanged_source(source, previous, *, selected=None):
-    """The pricing producer's completed proof covers every retained row."""
-    # DO NOT compare historical rows to confirm an unchanged generation/ancestry
-    # handoff. Pricing owns that guarantee across all views, including removals.
+    """Trust pricing's row proof and compare the mapping/request inputs too."""
     return (
         previous is not None
         and reusable_decision(previous)
-        and previous["processed_through"] <= source["latest_request"]["end_exclusive"]
-        and (
-            selected == previous["source_sha256"]
-            or any(
-                change["source_sha256"] == previous["source_sha256"] and change["changed_from"] is None
-                for change in source.get("history_changes", ())
-            )
+        and request_context(previous.get("pricing_request", {}))
+        == request_context({**source["latest_request"], "history_start": source.get("history_start")})
+        and unchanged_rows(source, previous, selected=selected)
+    )
+
+
+def unchanged_rows(source, previous, *, selected=None):
+    """Consume pricing's completed all-view equality, independently of requests."""
+    return previous is not None and (
+        selected == previous["source_sha256"]
+        or any(
+            change["source_sha256"] == previous["source_sha256"] and change["changed_from"] is None
+            for change in source.get("history_changes", ())
         )
     )
 
 
-def eligible_source(source, previous, *, refresh):
-    return eligible_prefix(source, previous, refresh=refresh) and not previous["dependencies"]
+def reusable_prefix(source, previous, *, selected=None, refresh=False):
+    """Select an unchanged isolated prefix, without predicting new assignments.
 
+    Pricing owns equality of every retained view. The completed lineage receipt
+    owns its assignments. Only an isolated, nonempty, fully resolved single
+    identity with distributions/splits can retain that prefix across an append.
+    Cross-label history, structural events, ambiguity and unknown action types
+    select complete-group work. No ownership rules are executed here.
+    """
 
-def eligible_prefix(source, previous, *, refresh, selected=None):
-    """Pricing ancestry proves a resolved single-identity prefix is unchanged."""
-    # The completed lineage receipt owns the prefix decision. Pricing ancestry
-    # supplies its exact invalidation condition; a later generation is safe only
-    # when its earliest possible change is at/after the exclusive lineage cutoff.
-    reason = None
-    if refresh:
-        reason = "explicit_refresh"
-    elif previous is None:
-        reason = "no_prior_receipt"
-    elif not reusable_decision(previous):
-        reason = "incompatible_decision"
-    elif previous["processed_through"] > source["latest_request"]["end_exclusive"]:
-        reason = "coverage_regressed"
-    elif previous["source_rows"] == 0:
-        reason = "empty_prefix"
-    elif previous["unresolved_rows"]:
-        reason = "unresolved_prefix"
-    elif len(previous["asset_ids"]) != 1:
-        reason = "multiple_prefix_identities"
-    elif not (
-        selected == previous["source_sha256"]
-        or any(
-            change["source_sha256"] == previous["source_sha256"]
-            and (change["changed_from"] is None or change["changed_from"] >= previous["processed_through"][:10])
-            for change in source.get("history_changes", ())
-        )
+    def selected_prefix(accepted, reason):
+        event("retained_prefix", symbol=source["symbol"], accepted=accepted, reason=reason)
+        return accepted
+
+    if refresh or not previous or not reusable_decision(previous):
+        return selected_prefix(False, "refresh_or_missing_compatible_receipt")
+    facts = previous["evidence"]
+    symbol = source["symbol"]
+    if previous["dependencies"] or facts["queried_symbols"] != [symbol]:
+        return selected_prefix(False, "cross_label_history")
+    if previous["source_rows"] == 0:
+        return selected_prefix(False, "empty_prefix")
+    if previous["unresolved_rows"] or len(previous["asset_ids"]) != 1:
+        return selected_prefix(False, "unresolved_or_multiple_identities")
+    if any(item.get("symbol") != symbol for item in facts["identities"]):
+        return selected_prefix(False, "foreign_identity_label")
+    if any(
+        item.get("action_type") not in {"cash_dividend", "forward_split", "reverse_split"}
+        for item in facts["corporate_actions"]
     ):
-        reason = "ancestry_missing_or_prefix_changed"
-    event("prefix_eligibility", symbol=source.get("symbol"), reason=reason or "accepted")
-    return reason is None
+        return selected_prefix(False, "structural_or_unknown_action")
+    before = request_context(previous.get("pricing_request", {}))
+    after = request_context({**source["latest_request"], "history_start": source.get("history_start")})
+    # Advancing the normal observation/mapping cutoff adds work. Changing any
+    # other effective pricing input invalidates the retained-history handoff.
+    for field in ("end_exclusive", "asof"):
+        old, new = before.pop(field, None), after.pop(field, None)
+        if old is None or new is None or new < old:
+            return selected_prefix(False, "mapping_or_coverage_regressed")
+    if before != after:
+        return selected_prefix(False, "effective_pricing_context_changed")
+    accepted = selected == previous["source_sha256"] or any(
+        change["source_sha256"] == previous["source_sha256"]
+        and (change["changed_from"] is None or change["changed_from"] >= previous["processed_through"][:10])
+        for change in source.get("history_changes", ())
+    )
+    return selected_prefix(accepted, "accepted_pricing_ancestry" if accepted else "changed_or_unproven_prefix")
+
+
+def complete_append(view):
+    """Only the new session grid and its accepted seam require validation."""
+    summaries = view.previous_assignment_summary
+    if not any(view.views.values()):
+        return True
+    checked = set()
+    for adjustment in ADJUSTMENTS:
+        rows = view.views[adjustment]
+        last = summaries[adjustment]["last_session"]
+        if last is None:
+            return False
+        key = id(rows), last
+        if key in checked:
+            continue
+        checked.add(key)
+        first = (date.fromisoformat(last) + timedelta(days=1)).isoformat()
+        expected = expected_market_session_coverage(first, view.source["latest_request"]["end_exclusive"])
+        sessions = tuple(timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows)
+        if sessions != expected.session_dates:
+            return False
+    return True
 
 
 def assignment_summary(previous, boundaries):
@@ -96,121 +137,44 @@ def assignment_summary(previous, boundaries):
     return result
 
 
-def stable_evidence(previous, current):
-    fields = (
-        "identities",
-        "corporate_actions",
-        "symbol_occupancy_evidence",
-        "input_symbol_occupants",
-        "unresolved_cusips",
-        "queried_symbols",
-    )
+def stable_evidence(previous, current, *, append=False):
+    """Compare every evidence fact; exclude only acquisition bookkeeping.
 
-    def lookup_facts(evidence):
-        return [
-            {key: value for key, value in lookup.items() if key != "source"}
-            if lookup.get("source") == "asset_catalogue"
-            else lookup
-            for lookup in evidence["asset_lookups"]
-        ]
-
-    return lookup_facts(previous) == lookup_facts(current) and all(
-        previous[field] == current[field] for field in fields
-    )
-
-
-def unique_assignment(segments, asset_id):
-    return bool(segments) and all(
-        segment.get("correlation_method") == "unique_uuid_candidate_with_warnings"
-        and segment.get("security_identity", {}).get("member_alpaca_asset_ids") == [asset_id]
-        for segment in segments
-    )
-
-
-def stable_observation_priority(inputs, previous, old_boundaries, reports):
-    """Consume accepted last assignments; a changed route rank needs full work.
-
-    Shared-identity sources can compete for older numerical observations even
-    when pricing ancestry is unchanged. Continue only an equal-ranked group
-    whose accepted own-label endpoints and new endpoints remain equal. Missing
-    endpoint assignments in the already-required bodies are not permission to
-    open additional history to prove this gate.
+    New producer fields participate automatically. This boundary has no map of
+    ownership rules, candidates, certificates or likely correlation outcomes.
     """
-    identities = defaultdict(list)
-    for name, prior in previous.items():
-        identities[prior["asset_ids"][0]].append(name)
-    for members in identities.values():
-        if len(members) < 2:
-            continue
-        old_last, new_last = set(), set()
-        for name in members:
-            summary = previous[name].get("assignment_summary", {}).get("raw", {})
-            last = summary.get("last_timestamp")
-            if not last:
-                return False
-            accepted = [
-                segment
-                for body in old_boundaries[name].values()
-                for adjustment in body["adjustments"]
-                if adjustment["adjustment"] == "raw"
-                for segment in adjustment["segments"]
-                if segment["last_timestamp"] == last and segment.get("historical_symbol") == name
-            ]
-            if not accepted:
-                return False
-            old_last.add(last)
-            added = inputs[name].views["raw"]
-            if added and any(
-                s.get("historical_symbol") != name
-                for s in reports[name]["correlated"]["segments"]
-                if s["adjustment"] == "raw"
-            ):
-                return False
-            new_last.add(added[-1][0] if added else last)
-        if len(old_last) != 1 or len(new_last) != 1:
-            return False
-    return True
+
+    def facts(value):
+        result = deepcopy(value)
+        result.pop("api_request_count", None)
+        result.pop("catalogue_observed_at_utc", None)
+        for lookup in result.get("asset_lookups", ()):
+            lookup.pop("source", None)
+        if append:
+            # The isolated-prefix gate already selects the wider acquisition
+            # window/new rows. Actual actions, disposition and coverage quality
+            # still participate. These diagnostics cannot invalidate its prefix.
+            query = result.get("query", {})
+            query.pop("corporate_actions_start", None)
+            query.pop("corporate_actions_end", None)
+            local = result.get("symbol_disposition", {}).get("local_market_data")
+            if isinstance(local, dict):
+                local.pop("maximum_rows", None)
+        return result
+
+    return facts(previous) == facts(current)
 
 
-def can_resume(view, previous, evidence):
-    # This owner checks changed evidence and the NEW suffix/seam only. Failure
-    # delegates the selected history to full reconciliation; it is not permission
-    # to authenticate unrelated stored groups or add checks to successful reuse.
-    if not stable_evidence(previous["evidence"], evidence):
-        event("continuation_rejected", reason="evidence_changed")
-        return False
-    if not any(view.views.values()):
-        return True
-    summary = view.previous_assignment_summary
-    checked, dates, calendars = set(), {}, {}
-    for adjustment in ADJUSTMENTS:
-        rows = view.views[adjustment]
-        last = summary[adjustment]["last_session"]
-        if last is None:
-            event("continuation_rejected", reason="missing_assignment_seam", adjustment=adjustment)
-            return False
-        key = id(rows), last
-        if key in checked:
-            continue
-        checked.add(key)
-        for row in rows:
-            if row[0] not in dates:
-                dates[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
-        sessions = tuple(dates[row[0]] for row in rows)
-        # Only the added range and its predecessor seam are new evidence.
-        first = (date.fromisoformat(last) + timedelta(days=1)).isoformat()
-        if first not in calendars:
-            calendars[first] = expected_market_session_coverage(
-                first, view.source["latest_request"]["end_exclusive"]
-            )
-        expected = calendars[first]
-        if sessions != expected.session_dates:
-            event(
-                "continuation_rejected",
-                reason="incomplete_session_seam",
-                adjustment=adjustment,
-                observed_sessions=len(sessions),
-                expected_sessions=len(expected.session_dates),
-            )
-            return False
-    return True
+def requires_lineage(previous, evidence, *, pricing_unchanged, refresh=False, append=False):
+    """Unknown or changed inputs select the existing complete lineage pipeline."""
+    return (
+        refresh
+        or not pricing_unchanged
+        or previous.keys() != evidence.keys()
+        or any(
+            prior is None
+            or not reusable_decision(prior)
+            or not stable_evidence(prior["evidence"], evidence[symbol], append=append)
+            for symbol, prior in previous.items()
+        )
+    )

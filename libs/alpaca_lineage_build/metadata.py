@@ -97,15 +97,17 @@ class EvidenceClient:
             self.work_policy.check({identifier})
         if identifier not in self.assets:
             asset = (completed_lookup or {}).get("asset")
-            if (
-                asset
-                and completed_lookup["outcome"] == "found"
-                and self.catalogue_assets.get(asset["id"]) == asset
-            ):
-                # The receipt owns the CUSIP-to-ID mapping; the fresh catalogue
-                # supplies matching current asset facts. Do not seed the exact
-                # lookup cache: a new action may still require a fresh mapping.
-                return {key: completed_lookup[key] for key in ("outcome", "http_status", "asset")}
+            if completed_lookup is not None:
+                # The receipt owns this historical mapping, including a negative
+                # result. A name/status change is not a changed CUSIP mapping.
+                # Current facts may be joined by an already accepted UUID; they
+                # must not be used to infer a different UUID from a ticker.
+                current = self.catalogue_assets.get(asset["id"]) if asset else None
+                return {
+                    "outcome": completed_lookup["outcome"],
+                    "http_status": completed_lookup["http_status"],
+                    "asset": current if current is not None else asset,
+                }
             try:
                 self.assets[identifier] = self.client.get_asset_lookup(identifier)
             except (RuntimeError, OSError, ValueError) as error:
@@ -118,14 +120,42 @@ class EvidenceClient:
         # does not extend to ambiguous labels or exact CUSIP-to-ID mappings.
         if self.work_policy is not None:
             self.work_policy.check({symbol})
-        if symbol not in self.assets and self.catalogue is not None and self.catalogue.get(symbol):
+        if symbol in self.assets:
+            return self.get_asset_lookup(symbol)
+        observed = self.observed_symbol_lookup(symbol)
+        return observed if observed is not None else self.get_asset_lookup(symbol)
+
+    def observed_symbol_lookup(self, symbol):
+        """Return only an already acquired observation, regardless of its route."""
+        if symbol in self.assets:
+            return self._value(self.assets[symbol])
+        if self.catalogue is not None and self.catalogue.get(symbol):
             return {
                 "outcome": "found",
                 "http_status": 200,
                 "asset": self.catalogue[symbol],
                 "source": "asset_catalogue",
             }
-        return self.get_asset_lookup(symbol)
+        return None
+
+    def evidence_current(self, evidence):
+        """New producer reports must use this operation's acquired observations."""
+        for lookup in evidence["asset_lookups"]:
+            identifier = lookup["lookup"]
+            observed = (
+                self.observed_symbol_lookup(identifier)
+                if lookup["lookup_kind"] == "symbol"
+                else self._value(self.assets[identifier])
+                if identifier in self.assets
+                else None
+            )
+            if observed is not None and (
+                lookup["outcome"] != observed["outcome"]
+                or lookup["http_status"] != observed["http_status"]
+                or lookup.get("asset") != (compact_asset(observed["asset"]) if observed.get("asset") else None)
+            ):
+                return False
+        return True
 
     @staticmethod
     def _value(value):
@@ -347,10 +377,8 @@ class _CompletedLookupChanged(RuntimeError):
 
 
 class WindowClient:
-    # Retained evidence owns the earlier completed window. Exact-lookup reuse also
-    # requires a positive retained result and identical, unambiguous current asset
-    # facts; negative/missing/changed facts or new actions can require acquisition.
-    # Moving the cutoff alone does not invalidate all historical lookup evidence.
+    # Completed mappings remain authoritative until their endpoint/action inputs
+    # change. A newly acquired endpoint has the same authority on every route.
     def __init__(self, client, symbol, previous, refresh):
         self.client, self.symbol = client, symbol
         self.previous = previous
@@ -372,12 +400,46 @@ class WindowClient:
     def request_count(self):
         return self.client.request_count
 
-    def get_asset_lookup(self, identifier):
+    def completed_lookup(self, identifier):
         previous = (
             self.completed_cusip_lookups.get(identifier)
             if self.start and identifier not in self.changed_cusips
             else None
         )
+        if previous is not None:
+            # New current endpoint identities are a concrete reason to acquire a
+            # mapping again. Starting a command or advancing a query cutoff is not.
+            old_symbols = {
+                lookup["lookup"]: (lookup.get("asset") or {}).get("id")
+                for lookup in self.previous["evidence"]["asset_lookups"]
+                if lookup["lookup_kind"] == "symbol"
+            }
+            labels = {
+                action.get(key[:-6] + "_symbol")
+                for action in self.completed_actions.values()
+                for key, value in action.items()
+                if key.endswith("_cusip") and value == identifier
+            }
+            labels |= {
+                action.get("symbol")
+                for action in self.completed_actions.values()
+                if action.get("cusip") == identifier
+            }
+            canonical = previous.get("asset") or {}
+            if canonical.get("symbol"):
+                labels.add(canonical["symbol"])
+                old_symbols.setdefault(canonical["symbol"], canonical.get("id"))
+            if any(
+                label in old_symbols
+                and (observed := self.client.observed_symbol_lookup(label)) is not None
+                and (observed.get("asset") or {}).get("id") != old_symbols[label]
+                for label in labels
+            ):
+                previous = None
+        return previous
+
+    def get_asset_lookup(self, identifier):
+        previous = self.completed_lookup(identifier)
         result = self.client.get_asset_lookup(identifier, completed_lookup=previous)
         if previous is not None and identifier not in self.client.assets:
             self.retained_lookups[identifier] = result
@@ -388,6 +450,12 @@ class WindowClient:
         if "source" in lookup:
             self.lookup_sources[symbol] = lookup["source"]
         return lookup
+
+    def evidence_current(self, evidence):
+        return self.client.evidence_current(evidence) and all(
+            identifier in self.client.assets or self.completed_lookup(identifier) is not None
+            for identifier in self.retained_lookups
+        )
 
     def lower(self, symbol, start):
         known = self.previous["evidence"]["queried_symbols"] if self.previous else ()
@@ -439,6 +507,8 @@ def acquire(view, client, previous=None, *, refresh=False):
             )
         except _CompletedLookupChanged:
             continue  # The fresh lookup is now authoritative in this operation's cache.
+        if not window.evidence_current(evidence):
+            continue  # A later symbol lookup changed an earlier retained dependency.
         return _finish_evidence(evidence, window)
     raise LineageError("metadata lookup changes exceeded the name-change traversal limit")
 

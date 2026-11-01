@@ -35,7 +35,7 @@ from .metadata import EvidenceClient, acquire, acquire_unpriced, action_requests
 from .migration import can_promote_observation_decision
 from .observations import select_observations
 from .pricing import load_pricing
-from .resume import can_resume, eligible_prefix, stable_observation_priority, unchanged_source, unique_assignment
+from .resume import complete_append, requires_lineage, reusable_prefix, unchanged_source
 from .selection import DependencyGraph
 from .transform import correlate, make_publication, retained_decision_report
 from .work_contract import acquisition_fingerprint, auxiliary_work, pricing_target
@@ -391,6 +391,7 @@ def process_group(
                 )
                 and (work_policy is None or work_policy.decision_inputs_satisfied(sources))
             ):
+                event("lineage_required", symbol=seed, required=False, reason="accepted_unchanged_inputs")
                 receipts = {
                     symbol: {
                         **prior,
@@ -482,14 +483,10 @@ def process_group(
                     )
                 )
                 resume = unchanged or (
-                    group == sources.keys()
+                    len(group) == 1
+                    and group == sources.keys()
                     and all(
-                        eligible_prefix(
-                            source,
-                            previous[symbol],
-                            refresh=refresh,
-                            selected=selected[symbol],
-                        )
+                        reusable_prefix(source, previous[symbol], selected=selected[symbol], refresh=refresh)
                         for symbol, source in sources.items()
                     )
                 )
@@ -498,13 +495,11 @@ def process_group(
                     symbol=seed,
                     members=len(group),
                     mode="unchanged" if unchanged else "prefix" if resume else "full",
-                    reason="unchanged_pricing"
+                    reason="accepted_unchanged_inputs"
                     if unchanged
-                    else "accepted_prefix"
+                    else "accepted_pricing_prefix"
                     if resume
-                    else "missing_member"
-                    if group != sources.keys()
-                    else "prefix_not_eligible",
+                    else "changed_or_unproven_inputs",
                 )
                 retained_kinds = {}
                 for symbol, prior in previous.items():
@@ -551,31 +546,46 @@ def process_group(
                         )
                         pricing_inputs[symbol] = cached
                     inputs[symbol] = cached[1]
-                evidence, deps, assets = {}, {}, set()
                 if progress:
                     progress("lineage_evidence", {"symbols": sorted(group), "reused": reuse_metadata})
-                for symbol, view in inputs.items():
-                    prior = previous[symbol]
-                    if reuse_metadata:
-                        # Only the downstream rules changed. Consume the approved
-                        # evidence directly, then recalculate the complete group.
-                        evidence[symbol] = prior["evidence"]
-                    else:
-                        full = full_metadata(prior, notices.get(symbol), refresh)
-                        key = (symbol, view.source_sha256, full)
-                        if key not in metadata_cache:
-                            metadata_cache[key] = acquire(view, evidence_client, prior, refresh=full)
-                        evidence[symbol] = metadata_cache[key]
-                    deps[symbol] = dependencies(evidence[symbol], symbol)
-                    assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
-                for symbol, missing in sorted(unavailable.items()):
-                    # Prices and metadata have different provider endpoints. Keep
-                    # discovering real relationships even when bars reject a label.
-                    if "evidence" not in missing:
-                        missing["evidence"] = acquire_unpriced(symbol, missing["request"], evidence_client)
-                    auxiliary = missing["evidence"]
-                    deps[symbol] = dependencies(auxiliary, symbol)
-                    assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
+                for _metadata_round in range(MAX_CLOSURE + 1):
+                    evidence, deps, assets = {}, {}, set()
+                    for symbol, view in inputs.items():
+                        prior = previous[symbol]
+                        if reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
+                            # Only the downstream rules changed. Consume the approved
+                            # evidence directly, then recalculate the complete group.
+                            evidence[symbol] = prior["evidence"]
+                        else:
+                            full = full_metadata(prior, notices.get(symbol), refresh)
+                            key = (symbol, view.source_sha256, full)
+                            if key not in metadata_cache or not evidence_client.evidence_current(
+                                metadata_cache[key]
+                            ):
+                                metadata_cache[key] = acquire(view, evidence_client, prior, refresh=full)
+                            evidence[symbol] = metadata_cache[key]
+                        deps[symbol] = dependencies(evidence[symbol], symbol)
+                        assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
+                    for symbol, missing in sorted(unavailable.items()):
+                        # Prices and metadata have different provider endpoints. Keep
+                        # discovering real relationships even when bars reject a label.
+                        if "evidence" not in missing or not evidence_client.evidence_current(
+                            missing["evidence"]
+                        ):
+                            missing["evidence"] = acquire_unpriced(symbol, missing["request"], evidence_client)
+                        auxiliary = missing["evidence"]
+                        deps[symbol] = dependencies(auxiliary, symbol)
+                        assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
+                    # A later member may acquire an exact mapping that supersedes
+                    # an earlier retained observation. Reassemble only stale new
+                    # reports from the in-memory producer cache, under these locks.
+                    if all(
+                        evidence_client.evidence_current(facts)
+                        for facts in [*evidence.values(), *(item["evidence"] for item in unavailable.values())]
+                    ):
+                        break
+                else:
+                    raise LineageError("selected metadata observations did not become coherent")
                 expanded = closure(
                     index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
                 )
@@ -623,18 +633,47 @@ def process_group(
                         required.setdefault(symbol, {"from": start, "end_exclusive": end})
                 if not required:
                     check_unavailable_pricing(store, unavailable, locked, sources=sources)
-                    if resume and not all(
-                        can_resume(view, previous[symbol], evidence[symbol]) for symbol, view in inputs.items()
-                    ):
-                        event("lineage_fallback", symbol=seed, reason="evidence_or_session_seam_changed")
-                        resume = False
-                        inputs = {
-                            symbol: load_pricing(store, symbol, source=source)
-                            for symbol, source in sources.items()
-                        }
-                    no_new_rows = resume and not any(
+                    historical_lineage = requires_lineage(
+                        previous,
+                        evidence,
+                        pricing_unchanged=resume
+                        and (unchanged or all(complete_append(view) for view in inputs.values())),
+                        refresh=refresh,
+                        append=resume and not unchanged,
+                    )
+                    no_new_rows = not historical_lineage and not any(
                         rows for view in inputs.values() for rows in view.views.values()
                     )
+                    event(
+                        "lineage_required",
+                        symbol=seed,
+                        required=not no_new_rows,
+                        retained_history_required=historical_lineage,
+                        scope="complete_group"
+                        if historical_lineage
+                        else "none"
+                        if no_new_rows
+                        else "added_sessions",
+                        retained_rows=sum(item["source_rows"] for item in previous.values() if item),
+                        reason="changed_or_unproven_inputs"
+                        if historical_lineage
+                        else "accepted_unchanged_inputs"
+                        if no_new_rows
+                        else "accepted_prefix_new_sessions",
+                    )
+                    if historical_lineage and resume:
+                        # Evidence changed after pricing alone proved reusable.
+                        # Announce selected owner work before reading its bodies.
+                        event(
+                            "lineage_work_selected", symbol=seed, symbols=sorted(inputs), scope="complete_group"
+                        )
+                        for name, prior in previous.items():
+                            missing = prior["boundaries"].keys() - old_boundaries[name].keys()
+                            old_boundaries[name].update(storage.read_boundaries(root, prior, kinds=missing))
+                        inputs = {
+                            name: load_pricing(store, name, source=source) for name, source in sources.items()
+                        }
+                    resume = not historical_lineage
                     if progress:
                         progress(
                             "lineage_decision_reuse" if no_new_rows else "lineage_correlation",
@@ -686,32 +725,6 @@ def process_group(
                         return selected_components, selected_reports
 
                     components, reports = correlate_components(inputs, retain=no_new_rows)
-                    if (
-                        resume
-                        and not no_new_rows
-                        and (
-                            any(
-                                reports[name]["uncorrelated"]["row_count"]
-                                or not unique_assignment(
-                                    reports[name]["correlated"]["segments"],
-                                    previous[name]["asset_ids"][0],
-                                )
-                                for name, view in inputs.items()
-                                if any(view.views.values())
-                            )
-                            or not stable_observation_priority(inputs, previous, old_boundaries, reports)
-                        )
-                    ):
-                        event(
-                            "lineage_fallback",
-                            symbol=seed,
-                            reason="suffix_identity_or_observation_priority_changed",
-                        )
-                        resume = False
-                        inputs = {
-                            name: load_pricing(store, name, source=source) for name, source in sources.items()
-                        }
-                        components, reports = correlate_components(inputs)
                     # DO NOT REMOVE WITHOUT USER AUTH!#
                     # The complete group establishes one numerical source choice
                     # for all views. A required mapping correction must publish

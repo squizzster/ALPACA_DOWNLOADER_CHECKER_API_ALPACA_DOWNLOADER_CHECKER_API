@@ -503,7 +503,7 @@ class ProductionPolicyOperationTests(TestCase):
             assert receipt["update_obligation_id"] == {marker!r}
             assert contract.reusable_decision(receipt)
             assert reader.read_lineage(store, "AAA")["receipt"] == receipt
-            assert callable(resume.can_resume)
+            assert callable(resume.requires_lineage)
             """
         )
         completed = subprocess.run(

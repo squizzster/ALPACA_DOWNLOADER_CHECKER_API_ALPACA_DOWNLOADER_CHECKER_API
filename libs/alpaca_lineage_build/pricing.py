@@ -25,7 +25,7 @@ from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from .contract import LineageError, document_digest
-from .resume import assignment_summary, unchanged_source
+from .resume import assignment_summary, unchanged_rows
 
 
 @dataclass
@@ -66,7 +66,7 @@ def load_pricing(
     generation = document_digest(source)
     views = (
         {adjustment: () for adjustment in ADJUSTMENTS}
-        if resume_from is not None and unchanged_source(source, previous, selected=generation)
+        if resume_from is not None and unchanged_rows(source, previous, selected=generation)
         else _added_views(root, source, resume_from)
         if resume_from is not None
         else (
