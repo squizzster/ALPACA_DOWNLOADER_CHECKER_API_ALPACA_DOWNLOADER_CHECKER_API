@@ -39,6 +39,7 @@ def boundaries(store, registry, *, context=None):
     # baselines. Neither registry labels nor directory contents can replace them.
     from libs.alpaca_serving_catalogue.producer import status as serving_status
     from libs.alpaca_serving_catalogue.storage import controls as serving_controls
+    from libs.alpaca_serving_catalogue.storage import select_late_bar_repairs
 
     store = Path(store)
     if context is None:
@@ -59,15 +60,15 @@ def boundaries(store, registry, *, context=None):
     checks = read_checks(store, readonly=True)
     if not checks["complete"]:
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
+    serving = serving_controls(store) if context is None else context.select_serving()
     return {
         "index": index,
         "summary": summary,
         "checks": checks,
         "registry": set(load_labels(registry)),
         "state": universe_state.read_state(store),
-        "serving_catalogue": serving_status(
-            store, controls=serving_controls(store) if context is None else context.select_serving()
-        ),
+        "serving_catalogue": serving_status(store, controls=serving),
+        "late_bar_repairs": select_late_bar_repairs(store, serving),
     }
 
 
@@ -399,6 +400,12 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
         for cohort in _cohorts(append)
     ]
+    late_bar_sources = {
+        symbol: item
+        for symbol, item in accepted["late_bar_repairs"]["sources"].items()
+        if symbol not in deferred
+    }
+    late_bar_sessions = sum(len(item["sessions"]) for item in late_bar_sources.values())
 
     def count(plans):
         return sum(len(step["actions"]) for plan in plans for step in plan["steps"])
@@ -441,6 +448,10 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
                 "serving_catalogue_and_obligations",
             ],
             "selected_pricing_manifests": len(initial) + len(empty),
+            "late_bar_probe_manifest_reads": len(late_bar_sources),
+            "late_bar_probe_sources": len(late_bar_sources),
+            "late_bar_probe_sessions": late_bar_sessions,
+            "late_bar_probe_actions_upper_bound": late_bar_sessions,
             "append_approval_manifest_reads": len(append),
             "selected_history_obligation_manifest_reads": sum(
                 bool(item.get("required_history_check"))
@@ -459,17 +470,19 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "acquisition_actions_estimate": count(plans) + count(empty_plans),
             "append_actions_before_reconciliation": count(append_plans),
             "http_pages_minimum": metadata_requests
+            + bool(late_bar_sessions)
             + count([history])
             + count(plans)
             + count(empty_plans)
             + count(append_plans),
             "http_pages_dense_history_estimate": metadata_requests
+            + late_bar_sessions
             + pages([history])
             + pages(plans)
             + pages(empty_plans)
             + pages(append_plans),
             "http_page_assumptions": "known work only, not an ETA: one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
-            "conditional_work": "retained dependency endpoint checks and their selected incremental/replacement acquisitions, same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions, dependency expansion and publications for every resulting complete group; these may dominate the known minimum",
+            "conditional_work": "exact producer-selected late-bar probes trigger the ordinary full-span replacement only on a positive raw response; retained dependency endpoint checks and their selected incremental/replacement acquisitions, same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions, dependency expansion and publications for every resulting complete group may dominate the known minimum",
             "pricing_publications_estimate": len(initial) + len(empty) + len(append),
             "lineage_publications": "complete affected groups; dependency expansion may add work",
             "serving_pending_symbols": accepted["serving_catalogue"]["pending_symbols"],

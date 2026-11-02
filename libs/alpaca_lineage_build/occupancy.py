@@ -19,7 +19,9 @@ _DISTRIBUTION_DATE_FIELDS = ("ex_date", "record_date", "payable_date", "process_
 # reader's second identity solver or use equal prices alone as ownership proof.
 
 
-def may_have_action_anchored_current_suffix(lineage: dict[str, Any]) -> bool:
+def may_have_action_anchored_current_suffix(
+    lineage: dict[str, Any], *, allow_closed_prior: bool = False
+) -> bool:
     """Recognize evidence for the producer's bounded-suffix fallback."""
     from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import (
         build_ticker_ownership_intervals,
@@ -28,6 +30,7 @@ def may_have_action_anchored_current_suffix(lineage: dict[str, Any]) -> bool:
     intervals, _ = build_ticker_ownership_intervals(
         lineage,
         include_action_anchored_current_suffix=True,
+        allow_closed_prior_action_anchored_suffix=allow_closed_prior,
     )
     return any(
         rule.name == "action_anchored_current_ticker_occupancy"

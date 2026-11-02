@@ -13,6 +13,9 @@ from .occupancy_anchor import competing_terminal_anchors, positive_occupancy_act
 from .security_identity import security_identity_for_alpaca_assets
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
 
+CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION = 74
+STABLE_PHASE_HANDOFF_CORRELATION_VERSION = 76
+
 
 @dataclass(frozen=True)
 class AppliedOwnershipIntervalRule:
@@ -75,6 +78,7 @@ class _OwnershipIntervalRuleContext:
     asset_ids_by_symbol_and_cusip: dict[tuple[str, str], str]
     lineage: dict[str, Any]
     uuid_lineage_edges: tuple = ()
+    allow_closed_prior_action_anchored_suffix: bool = False
 
 
 @dataclass(frozen=True)
@@ -866,8 +870,6 @@ def _apply_action_anchored_current_suffix_rule(
         }
     )
     for symbol in symbols:
-        if any(interval.historical_symbol == symbol for interval in existing_intervals):
-            continue
         current = exact_symbol_lookup_asset(context.lineage, symbol)
         if (
             current is None
@@ -915,6 +917,20 @@ def _apply_action_anchored_current_suffix_rule(
         if not current_anchors:
             continue
         lower_bound = current_anchors[0][0]
+        prior_symbol_intervals = [
+            interval for interval in existing_intervals if interval.historical_symbol == symbol
+        ]
+        if prior_symbol_intervals and not context.allow_closed_prior_action_anchored_suffix:
+            continue
+        if any(
+            interval.end_date_exclusive is None or interval.end_date_exclusive > lower_bound
+            for interval in prior_symbol_intervals
+        ):
+            # An existing open or overlapping owner remains authoritative.  A
+            # separately closed prior episode, however, cannot veto a later
+            # exact current-UUID occupancy anchor merely because the label was
+            # used before.  The unsupported interval between them stays open.
+            continue
         supporting_action_ids = tuple(
             action_id
             for effective, action_id, cusip, asset_id in current_anchors
@@ -1009,13 +1025,36 @@ def _asset_ids_by_symbol_and_cusip(
     return asset_ids, evidence_issues
 
 
-def build_ticker_ownership_intervals(
+@dataclass(frozen=True)
+class PreparedTickerOwnership:
+    established: tuple[TickerOwnershipInterval, ...]
+    established_issues: tuple[dict[str, Any], ...]
+    complete: tuple[TickerOwnershipInterval, ...]
+    complete_issues: tuple[dict[str, Any], ...]
+    context: _OwnershipIntervalRuleContext | None
+
+    def with_fallback(self, rule: OwnershipIntervalRule):
+        """Apply a newly authorized fallback to the completed established view."""
+        if self.context is None:
+            return self
+        result = rule.apply(self.context, self.established, 4, rule.name)
+        return PreparedTickerOwnership(
+            self.established,
+            self.established_issues,
+            result.intervals,
+            (*self.established_issues, *result.evidence_issues),
+            self.context,
+        )
+
+
+def prepare_ticker_ownership(
     lineage: dict[str, Any],
     *,
     uuid_lineage_edges=None,
     rules: tuple[OwnershipIntervalRule, ...] | None = None,
     include_action_anchored_current_suffix: bool = False,
-) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
+    allow_closed_prior_action_anchored_suffix: bool = False,
+) -> PreparedTickerOwnership:
     # This owner translates dated evidence into ticker-ownership intervals.
     # Intervals constrain row allocation; they do not themselves merge provider
     # UUIDs. Supplied edges belong to the caller's same evidence group, so DO NOT
@@ -1023,7 +1062,8 @@ def build_ticker_ownership_intervals(
     rules = OWNERSHIP_INTERVAL_RULES if rules is None else rules
     corporate_actions = lineage.get("corporate_actions")
     if not isinstance(corporate_actions, list):
-        return [], [{"reason_code": "malformed_corporate_actions", "detail": "expected a list"}]
+        issues = ({"reason_code": "malformed_corporate_actions", "detail": "expected a list"},)
+        return PreparedTickerOwnership((), issues, (), issues, None)
     normalized_actions = tuple(action for action in corporate_actions if isinstance(action, dict))
     malformed_action_issues = [
         {"reason_code": "malformed_corporate_action_item", "item": repr(action)}
@@ -1039,10 +1079,14 @@ def build_ticker_ownership_intervals(
         uuid_lineage_edges=tuple(
             build_uuid_lineage_edges(lineage)[0] if uuid_lineage_edges is None else uuid_lineage_edges
         ),
+        allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
+    established = None
 
     for rule_order, rule in enumerate(rules, start=1):
+        if rule.name == "action_anchored_current_ticker_occupancy":
+            established = (intervals, tuple(evidence_issues))
         if (
             rule.name == "action_anchored_current_ticker_occupancy"
             and not include_action_anchored_current_suffix
@@ -1052,4 +1096,24 @@ def build_ticker_ownership_intervals(
         intervals = rule_result.intervals
         evidence_issues.extend(rule_result.evidence_issues)
 
-    return list(intervals), evidence_issues
+    if established is None:
+        established = (intervals, tuple(evidence_issues))
+    return PreparedTickerOwnership(*established, intervals, tuple(evidence_issues), context)
+
+
+def build_ticker_ownership_intervals(
+    lineage: dict[str, Any],
+    *,
+    uuid_lineage_edges=None,
+    rules: tuple[OwnershipIntervalRule, ...] | None = None,
+    include_action_anchored_current_suffix: bool = False,
+    allow_closed_prior_action_anchored_suffix: bool = False,
+) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
+    prepared = prepare_ticker_ownership(
+        lineage,
+        uuid_lineage_edges=uuid_lineage_edges,
+        rules=rules,
+        include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+        allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
+    )
+    return list(prepared.complete), list(prepared.complete_issues)

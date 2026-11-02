@@ -33,6 +33,7 @@ from .terminal_episode import (
     assess_dated_departure_prefix,
     assess_historical_asof_gap,
     assess_terminal_traded_episode,
+    assess_vacant_ticker_bridges,
     has_informative_trading,
     has_prolonged_carry_forward,
 )
@@ -118,6 +119,7 @@ def build_security_correlation_report(
     row_correlation_rules=None,
     occupancy_reconciliations: tuple[dict[str, Any], ...] = (),
     include_action_anchored_current_suffix: bool = False,
+    established_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_correlation_change_log()
     # TRUST BOUNDARY: the caller supplies selected input readers and one immutable
@@ -284,6 +286,9 @@ def build_security_correlation_report(
         authenticated_work_items,
         correlation_loader=correlation_loader if complete_source else None,
         source_rows_loader=source_rows_loader,
+        include_successor_prefix=cache.mapped_successor_prefixes,
+        include_successor_split_chain=cache.mapped_successor_split_chains,
+        include_active_successor_prefix=cache.active_successor_prefixes,
     )
     independent_history = assess_independent_historical_intervals(
         symbol,
@@ -315,6 +320,21 @@ def build_security_correlation_report(
     bridged_episodes = (
         assess_bridged_traded_episodes(symbol, lineage, intervals, authenticated_work_items)
         if complete_source
+        else ()
+    )
+    vacant_ticker_bridges = (
+        assess_vacant_ticker_bridges(
+            symbol,
+            lineage,
+            intervals,
+            uuid_lineage_edges,
+            authenticated_work_items,
+            evidence_issues=evidence_issues,
+            correlation_loader=correlation_loader,
+            source_rows_loader=source_rows_loader,
+            include_action_anchored_arrivals=(cache.action_anchored_vacant_ticker_bridges),
+        )
+        if complete_source and cache.vacant_ticker_bridge_exclusions
         else ()
     )
 
@@ -353,6 +373,29 @@ def build_security_correlation_report(
         if complete_source
         else None
     )
+    established_by_adjustment = {}
+    if established_report is not None:
+        for segment in established_report["correlated"]["segments"]:
+            established_by_adjustment.setdefault(segment["adjustment"], []).append(segment)
+        # The new fact is compatibility of newly produced intervals with the
+        # frozen allocation, not authenticity of either accepted handoff.
+        # Reject a contradictory fallback at its producer before reserving rows;
+        # never conceal it by replacing a calculated result afterward.
+        prior_intervals = established_report["ticker_ownership_intervals"]
+        for interval in intervals:
+            if _interval_report_object(interval) in prior_intervals or interval.historical_symbol != symbol:
+                continue
+            for _, source, sessions in authenticated_work_items:
+                for segment in established_by_adjustment.get(source["adjustment"], ()):
+                    owner = segment["canonical_security"]["alpaca_asset_id"]
+                    if owner == interval.asset_id:
+                        continue
+                    if any(
+                        interval.contains(day) for day in sessions[segment["row_start"] - 1 : segment["row_end"]]
+                    ):
+                        raise SecurityCorrelationError(
+                            "fallback ownership conflicts with established row authority"
+                        )
     for authenticated_download, source, _ in authenticated_work_items:
         file_branches = correlate_download_rows(
             authenticated_download.rows,
@@ -366,6 +409,7 @@ def build_security_correlation_report(
             mapped_continuations=mapped_continuations,
             terminal_episode=terminal_episode,
             bridged_episodes=bridged_episodes,
+            vacant_ticker_bridges=vacant_ticker_bridges,
             departure_prefix=departure_prefix,
             historical_asof_gap=historical_asof_gap,
             closed_history_evidence=closed_history_evidence,
@@ -380,6 +424,7 @@ def build_security_correlation_report(
                 include_action_anchored_current_suffix=include_action_anchored_current_suffix,
             ),
             row_rules=row_correlation_rules,
+            established_segments=tuple(established_by_adjustment.get(source["adjustment"], ())),
         )
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]

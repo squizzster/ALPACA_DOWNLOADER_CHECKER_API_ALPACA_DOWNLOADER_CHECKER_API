@@ -21,6 +21,7 @@ from libs.common.debug_trace import event, traced
 
 from . import storage
 from .acquisition import check_unavailable_pricing, unavailable_pricing
+from .certificate_migration import can_promote_group, group_evidence
 from .context import accept_context
 from .contract import (
     MAX_ACQUISITION_WAVES,
@@ -31,7 +32,15 @@ from .contract import (
     reusable_metadata_versions,
     versions,
 )
-from .metadata import EvidenceClient, acquire, acquire_unpriced, action_requests, dependencies, full_metadata
+from .metadata import (
+    EvidenceClient,
+    RetainedReportClient,
+    acquire,
+    acquire_unpriced,
+    action_requests,
+    dependencies,
+    full_metadata,
+)
 from .migration import can_promote_observation_decision
 from .observations import select_observations
 from .pricing import load_pricing
@@ -373,6 +382,16 @@ def process_group(
             }
             selected = {name: storage.document_digest(source) for name, source in sources.items()}
             prior_unavailable = unavailable_pricing(previous.get(seed))
+            from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
+
+            if any(
+                prior and prior["versions"]["correlation"] < DEPENDENCY_HANDOFF_CORRELATION_VERSION
+                for prior in previous.values()
+            ):
+                evidence_client.prepare_retained(
+                    [prior["evidence"] for prior in previous.values() if prior]
+                    + [item["evidence"] for item in prior_unavailable.values() if "evidence" in item]
+                )
             reuse_metadata = _reuse_metadata(seed, group, selected, previous, notices, refresh)
             if reuse_metadata:
                 check_unavailable_pricing(store, prior_unavailable, locked, sources=sources)
@@ -383,11 +402,19 @@ def process_group(
                 work_policy.check(group)
             if register_discoveries is not None:
                 register_discoveries(group)
+            promoted_decision = (
+                reuse_metadata
+                and can_promote_group(previous, group)
+                and all(evidence_client.evidence_current(facts) for facts in group_evidence(previous))
+            )
             if (
                 reuse_metadata
-                and all(
-                    reusable_decision(prior) or can_promote_observation_decision(prior, correlation_policy)
-                    for prior in previous.values()
+                and (
+                    promoted_decision
+                    or all(
+                        reusable_decision(prior) or can_promote_observation_decision(prior, correlation_policy)
+                        for prior in previous.values()
+                    )
                 )
                 and (work_policy is None or work_policy.decision_inputs_satisfied(sources))
             ):
@@ -430,6 +457,7 @@ def process_group(
                         checks=checks,
                         previous=previous,
                         sources=sources,
+                        unchanged_decision=promoted_decision,
                     )
                     receipt_cache.published(receipts)
                     if work_policy is not None:
@@ -562,7 +590,14 @@ def process_group(
                             if key not in metadata_cache or not evidence_client.evidence_current(
                                 metadata_cache[key]
                             ):
-                                metadata_cache[key] = acquire(view, evidence_client, prior, refresh=full)
+                                metadata_cache[key] = acquire(
+                                    view,
+                                    RetainedReportClient(evidence_client, prior["evidence"])
+                                    if reuse_metadata
+                                    else evidence_client,
+                                    prior,
+                                    refresh=full,
+                                )
                             evidence[symbol] = metadata_cache[key]
                         deps[symbol] = dependencies(evidence[symbol], symbol)
                         assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
@@ -572,7 +607,12 @@ def process_group(
                         if "evidence" not in missing or not evidence_client.evidence_current(
                             missing["evidence"]
                         ):
-                            missing["evidence"] = acquire_unpriced(symbol, missing["request"], evidence_client)
+                            missing["evidence"] = acquire_unpriced(
+                                symbol,
+                                missing["request"],
+                                evidence_client,
+                                previous=missing.get("evidence") if reuse_metadata else None,
+                            )
                         auxiliary = missing["evidence"]
                         deps[symbol] = dependencies(auxiliary, symbol)
                         assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))

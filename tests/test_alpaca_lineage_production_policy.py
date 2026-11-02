@@ -195,7 +195,7 @@ class ProductionPolicyAuthorizationTests(TestCase):
         self.assertEqual("correlation_v59_two_phase", load_lab_policy(V59_POLICY).execution_profile)
         self.assertEqual("corrected_v59", load_lab_policy(CORRECTED_POLICY).fallback_profile)
 
-    def test_current_policy_preserves_frozen_v59_assignment_semantics(self):
+    def test_current_policy_preserves_unaffected_frozen_v59_assignments(self):
         evidence = correlation_fixtures.RowCorrelationTests._overlapping_asof_lineage()
         evidence["symbol_disposition"] = {"classification": EXCHANGE_TEST_SYMBOL}
 
@@ -654,13 +654,13 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 with self.assertRaisesRegex(LineageError, "legacy.*policy provenance"):
                     storage._validate_journal_policy(legacy)
 
-    def test_only_exact_v33_v59_receipt_is_promotable_under_current_policy(self):
+    def test_v33_v59_receipt_is_not_relabelled_as_current_v62(self):
         policy = load_authorized_policy()
         receipt = {
             "schema_version": 33,
             "versions": self.legacy_versions(),
         }
-        self.assertTrue(can_promote_observation_decision(receipt, policy))
+        self.assertFalse(can_promote_observation_decision(receipt, policy))
         for changed in (
             {**receipt, "schema_version": 32},
             {**receipt, "versions": {**receipt["versions"], "correlation": 58}},
@@ -670,20 +670,17 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 self.assertFalse(can_promote_observation_decision(changed, policy))
         self.assertFalse(can_promote_observation_decision(receipt, load_policy(V59_POLICY)))
 
-    def test_exact_legacy_complete_group_promotes_without_prices_rules_or_network(self):
+    def test_exact_legacy_complete_group_recalculates_without_network(self):
         self.seed_group()
         before = self.install_legacy_group()
         pricing = snapshot(self.store / "end_of_day/pricing")
         client = self.group_client()
         client.request_count = 0
         client.calls.clear()
-        with (
-            patch.object(pipeline, "load_pricing", side_effect=AssertionError("decoded prices")),
-            patch.object(pipeline, "correlate", side_effect=AssertionError("replayed rules")),
-        ):
-            result = run_lineage(self.store, ["AAA"], identity_client=client)
+        result = run_lineage(self.store, ["AAA"], identity_client=client)
         self.assertEqual(0, result["failed"], result)
-        self.assertTrue(result["results"][0]["reused_decision"])
+        self.assertFalse(result["results"][0]["reused_decision"])
+        self.assertGreater(result["results"][0]["pricing_rows_processed"], 0)
         self.assertEqual(0, client.request_count)
         self.assertEqual(pricing, snapshot(self.store / "end_of_day/pricing"))
 
@@ -724,7 +721,7 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 self.assertEqual(before[symbol]["versions"], receipt["versions"])
                 self.assertNotIn("correlation_policy", receipt)
 
-    def test_dedicated_migration_changes_only_provenance_and_queues_serving_work(self):
+    def test_retired_v60_migration_fails_closed_without_publication(self):
         from libs.alpaca_serving_catalogue import work as serving_work
 
         self.seed_group()
@@ -761,14 +758,15 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 progress=lambda done, total: progress.append((done, total)),
             )
 
-        self.assertTrue(result["complete"], result)
+        self.assertFalse(result["complete"], result)
         self.assertEqual(1, result["selected_groups"])
         self.assertEqual(2, result["selected_receipts"])
-        self.assertEqual(1, result["promoted_groups"])
-        self.assertEqual(2, result["promoted_receipts"])
+        self.assertEqual(0, result["promoted_groups"])
+        self.assertEqual(0, result["promoted_receipts"])
         self.assertEqual(0, result["already_current_groups"])
-        self.assertEqual(0, result["failed_groups"])
-        self.assertEqual("pending_update", result["serving_catalogue_action"])
+        self.assertEqual(1, result["failed_groups"])
+        self.assertIn("promotion is unavailable", result["failure_examples"][0]["reason"])
+        self.assertEqual("none", result["serving_catalogue_action"])
         self.assertEqual(0, result["provider_requests"])
         self.assertEqual(0, result["identity_rule_executions"])
         self.assertEqual(0, result["pricing_payload_reads"])
@@ -776,48 +774,19 @@ class PolicyRecoveryAndMigrationTests(TestCase):
         self.assertEqual([(1, 1)], progress)
         self.assertEqual(pricing_before, snapshot(self.store / "end_of_day/pricing"))
 
-        policy = load_authorized_policy().provenance()
         index = storage.read_index(self.root)
         for symbol in ("AAA", "BBB"):
             with self.subTest(symbol=symbol):
                 receipt = storage.read_receipt(self.root, symbol, index)
-                expected = {
-                    **legacy_receipts[symbol],
-                    "schema_version": VERSION,
-                    "versions": versions(),
-                    "correlation_policy": policy,
-                }
-                self.assertEqual(expected, receipt)
-        pending = serving_work.read(self.store)
-        self.assertEqual(
-            {symbol: index["symbols"][symbol]["sha256"] for symbol in ("AAA", "BBB")},
-            pending,
-        )
+                self.assertEqual(legacy_receipts[symbol], receipt)
+        self.assertEqual({}, serving_work.read(self.store))
 
-        selector = copy.deepcopy(index["projection_state"])
         repeated = migrate_correlation_policy(self.store)
-        self.assertTrue(repeated["complete"], repeated)
+        self.assertFalse(repeated["complete"], repeated)
         self.assertEqual(0, repeated["promoted_groups"])
-        self.assertEqual(1, repeated["already_current_groups"])
-        self.assertEqual("pending_update", repeated["serving_catalogue_action"])
-        self.assertEqual(selector, storage.read_index(self.root)["projection_state"])
-        self.assertEqual(pending, serving_work.read(self.store))
-
-        serving_work.acknowledge(self.store, pending)
-        completed = migrate_correlation_policy(self.store)
-        self.assertEqual("none", completed["serving_catalogue_action"])
-
-        from libs.alpaca_serving_catalogue.contract import CatalogueError
-
-        with patch.object(
-            serving_work,
-            "read",
-            side_effect=CatalogueError("serving work coverage is absent"),
-        ):
-            bootstrap = migrate_correlation_policy(self.store)
-        self.assertTrue(bootstrap["complete"])
-        self.assertEqual("bootstrap_required", bootstrap["serving_catalogue_action"])
-        self.assertIsNone(bootstrap["serving_pending_symbols"])
+        self.assertEqual(1, repeated["failed_groups"])
+        self.assertEqual(index, storage.read_index(self.root))
+        self.assertEqual({}, serving_work.read(self.store))
 
     def test_dedicated_migration_cli_branches_before_credentials_or_clients(self):
         from libs.alpaca_cli import _store_operation_mode, build_parser, dispatch
@@ -919,13 +888,20 @@ class PolicyRecoveryAndMigrationTests(TestCase):
         publish.assert_not_called()
         self.assertEqual(before, storage.read_index(self.root))
 
-    def test_dedicated_migration_rejects_notice_source_change_and_unavailable_appearance(self):
+    def test_migration_source_guard_rejects_notice_change_and_unavailable_appearance(self):
         from libs.alpaca_pricing_download import storage as pricing_storage
 
         self.seed_group()
         self.install_legacy_group()
         self.complete_empty_checks()
-        before = storage.read_index(self.root)
+        real_sources = {
+            symbol: pricing_storage.load_source(
+                self.store / "end_of_day/pricing" / symbol,
+                symbol,
+            )
+            for symbol in ("AAA", "BBB")
+        }
+        input_sources = {symbol: storage.document_digest(source) for symbol, source in real_sources.items()}
 
         with (
             patch.object(
@@ -938,27 +914,17 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 "load_source",
                 side_effect=AssertionError("opened source after pending notice"),
             ) as load_source,
-            patch.object(
-                storage,
-                "publish",
-                side_effect=AssertionError("published after pending notice"),
-            ) as publish,
+            self.assertRaisesRegex(LineageError, "pricing update notice is pending"),
         ):
-            notice = migrate_correlation_policy(self.store)
-        self.assertFalse(notice["complete"])
-        self.assertEqual(1, notice["failed_groups"])
-        self.assertIn("pricing update notice is pending", notice["failure_examples"][0]["reason"])
-        load_source.assert_not_called()
-        publish.assert_not_called()
-        self.assertEqual(before, storage.read_index(self.root))
-
-        real_sources = {
-            symbol: pricing_storage.load_source(
-                self.store / "end_of_day/pricing" / symbol,
-                symbol,
+            _locked_sources_for_migration(
+                self.store,
+                ("AAA", "BBB"),
+                input_sources,
+                {},
+                {"AAA", "BBB"},
             )
-            for symbol in ("AAA", "BBB")
-        }
+        load_source.assert_not_called()
+
         changed_source = {**real_sources["AAA"], "changed_after_lineage": True}
         with (
             patch.object(pricing_storage, "read_update", return_value=None),
@@ -967,18 +933,15 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 "load_source",
                 side_effect=lambda _root, symbol: changed_source if symbol == "AAA" else real_sources[symbol],
             ),
-            patch.object(
-                storage,
-                "publish",
-                side_effect=AssertionError("published changed source"),
-            ) as publish,
+            self.assertRaisesRegex(LineageError, "selected pricing generation changed"),
         ):
-            changed = migrate_correlation_policy(self.store)
-        self.assertFalse(changed["complete"])
-        self.assertEqual(1, changed["failed_groups"])
-        self.assertIn("selected pricing generation changed", changed["failure_examples"][0]["reason"])
-        publish.assert_not_called()
-        self.assertEqual(before, storage.read_index(self.root))
+            _locked_sources_for_migration(
+                self.store,
+                ("AAA", "BBB"),
+                input_sources,
+                {},
+                {"AAA", "BBB"},
+            )
 
         available_source = {"symbol": "AAA", "generation": "selected"}
         generation = storage.document_digest(available_source)
@@ -1017,42 +980,30 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                 {"AAA", "MISSING"},
             )
 
-    def test_dedicated_migration_interruption_recovers_frozen_group_then_is_idempotent(self):
+    def test_retired_v60_migration_never_starts_a_publication(self):
         self.seed_group()
         self.install_legacy_group()
         self.complete_empty_checks()
         with (
             patch.object(
                 storage,
-                "finish_publication",
-                side_effect=RuntimeError("interrupted policy promotion"),
-            ),
-            self.assertRaisesRegex(RuntimeError, "interrupted policy promotion"),
+                "publish",
+                side_effect=AssertionError("started an ineligible policy promotion"),
+            ) as publish,
         ):
-            migrate_correlation_policy(self.store)
-        self.assertTrue((self.root / ".pending.json").exists())
+            first = migrate_correlation_policy(self.store)
+        self.assertFalse(first["complete"], first)
+        publish.assert_not_called()
+        self.assertFalse((self.root / ".pending.json").exists())
 
-        with (
-            patch.object(
-                policy_engine,
-                "evaluate_policy",
-                side_effect=AssertionError("replayed policy after recovery"),
-            ),
-            patch.object(
-                storage,
-                "read_boundaries",
-                side_effect=AssertionError("opened boundaries after recovery"),
-            ),
-        ):
-            recovered = migrate_correlation_policy(self.store)
-        self.assertTrue(recovered["complete"], recovered)
-        self.assertTrue(recovered["recovered_publication"])
-        self.assertEqual(0, recovered["promoted_groups"])
-        self.assertEqual(1, recovered["already_current_groups"])
+        repeated = migrate_correlation_policy(self.store)
+        self.assertFalse(repeated["complete"], repeated)
+        self.assertFalse(repeated["recovered_publication"])
+        self.assertEqual(first["failure_examples"], repeated["failure_examples"])
         self.assertFalse((self.root / ".pending.json").exists())
         index = storage.read_index(self.root)
         self.assertEqual(
-            {versions()["correlation"]},
+            {59},
             {index["symbols"][symbol]["versions"]["correlation"] for symbol in ("AAA", "BBB")},
         )
 

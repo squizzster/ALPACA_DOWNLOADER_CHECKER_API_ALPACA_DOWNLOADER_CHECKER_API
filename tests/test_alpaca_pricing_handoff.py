@@ -131,12 +131,14 @@ class PricingHandoffTests(unittest.TestCase):
         self.assertEqual(result["mode"], "full_refresh")
         self.assertEqual(storage.read_document(self.notice), {"from": "2016-01-04", "to": "2026-10-15"})
 
-    def test_explicit_refresh_notifies_even_if_all_replacement_bytes_match(self):
+    def test_explicit_refresh_preserves_completion_when_all_effective_rows_match(self):
         self.download()
         self.consume()
         result = self.download(refresh_all=True)
         self.assertEqual(result["mode"], "full_refresh")
-        self.assertEqual(storage.read_document(self.notice), {"from": "2016-01-04", "to": "2026-10-01"})
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["files_written"], 0)
+        self.assertFalse(self.notice.exists())
 
     def test_unchanged_update_does_not_recreate_consumed_manifest_directory(self):
         self.download()

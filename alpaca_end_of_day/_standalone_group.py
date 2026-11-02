@@ -21,6 +21,42 @@ from .standalone import (
 )
 
 
+def raw_source_presence(store, sources, generations, queries, *, payload_cache=None):
+    """Selected raw source/date observations for the history producer.
+
+    Caller holds the selected pricing locks. Source manifests already select the
+    payload inventory; no assignment, upstream authentication or other view is
+    required to establish these raw-presence facts.
+    """
+    from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
+
+    result, cache = {}, {}
+    for name, days in sorted(queries.items()):
+        source = sources[name]
+        anchor = source["anchor_month"]
+        kinds = {
+            "completed_years"
+            if day[:4] < anchor[:4]
+            else "current_year"
+            if day[:7] < anchor
+            else "current_month"
+            for day in days
+            if day[:7] <= anchor
+        }
+        present = set()
+        for kind in sorted(kinds):
+            for row in _rows(store / "end_of_day/pricing" / name, source, kind, "raw", cache, payload_cache):
+                day = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                if day in days and (kind != "current_year" or day[:7] < anchor):
+                    present.add(day)
+        result[name] = {
+            "pricing_generation": generations[name],
+            "checked_sessions": sorted(days),
+            "present_sessions": sorted(present),
+        }
+    return result
+
+
 class GroupSnapshot:
     def __init__(
         self,
@@ -213,6 +249,17 @@ class GroupSnapshot:
                     ):
                         result.add(session)
         return result
+
+    def source_raw_presence(self, queries):
+        if self._sources is None:
+            raise StandaloneReaderError("group snapshot is closed")
+        return raw_source_presence(
+            self._reader.store,
+            self._sources,
+            self.references["pricing"],
+            queries,
+            payload_cache=self._cache if self._cache.maximum_bytes else None,
+        )
 
     def set_cache_limit(self, cache_bytes):
         """Adjust retained reuse between reads, within the reader's configured cap."""

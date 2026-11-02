@@ -8,10 +8,10 @@ from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import CatalogueError
 
-WORK_VERSION = 1
+WORK_VERSION = 2
 
 
-def record_publication(connection, entries, *, empty):
+def record_publication(connection, entries, *, empty, handoff=None):
     # Called inside the lineage index transaction: selecting a changed receipt
     # and recording its serving obligation become visible together. Queue state
     # selects work; the committed catalogue decides whether it is already done.
@@ -22,12 +22,57 @@ def record_publication(connection, entries, *, empty):
         "CREATE TABLE IF NOT EXISTS serving_work_state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, complete INTEGER NOT NULL)"
     )
     connection.execute("INSERT OR IGNORE INTO serving_work_state VALUES(1, ?, ?)", (WORK_VERSION, int(empty)))
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS serving_handoffs (symbol TEXT PRIMARY KEY, generation TEXT NOT NULL, body TEXT NOT NULL)"
+    )
+    if handoff is not None:
+        state = connection.execute("SELECT version FROM serving_work_state WHERE id=1").fetchone()
+        if state != (WORK_VERSION,):
+            raise CatalogueError("serving work handoff version changed; run catalogue rebuild")
     if any("group_members" not in entry for entry in entries.values()):
         connection.execute("UPDATE serving_work_state SET complete=0 WHERE id=1")
     for symbol, entry in entries.items():
         prior = connection.execute("SELECT receipt FROM symbols WHERE symbol=?", (symbol,)).fetchone()
         if prior is None or json.loads(prior[0])["sha256"] != entry["sha256"]:
             connection.execute("INSERT OR REPLACE INTO serving_work VALUES(?, ?)", (symbol, entry["sha256"]))
+            connection.execute("DELETE FROM serving_handoffs WHERE symbol=?", (symbol,))
+        if handoff is not None:
+            connection.execute(
+                "INSERT OR REPLACE INTO serving_handoffs VALUES(?, ?, ?)",
+                (symbol, entry["sha256"], json.dumps(handoff, sort_keys=True, separators=(",", ":"))),
+            )
+
+
+def upgrade(store):
+    """Explicit maintenance converts the compact queue without changing obligations."""
+    with closing(connect_sqlite(store / "end_of_day/lineage/index.sqlite3")) as connection, connection:
+        state = connection.execute("SELECT version FROM serving_work_state WHERE id=1").fetchone()
+        if state is None or state[0] not in (1, WORK_VERSION):
+            raise CatalogueError("serving work missing or incompatible; explicit bootstrap required")
+        if state[0] == WORK_VERSION:
+            return
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS serving_handoffs (symbol TEXT PRIMARY KEY, generation TEXT NOT NULL, body TEXT NOT NULL)"
+        )
+        connection.execute("UPDATE serving_work_state SET version=? WHERE id=1", (WORK_VERSION,))
+
+
+def read_handoffs(store, targets):
+    """Only exact selected obligations can carry an unchanged-decision guarantee."""
+    result = {}
+    with closing(connect_sqlite(store / "end_of_day/lineage/index.sqlite3", readonly=True)) as connection:
+        connection.execute("BEGIN")
+        for symbol, generation in sorted(targets.items()):
+            row = connection.execute(
+                "SELECT body FROM serving_handoffs WHERE symbol=? AND generation=?", (symbol, generation)
+            ).fetchone()
+            if row is None:
+                continue
+            handoff = json.loads(row[0])
+            if handoff.get("version") != 1:
+                raise CatalogueError("incompatible unchanged-lineage handoff")
+            result[tuple(handoff["lineage_after"])] = handoff
+    return tuple(result.values())
 
 
 def read(store):
@@ -68,4 +113,7 @@ def acknowledge(store, targets):
     with closing(connect_sqlite(store / "end_of_day/lineage/index.sqlite3")) as connection, connection:
         connection.executemany(
             "DELETE FROM serving_work WHERE symbol=? AND generation=?", sorted(targets.items())
+        )
+        connection.executemany(
+            "DELETE FROM serving_handoffs WHERE symbol=? AND generation=?", sorted(targets.items())
         )

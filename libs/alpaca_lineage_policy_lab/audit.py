@@ -11,6 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import (
+    CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION,
+)
 from libs.alpaca_lineage_build.acquisition import (
     check_unavailable_pricing,
     unavailable_pricing,
@@ -307,7 +310,13 @@ def _suffix_prefilter(
     if policy.schema_version == 4:
         if policy.fallback_profile == PUBLISHED_PROFILE:
             candidates = [
-                may_have_action_anchored_current_suffix(group.receipts[symbol]["evidence"])
+                may_have_action_anchored_current_suffix(
+                    group.receipts[symbol]["evidence"],
+                    allow_closed_prior=(
+                        policy.implementation_correlation_version
+                        >= CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION
+                    ),
+                )
                 for symbol in group.symbols
             ]
             return any(candidates)

@@ -18,8 +18,14 @@ from .evidence import (
     identity_candidates_for_symbol,
 )
 from .identity_partition import OneSessionDistinctUuidTransition
-from .name_change import NameChangeAssessment, assess_name_change_history, name_change_dates
+from .name_change import (
+    PRE_ENTRY_CARRY_FORWARD_REASON,
+    NameChangeAssessment,
+    assess_name_change_history,
+    name_change_dates,
+)
 from .occupancy_anchor import dated_occupancy_anchors
+from .ownership_interval_rules import prepare_ticker_ownership
 from .predecessor_prefix import (
     INDEPENDENT_HISTORY_WARNING,
     MAPPED_CONTINUATION_RULE_NAME,
@@ -37,7 +43,13 @@ from .source_continuity import (
     retired_source_identity,
     same_symbol_continuation_ids,
 )
-from .terminal_episode import DatedDeparturePrefix, HistoricalAsOfGap, TerminalTradedEpisode
+from .terminal_episode import (
+    VACANT_TICKER_BRIDGE_REASON,
+    DatedDeparturePrefix,
+    HistoricalAsOfGap,
+    TerminalTradedEpisode,
+    VacantTickerBridge,
+)
 from .terminal_fallback import (
     TERMINAL_FALLBACK_RULE_NAME,
     apply_terminal_continuous_ticker_fallback,
@@ -134,6 +146,7 @@ class _RowRuleContext:
     same_symbol_continuation_ids: frozenset[str] = frozenset()
     terminal_episode: TerminalTradedEpisode | None = None
     bridged_episodes: tuple[TerminalTradedEpisode, ...] = ()
+    vacant_ticker_bridges: tuple[VacantTickerBridge, ...] = ()
     unrelated_cash_acquiree_intervals: frozenset[tuple] = frozenset()
     departure_prefix: DatedDeparturePrefix | None = None
     historical_asof_gap: HistoricalAsOfGap | None = None
@@ -144,6 +157,9 @@ class _RowRuleContext:
     retired_continuation: RetiredContinuation | None = None
     bounded_aliases: frozenset[tuple] = frozenset()
     name_change_date_conflicts: tuple[tuple[date, date], ...] = ()
+    terminal_carry_forward_exclusions: tuple = ()
+    pre_entry_carry_forward_exclusions: tuple = ()
+    closed_prior_action_anchored_suffixes: bool = False
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -212,15 +228,66 @@ class CorrelationCache:
     reload/publication; it is never a cross-run or whole-universe cache.
     """
 
-    def __init__(self, *, ownership_interval_rules=None, row_correlation_rules=None):
+    def __init__(
+        self,
+        *,
+        ownership_interval_rules=None,
+        row_correlation_rules=None,
+        exact_same_symbol_handoffs=True,
+        bounded_entry_same_symbol_handoffs=True,
+        partial_shared_uuid_suffixes=True,
+        single_session_shared_uuid_histories=True,
+        early_successor_source_bridges=True,
+        complete_certificate_conflicts=True,
+        terminal_carry_forward_exclusions=True,
+        post_padding_shared_uuid_suffixes=True,
+        split_adjusted_post_padding_aliases=True,
+        vacant_ticker_bridge_exclusions=True,
+        action_anchored_vacant_ticker_bridges=True,
+        pre_entry_carry_forward_exclusions=True,
+        component_anchored_early_successors=True,
+        extended_component_handoffs=True,
+        internal_component_handoffs=True,
+        mapped_successor_prefixes=True,
+        mapped_successor_split_chains=True,
+        active_successor_prefixes=True,
+        closed_prior_action_anchored_suffixes=True,
+        stable_phase_handoffs=True,
+    ):
         self.ownership_interval_rules = ownership_interval_rules
         self.row_correlation_rules = row_correlation_rules
+        self.exact_same_symbol_handoffs = exact_same_symbol_handoffs
+        self.bounded_entry_same_symbol_handoffs = bounded_entry_same_symbol_handoffs
+        self.partial_shared_uuid_suffixes = partial_shared_uuid_suffixes
+        self.single_session_shared_uuid_histories = single_session_shared_uuid_histories
+        self.early_successor_source_bridges = early_successor_source_bridges
+        self.complete_certificate_conflicts = complete_certificate_conflicts
+        self.terminal_carry_forward_exclusions = terminal_carry_forward_exclusions
+        self.post_padding_shared_uuid_suffixes = post_padding_shared_uuid_suffixes
+        self.split_adjusted_post_padding_aliases = split_adjusted_post_padding_aliases
+        self.vacant_ticker_bridge_exclusions = vacant_ticker_bridge_exclusions
+        self.action_anchored_vacant_ticker_bridges = action_anchored_vacant_ticker_bridges
+        self.pre_entry_carry_forward_exclusions = pre_entry_carry_forward_exclusions
+        self.component_anchored_early_successors = component_anchored_early_successors
+        self.extended_component_handoffs = extended_component_handoffs
+        self.internal_component_handoffs = internal_component_handoffs
+        self.mapped_successor_prefixes = mapped_successor_prefixes
+        self.mapped_successor_split_chains = mapped_successor_split_chains
+        self.active_successor_prefixes = active_successor_prefixes
+        self.closed_prior_action_anchored_suffixes = closed_prior_action_anchored_suffixes
+        self.stable_phase_handoffs = stable_phase_handoffs
         self._sessions = {}
         self._downloads = {}
         self._decisions = {}
         self._lineage = {}
         self._name_change_sources = {}
         self._name_changes = {}
+        self._continuity = {}
+
+    def inherit_continuity(self, established):
+        # Same selected inputs and established rules; only the certified fourth
+        # rule changes. Reuse the completed chronology and continuity authorities.
+        self._continuity = dict(established._continuity)
 
     def register_name_change_source(self, symbol, downloads, *, complete):
         if not complete:
@@ -244,42 +311,110 @@ class CorrelationCache:
         key = (id(lineage), include_action_anchored_current_suffix)
         cached = self._lineage.get(key)
         if cached is None:
-            candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
+            shared = self._continuity.get(id(lineage)) if self.stable_phase_handoffs else None
+            if shared is None:
+                candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
+            else:
+                _, candidates, edges, edge_issues, assessment, prepared = shared
             # DO NOT REMOVE WITHOUT USER AUTH!#
             # Build each evidence authority once. Interval construction consumes
             # accepted split edges; cross-UUID name candidates still require the
             # subsequent full-group history certificate before membership use.
-            intervals, interval_issues = build_ticker_ownership_intervals(
-                lineage,
-                uuid_lineage_edges=candidates,
-                rules=self.ownership_interval_rules,
-                include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+            if self.stable_phase_handoffs:
+                # Chronology and continuity are produced once, before either row
+                # phase. A dated later occupant may disambiguate a historical
+                # rename; that does NOT authorize fallback row allocation early.
+                # The established view still exposes only the first three rules.
+                prepared = (
+                    prepared.with_fallback(self.ownership_interval_rules[3])
+                    if shared is not None
+                    else prepare_ticker_ownership(
+                        lineage,
+                        uuid_lineage_edges=candidates,
+                        rules=self.ownership_interval_rules,
+                        include_action_anchored_current_suffix=True,
+                        allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
+                    )
+                )
+                intervals = list(prepared.complete)
+                phase_intervals = {
+                    False: (prepared.established, prepared.established_issues),
+                    True: (prepared.complete, prepared.complete_issues),
+                }
+            else:
+                intervals, interval_issues = build_ticker_ownership_intervals(
+                    lineage,
+                    uuid_lineage_edges=candidates,
+                    rules=self.ownership_interval_rules,
+                    include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+                    allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
+                )
+                phase_intervals = {include_action_anchored_current_suffix: (intervals, interval_issues)}
+            assessment = (
+                assessment
+                if shared is not None
+                else assess_name_change_history(
+                    lineage,
+                    intervals,
+                    candidates,
+                    self._name_change_sources,
+                    exact_same_symbol_handoffs=self.exact_same_symbol_handoffs,
+                    bounded_entry_same_symbol_handoffs=self.bounded_entry_same_symbol_handoffs,
+                    partial_shared_uuid_suffixes=self.partial_shared_uuid_suffixes,
+                    single_session_shared_uuid_histories=self.single_session_shared_uuid_histories,
+                    early_successor_source_bridges=self.early_successor_source_bridges,
+                    complete_certificate_conflicts=self.complete_certificate_conflicts,
+                    terminal_carry_forward_exclusions=self.terminal_carry_forward_exclusions,
+                    post_padding_shared_uuid_suffixes=self.post_padding_shared_uuid_suffixes,
+                    split_adjusted_post_padding_aliases=self.split_adjusted_post_padding_aliases,
+                    pre_entry_carry_forward_exclusions=(self.pre_entry_carry_forward_exclusions),
+                    component_anchored_early_successors=(self.component_anchored_early_successors),
+                    extended_component_handoffs=self.extended_component_handoffs,
+                    internal_component_handoffs=self.internal_component_handoffs,
+                )
             )
-            assessment = assess_name_change_history(lineage, intervals, candidates, self._name_change_sources)
-            self._name_changes[key] = assessment
-            edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)
-            edge_issues.extend(continuity_issues)
+            if shared is None:
+                edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)
+                edge_issues.extend(continuity_issues)
+                if self.stable_phase_handoffs:
+                    self._continuity[id(lineage)] = (
+                        lineage,
+                        candidates,
+                        edges,
+                        tuple(edge_issues),
+                        assessment,
+                        prepared,
+                    )
             independent = {
                 edge.action_id: edge
                 for edge in candidates
                 if edge.action_id in assessment.independent_successors
             }
-            intervals = [
-                replace(
-                    interval,
-                    start_date_inclusive=self._name_change_sources[interval.historical_symbol][0][2][0],
+            for enabled, (intervals, interval_issues) in phase_intervals.items():
+                selected_key = (id(lineage), enabled)
+                intervals = [
+                    replace(
+                        interval,
+                        start_date_inclusive=self._name_change_sources[interval.historical_symbol][0][2][0],
+                    )
+                    if any(
+                        interval.identity_key()
+                        == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+                        and interval.start_date_inclusive == edge.effective_date
+                        for edge in independent.values()
+                    )
+                    else interval
+                    for interval in intervals
+                ]
+                self._name_changes[selected_key] = assessment
+                self._lineage[selected_key] = (
+                    lineage,
+                    intervals,
+                    tuple(interval_issues),
+                    edges,
+                    tuple(edge_issues),
                 )
-                if any(
-                    interval.identity_key()
-                    == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
-                    and interval.start_date_inclusive == edge.effective_date
-                    for edge in independent.values()
-                )
-                else interval
-                for interval in intervals
-            ]
-            cached = (lineage, intervals, tuple(interval_issues), edges, tuple(edge_issues))
-            self._lineage[key] = cached
+            cached = self._lineage[key]
         _, intervals, interval_issues, edges, edge_issues = cached
         return intervals, list(interval_issues), edges, list(edge_issues)
 
@@ -621,6 +756,16 @@ def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecis
             and any(
                 interval.historical_symbol == context.requested_symbol
                 and interval.asset_id != requested_interval.asset_id
+                and not (
+                    context.closed_prior_action_anchored_suffixes
+                    and requested_interval.end_date_exclusive is not None
+                    and interval.start_date_inclusive is not None
+                    and interval.start_date_inclusive >= requested_interval.end_date_exclusive
+                    and any(
+                        rule.name == "action_anchored_current_ticker_occupancy"
+                        for rule in interval.applied_rules
+                    )
+                )
                 for interval in context.intervals
             )
         )
@@ -660,6 +805,26 @@ def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecis
 
 
 def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision | None:
+    if any(
+        item.symbol == context.requested_symbol and item.first <= context.session_date <= item.last
+        for item in context.pre_entry_carry_forward_exclusions
+    ):
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=(PRE_ENTRY_CARRY_FORWARD_REASON,),
+        )
+    excluded = [
+        item
+        for item in context.terminal_carry_forward_exclusions
+        if item.symbol == context.requested_symbol and item.first <= context.session_date <= item.last
+    ]
+    excluded_candidates = {(item.asset_id, item.cusip) for item in excluded}
+    if len(excluded_candidates) == 1:
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=("terminal_nontrading_carry_forward",),
+            candidates=tuple(sorted(excluded_candidates)),
+        )
     own_intervals = [item for item in context.intervals if item.historical_symbol == context.requested_symbol]
     if any(
         rule.name == "name_change_ticker_transition" for item in own_intervals for rule in item.applied_rules
@@ -736,6 +901,11 @@ def _apply_inactive_current_suffix_rule(
 def _apply_dated_terminal_suffix_rule(
     context: _RowRuleContext,
 ) -> _RowDecision | None:
+    if any(bridge.contains(context.session_date) for bridge in context.vacant_ticker_bridges):
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH,
+            reason_codes=(VACANT_TICKER_BRIDGE_REASON,),
+        )
     if any(
         episode.preceding_inert_first is not None
         and episode.preceding_inert_first <= context.session_date <= episode.preceding_inert_last
@@ -1168,6 +1338,7 @@ def correlate_download_rows(
     mapped_continuations: tuple[MappedContinuation, ...] = (),
     terminal_episode: TerminalTradedEpisode | None = None,
     bridged_episodes: tuple[TerminalTradedEpisode, ...] = (),
+    vacant_ticker_bridges: tuple[VacantTickerBridge, ...] = (),
     closed_history_evidence: bool | None = None,
     departure_prefix: DatedDeparturePrefix | None = None,
     historical_asof_gap: HistoricalAsOfGap | None = None,
@@ -1179,6 +1350,7 @@ def correlate_download_rows(
     adopted_target_pairs: frozenset[tuple[str, str]] | None = None,
     name_change_assessment: NameChangeAssessment = NameChangeAssessment(),
     row_rules: tuple[RowCorrelationRule, ...] | None = None,
+    established_segments: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, list[dict[str, Any]]]:
     # This owner allocates rows from supplied intervals and bounded certificates.
     # Those proofs belong to the same selected group; DO NOT reacquire evidence
@@ -1304,6 +1476,7 @@ def correlate_download_rows(
         same_symbol_continuation_ids=continuation_ids,
         terminal_episode=terminal_episode,
         bridged_episodes=bridged_episodes,
+        vacant_ticker_bridges=vacant_ticker_bridges,
         unrelated_cash_acquiree_intervals=unrelated_cash_acquiree_intervals,
         departure_prefix=departure_prefix,
         historical_asof_gap=historical_asof_gap,
@@ -1313,6 +1486,11 @@ def correlate_download_rows(
         retired_lower_bound=retired_lower_bound,
         retired_continuation=retired_continuation,
         bounded_aliases=bounded_aliases,
+        terminal_carry_forward_exclusions=name_change_assessment.terminal_carry_forward_exclusions,
+        pre_entry_carry_forward_exclusions=(name_change_assessment.pre_entry_carry_forward_exclusions),
+        closed_prior_action_anchored_suffixes=(
+            cache.closed_prior_action_anchored_suffixes if cache is not None else True
+        ),
         name_change_date_conflicts=tuple(
             (dates[0], dates[-1]) if dates else (date.min, date.max)
             for action in lineage.get("corporate_actions", [])
@@ -1324,7 +1502,16 @@ def correlate_download_rows(
     )
     decisions = cache.decisions_for(context) if cache is not None else {}
     correlated_rows = []
+    # The caller supplies this phase's immutable, same-input allocation. Reserve
+    # its exact segments before invoking rules. Do not reconstruct membership or
+    # coalesce these segments with newly resolved neighbours.
+    established = iter(sorted(established_segments, key=lambda item: item["row_start"]))
+    protected = next(established, None)
     for row_number, timestamp, session_date in parsed_rows:
+        while protected is not None and row_number > protected["row_end"]:
+            protected = next(established, None)
+        if protected is not None and row_number >= protected["row_start"]:
+            continue
         decision = decisions.get(session_date)
         if decision is None:
             decision = decisions[session_date] = _decide_row(
@@ -1340,7 +1527,7 @@ def correlate_download_rows(
             )
         )
 
-    branches = {CORRELATED_BRANCH: [], UNCORRELATED_BRANCH: []}
+    branches = {CORRELATED_BRANCH: list(established_segments), UNCORRELATED_BRANCH: []}
     segment_start = 0
     while segment_start < len(correlated_rows):
         decision = correlated_rows[segment_start].decision
@@ -1348,6 +1535,7 @@ def correlate_download_rows(
         segment_end = segment_start + 1
         while (
             segment_end < len(correlated_rows)
+            and correlated_rows[segment_end].row_number == correlated_rows[segment_end - 1].row_number + 1
             and correlated_rows[segment_end].decision.grouping_key() == grouping_key
         ):
             segment_end += 1
@@ -1456,9 +1644,10 @@ def correlate_download_rows(
     )
     if partitioned_row_count != len(rows):
         raise SecurityCorrelationError(f"row partition invariant failed: {partitioned_row_count} != {len(rows)}")
+    branches[CORRELATED_BRANCH].sort(key=lambda item: item["row_start"])
     return apply_terminal_continuous_ticker_fallback(
         branches,
-        tuple(row.session_date for row in correlated_rows),
+        tuple(session_date for _, _, session_date in parsed_rows),
         source,
         lineage,
         uuid_lineage_edges,

@@ -4,7 +4,7 @@ policy_version: 1.0.0
 policy_role: production
 
 implementation:
-  correlation_version: 60
+  correlation_version: 77
   lineage_version: 34
 
 execution:

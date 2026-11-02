@@ -1,8 +1,13 @@
 """A current dividend anchors an observed episode, not a fabricated inception."""
 
 import unittest
+from dataclasses import replace
 
 from libs.alpaca_end_of_day_security_correlation.evidence import build_ticker_ownership_intervals
+from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import (
+    AppliedOwnershipIntervalRule,
+    TickerOwnershipInterval,
+)
 from libs.alpaca_end_of_day_security_correlation.row_correlation import correlate_download_rows
 from tests import test_alpaca_bridged_history as bridged_fixtures
 from tests.test_alpaca_end_of_day_security_correlation import add_name_change_edge
@@ -70,6 +75,40 @@ class DividendReuseEpisodeTests(unittest.TestCase):
             self.setUp()
             mutation()
             self.assertEqual([], self.current_episode())
+
+    def test_same_owner_action_anchor_preserves_the_independently_proved_episode(self):
+        before = self.current_episode()
+        anchor = TickerOwnershipInterval(
+            "OLD",
+            "current-cusip",
+            "current",
+            self.case.sessions[206],
+            None,
+            (AppliedOwnershipIntervalRule(4, "action_anchored_current_ticker_occupancy", ("anchor",)),),
+        )
+        self.case.intervals.append(anchor)
+        self.assertEqual(before, self.current_episode())
+
+        for conflicting in (
+            replace(anchor, asset_id="different"),
+            replace(anchor, cusip="different"),
+            replace(anchor, end_date_exclusive=self.case.sessions[207]),
+            replace(anchor, applied_rules=()),
+            replace(
+                anchor,
+                applied_rules=(AppliedOwnershipIntervalRule(1, "name_change_ticker_transition", ("arrival",)),),
+            ),
+            replace(
+                anchor,
+                applied_rules=(
+                    *anchor.applied_rules,
+                    AppliedOwnershipIntervalRule(1, "name_change_ticker_transition", ("arrival",)),
+                ),
+            ),
+        ):
+            with self.subTest(interval=conflicting):
+                self.case.intervals[-1] = conflicting
+                self.assertEqual([], self.current_episode())
 
     def test_conflicting_dividend_or_dated_occupancy_declines(self):
         self.lineage["corporate_actions"].append({**self.dividend, "id": "foreign", "cusip": "foreign-cusip"})

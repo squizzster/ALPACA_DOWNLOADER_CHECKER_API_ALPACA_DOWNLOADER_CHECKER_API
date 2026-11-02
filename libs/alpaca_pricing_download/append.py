@@ -195,7 +195,7 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
             "status": "updated" if update else "unchanged",
             "mode": "append",
             "request": request,
-            "changed": update is not None,
+            "changed": written["changed"],
             "added_rows": {name: len(rows) for name, rows in views.items()},
             "files_written": written["files_written"],
             "source_sha256": written["source_sha256"],

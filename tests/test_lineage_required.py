@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import test_alpaca_lineage_build as fixture
 
-from libs.alpaca_lineage_build import pipeline, pricing
+from libs.alpaca_lineage_build import metadata, pipeline, pricing
 from libs.alpaca_lineage_build.resume import requires_lineage, stable_evidence
 from libs.alpaca_lineage_build.transform import ASSIGNMENT_FIELDS
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
@@ -377,3 +377,116 @@ class LineageRequiredTests(unittest.TestCase):
         current = {**evidence, "new_owner_fact": True}
         self.assertFalse(stable_evidence(evidence, current))
         self.assertTrue(requires_lineage({}, {}, pricing_unchanged=False))
+
+    def test_dependency_bookkeeping_changes_do_not_select_lineage_or_mutate_evidence(self):
+        case = self.case
+        case.download()
+        case.run_build()
+        receipt = case.receipt()
+        for before, after in (
+            (None, {"111111111": {"GOOG": "GOOG-id"}}),
+            ({"111111111": {"GOOG": "old-observation"}}, {"111111111": {"GOOG": "GOOG-id"}}),
+            ({"111111111": {"GOOG": "GOOG-id"}}, None),
+        ):
+            prior, evidence = copy.deepcopy(receipt), copy.deepcopy(receipt["evidence"])
+            for document, value in ((prior["evidence"], before), (evidence, after)):
+                document.pop("mapping_endpoint_observations", None)
+                if value is not None:
+                    document["mapping_endpoint_observations"] = value
+            original = copy.deepcopy((prior, evidence))
+            for append in (False, True):
+                with self.subTest(before=before, after=after, append=append):
+                    self.assertFalse(
+                        requires_lineage(
+                            {"GOOG": prior}, {"GOOG": evidence}, pricing_unchanged=True, append=append
+                        )
+                    )
+            self.assertEqual((prior, evidence), original)
+            self.assertTrue(requires_lineage({"GOOG": prior}, {"GOOG": evidence}, pricing_unchanged=False))
+            self.assertTrue(
+                requires_lineage({"GOOG": prior}, {"GOOG": evidence}, pricing_unchanged=True, refresh=True)
+            )
+
+    def test_dependency_bookkeeping_does_not_hide_changed_or_new_evidence(self):
+        case = self.case
+        identity = fixture.asset("GOOG")
+        action = dividend("distribution", "GOOG", "111111111", "2026-10-01")
+        case.download()
+        case.run_build(client=fixture.IdentityClient({"GOOG": identity, "111111111": identity}, [action]))
+        prior = case.receipt()
+        prior["evidence"].pop("mapping_endpoint_observations", None)
+        evidence = copy.deepcopy(prior["evidence"])
+        evidence["mapping_endpoint_observations"] = {"111111111": {"GOOG": "GOOG-id"}}
+        for change in ("lookup_uuid", "action", "occupant", "new_fact"):
+            current = copy.deepcopy(evidence)
+            if change == "lookup_uuid":
+                lookup = next(row for row in current["asset_lookups"] if row["lookup_kind"] == "cusip")
+                lookup["asset"]["id"] = "new-owner"
+            elif change == "action":
+                current["corporate_actions"][0]["rate"] = "0.2"
+            elif change == "occupant":
+                current.setdefault("input_symbol_occupants", []).append(
+                    {"symbol": "GOOG", "asset_id": "competing-owner"}
+                )
+            else:
+                current["new_owner_fact"] = True
+            with self.subTest(change=change):
+                self.assertTrue(requires_lineage({"GOOG": prior}, {"GOOG": current}, pricing_unchanged=True))
+
+    def test_identical_refresh_adds_dependency_bookkeeping_without_group_recalculation(self):
+        case = self.case
+        names = ("AAA", "BBB")
+        identity = fixture.asset("BBB", "shared-uuid")
+        action = {
+            "action_type": "name_change",
+            "id": "rename",
+            "process_date": "2026-10-01",
+            "old_symbol": "AAA",
+            "new_symbol": "BBB",
+            "old_cusip": "111111111",
+            "new_cusip": "111111111",
+        }
+        client = fixture.IdentityClient(
+            {"AAA": fixture.asset("AAA", "shared-uuid"), "BBB": identity, "111111111": identity}, [action]
+        )
+        bars = case.bars + [fixture.bar("2026-10-14")]
+        for name in names:
+            case.download(symbol=name)
+            case.download(symbol=name, end="2026-10-15", bars=bars)
+        finish = metadata._finish_evidence
+
+        def completed_without_bookkeeping(evidence, window):
+            result = finish(evidence, window)
+            result.pop("mapping_endpoint_observations", None)
+            return result
+
+        # Model an accepted complete group from before this optional producer
+        # bookkeeping existed, using the normal normalizer and publication path.
+        with patch.object(metadata, "_finish_evidence", side_effect=completed_without_bookkeeping):
+            case.run_build(symbols=["AAA"], client=client)
+        previous = {name: case.receipt(name) for name in names}
+        self.assertEqual(set(previous["AAA"]["input_sources"]), set(names))
+        refreshed = case.download(symbol="AAA", end="2026-10-15", bars=bars, refresh_all=True)
+        self.assertFalse(refreshed["changed"])
+        self.assertIsNone(refreshed["pending_update"])
+        self.assertNotEqual(refreshed["source_sha256"], previous["AAA"]["source_sha256"])
+        with (
+            patch.object(pipeline, "correlate", side_effect=AssertionError("bookkeeping reran lineage")),
+            patch.object(pricing, "load_published_views", side_effect=AssertionError("historical prices read")),
+            patch.object(pricing, "load_published_boundary", side_effect=AssertionError("price boundary read")),
+            patch.object(pipeline, "event", wraps=pipeline.event) as events,
+        ):
+            result = case.run_build(symbols=["AAA"], client=client)["results"][0]
+        self.assertEqual(result["processed"], list(names))
+        self.assertEqual(result["pricing_rows_processed"], 0)
+        self.assertEqual(result["historical_rows_reused"], sum(r["source_rows"] for r in previous.values()))
+        self.assertTrue(result["reused_decision"])
+        self.assertEqual(
+            [call.kwargs["required"] for call in events.call_args_list if call.args == ("lineage_required",)],
+            [False],
+        )
+        for name in names:
+            current = case.receipt(name)
+            self.assertTrue(current["evidence"]["mapping_endpoint_observations"])
+            self.assertEqual(current["boundaries"], previous[name]["boundaries"])
+            self.assertEqual(current["asset_ids"], previous[name]["asset_ids"])

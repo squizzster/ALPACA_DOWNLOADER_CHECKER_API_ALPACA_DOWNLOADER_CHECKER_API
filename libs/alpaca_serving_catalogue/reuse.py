@@ -98,34 +98,46 @@ def select_prefixes(group, previous, inputs, offsets):
 
 
 def _unchanged_history_checkpoint(prior_group, inputs):
-    """Translate an unchanged policy-5 checkpoint at its maintenance owner."""
+    """Translate an unchanged policy-5/6/7 checkpoint at its maintenance owner."""
     # DO NOT REMOVE WITHOUT USER AUTH!#
-    # Policy 6 changes numerical source selection and makes each ownership label
-    # a list. If the COMPLETE group's published pricing generations and EVERY
-    # row/source/owner/label selection are unchanged, the completed numeric and
-    # session checks still describe the identical history.
+    # Policy 6 changed numerical source selection and made each ownership label
+    # a list. Policies 7 and 8 trust producer-owned non-observation dispositions;
+    # neither changes selected numeric history. If the COMPLETE group's published
+    # pricing generations and EVERY row/source/owner/label selection are
+    # unchanged, the completed numeric and session checks still describe the
+    # identical history while eligibility is recalculated from today's receipt.
     # Compare only these already loaded producer handoffs: no payload reads,
     # upstream authentication, or identity calculation belongs in this proof.
     current = policy()
-    if current["version"] != 6 or prior_group["policy"] != {**current, "version": 5}:
+    prior_policy = prior_group["policy"]
+    if current["version"] != 8 or prior_policy not in (
+        {**current, "version": 5},
+        {**current, "version": 6},
+        {**current, "version": 7},
+    ):
         return None
     completed = prior_group["history_validation"]
-    translated = {
-        symbol: {
-            **source,
-            "views": {
-                adjustment: {
-                    **view,
-                    "ownership": [
-                        {**run, "owner": [run["owner"][0], [run["owner"][1]] if run["owner"][0] else None]}
-                        for run in view["ownership"]
-                    ],
-                }
-                for adjustment, view in source["views"].items()
-            },
+    translated = completed["inputs"]
+    if prior_policy["version"] == 5:
+        translated = {
+            symbol: {
+                **source,
+                "views": {
+                    adjustment: {
+                        **view,
+                        "ownership": [
+                            {
+                                **run,
+                                "owner": [run["owner"][0], [run["owner"][1]] if run["owner"][0] else None],
+                            }
+                            for run in view["ownership"]
+                        ],
+                    }
+                    for adjustment, view in source["views"].items()
+                },
+            }
+            for symbol, source in completed["inputs"].items()
         }
-        for symbol, source in completed["inputs"].items()
-    }
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # A changed source, generation, row count, owner, label or session defeats
     # migration and retains the ordinary full evaluation. A newly superseded
@@ -134,7 +146,7 @@ def _unchanged_history_checkpoint(prior_group, inputs):
     # cannot turn a conflict into an eligible history. Metadata is still projected
     # from the current group by evaluate(); only identical completed history
     # facts are reused.
-    # This exact transition deliberately expires at the next policy version.
+    # These exact transitions deliberately expire at the next policy version.
     return {**completed, "inputs": inputs} if translated == inputs else None
 
 

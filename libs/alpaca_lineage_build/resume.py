@@ -148,6 +148,10 @@ def stable_evidence(previous, current, *, append=False):
         result = deepcopy(value)
         result.pop("api_request_count", None)
         result.pop("catalogue_observed_at_utc", None)
+        # Metadata owns these lookup-invalidation baselines and completes any
+        # required acquisition before this handoff. Adding/changing its bookkeeping
+        # alone is not new lineage evidence; actual lookup/action facts stay below.
+        result.pop("mapping_endpoint_observations", None)
         for lookup in result.get("asset_lookups", ()):
             lookup.pop("source", None)
         if append:

@@ -10,7 +10,7 @@ from test_alpaca_end_of_day_api import NativeCase
 
 from alpaca_end_of_day import DataLibrary, StandaloneReader, standalone
 from libs.alpaca_lineage_build import storage as lineage
-from libs.alpaca_serving_catalogue import policy, reuse, storage, work
+from libs.alpaca_serving_catalogue import policy, producer, reuse, storage, work
 from libs.alpaca_serving_catalogue.producer import maintain
 from libs.common.sqlite_connections import connect_sqlite
 
@@ -28,6 +28,35 @@ def legacy_group(group):
 
 
 class ServingMigrationTests(NativeCase):
+    def test_rebuild_adds_scheduling_projection_without_rechecking_completed_groups(self):
+        self.add_symbol("OTHER")
+        self.bootstrap()
+        expected = storage.controls(self.store)["groups"]
+        with closing(connect_sqlite(storage.path(self.store))) as db, db:
+            bodies = dict(db.execute("SELECT group_key, body FROM groups"))
+            for key, selection in expected.items():
+                legacy = deepcopy(selection)
+                if key == "TEST":
+                    legacy.pop("late_bar_repairs")
+                else:
+                    legacy["late_bar_repairs"] = {"version": 0}
+                db.execute("UPDATE groups SET selection=? WHERE group_key=?", (storage.encoded(legacy), key))
+        with (
+            patch.object(standalone, "_rows", side_effect=AssertionError("completed history reopened")),
+            patch.object(producer, "evaluate", side_effect=AssertionError("completed decision repeated")),
+        ):
+            result = maintain(self.store, rebuild=True)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(2, result["reused_groups"])
+        self.assertEqual(0, result["checked_bars"])
+        self.assertEqual(expected, storage.controls(self.store)["groups"])
+        with closing(connect_sqlite(storage.path(self.store), readonly=True)) as db:
+            self.assertEqual(bodies, dict(db.execute("SELECT group_key, body FROM groups")))
+        with patch.object(
+            storage, "_late_bar_projection", side_effect=AssertionError("completed projection repeated")
+        ):
+            self.assertTrue(maintain(self.store, rebuild=True)["complete"])
+
     def previous(self):
         self.bootstrap()
         return legacy_group(self.catalogue_groups("TEST")["TEST"])
@@ -90,7 +119,7 @@ class ServingMigrationTests(NativeCase):
         with StandaloneReader(self.store)._open_group("TEST", include_unresolved=True) as group:
             inputs, _ = group.serving_inputs()
         cases = []
-        for key, value in (("version", 4), ("version", 6), ("calendar_sha256", "different")):
+        for key, value in (("version", 4), ("version", 9), ("calendar_sha256", "different")):
             prior = deepcopy(previous)
             prior["policy"][key] = value
             cases.append((key + str(value), prior, inputs))
@@ -122,8 +151,18 @@ class ServingMigrationTests(NativeCase):
         for name, prior, current in cases:
             with self.subTest(name=name):
                 self.assertIsNone(reuse._unchanged_history_checkpoint(prior, current))
-        with patch.object(reuse, "policy", return_value={**reuse.policy(), "version": 7}):
+        with patch.object(reuse, "policy", return_value={**reuse.policy(), "version": 9}):
             self.assertIsNone(reuse._unchanged_history_checkpoint(previous, inputs))
+
+    def test_policy6_and_7_unchanged_checkpoints_reuse_completed_history_for_policy8(self):
+        self.bootstrap()
+        with StandaloneReader(self.store)._open_group("TEST", include_unresolved=True) as group:
+            inputs, _ = group.serving_inputs()
+        for version in (6, 7):
+            with self.subTest(version=version):
+                previous = deepcopy(self.catalogue_groups("TEST")["TEST"])
+                previous["policy"]["version"] = version
+                self.assertEqual(reuse._unchanged_history_checkpoint(previous, inputs)["inputs"], inputs)
 
     def test_complete_unchanged_multisource_checkpoint_is_translated(self):
         previous = self.previous()

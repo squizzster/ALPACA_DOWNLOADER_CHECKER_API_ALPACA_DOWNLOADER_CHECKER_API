@@ -1,4 +1,4 @@
-"""Producer-owned promotion of one semantically identical policy transition."""
+"""Retained producer-owned proof for one historical identical transition."""
 
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,8 @@ def can_promote_observation_decision(receipt, policy):
     The caller already owns a coherent selected complete group with unchanged
     pricing generations and evidence. This pure proof performs no I/O. Every
     selected group member must pass before the existing journal publishes the
-    current receipt and policy provenance.
+    current receipt and policy provenance. A later production target makes the
+    proof ineligible rather than relabelling the historical decision.
     """
     current = versions()
     if (PRODUCTION_LINEAGE_VERSION, PRODUCTION_CORRELATION_VERSION) != (
@@ -175,12 +176,18 @@ def migrate_correlation_policy(store: str | Path, *, progress=None) -> dict[str,
     # Explicit offline migration owns this broad selector pass. Ordinary update
     # and reader paths must fail closed or use supported compatibility, not invoke
     # a hidden universe migration when a boundary is missing/incompatible.
-    """Offline, group-atomic promotion of exact 33/59 decisions to 34/60.
+    """Attempt offline group-atomic promotion of exact 33/59 decisions to 34/60.
 
     This dedicated path never imports the live lineage pipeline, constructs a
     provider client, opens a pricing payload or assignment boundary, or executes
-    correlation/observation rules.
+    correlation/observation rules. When 34/60 is no longer current, legacy groups
+    fail closed without publication.
     """
+    if (PRODUCTION_LINEAGE_VERSION, PRODUCTION_CORRELATION_VERSION) == (34, 77):
+        from .certificate_migration import migrate
+
+        return migrate(store, progress=progress)
+
     from libs.alpaca_pricing_download.check_summary import read_snapshot, summary_path
     from libs.alpaca_pricing_download.contract import DownloadError
     from libs.alpaca_pricing_download.update_checks import read_checks

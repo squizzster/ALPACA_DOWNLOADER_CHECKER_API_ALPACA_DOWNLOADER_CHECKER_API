@@ -366,6 +366,7 @@ def run_update(
                 register_discoveries=register,
                 recover_pending=False,
                 work_policy=policy,
+                late_bar_repairs=accepted["late_bar_repairs"],
                 context=context,
             )
         )

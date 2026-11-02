@@ -1,6 +1,6 @@
 """Bind an old-label source prefix to an independently resolved successor view."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
@@ -17,24 +17,31 @@ from libs.common.us_equity_market_session_calendar import (
 
 from .errors import SecurityCorrelationError
 from .identity_partition import _session_date
+from .name_change import _complete_action_query_covers
 from .ownership_interval_rules import TickerOwnershipInterval
 from .terminal_episode import (
     _inert,
     _positive_competing_owner,
     has_informative_trading,
     has_prolonged_carry_forward,
+    has_traded_observation,
     shared_inert_bridges,
 )
+from .ticker_reuse_gap import DATED_TERMINAL_SUFFIX_RULE_NAME
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, UuidLineageEdge
 
 PREDECESSOR_PREFIX_RULE_NAME = "exact_independently_resolved_predecessor_prefix"
 MAPPED_CONTINUATION_RULE_NAME = "accepted_name_change_mapped_continuation"
 MAPPED_CONTINUATION_WARNING = "mapped_predecessor_duplicate"
+SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION = 72
+SUCCESSOR_PREFIX_SPLIT_CHAIN_CORRELATION_VERSION = 73
+ACTIVE_SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION = 75
 _INDEPENDENT_RULE = "asof_selected_uuid_lineage_interval"
 _FIELDS = ("t", "o", "h", "l", "c", "v", "n", "vw")
 # Ownership follows the original transaction fingerprint. Later corporate actions
 # can legitimately give two request labels different adjusted representations.
 _PRICE_COMPARISON_VIEWS = frozenset(("raw",))
+_SPLIT_ADJUSTED_VIEWS = frozenset(("split", "split,dividend", "split,spin-off", "all"))
 INDEPENDENT_HISTORY_WARNING = "independently_dated_matching_history"
 
 
@@ -108,8 +115,312 @@ def _mapped_donor_positions(report, descriptor, edge, source):
     return positions
 
 
+def _mapped_predecessor_positions(
+    report,
+    descriptor,
+    edge,
+    source,
+    *,
+    required_method=None,
+    required_start=None,
+):
+    """Select exact owner assignments from the completed predecessor report."""
+    positions = set()
+    for segment in report.correlated["segments"]:
+        if segment.get("data_file") != descriptor["data_file"]:
+            continue
+        security = segment.get("canonical_security") or {}
+        interval = segment.get("ticker_ownership_interval")
+        if (
+            segment.get("historical_symbol") != edge.predecessor_symbol
+            or security.get("alpaca_asset_id") != edge.predecessor_asset_id
+            or security.get("cusip") != edge.predecessor_cusip
+            or segment.get("correlation_method") == MAPPED_CONTINUATION_RULE_NAME
+            or segment.get("feed") != source["feed"]
+            or segment.get("timeframe") != source["timeframe"]
+            or segment.get("download_sha256") != descriptor["download_sha256"]
+            or interval is not None
+            and (
+                interval.get("historical_symbol") != edge.predecessor_symbol
+                or interval.get("asset_id") != edge.predecessor_asset_id
+                or interval.get("cusip") != edge.predecessor_cusip
+            )
+            or required_method is not None
+            and (
+                segment.get("correlation_method") != required_method
+                or not isinstance(interval, dict)
+                or interval.get("start_date_inclusive") != required_start.isoformat()
+                or interval.get("end_date_exclusive") != edge.effective_date.isoformat()
+                or edge.action_id not in interval.get("supporting_corporate_action_ids", ())
+            )
+        ):
+            continue
+        covered = set(range(segment["row_start"], segment["row_end"] + 1))
+        if positions.intersection(covered):
+            return set()
+        positions.update(covered)
+    return positions
+
+
+def _same_label_successor_split_chain(lineage, edges, handoff, through):
+    """Accept only one complete post-handoff identity-preserving split chain."""
+    symbol = handoff.successor_symbol
+    known = _known_label_asset_ids(lineage, symbol) | {handoff.successor_asset_id}
+    current = handoff.successor_asset_id
+    if known == {current}:
+        return frozenset(known)
+    visited = {current}
+    before = None
+    while True:
+        incoming = {
+            (edge.predecessor_asset_id, edge.effective_date)
+            for edge in edges
+            if edge.successor_asset_id == current
+            and edge.predecessor_asset_id != current
+            and handoff.effective_date < edge.effective_date <= through
+            and (before is None or edge.effective_date < before)
+        }
+        if not incoming:
+            break
+        if len(incoming) != 1:
+            return frozenset()
+        predecessor, when = next(iter(incoming))
+        connecting = [
+            edge
+            for edge in edges
+            if edge.predecessor_asset_id == predecessor
+            and edge.successor_asset_id == current
+            and edge.effective_date == when
+        ]
+        if (
+            predecessor in visited
+            or len(connecting) != 1
+            or connecting[0].edge_type not in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+            or connecting[0].predecessor_symbol != symbol
+            or connecting[0].successor_symbol != symbol
+            or any(
+                edge.successor_asset_id != current for edge in edges if edge.predecessor_asset_id == predecessor
+            )
+        ):
+            return frozenset()
+        visited.add(predecessor)
+        current, before = predecessor, when
+    return frozenset(visited) if known == visited else frozenset()
+
+
+def _successor_prefix_mapped_continuations(
+    symbol,
+    lineage,
+    intervals,
+    edges,
+    sources,
+    grids,
+    *,
+    correlation_loader,
+    source_rows_loader,
+    include_successor_split_chain,
+    include_active_successor_prefix,
+):
+    """Trust an exact predecessor assignment copied into a successor-labelled prefix."""
+    qualified = []
+    for edge in edges:
+        if (
+            edge.edge_type != "name_change"
+            or edge.successor_symbol != symbol
+            or edge.predecessor_symbol == symbol
+            or edge.predecessor_asset_id != edge.successor_asset_id
+            or edge.predecessor_cusip != edge.successor_cusip
+            or (
+                not include_successor_split_chain
+                and _known_label_asset_ids(lineage, symbol) != {edge.successor_asset_id}
+            )
+            or any(
+                interval.historical_symbol == symbol and interval.asset_id != edge.successor_asset_id
+                for interval in intervals
+            )
+        ):
+            continue
+        predecessors = [
+            interval
+            for interval in intervals
+            if interval.identity_key()
+            == (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+            and interval.end_date_exclusive == edge.effective_date
+        ]
+        successors = [
+            interval
+            for interval in intervals
+            if interval.identity_key() == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+            and interval.start_date_inclusive == edge.effective_date
+        ]
+        if len(predecessors) != 1 or len(successors) != 1:
+            continue
+        try:
+            asof = date.fromisoformat(sources["raw"][1]["asof"][:10])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not successors[0].contains(asof):
+            continue
+        successor_split_chain = (
+            _same_label_successor_split_chain(lineage, edges, edge, asof)
+            if include_successor_split_chain
+            else frozenset()
+        )
+        if include_successor_split_chain and not successor_split_chain:
+            continue
+        outgoing = [
+            candidate
+            for candidate in edges
+            if candidate.edge_type == "name_change"
+            and (
+                candidate.predecessor_symbol,
+                candidate.predecessor_cusip,
+                candidate.predecessor_asset_id,
+            )
+            == (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+        ]
+        incoming = [
+            candidate
+            for candidate in edges
+            if candidate.edge_type == "name_change"
+            and (
+                candidate.successor_symbol,
+                candidate.successor_cusip,
+                candidate.successor_asset_id,
+            )
+            == (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+        ]
+        if outgoing != [edge] or incoming != [edge]:
+            continue
+        sessions = next(iter(grids))
+        prefix = tuple(session for session in sessions if session < edge.effective_date)
+        suffix = tuple(session for session in sessions if session >= edge.effective_date)
+        if (
+            not prefix
+            or not suffix
+            or suffix[0] != edge.effective_date
+            or any(not predecessors[0].contains(session) for session in prefix)
+        ):
+            continue
+        try:
+            expected = expected_market_session_coverage(prefix[0].isoformat(), edge.effective_date.isoformat())
+        except MarketCalendarError:
+            continue
+        if tuple(session.isoformat() for session in prefix) != expected.session_dates:
+            continue
+        raw_prefix = sources["raw"][0][: len(prefix)]
+        inert_value = _inert(raw_prefix[0])
+        padding = 0
+        while (
+            padding < len(raw_prefix) and inert_value is not None and _inert(raw_prefix[padding]) == inert_value
+        ):
+            padding += 1
+        padded_prefix = (
+            padding >= 100
+            and has_informative_trading(raw_prefix[padding:])
+            and not has_prolonged_carry_forward(raw_prefix[padding:])
+        )
+        active_prefix = (
+            include_active_successor_prefix
+            and len(successor_split_chain) == 1
+            and all(has_traded_observation((row,)) for row in raw_prefix)
+            and has_informative_trading(raw_prefix)
+            and not has_prolonged_carry_forward(raw_prefix)
+        )
+        if active_prefix and not _complete_action_query_covers(
+            lineage,
+            edge.successor_symbol,
+            edge.effective_date,
+        ):
+            continue
+        # The established path mirrors a successor source that begins inside a
+        # donor's prolonged padding. The active path is narrower: it consumes
+        # only an exact, completed dated-terminal donor suffix.
+        if not padded_prefix and not active_prefix:
+            continue
+        try:
+            report = correlation_loader(edge.predecessor_symbol)
+        except SecurityCorrelationError:
+            continue
+        descriptors = {}
+        for descriptor in report.sources_by_filename.values():
+            adjustment = descriptor["adjustment"]
+            if adjustment in descriptors:
+                descriptors = {}
+                break
+            descriptors[adjustment] = descriptor
+        if set(descriptors) != set(sources):
+            continue
+        matching = set(prefix)
+        for adjustment, (rows, source, _) in sources.items():
+            descriptor = descriptors[adjustment]
+            try:
+                donor_rows, generation = source_rows_loader(edge.predecessor_symbol, descriptor["data_file"])
+            except SecurityCorrelationError:
+                matching.clear()
+                break
+            if generation != descriptor["download_sha256"]:
+                matching.clear()
+                break
+            donor = {_session_date(row.get("t")): (position, row) for position, row in enumerate(donor_rows, 1)}
+            if len(donor) != len(donor_rows):
+                matching.clear()
+                break
+            owned = _mapped_predecessor_positions(
+                report,
+                descriptor,
+                edge,
+                source,
+                required_method=(DATED_TERMINAL_SUFFIX_RULE_NAME if active_prefix else None),
+                required_start=(prefix[0] if active_prefix else None),
+            )
+            source_by_session = dict(zip(sessions, rows, strict=True))
+            split_vintage = (
+                padded_prefix and len(successor_split_chain) > 1 and adjustment in _SPLIT_ADJUSTED_VIEWS
+            )
+            matching = {
+                session
+                for session in matching
+                if session in donor
+                and donor[session][0] in owned
+                and (
+                    split_vintage
+                    or all(
+                        source_by_session[session].get(field) is not None
+                        and source_by_session[session].get(field) == donor[session][1].get(field)
+                        for field in FIELDS
+                    )
+                )
+            }
+            if matching != set(prefix):
+                matching.clear()
+                break
+        if matching == set(prefix):
+            qualified.append(
+                MappedContinuation(
+                    frozenset(prefix),
+                    replace(predecessors[0], start_date_inclusive=prefix[0])
+                    if active_prefix
+                    else predecessors[0],
+                    edge.predecessor_symbol,
+                    edge.action_id,
+                )
+            )
+    return tuple(dict.fromkeys(qualified))
+
+
 def assess_mapped_continuations(
-    symbol, lineage, intervals, edges, work_items, *, correlation_loader, source_rows_loader
+    symbol,
+    lineage,
+    intervals,
+    edges,
+    work_items,
+    *,
+    correlation_loader,
+    source_rows_loader,
+    include_successor_prefix=False,
+    include_successor_split_chain=False,
+    include_active_successor_prefix=False,
 ):
     """Bind mapped predecessor rows only after the successor independently owns them."""
     if correlation_loader is None or source_rows_loader is None:
@@ -226,6 +537,21 @@ def assess_mapped_continuations(
             qualified.append(
                 MappedContinuation(frozenset(matching), successor, edge.successor_symbol, edge.action_id)
             )
+    if include_successor_prefix:
+        qualified.extend(
+            _successor_prefix_mapped_continuations(
+                symbol,
+                lineage,
+                intervals,
+                edges,
+                sources,
+                grids,
+                correlation_loader=correlation_loader,
+                source_rows_loader=source_rows_loader,
+                include_successor_split_chain=include_successor_split_chain,
+                include_active_successor_prefix=include_active_successor_prefix,
+            )
+        )
     return tuple(dict.fromkeys(qualified))
 
 

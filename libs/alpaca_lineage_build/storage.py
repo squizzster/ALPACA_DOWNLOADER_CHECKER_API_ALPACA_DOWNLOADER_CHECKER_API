@@ -404,7 +404,7 @@ def refresh_index(root, index=None):
     return read_index(root)
 
 
-def _update_index(root: Path, entries: dict, *, projection_complete=False) -> dict:
+def _update_index(root: Path, entries: dict, *, projection_complete=False, serving_handoff=None) -> dict:
     # One tiny indexed row per ticker, not a full-universe JSON rewrite on each
     # update. The chronological JSON boundaries remain the authoritative outputs.
     path = path_at(root, "index.sqlite3")
@@ -427,7 +427,7 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False) -> di
 
                 # The serving obligation commits with the lineage selector, before
                 # upstream acknowledgement. Recovery can replay this transaction.
-                record_publication(connection, entries, empty=count == 0)
+                record_publication(connection, entries, empty=count == 0, handoff=serving_handoff)
                 connection.execute(
                     "INSERT OR IGNORE INTO projection_state VALUES (1, ?, 0, ?)",
                     (PROJECTION_VERSION, int(count == 0)),
@@ -539,7 +539,7 @@ def _install(root: Path, journal: dict, *, compare=True) -> dict:
         while parent != root and parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
             parent = parent.parent
-    return _update_index(root, journal["index_updates"])
+    return _update_index(root, journal["index_updates"], serving_handoff=journal.get("serving_handoff"))
 
 
 def _validate_journal_policy(journal: dict) -> None:
@@ -683,6 +683,7 @@ def publish(
     checks=None,
     previous=None,
     sources=None,
+    unchanged_decision=False,
 ) -> None:
     if not receipts:
         raise LineageError("lineage publication requires at least one receipt")
@@ -732,6 +733,33 @@ def publish(
         ),
         "notices": notices,
     }
+    if unchanged_decision:
+        # The migration owner has established rule applicability once. This
+        # publication guarantee covers the exact old/new outputs, so serving
+        # can retain completed checks without rediscovering that proof.
+        ignored = {
+            "schema_version",
+            "versions",
+            "correlation_policy",
+            "update_obligation_id",
+            "evidence_requirements",
+            "unavailable_obligations",
+        }
+        if previous is None or any(
+            {k: v for k, v in receipt.items() if k not in ignored}
+            != {k: v for k, v in previous[symbol].items() if k not in ignored}
+            for symbol, receipt in receipts.items()
+        ):
+            raise LineageError("unchanged decision handoff changed serving inputs")
+        members = sorted(set(receipts) | set(journal["unavailable_pricing"]))
+        journal["serving_handoff"] = {
+            "version": 1,
+            "lineage_before": {
+                name: index["symbols"][name]["sha256"] if name in receipts else None for name in members
+            },
+            "lineage_after": {name: updated[name]["sha256"] if name in receipts else None for name in members},
+            "pricing": journal["sources"],
+        }
     if checks is not None:
         journal["checks"] = {
             "epoch": checks["epoch"],

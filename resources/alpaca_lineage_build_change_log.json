@@ -228,9 +228,38 @@
     ]
   },
   {
-    "modifications": ["Separate universe update-lock acquisition and durable work-state loading in opt-in debug timing spans, without changing selection, stored artifacts or non-debug output."]
+    "modifications": [
+      "Separate universe update-lock acquisition and durable work-state loading in opt-in debug timing spans, without changing selection, stored artifacts or non-debug output."
+    ]
   },
   {
-    "modifications": ["Use one input-selection boundary and the existing policy evaluator for both complete-group work and producer-proven isolated-prefix continuation. Retain fully resolved single-identity prefixes across ordinary distribution/split appends, compare all material evidence and effective pricing context, and exclude only scoped acquisition bookkeeping. Keep complex, empty, ambiguous, changed and unproven histories on complete-group evaluation before execution; remove alternate executors and outcome-based fallback. Preserve authoritative historical lookup mappings and invalidate dependent mappings on newly observed endpoint changes, including recorded canonical endpoints. Trace retained-history selection and actual work scope only with --debug; preserve lineage-34 compatibility and normal publication/recovery."]
+    "modifications": [
+      "Use one input-selection boundary and the existing policy evaluator for both complete-group work and producer-proven isolated-prefix continuation. Retain fully resolved single-identity prefixes across ordinary distribution/split appends, compare all material evidence and effective pricing context, and exclude only scoped acquisition bookkeeping. Keep complex, empty, ambiguous, changed and unproven histories on complete-group evaluation before execution; remove alternate executors and outcome-based fallback. Preserve authoritative historical lookup mappings and invalidate dependent mappings on newly observed endpoint changes, including recorded canonical endpoints. Trace retained-history selection and actual work scope only with --debug; preserve lineage-34 compatibility and normal publication/recovery."
+    ]
+  },
+  {
+    "modifications": [
+      "Plan provider-late session checks from the accepted serving selector, report their bounded manifest and request shape, and run a confirmed correction through the one generation-bound pricing replacement and normal complete-group lineage path before append. Preserve empty/stale decisions, cutoff restrictions, serving-generation publication guards and lineage-34 compatibility."
+    ]
+  },
+  {
+    "modifications": [
+      "Pass the immutable established allocation into the same second-phase correlation evaluator, reuse completed source reports without rebuilding them, and preserve the existing phase integrity checks. Authorize correlation-76 while retaining lineage-34 publication and recovery contracts."
+    ]
+  },
+  {
+    "modifications": [
+      "Invalidate retained mappings only when their recorded endpoint observations change; repair selected pre-fix metadata and migrate provably unchanged complete-group decisions with a durable serving handoff."
+    ]
+  },
+  {
+    "modifications": [
+      "Exclude producer-owned mapping dependency bookkeeping from the lineage-input comparison while retaining metadata invalidation and all material evidence comparisons. Preserve completed assignments on bookkeeping-only handoffs without historical payload reads or correlation, retaining lineage-34 and correlation-77 compatibility."
+    ]
+  },
+  {
+    "modifications": [
+      "Complete metadata dependency baselines before checking rebuilt report coherence, preserving accepted historical mappings across current ticker reuse without repeating unchanged assembly. Retain exact acquisition for changed endpoint/action evidence and explicit refresh, with lineage-34 publication compatibility."
+    ]
   }
 ]

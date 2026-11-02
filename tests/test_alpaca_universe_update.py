@@ -14,7 +14,7 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from libs.alpaca_data_api_solver import build_plan
-from libs.alpaca_lineage_build import storage, universe_plan, universe_state
+from libs.alpaca_lineage_build import pipeline, storage, universe_plan, universe_state
 from libs.alpaca_lineage_build.catalogue import discovery_labels, observe_catalogue
 from libs.alpaca_lineage_build.check_summary import rebuild
 from libs.alpaca_lineage_build.contract import CorrelationPolicyError, LineageError, versions
@@ -176,7 +176,7 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(entry["projection"]["processed_through"], "2026-10-20T00:00:00Z")
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")
 
-    def test_summarized_rule_change_reaches_lineage_without_pricing_or_metadata_reacquisition(self):
+    def test_summarized_rule_change_recalculates_from_retained_prices_without_reacquisition(self):
         self.records[:] = [asset("AAA")]
         root = self.store / "end_of_day/lineage"
         index = storage.read_index(root)
@@ -211,8 +211,8 @@ class UniverseUpdateTests(unittest.TestCase):
 
         with (
             patch("libs.alpaca_lineage_build.pipeline.acquire", side_effect=AssertionError("metadata request")),
-            patch("libs.alpaca_lineage_build.pipeline.load_pricing", side_effect=AssertionError("price decode")),
-            patch("libs.alpaca_lineage_build.pipeline.correlate", side_effect=AssertionError("rule replay")),
+            patch.object(pipeline, "load_pricing", wraps=pipeline.load_pricing) as load_pricing,
+            patch.object(pipeline, "correlate", wraps=pipeline.correlate) as correlate,
         ):
             result = self.update()
 
@@ -220,7 +220,10 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertIn("changed_rules", result["plan"]["work"]["AAA"]["reasons"])
         rows = result["stages"]["discovery_lineage"][0]["results"]
         self.assertEqual(rows[0]["processed"], ["AAA"])
-        self.assertTrue(rows[0]["reused_decision"])
+        self.assertFalse(rows[0]["reused_decision"])
+        self.assertGreater(rows[0]["pricing_rows_processed"], 0)
+        load_pricing.assert_called_once()
+        correlate.assert_called_once()
         current = storage.read_receipt(root, "AAA", storage.read_index(root))
         self.assertEqual(current["versions"], versions())
         self.assertEqual(universe_state.read_state(self.store)["work"]["AAA"]["status"], "complete")

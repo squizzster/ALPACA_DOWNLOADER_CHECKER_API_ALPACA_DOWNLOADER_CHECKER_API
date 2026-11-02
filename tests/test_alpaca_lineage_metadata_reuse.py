@@ -74,7 +74,7 @@ class MetadataReuseTests(unittest.TestCase):
         self.run_build(client=client)
         self.assertEqual(client.calls, [("GOOG", "2026-10-01", "2026-10-15")])
 
-    def test_identical_pricing_notice_prevents_metadata_reuse(self):
+    def test_identical_pricing_refresh_keeps_metadata_reusable_for_new_rules(self):
         self.download()
         self.run_build()
         source = self.receipt()["source_sha256"]
@@ -83,7 +83,7 @@ class MetadataReuseTests(unittest.TestCase):
         client = IdentityClient()
         self.run_build(client=client)
         self.assertEqual(self.receipt()["source_sha256"], source)
-        self.assertEqual(client.calls, [("GOOG", "2016-01-01", "2026-10-14")])
+        self.assertEqual(client.calls, [])
 
     def test_explicit_refresh_with_new_rules_still_acquires_metadata(self):
         self.download()

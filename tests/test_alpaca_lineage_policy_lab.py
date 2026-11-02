@@ -192,10 +192,10 @@ class PolicyCompilerTests(TestCase):
         corrected = load_policy(CURRENT_QUALITY_POLICY)
 
         self.assertEqual(4, production.schema_version)
-        self.assertEqual(60, production.implementation_correlation_version)
+        self.assertEqual(77, production.implementation_correlation_version)
         self.assertEqual(34, production.implementation_lineage_version)
         self.assertEqual("production", production.policy_role)
-        self.assertEqual("correlation_v60_policy_engine", production.execution_profile)
+        self.assertEqual("correlation_v77_policy_engine", production.execution_profile)
         self.assertEqual("published_v59", production.fallback_profile)
         self.assertEqual(4, published.schema_version)
         self.assertEqual(59, published.implementation_correlation_version)
@@ -2372,7 +2372,9 @@ class PolicyAuditTests(TestCase):
 
         with patch(
             "libs.alpaca_lineage_policy_lab.audit.may_have_action_anchored_current_suffix",
-            side_effect=lambda evidence: evidence.get("symbol") in {"AAA", "BBB"},
+            side_effect=lambda evidence, *, allow_closed_prior=False: (
+                not allow_closed_prior and evidence.get("symbol") in {"AAA", "BBB"}
+            ),
         ) as candidate:
             self.assertTrue(_suffix_prefilter(complete_group, index, published))
             self.assertTrue(_suffix_prefilter(incomplete_group, index, published))

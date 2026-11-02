@@ -98,6 +98,7 @@ def update_everything(
     register_discoveries=None,
     work_policy=None,
     recover_pending=True,
+    late_bar_repairs=None,
     context=None,
 ):
     """Fresh check -> same-span replacement/lineage -> append -> lineage -> summary.
@@ -166,6 +167,7 @@ def update_everything(
                 register_discoveries=register_discoveries,
                 work_policy=work_policy,
                 symbols=remaining,
+                late_bar_repairs=late_bar_repairs if round_number == 0 else None,
                 context=context,
             )
             if not checked["complete"]:

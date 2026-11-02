@@ -150,7 +150,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
         # still fail before creating anything or upgrading the lineage protocol.
         validate_version()
         try:
-            selected_state = storage.selector_state(store, recover=True)
+            selected_state = storage.selector_state(store, recover=True, incomplete=scope is not None)
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as error:
             raise CatalogueError(
                 "cannot read serving catalogue; run alpaca-cli-eod catalogue bootstrap --store PATH"
@@ -162,7 +162,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
         if (root / ".pending.json").exists():
             raise CatalogueError("lineage publication pending; resume its owner first")
         if not (bootstrap or rebuild):
-            selected_state = storage.selector_state(store)
+            selected_state = storage.selector_state(store, incomplete=scope is not None)
             # The worker opened the index for native transaction recovery before
             # this read. An empty queue needs no membership reload or payloads.
             pending = work.read(store)
@@ -172,12 +172,42 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                     "complete": True,
                     "pending_symbols": [],
                     "generation": selected_state["generation"],
+                    "catalogue_complete": selected_state["complete"],
                 }
             # The complete empty queue is authoritative. Only selected work
             # needs the catalogue's group/member map; do not load it for a no-op.
-            controls = storage.controls(store) if context is None else context.select_serving()
+            # An explicit lineage scope may finish its own obligations while
+            # catalogue bootstrap remains incomplete. This private owner view
+            # must not enter the context used by public/daily selectors, nor
+            # authorize a global completion or an implicit bootstrap.
+            controls = (
+                storage.controls(store, incomplete=True)
+                if not selected_state["complete"]
+                else storage.controls(store)
+                if context is None
+                else context.select_serving()
+            )
         index = writer_view.index()
         entries = index["symbols"]
+        if rebuild:
+            work.upgrade(store)
+        if rebuild and storage.path(store).exists():
+            from .gaps import PROJECTION_VERSION, migrate_projections
+
+            prior_controls = storage.controls(store, incomplete=True, old_policy=True)
+            if prior_controls["state"]["policy"] == policy() and any(
+                group.get("late_bar_repairs", {}).get("version") != PROJECTION_VERSION
+                for group in prior_controls["groups"].values()
+            ):
+                migrated = migrate_projections(store, prior_controls, progress=progress)
+                return {
+                    **result,
+                    **migrated,
+                    "reused_groups": migrated["projection_groups"],
+                    "complete": migrated["catalogue_complete"],
+                    "operation": "projection_migration",
+                    "pending_symbols": sorted(work.read(store)),
+                }
         # This accepted view remains pinned by the lineage worker and is passed
         # intact to selected-group readers below. Bootstrap updates this same
         # view after its explicit membership migration; steady state never scans
@@ -214,6 +244,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             try:
                 with ExitStack() as locks:
                     retained = set()
+                    handoffs = work.read_handoffs(store, {s: pending[s] for s in component if s in pending})
                     for key in sorted(previous):
                         prior = controls["groups"][key]
                         # This completed selector already proves the published
@@ -226,6 +257,30 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                             retained.add(key)
                             covered.update(prior["references"]["lineage"])
                             result["reused_groups"] += 1
+                            continue
+                        handoff = next(
+                            (
+                                proof
+                                for proof in handoffs
+                                if (
+                                    prior["policy"] == policy()
+                                    and prior["references"]["lineage"] == proof["lineage_before"]
+                                    and prior["references"]["pricing"] == proof["pricing"]
+                                    and all(
+                                        (entries[name]["sha256"] if name in entries else None) == token
+                                        for name, token in proof["lineage_after"].items()
+                                    )
+                                )
+                            ),
+                            None,
+                        )
+                        if handoff is not None:
+                            controls["state"] = storage.retarget_decision(store, key, handoff, controls["state"])
+                            prior["references"]["lineage"] = handoff["lineage_after"]
+                            retained.add(key)
+                            covered.update(handoff["lineage_after"])
+                            result["reused_groups"] += 1
+                            result["published_components"] += 1
                     replaced = previous - retained
                     prior_groups = (
                         storage.read_groups(store, replaced, generation=controls["state"]["generation"])
@@ -292,6 +347,9 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             state = storage.finish_bootstrap(store) if bootstrap or rebuild else controls["state"]
             result["complete"] = True
             result["generation"] = state["generation"]
+        result["catalogue_complete"] = controls["state"]["complete"]
+        if bootstrap or rebuild:
+            result["catalogue_complete"] = result["complete"]
     return result
 
 

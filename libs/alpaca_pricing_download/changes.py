@@ -3,9 +3,42 @@
 import re
 from datetime import date
 
-from .contract import DownloadError, digest, json_bytes
+from .contract import ADJUSTMENTS, DownloadError, csv_bytes, digest, json_bytes, month_of, timestamp
 
 MAX_ANCESTORS = 64
+
+
+def equal_effective_replacement(previous, anchor, views, documents):
+    """Compare new values with accepted logical digests, never old payload bytes.
+
+    The active month overrides the year snapshot. The year may therefore stop
+    inside that month after an ordinary append. Its complete recorded bounds
+    still prove its nonoverridden prefix when the new rows inside those bounds
+    match exactly and no new nonoverridden rows appear outside them.
+    """
+    if previous is None or previous["anchor_month"] != anchor or set(views) != set(documents):
+        return False
+    if set(views) != {"completed_years", "current_year", "current_month"}:
+        return False
+    for kind, document in documents.items():
+        entries = {entry["adjustment"]: entry for entry in document["adjustments"]}
+        for adjustment in ADJUSTMENTS:
+            entry, rows = entries[adjustment], views[kind][adjustment]
+            if kind == "current_year":
+                if entry["rows"]:
+                    first, last = timestamp(entry["first"]), timestamp(entry["last"])
+                    selected = tuple(row for row in rows if first <= timestamp(row[0]) <= last)
+                    if any(month_of(row) != anchor and not first <= timestamp(row[0]) <= last for row in rows):
+                        return False
+                else:
+                    selected = ()
+                    if any(month_of(row) != anchor for row in rows):
+                        return False
+            else:
+                selected = rows
+            if len(selected) != entry["rows"] or digest(csv_bytes(selected)) != entry["logical_sha256"]:
+                return False
+    return True
 
 
 def change_history(previous, update):

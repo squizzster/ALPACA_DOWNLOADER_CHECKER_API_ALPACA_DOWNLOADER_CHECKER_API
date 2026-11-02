@@ -8,12 +8,39 @@ from typing import Any
 from libs.alpaca_end_of_day_security_correlation.correlation import (
     build_security_correlation_report,
 )
-from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import OwnershipIntervalRule
+from libs.alpaca_end_of_day_security_correlation.name_change import (
+    BOUNDED_ENTRY_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
+    COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION,
+    EARLY_SUCCESSOR_SOURCE_BRIDGE_CORRELATION_VERSION,
+    EXACT_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
+    EXTENDED_COMPONENT_HANDOFF_CORRELATION_VERSION,
+    INTERNAL_COMPONENT_HANDOFF_CORRELATION_VERSION,
+    PARTIAL_SHARED_UUID_SUFFIX_CORRELATION_VERSION,
+    POST_PADDING_SHARED_UUID_SUFFIX_CORRELATION_VERSION,
+    PRE_ENTRY_AND_COMPONENT_HANDOFF_CORRELATION_VERSION,
+    SINGLE_SESSION_SHARED_UUID_HISTORY_CORRELATION_VERSION,
+    SPLIT_ADJUSTED_POST_PADDING_ALIAS_CORRELATION_VERSION,
+    TERMINAL_CARRY_FORWARD_EXCLUSION_CORRELATION_VERSION,
+)
+from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import (
+    CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION,
+    STABLE_PHASE_HANDOFF_CORRELATION_VERSION,
+    OwnershipIntervalRule,
+)
 from libs.alpaca_end_of_day_security_correlation.policy_rules import (
     CertifiedActiveSuffix,
     certified_active_suffix_ownership_rule,
 )
+from libs.alpaca_end_of_day_security_correlation.predecessor_prefix import (
+    ACTIVE_SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION,
+    SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION,
+    SUCCESSOR_PREFIX_SPLIT_CHAIN_CORRELATION_VERSION,
+)
 from libs.alpaca_end_of_day_security_correlation.row_correlation import CorrelationCache
+from libs.alpaca_end_of_day_security_correlation.terminal_episode import (
+    ACTION_ANCHORED_VACANT_TICKER_BRIDGE_CORRELATION_VERSION,
+    VACANT_TICKER_BRIDGE_CORRELATION_VERSION,
+)
 from libs.alpaca_lineage_build.occupancy import (
     may_have_action_anchored_current_suffix,
     reconcile_duplicate_foreign_occupancy,
@@ -87,13 +114,16 @@ def _correlate_until_stable(
     suffix_sources=frozenset(),
     occupancy_reconciliations=None,
     phase_trace=None,
+    established_reports=None,
 ):
     """Run only the rule implementations selected by the compiled policy."""
     occupancy_reconciliations = occupancy_reconciliations or {}
     for pass_number in range(1, policy.max_passes + 1):
         sessions, correlation, rows = rule_loaders(inputs, previous, cache)
         reports = {
-            symbol: build_security_correlation_report(
+            symbol: established_reports[symbol]
+            if established_reports is not None and established_reports[symbol]["uncorrelated"]["row_count"] == 0
+            else build_security_correlation_report(
                 {"symbol": symbol, "local": view.local, "lineage": evidence[symbol]},
                 store,
                 authenticated_download_reader=view.reader,
@@ -106,6 +136,7 @@ def _correlate_until_stable(
                 row_correlation_rules=policy.row_rules,
                 occupancy_reconciliations=occupancy_reconciliations.get(symbol, ()),
                 include_action_anchored_current_suffix=symbol in suffix_sources,
+                established_report=established_reports[symbol] if established_reports is not None else None,
             )
             for symbol, view in sorted(inputs.items())
         }
@@ -135,6 +166,73 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
                 for descriptor in view.local["downloads"]
             ),
         )
+
+
+def _correlation_cache(policy) -> CorrelationCache:
+    return CorrelationCache(
+        complete_certificate_conflicts=(
+            policy.implementation_correlation_version >= COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION
+        ),
+        stable_phase_handoffs=(
+            policy.implementation_correlation_version >= STABLE_PHASE_HANDOFF_CORRELATION_VERSION
+        ),
+        ownership_interval_rules=policy.ownership_rules,
+        row_correlation_rules=policy.row_rules,
+        exact_same_symbol_handoffs=(
+            policy.implementation_correlation_version >= EXACT_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION
+        ),
+        bounded_entry_same_symbol_handoffs=(
+            policy.implementation_correlation_version >= BOUNDED_ENTRY_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION
+        ),
+        partial_shared_uuid_suffixes=(
+            policy.implementation_correlation_version >= PARTIAL_SHARED_UUID_SUFFIX_CORRELATION_VERSION
+        ),
+        single_session_shared_uuid_histories=(
+            policy.implementation_correlation_version >= SINGLE_SESSION_SHARED_UUID_HISTORY_CORRELATION_VERSION
+        ),
+        early_successor_source_bridges=(
+            policy.implementation_correlation_version >= EARLY_SUCCESSOR_SOURCE_BRIDGE_CORRELATION_VERSION
+        ),
+        terminal_carry_forward_exclusions=(
+            policy.implementation_correlation_version >= TERMINAL_CARRY_FORWARD_EXCLUSION_CORRELATION_VERSION
+        ),
+        post_padding_shared_uuid_suffixes=(
+            policy.implementation_correlation_version >= POST_PADDING_SHARED_UUID_SUFFIX_CORRELATION_VERSION
+        ),
+        split_adjusted_post_padding_aliases=(
+            policy.implementation_correlation_version >= SPLIT_ADJUSTED_POST_PADDING_ALIAS_CORRELATION_VERSION
+        ),
+        vacant_ticker_bridge_exclusions=(
+            policy.implementation_correlation_version >= VACANT_TICKER_BRIDGE_CORRELATION_VERSION
+        ),
+        action_anchored_vacant_ticker_bridges=(
+            policy.implementation_correlation_version >= ACTION_ANCHORED_VACANT_TICKER_BRIDGE_CORRELATION_VERSION
+        ),
+        pre_entry_carry_forward_exclusions=(
+            policy.implementation_correlation_version >= PRE_ENTRY_AND_COMPONENT_HANDOFF_CORRELATION_VERSION
+        ),
+        component_anchored_early_successors=(
+            policy.implementation_correlation_version >= PRE_ENTRY_AND_COMPONENT_HANDOFF_CORRELATION_VERSION
+        ),
+        extended_component_handoffs=(
+            policy.implementation_correlation_version >= EXTENDED_COMPONENT_HANDOFF_CORRELATION_VERSION
+        ),
+        internal_component_handoffs=(
+            policy.implementation_correlation_version >= INTERNAL_COMPONENT_HANDOFF_CORRELATION_VERSION
+        ),
+        mapped_successor_prefixes=(
+            policy.implementation_correlation_version >= SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION
+        ),
+        mapped_successor_split_chains=(
+            policy.implementation_correlation_version >= SUCCESSOR_PREFIX_SPLIT_CHAIN_CORRELATION_VERSION
+        ),
+        active_successor_prefixes=(
+            policy.implementation_correlation_version >= ACTIVE_SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION
+        ),
+        closed_prior_action_anchored_suffixes=(
+            policy.implementation_correlation_version >= CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION
+        ),
+    )
 
 
 def _unchanged_evidence_report(
@@ -453,10 +551,7 @@ def correlate_schema_four(
     include_trace: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Execute the schema-v4 frozen-baseline/two-phase contract in memory."""
-    cache = CorrelationCache(
-        ownership_interval_rules=policy.ownership_rules,
-        row_correlation_rules=policy.row_rules,
-    )
+    cache = _correlation_cache(policy)
     _register_sources(cache, inputs)
     phase_one_passes = [] if include_trace else None
     baseline = _correlate_until_stable(
@@ -470,7 +565,25 @@ def correlate_schema_four(
     )
     unresolved = {symbol for symbol, report in baseline.items() if report["uncorrelated"]["row_count"] > 0}
     raw_suffix_sources = frozenset(
-        symbol for symbol in unresolved if may_have_action_anchored_current_suffix(evidence[symbol])
+        symbol
+        for symbol in unresolved
+        if (
+            any(
+                rule.name == FOURTH_RULE_NAME
+                for interval in cache.lineage_analysis(
+                    evidence[symbol], include_action_anchored_current_suffix=True
+                )[0]
+                for rule in interval.applied_rules
+            )
+            if cache.stable_phase_handoffs
+            else may_have_action_anchored_current_suffix(
+                evidence[symbol],
+                allow_closed_prior=(
+                    policy.implementation_correlation_version
+                    >= CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION
+                ),
+            )
+        )
     )
     rate_evaluations: list[dict[str, Any]] = []
     quality_report = _unchanged_evidence_report(evidence) if include_trace else {}
@@ -518,10 +631,10 @@ def correlate_schema_four(
                 policy,
                 ownership_rules=(*policy.established_ownership_rules, corrected_fourth),
             )
-            cache = CorrelationCache(
-                ownership_interval_rules=runtime_policy.ownership_rules,
-                row_correlation_rules=runtime_policy.row_rules,
-            )
+            established_cache = cache
+            cache = _correlation_cache(runtime_policy)
+            if cache.stable_phase_handoffs:
+                cache.inherit_continuity(established_cache)
             _register_sources(cache, inputs)
     else:
         raise CorrelationPolicyError(f"unknown schema-v4 fallback profile {policy.fallback_profile!r}")
@@ -540,6 +653,11 @@ def correlate_schema_four(
             occupancy_reconciliations=reconciliations,
             policy=runtime_policy,
             phase_trace=phase_two_passes,
+            established_reports=(
+                baseline
+                if policy.implementation_correlation_version >= STABLE_PHASE_HANDOFF_CORRELATION_VERSION
+                else None
+            ),
         )
     phase_invariants = _validate_phase_monotonicity(baseline, reports)
     if policy.fallback_profile == CORRECTED_PROFILE and certificates:
@@ -648,10 +766,7 @@ def evaluate_policy(
             evidence_generations=evidence_generations or {},
             local_reports={symbol: getattr(view, "local", {}) for symbol, view in inputs.items()},
         )
-        cache = CorrelationCache(
-            ownership_interval_rules=policy.ownership_rules,
-            row_correlation_rules=policy.row_rules,
-        )
+        cache = _correlation_cache(policy)
         _register_sources(cache, inputs)
         phase = [] if execution_trace is not None else None
         reports = _correlate_until_stable(
@@ -679,10 +794,7 @@ def evaluate_policy(
                 policy,
                 row_rules=with_active_suffix_rule(policy.row_rules, certificates),
             )
-            cache = CorrelationCache(
-                ownership_interval_rules=candidate_policy.ownership_rules,
-                row_correlation_rules=candidate_policy.row_rules,
-            )
+            cache = _correlation_cache(candidate_policy)
             _register_sources(cache, inputs)
             reports = _correlate_until_stable(
                 store,

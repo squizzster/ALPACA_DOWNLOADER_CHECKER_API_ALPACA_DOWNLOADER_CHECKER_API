@@ -376,5 +376,108 @@
     "modifications": [
       "Require the strict canonical YAML policy for every correlation evaluation, bind its semantic identity and byte provenance to the result, and remove the implicit hardcoded production cascade while preserving the exact correlation-59 decisions."
     ]
+  },
+  {
+    "modifications": [
+      "Certify one exact same-symbol, distinct-CUSIP and distinct-UUID predecessor-to-current substitution at the existing name-change continuity producer when a complete action query, unique exact endpoint lookups, one active successor, one inactive predecessor, one non-OTC exchange and exactly two contiguous ownership intervals agree. Let row chronology and UUID membership consume that single certificate; preserve incomplete queries, ambiguous or competing lookups/actions, extra occupants, ticker reuse and all frozen earlier policy profiles as unresolved."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend the exact same-symbol handoff certificate to a predecessor interval whose lower bound is supplied by exactly one strictly earlier incoming different-label rename that preserves the exact predecessor CUSIP and UUID. Require that entry to equal the interval start and retain the complete-query, exact endpoint and current lookup, status, exchange, two-occupant, contiguous-interval, branch, recurrence and conflicting-date vetoes.",
+      "Keep rows before the bounded entry unresolved and freeze correlation-61 to the original unbounded form; row chronology and UUID membership continue consuming one producer-owned accepted action ID."
+    ]
+  },
+  {
+    "modifications": [
+      "Let the existing shared-UUID name-change continuity producer consume a later-starting destination source only when its overlap is one complete contiguous suffix of the independently owned predecessor interval and contains an informative exact raw suffix. Start the destination history certificate at its first observed session; never extend proof into the predecessor-only prefix.",
+      "Retain the complete-predecessor-grid requirement for distinct-UUID joins, and preserve missing, gapped, non-informative, divergent, parallel-line and competing-occupant cases as unresolved. Freeze correlation-62 to the earlier full-grid behavior."
+    ]
+  },
+  {
+    "modifications": [
+      "Certify a complete one-session predecessor history at the existing name-change continuity producer only for one unique direct shared-UUID, unchanged-CUSIP edge, when complete aligned eight-view sources contain the same exact positive-volume, positive-trade raw transaction and that session immediately precedes the provider boundary. Certify only the observed session; adjusted views remain numerical vintages rather than identity evidence.",
+      "Preserve distinct UUIDs or CUSIPs, related structural edges, nonadjacent boundaries, partial or multi-session non-informative histories, inert or divergent transactions and all existing ambiguity/conflict vetoes as unresolved. Freeze correlation-63 to the earlier informative-history requirement."
+    ]
+  },
+  {
+    "modifications": [
+      "Date a bounded early successor span at the existing name-change continuity producer when one complete action query and unique direct shared-UUID, unchanged-provider-CUSIP edge are joined by complete predecessor and successor sources on consecutive market sessions, and an independently resolved current-CUSIP source is the exact raw concatenation of both complete histories. Require one predecessor and one successor interval, aligned complete adjustment grids and informative non-carry trading; adjusted values remain numerical vintages rather than identity evidence.",
+      "Certify only the observed successor sessions before the retained provider boundary without rewriting that boundary or extending unseen history. Preserve distinct identifiers, absent or ambiguous current owners, related structural actions, ticker recurrence, gaps, overlaps, incomplete sources, divergent raw rows and every existing conflict veto as unresolved; freeze correlation-64 to the earlier behavior."
+    ]
+  },
+  {
+    "modifications": [
+      "Classify a complete post-boundary predecessor-label suffix as terminal non-trading carry-forward only when every aligned adjustment view exactly repeats its own last supported close with zero volume, trades and VWAP; a complete action query supplies one exact distinct-UUID stock-merger acquiree; and the independently owned successor source trades informatively from the same boundary. Preserve the suffix as uncorrelated and record only the retired acquiree as its candidate.",
+      "Do not assign, delete or rewrite the carry-forward rows, join UUIDs, move action dates or relax serving eligibility. Missing or conflicting actions/lookups/owners, ticker recurrence, active or OTC acquirees, structural conflicts, incomplete or gapped views, positive or divergent tail activity and absent or uninformative successor trading retain the earlier unresolved anonymous conflict; freeze correlation-65 to that behavior."
+    ]
+  },
+  {
+    "modifications": [
+      "Let the existing shared-UUID name-change continuity producer certify a successor-source prefix as predecessor-labelled history across a ticker-reuse separator only when one complete action query and unchanged-CUSIP edge agree with unique active current-symbol/CUSIP lookups; one complete aligned prolonged padding run follows a traded observation and ends immediately before the prefix; the prefix is the complete contiguous predecessor-source suffix through the market session immediately before the retained action boundary; and every raw transaction matches with informative traded endpoints. Consume only that observed overlap; the padding is a shape gate, and adjusted views remain numerical vintages rather than independent identity evidence.",
+      "Do not use inert rows as trading-absence or ownership evidence, move the action boundary, assign the padded span, extend unseen history or join UUIDs. Preserve ticker reuse, unrelated occupants, later or successor-label structural actions, inactive/OTC endpoints, incomplete or gapped sources, divergent or uninformative overlap and every existing conflict veto as unresolved; freeze correlation-66 to the earlier whole-prefix padding veto."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend the post-padding bounded alias certificate across an already accepted same-symbol split within the inert separator: every view must remain complete, aligned, flat and zero-activity, and any adjusted inert-value change must occur exactly on that split edge's dated handoff within the predecessor identity component. Preserve correlation-67's constant-per-view separator when this evidence is absent.",
+      "Do not let a complete stock merger wholly after the retained rename boundary veto this earlier certificate when the successor is the continuing acquirer on its unchanged CUSIP, the acquiree is a distinct label/CUSIP, positive rates are recorded, effective and process dates exist and every recorded action date is strictly later. This exception assigns neither padding nor acquiree history, changes no boundary or UUID membership, and preserves missing, invalid, straddling, predecessor-involving or otherwise structural conflicts as unresolved."
+    ]
+  },
+  {
+    "modifications": [
+      "Certify a complete prolonged source span as a vacant-ticker non-observation only when accepted direct same-identity renames delimit two distinct UUID/CUSIP occupants; the complete action query and exact ownership intervals leave the label vacant; every aligned adjustment view is flat with zero volume, trades and VWAP on the exact market-session grid; raw carries the departing close; adjacent observations trade; and both independent successor/predecessor sources own and trade every vacant session.",
+      "Permit adjusted padding levels to change only on exact positive dividend ex-dates without treating those actions as tenure. Preserve all rows as unassigned, change no edge, interval, action date or UUID membership, and retain ordinary unresolved behavior for incomplete views, missing independent trades, third occupants, structural conflicts, raw variation, positive activity, malformed evidence or any other ambiguity; freeze correlation-68 to the prior behavior."
+    ]
+  },
+  {
+    "modifications": [
+      "Classify only a destination label's prolonged pre-entry carry-forward tail as a non-observation when one direct unchanged-UUID/CUSIP rename, complete action evidence, exact endpoint ownership and complete aligned sources agree; every tail row repeats the last independently traded close with zero volume, trades and VWAP; and the independently owned predecessor source overlaps that tail and reaches the exact adjacent rename boundary. Preserve the earlier traded issue as anonymous and preserve every row, edge, interval, action date and UUID membership.",
+      "Date only an observed early successor-label component span when complete adjacent predecessor/successor sources, one direct unchanged-UUID/CUSIP rename and exactly one positive provider unit-separation action agree on the source handoff date. Retain the later provider rename date, allow only a strictly later linear same-identity exit, and preserve incomplete grids, non-informative histories, missing occupancy, competing actions or occupants, identifier changes, gaps and overlaps as unresolved; freeze correlation-69 to the prior behavior."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend the component-event early-successor certificate to an exact new or alternate unit-split output. Consume only dated predecessor-label ownership, require the exact role CUSIP endpoint when that component has an identified asset, and require complete aligned adjacent sources; an older source containing prolonged padding is admissible only when its final five rows are actively traded and nonconstant.",
+      "Permit a later terminal cash-merger exit only when one positive-rate action, the exact successor symbol/CUSIP, a single action date, the successor ownership interval end and the next market session after its final observed row all agree. Preserve missing endpoints, third dated occupants, non-output components, untraded or nonadjacent endpoints, conflicting events and frozen correlation-70 behavior as unresolved."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend the existing mapped-continuation producer for a successor-labelled source that begins inside a leading prolonged inert donor run and reaches an informative traded donor tail before the boundary. Certify its complete pre-boundary prefix only when one accepted direct same-UUID, unchanged-CUSIP rename, unique intervals and branches, one current-label owner, the adjacent boundary, complete aligned sources, matching feed/timeframe, the selected donor generation and exact equality of every field in all eight views agree. Require every donor position to be already correlated to that exact predecessor-label UUID/CUSIP and reject mapped-donor recursion.",
+      "Consume the producer-owned certificate through the existing row pipeline without moving an action date, expanding UUID membership or re-evaluating the donor decision. Any unresolved donor row, incomplete source, missing session, value mismatch, competing owner/rename or identifier change vetoes the whole prefix; freeze correlation-71 to the prior behavior."
+    ]
+  },
+  {
+    "modifications": [
+      "Refine the exact mapped-successor-prefix owner guard so a later UUID on the successor label is noncompeting only when accepted same-label identity-preserving split edges form one complete, nonbranching chain strictly after the rename handoff and connect every known label UUID to the handoff asset. Preserve complete aligned eight-view donor ownership and require exact field equality in every non-split view; only that accepted chain permits split-bearing numerical vintages to differ.",
+      "Keep unrelated occupants, pre-handoff or non-split edges, incomplete or branched chains and every correlation-72 veto unresolved; this changes no action date, ownership interval, UUID membership or observation-selection rule."
+    ]
+  },
+  {
+    "modifications": [
+      "Let the existing positive-action current-suffix producer follow a separately closed prior same-label interval only when every earlier interval ends no later than the exact current anchor; open and overlapping owners remain vetoes. A known later nonoverlapping interval no longer retroactively invalidates the closed interval's established rows, and correlation-73 retains the original global existing-interval veto.",
+      "Extend vacant-ticker non-observation to the complete inert gap between one accepted same-identity departure interval and one later exact unit-component action-anchored UUID suffix. Require complete aligned eight-view calendar coverage, one shared zero-activity carry with zero VWAP, traded observations around the full carry, exact two-occupant closure and no action, edge or occupancy conflict in the gap. Dated unresolved CUSIPs outside the gap remain unresolved but noncompeting; the certificate assigns no row, interval or UUID membership.",
+      "Date only the traded internal successor-label sessions after one unique component event and before an unchanged-UUID/CUSIP rename when the successor source retains an exact complete eight-view predecessor prefix through the event, the predecessor source carries inertly during the internal span and a later reused predecessor label is bounded by its accepted action-anchored interval. Preserve mismatches, incomplete grids, positive predecessor activity, inert successor rows, third or overlapping occupants and intervening structural actions as unresolved; change no provider date or UUID membership."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend the existing mapped-continuation producer to one complete informative successor-label prefix copied from an independently correlated dated-terminal predecessor suffix. Require one accepted direct same-UUID, unchanged-CUSIP rename, a complete action query, the adjacent boundary, complete aligned sources, matching feed/timeframe and selected generations, positive trading in every raw prefix row, at least two transaction fingerprints and exact full-field equality in all eight views. Every donor position must already be assigned by the dated-terminal ticker-reuse rule to the exact predecessor label, UUID, CUSIP, boundary and supporting action.",
+      "Consume only the observed duplicate prefix through the ordinary row and observation-selection pipeline. The exact successor copy may supersede the donor's identical physical rows while retaining the donor's historical label; no numerical mapping correction is permitted. Do not move the action date, extend unseen tenure, change UUID membership or reopen the donor decision. Preserve the old ticker-reuse run, incomplete or gapped sources, inert or uninformative prefixes, mismatched views, mapped donors, split-chain vintages, competing owners or branches and every correlation-74 veto as unresolved."
+    ]
+  },
+  {
+    "modifications": [
+      "Prepare dated occupancy and name-change continuity once before freezing the established allocation, while keeping fallback row intervals disabled until their authorized phase. Both phases consume the same UUID certificate.",
+      "Reserve established correlated segments before second-phase row evaluation, preserving exact ownership, membership, provenance and segment bounds. Reject conflicting new fallback ownership at the producer; retain the unchanged phase integrity guard and full-source terminal fallback.",
+      "A later open positive-action anchor for the exact same UUID/CUSIP does not revoke an independently proved current dividend-backed traded episode. Keep competing occupants, ordinary or mixed-rule transitions and bounded intervals as vetoes.",
+      "Preserve unresolved dated occupant and structural-action vetoes at terminal/pre-entry non-observation certificate producers; same-symbol handoffs reject additional related structural evidence. Malformed component actions missing an alternate symbol remain unresolved rather than raising an exception."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain unresolved conflicting occupancy and incomplete structural actions in scoped name-change certificate gates, preserving validated component exceptions and frozen version-76 replay."
+    ]
   }
 ]

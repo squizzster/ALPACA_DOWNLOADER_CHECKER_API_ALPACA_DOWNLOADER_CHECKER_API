@@ -243,8 +243,8 @@ class LineageBuildTests(unittest.TestCase):
             patch.object(row_correlation, "_decide_row", wraps=row_correlation._decide_row) as decide,
             patch.object(
                 row_correlation,
-                "build_ticker_ownership_intervals",
-                wraps=row_correlation.build_ticker_ownership_intervals,
+                "prepare_ticker_ownership",
+                wraps=row_correlation.prepare_ticker_ownership,
             ) as intervals,
             patch.object(
                 row_correlation,
@@ -686,7 +686,7 @@ class LineageBuildTests(unittest.TestCase):
         )
         self.run_build(["GOOG"], client=client)
         self.assertFalse(self.notice().exists())
-        self.download("OLD", refresh_all=True)
+        self.download("OLD", bars=[bar("2016-01-04", "99"), *self.bars[1:]], refresh_all=True)
         result = self.run_build(client=client)
         self.assertEqual(result["results"][0]["processed"], ["GOOG", "OLD"])
         self.assertEqual(result["results"][0]["acknowledged"], ["OLD"])

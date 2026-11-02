@@ -253,6 +253,7 @@ class CurrentActionAnchoredSuffixTests(unittest.TestCase):
         return build_ticker_ownership_intervals(
             self.lineage,
             include_action_anchored_current_suffix=True,
+            allow_closed_prior_action_anchored_suffix=True,
         )
 
     def correlate(self, dates=("2024-01-05", "2024-01-08")):
@@ -358,3 +359,51 @@ class CurrentActionAnchoredSuffixTests(unittest.TestCase):
         self.assertEqual(self.previous_id, reused_intervals[0].asset_id)
         self.assertIsNone(reused_intervals[0].end_date_exclusive)
         self.assertNotIn(self.current_id, {item.asset_id for item in intervals})
+
+    def test_closed_prior_interval_permits_only_the_later_anchored_suffix(self):
+        add_name_change_edge(
+            self.lineage,
+            action_id="previous-departure",
+            process_date="2024-01-04",
+            predecessor=(self.previous_id, "REUS", self.previous_cusip, "Previous Security"),
+            successor=(self.previous_id, "LEFT", self.previous_cusip, "Previous Security"),
+        )
+        current_component = {
+            "id": "current-component",
+            "action_type": "unit_split",
+            "old_symbol": "UNIT",
+            "old_cusip": "333333333",
+            "old_rate": 1,
+            "new_symbol": "COMMON",
+            "new_cusip": "444444444",
+            "new_rate": 1,
+            "alternate_symbol": "REUS",
+            "alternate_cusip": self.current_cusip,
+            "alternate_rate": 0.5,
+            "effective_date": "2024-01-08",
+            "process_date": "2024-01-08",
+        }
+        self.lineage["corporate_actions"] = [
+            self.previous_action,
+            self.lineage["corporate_actions"][-1],
+            current_component,
+        ]
+
+        intervals, issues = self.build()
+
+        self.assertEqual([], issues)
+        reused_intervals = [item for item in intervals if item.historical_symbol == "REUS"]
+        self.assertEqual(2, len(reused_intervals))
+        self.assertEqual(
+            [
+                (self.previous_id, None, date(2024, 1, 4)),
+                (self.current_id, date(2024, 1, 8), None),
+            ],
+            [(item.asset_id, item.start_date_inclusive, item.end_date_exclusive) for item in reused_intervals],
+        )
+        _, branches = self.correlate(dates=("2024-01-03", "2024-01-05", "2024-01-08"))
+        self.assertEqual(1, sum(item["row_count"] for item in branches["uncorrelated"]))
+        self.assertEqual(
+            [self.previous_id, self.current_id],
+            [item["canonical_security"]["alpaca_asset_id"] for item in branches["correlated"]],
+        )

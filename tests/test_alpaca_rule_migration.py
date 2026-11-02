@@ -1,4 +1,4 @@
-"""A version migration publishes its proof once without redoing unaffected work."""
+"""A behavior-changing correlation version recalculates instead of relabelling."""
 
 from copy import deepcopy
 from pathlib import Path
@@ -111,22 +111,22 @@ class RuleMigrationProofTests(TestCase):
             ],
         }
 
-    def test_completed_single_uuid_decision_needs_no_evidence_replay(self):
+    def test_current_version_does_not_relabel_a_single_uuid_decision(self):
         receipt = self.receipt()
         before = deepcopy(receipt)
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
         self.assertEqual(receipt, before)
 
     def test_only_lineage_33_decision_uses_the_exact_proof(self):
         receipt = self.receipt(schema_version=31, lineage_version=31)
         self.assertFalse(self.promotable(receipt))
 
-    def test_unresolved_shape_does_not_block_a_behavior_identical_transition(self):
+    def test_unresolved_shape_cannot_override_the_version_gate(self):
         receipt = self.receipt()
         receipt["unresolved_rows"] = 8
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
 
-    def test_empty_identity_decision_needs_no_evidence_replay(self):
+    def test_empty_identity_shape_cannot_override_the_version_gate(self):
         receipt = self.receipt()
         receipt.update(
             asset_ids=[],
@@ -138,26 +138,26 @@ class RuleMigrationProofTests(TestCase):
                 "asset_lookups": [],
             },
         )
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
 
-    def test_action_anchored_current_suffix_is_behavior_identical(self):
+    def test_action_anchored_current_suffix_cannot_override_the_version_gate(self):
         receipt = self.receipt()
         receipt.update(
             asset_ids=["old-id", "current-id"],
             unresolved_rows=8,
             evidence=self.reused_label_evidence(),
         )
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
 
-    def test_completed_decision_with_suffix_shape_is_promoted_unchanged(self):
+    def test_completed_suffix_shape_cannot_override_the_version_gate(self):
         receipt = self.receipt()
         receipt.update(
             asset_ids=["old-id", "current-id"],
             evidence=self.reused_label_evidence(),
         )
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
 
-    def test_possible_foreign_occupancy_duplicate_is_behavior_identical(self):
+    def test_foreign_occupancy_shape_cannot_override_the_version_gate(self):
         receipt = self.receipt()
         evidence = self.reused_label_evidence()
         evidence["corporate_actions"] = [
@@ -181,9 +181,9 @@ class RuleMigrationProofTests(TestCase):
             unresolved_rows=8,
             evidence=evidence,
         )
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
 
-    def test_unaffected_multi_uuid_shape_is_promotable(self):
+    def test_unaffected_multi_uuid_shape_still_requires_current_evaluation(self):
         receipt = self.receipt()
         receipt.update(
             asset_ids=["old-id", "current-id"],
@@ -195,7 +195,7 @@ class RuleMigrationProofTests(TestCase):
                 "asset_lookups": [],
             },
         )
-        self.assertTrue(self.promotable(receipt))
+        self.assertFalse(self.promotable(receipt))
 
     def test_proof_is_specific_to_one_complete_version_transition(self):
         for field, value in (
@@ -273,7 +273,7 @@ class RuleMigrationPublicationTests(NativeCase):
             )
         self.assertFalse((self.root / ".pending.json").exists())
 
-    def test_dedicated_policy_migration_uses_only_the_fast_path_and_is_idempotent(self):
+    def test_retired_policy_migration_fails_closed_without_payload_or_publication(self):
         self.downgrade()
         checks = read_checks(self.store)
         complete_checks(self.store, checks["epoch"])
@@ -295,39 +295,40 @@ class RuleMigrationPublicationTests(NativeCase):
                 "libs.alpaca_lineage_build.storage.read_boundaries",
                 side_effect=AssertionError("opened assignment boundaries"),
             ),
+            patch(
+                "libs.alpaca_lineage_build.storage.publish",
+                side_effect=AssertionError("published an ineligible decision"),
+            ) as publish,
         ):
             migrated = migrate_correlation_policy(self.store)
             repeated = migrate_correlation_policy(self.store)
-        self.assertEqual(1, migrated["promoted_groups"])
-        self.assertEqual(1, migrated["promoted_receipts"])
-        self.assertEqual(0, migrated["failed"])
+        self.assertEqual(0, migrated["promoted_groups"])
+        self.assertEqual(0, migrated["promoted_receipts"])
+        self.assertEqual(1, migrated["failed"])
+        self.assertIn("promotion is unavailable", migrated["failure_examples"][0]["reason"])
         self.assertEqual(0, migrated["provider_requests"])
         self.assertEqual(0, migrated["identity_rule_executions"])
         self.assertEqual(0, migrated["pricing_payload_reads"])
         self.assertEqual(0, migrated["pricing_writes"])
-        self.assertEqual("pending_update", migrated["serving_catalogue_action"])
         self.assertEqual(0, repeated["promoted_groups"])
-        self.assertEqual(1, repeated["already_current_groups"])
-        self.assertEqual("pending_update", repeated["serving_catalogue_action"])
+        self.assertEqual(1, repeated["failed"])
+        self.assertEqual(migrated["failure_examples"], repeated["failure_examples"])
+        publish.assert_not_called()
         self.assertEqual(pricing, snapshot(self.store / "end_of_day/pricing"))
 
-    def test_dedicated_policy_migration_recovers_its_frozen_journal_before_resuming(self):
+    def test_retired_policy_migration_never_creates_a_frozen_journal(self):
         self.downgrade()
         checks = read_checks(self.store)
         complete_checks(self.store, checks["epoch"])
         with (
             patch(
-                "libs.alpaca_lineage_build.storage.finish_publication",
-                side_effect=RuntimeError("interrupted policy migration"),
-            ),
-            self.assertRaisesRegex(RuntimeError, "interrupted policy migration"),
+                "libs.alpaca_lineage_build.storage.publish",
+                side_effect=AssertionError("published an ineligible decision"),
+            ) as publish,
         ):
-            migrate_correlation_policy(self.store)
-        self.assertTrue((self.root / ".pending.json").exists())
-        resumed = migrate_correlation_policy(self.store)
-        self.assertTrue(resumed["recovered_publication"])
-        self.assertEqual(0, resumed["promoted_groups"])
-        self.assertEqual(1, resumed["already_current_groups"])
+            result = migrate_correlation_policy(self.store)
+        self.assertFalse(result["complete"], result)
+        publish.assert_not_called()
         self.assertFalse((self.root / ".pending.json").exists())
 
     def test_dedicated_policy_migration_preserves_pending_summary_ownership(self):
@@ -353,25 +354,22 @@ class RuleMigrationPublicationTests(NativeCase):
         receipt = storage.read_receipt(self.root, "TEST", storage.read_index(self.root))
         self.assertEqual(33, receipt["schema_version"])
 
-    def test_promote_then_repeat_without_payload_decode_or_repeated_migration_proof(self):
+    def test_recalculate_then_repeat_without_network_or_repeated_migration_proof(self):
         self.downgrade()
         before = storage.read_receipt(self.root, "TEST", storage.read_index(self.root))
         pricing = snapshot(self.store / "end_of_day/pricing/TEST")
         client = IdentityClient({"TEST": asset("TEST")})
-        with (
-            patch(
-                "libs.alpaca_lineage_build.pipeline.load_pricing", side_effect=AssertionError("decoded prices")
-            ),
-            patch(
-                "libs.alpaca_lineage_build.pipeline.correlate", side_effect=AssertionError("repeated decisions")
-            ),
+        migrated = run_lineage(self.store, ["TEST"], identity_client=client)
+        self.assertEqual(migrated["failed"], 0, migrated)
+        self.assertFalse(migrated["results"][0]["reused_decision"])
+        self.assertGreater(migrated["results"][0]["pricing_rows_processed"], 0)
+        after = storage.read_receipt(self.root, "TEST", storage.read_index(self.root))
+        self.assertEqual(after["versions"], versions())
+        self.assertEqual(after["boundaries"], before["boundaries"])
+        with patch(
+            "libs.alpaca_lineage_build.pipeline.load_pricing",
+            side_effect=AssertionError("decoded prices after current publication"),
         ):
-            migrated = run_lineage(self.store, ["TEST"], identity_client=client)
-            self.assertEqual(migrated["failed"], 0, migrated)
-            self.assertTrue(migrated["results"][0]["reused_decision"])
-            after = storage.read_receipt(self.root, "TEST", storage.read_index(self.root))
-            self.assertEqual(after["versions"], versions())
-            self.assertEqual(after["boundaries"], before["boundaries"])
             with patch(
                 "libs.alpaca_lineage_build.pipeline.can_promote_observation_decision",
                 side_effect=AssertionError("repeated migration"),

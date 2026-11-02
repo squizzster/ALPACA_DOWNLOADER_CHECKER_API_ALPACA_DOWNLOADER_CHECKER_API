@@ -116,9 +116,18 @@ groups and reuses completed history prefixes. Bootstrap, rebuild or invalidated 
 histories, possibly reread per identity within bounded cache; narrow date filters cannot establish full-history eligibility.
 No provider requests, identity-rule replay, redownloads, pricing copies or rewrites.
 
+For a version-1 raw-gap selector, `catalogue rebuild` performs projection conversion before ordinary
+history maintenance. It preserves completed decisions and pending work; selected ineligible groups may need
+bounded raw-source reads. [Source-specific scheduling](technical-contracts.md#pricing-acquisition-and-continuation)
+and [exact policy migration](lineage.md#policy-migration) describe the ordered upgrade path.
+
 Daily execution/preview require a complete serving selector even with an empty queue. Focused lineage maintains
 only selected complete groups in an existing catalogue; it never bootstraps implicitly. Direct pricing writes
 need lineage next; readers never maintain stores.
+
+Focused lineage recovery may finish selected groups in an incomplete catalogue. Its `complete` result covers
+selected work; `serving_catalogue.catalogue_complete` remains false until explicit bootstrap/rebuild completes.
+Daily planning and public readers continue to reject the incomplete catalogue.
 
 `catalogue update` consumes obligations/reuses compatible decisions; reports include `reused_history_prefixes`,
 `full_history_evaluations`, `checked_bars`. Finish pending pricing/lineage owners first. Policy changes require

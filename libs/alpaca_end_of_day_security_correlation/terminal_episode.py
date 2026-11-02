@@ -6,15 +6,24 @@ from decimal import Decimal, InvalidOperation
 from itertools import groupby
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS as ALPACA_ADJUSTMENT_MODES
-from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
+from libs.common.us_equity_market_session_calendar import (
+    MarketCalendarError,
+    expected_market_session_coverage,
+)
 
 from .action_identity import exact_cusip_lookup_asset
 from .current_symbol_reuse import _complete_corporate_action_query, _current_identity
+from .errors import SecurityCorrelationError
+from .identity_partition import _session_date
 from .occupancy_anchor import positive_occupancy_action_date
 from .ownership_interval_rules import TickerOwnershipInterval
 from .security_identity import security_identity_for_alpaca_assets
 from .ticker_reuse_gap import adjustment_session_consensus, assess_ticker_reuse_gap
 from .uuid_lineage import build_uuid_lineage_edges
+
+VACANT_TICKER_BRIDGE_CORRELATION_VERSION = 69
+ACTION_ANCHORED_VACANT_TICKER_BRIDGE_CORRELATION_VERSION = 74
+VACANT_TICKER_BRIDGE_REASON = "certified_vacant_ticker_bridge_non_observation"
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,17 @@ class HistoricalAsOfGap:
 
     def contains_unresolved_tail(self, session: date) -> bool:
         return self.asof < session < self.end_exclusive
+
+
+@dataclass(frozen=True)
+class VacantTickerBridge:
+    first: date
+    last: date
+    departure_action_id: str
+    arrival_action_id: str
+
+    def contains(self, session: date) -> bool:
+        return self.first <= session <= self.last
 
 
 def _current_same_uuid_alias(lineage, action, asset):
@@ -145,12 +165,22 @@ def has_prolonged_carry_forward(rows):
     return any(value is not None and sum(1 for _ in group) >= 100 for value, group in groupby(rows, _inert))
 
 
+def has_traded_observation(rows):
+    return bool(_traded_prices(rows))
+
+
 def has_informative_trading(rows):
     return len(_traded_prices(rows)) >= 2
 
 
-def shared_inert_bridges(work_items, *, include_edges=False, before=None):
-    """Return only complete, constant inert separators shared by all views."""
+def shared_inert_bridges(
+    work_items,
+    *,
+    include_edges=False,
+    before=None,
+    allowed_value_change_dates=frozenset(),
+):
+    """Return complete inert separators whose value changes are explicitly dated."""
     views = {source["adjustment"]: (download.rows, sessions) for download, source, sessions in work_items}
     if len(views) != len(work_items) or set(views) != set(ALPACA_ADJUSTMENT_MODES):
         return ()
@@ -167,12 +197,568 @@ def shared_inert_bridges(work_items, *, include_edges=False, before=None):
         first, last = positions[0], positions[-1]
         if value is None or len(positions) < 100 or not include_edges and (first == 0 or last + 1 == len(rows)):
             continue
-        if all(
-            None not in (values := {_inert(row) for row in other[first : last + 1]}) and len(values) == 1
-            for other, _ in views.values()
-        ):
+
+        def supported_inert_values(other):
+            values = [_inert(row) for row in other[first : last + 1]]
+            return None not in values and all(
+                left == right or sessions[first + index] in allowed_value_change_dates
+                for index, (left, right) in enumerate(zip(values, values[1:]), start=1)
+            )
+
+        if all(supported_inert_values(other) for other, _ in views.values()):
             bridges.append((first, last))
     return tuple(bridges)
+
+
+def _independently_trades_through_vacancy(
+    symbol,
+    asset_id,
+    cusip,
+    expected_sessions,
+    source,
+    *,
+    correlation_loader,
+    source_rows_loader,
+):
+    """Require independently assigned positive raw trades on every vacant session."""
+    try:
+        report = correlation_loader(symbol)
+        descriptors = {}
+        for descriptor in report.sources_by_filename.values():
+            adjustment = descriptor["adjustment"]
+            if adjustment in descriptors:
+                return False
+            descriptors[adjustment] = descriptor
+        if set(descriptors) != set(ALPACA_ADJUSTMENT_MODES):
+            return False
+        descriptor = descriptors["raw"]
+        rows, generation = source_rows_loader(symbol, descriptor["data_file"])
+        if generation != descriptor["download_sha256"]:
+            return False
+        selected = [
+            (position, row)
+            for position, row in enumerate(rows, 1)
+            if _session_date(row.get("t")) in expected_sessions
+        ]
+        if tuple(_session_date(row.get("t")) for _, row in selected) != expected_sessions:
+            return False
+        selected_rows = [row for _, row in selected]
+        if not has_informative_trading(selected_rows) or any(
+            _inert(row) is not None
+            or Decimal(str(row.get("v", "0"))) <= 0
+            or Decimal(str(row.get("n", "0"))) <= 0
+            for row in selected_rows
+        ):
+            return False
+        positions = {position for position, _ in selected}
+        covered = set()
+        for segment in report.correlated["segments"]:
+            if segment.get("data_file") != descriptor["data_file"]:
+                continue
+            overlap = positions.intersection(range(segment["row_start"], segment["row_end"] + 1))
+            if not overlap:
+                continue
+            security = segment.get("canonical_security") or {}
+            if (
+                segment.get("adjustment") != "raw"
+                or segment.get("historical_symbol") != symbol
+                or (security.get("alpaca_asset_id"), security.get("cusip")) != (asset_id, cusip)
+                or segment.get("feed") != source["feed"]
+                or segment.get("timeframe") != source["timeframe"]
+                or segment.get("download_sha256") != generation
+                or covered.intersection(overlap)
+            ):
+                return False
+            covered.update(overlap)
+        return covered == positions
+    except (
+        AttributeError,
+        InvalidOperation,
+        KeyError,
+        SecurityCorrelationError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+
+def _dated_action_values(action):
+    values = []
+    for field in ("ex_date", "effective_date", "process_date", "record_date", "payable_date"):
+        value = action.get(field)
+        if value is None:
+            continue
+        try:
+            values.append(date.fromisoformat(value))
+        except (TypeError, ValueError):
+            return None
+    return tuple(values)
+
+
+def _known_label_occupants(lineage, symbol):
+    occupants = {
+        item.get("id")
+        for item in lineage.get("identities", [])
+        if item.get("symbol") == symbol and item.get("id")
+    }
+    for field in ("symbol_occupancy_evidence", "input_symbol_occupants"):
+        occupants.update(
+            item.get("asset_id")
+            for item in lineage.get(field, [])
+            if item.get("symbol") == symbol and item.get("asset_id")
+        )
+    occupants.update(
+        item["asset"].get("id")
+        for item in lineage.get("asset_lookups", [])
+        if item.get("lookup_kind") == "symbol"
+        and item.get("lookup") == symbol
+        and isinstance(item.get("asset"), dict)
+        and item["asset"].get("id")
+    )
+    return occupants
+
+
+def _action_anchored_vacant_ticker_bridges(
+    symbol,
+    lineage,
+    intervals,
+    edges,
+    work_items,
+):
+    """Exclude an inert gap between closed and action-anchored label owners.
+
+    The ownership producers already proved both endpoints.  This consumer does
+    not replay their identity decision: it only verifies that every retained
+    row strictly between those endpoints is one complete synthetic carry and
+    that no third occupancy or action claims the gap.
+    """
+    unresolved_cusips = lineage.get("unresolved_cusips")
+    if not isinstance(unresolved_cusips, list) or any(
+        not isinstance(cusip, str) or not cusip for cusip in unresolved_cusips
+    ):
+        return ()
+    actions = {
+        action.get("id"): action
+        for action in lineage.get("corporate_actions", ())
+        if isinstance(action, dict) and isinstance(action.get("id"), str) and action["id"]
+    }
+    if len(actions) != sum(
+        isinstance(action, dict) and isinstance(action.get("id"), str) and bool(action["id"])
+        for action in lineage.get("corporate_actions", ())
+    ):
+        return ()
+    views = {
+        source["adjustment"]: (download.rows, source, sessions) for download, source, sessions in work_items
+    }
+    if len(views) != len(work_items) or set(views) != set(ALPACA_ADJUSTMENT_MODES):
+        return ()
+    grids = {sessions for _, _, sessions in views.values()}
+    if len(grids) != 1:
+        return ()
+    sessions = next(iter(grids))
+    symbol_intervals = [item for item in intervals if item.historical_symbol == symbol]
+    departures = [
+        (edge, interval)
+        for edge in edges
+        for interval in symbol_intervals
+        if edge.edge_type == "name_change"
+        and edge.predecessor_symbol == symbol
+        and edge.successor_symbol != symbol
+        and edge.predecessor_asset_id == edge.successor_asset_id
+        and interval.identity_key() == (symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
+        and interval.end_date_exclusive == edge.effective_date
+    ]
+    arrivals = []
+    for interval in symbol_intervals:
+        matching_rules = [
+            rule for rule in interval.applied_rules if rule.name == "action_anchored_current_ticker_occupancy"
+        ]
+        action_ids = tuple(
+            dict.fromkeys(action_id for rule in matching_rules for action_id in rule.supporting_action_ids)
+        )
+        if (
+            interval.start_date_inclusive is None
+            or interval.end_date_exclusive is not None
+            or len(matching_rules) != 1
+            or len(action_ids) != 1
+        ):
+            continue
+        action = actions.get(action_ids[0])
+        if action is None or action.get("action_type") != "unit_split":
+            continue
+        arrivals.append((interval, action_ids[0]))
+
+    candidates = {}
+    for (departure, prior), (arrival, arrival_action_id) in (
+        (departure_item, arrival_item) for departure_item in departures for arrival_item in arrivals
+    ):
+        first_boundary = prior.end_date_exclusive
+        end_boundary = arrival.start_date_inclusive
+        if (
+            first_boundary is None
+            or end_boundary is None
+            or first_boundary >= end_boundary
+            or prior.asset_id == arrival.asset_id
+            or prior.cusip == arrival.cusip
+            or not _complete_corporate_action_query(lineage, first_boundary, end_boundary)
+        ):
+            continue
+        if any(
+            item not in (prior, arrival)
+            and (item.start_date_inclusive is None or item.start_date_inclusive < end_boundary)
+            and (item.end_date_exclusive is None or item.end_date_exclusive > first_boundary)
+            for item in symbol_intervals
+        ):
+            continue
+        touching_edges = {
+            edge
+            for edge in edges
+            if first_boundary <= edge.effective_date <= end_boundary
+            and symbol in (edge.predecessor_symbol, edge.successor_symbol)
+        }
+        if touching_edges != {departure}:
+            continue
+        expected_occupants = {prior.asset_id, arrival.asset_id}
+        if _known_label_occupants(lineage, symbol) != expected_occupants:
+            continue
+        allowed_action_ids = {departure.action_id, arrival_action_id}
+        conflict = False
+        for action in lineage.get("corporate_actions", ()):
+            if not isinstance(action, dict) or not any(
+                value == symbol for key, value in action.items() if key == "symbol" or key.endswith("_symbol")
+            ):
+                continue
+            dated = _dated_action_values(action)
+            if dated is None:
+                conflict = True
+                break
+            if action.get("id") not in allowed_action_ids and any(
+                first_boundary <= when <= end_boundary for when in dated
+            ):
+                conflict = True
+                break
+        if conflict:
+            continue
+        for occupancy in lineage.get("symbol_occupancy_evidence", ()):
+            if not isinstance(occupancy, dict) or occupancy.get("symbol") != symbol:
+                continue
+            evidence = occupancy.get("evidence")
+            if not isinstance(evidence, list) or not evidence:
+                conflict = True
+                break
+            for record in evidence:
+                try:
+                    when = date.fromisoformat(record["process_date"])
+                except (KeyError, TypeError, ValueError):
+                    conflict = True
+                    break
+                if first_boundary <= when <= end_boundary and (
+                    occupancy.get("asset_id") not in expected_occupants
+                    or record.get("action_id") not in allowed_action_ids
+                ):
+                    conflict = True
+                    break
+            if conflict:
+                break
+        if conflict:
+            continue
+        try:
+            expected = tuple(
+                date.fromisoformat(value)
+                for value in expected_market_session_coverage(
+                    first_boundary.isoformat(), end_boundary.isoformat()
+                ).session_dates
+            )
+        except (MarketCalendarError, ValueError):
+            continue
+        positions = [position for position, session in enumerate(sessions) if session in expected]
+        if (
+            not expected
+            or not positions
+            or positions != list(range(positions[0], positions[-1] + 1))
+            or tuple(sessions[position] for position in positions) != expected
+        ):
+            continue
+        start, stop = positions[0], positions[-1] + 1
+        if start == 0 or stop >= len(sessions) or sessions[stop] != end_boundary:
+            continue
+        containing_bridges = [
+            bridge for bridge in shared_inert_bridges(work_items) if bridge[0] <= start and bridge[1] == stop - 1
+        ]
+        if len(containing_bridges) != 1:
+            continue
+        inert_start = containing_bridges[0][0]
+        if any(
+            Decimal(str(row.get("vw", "0"))) != 0
+            for values, _, _ in views.values()
+            for row in values[start:stop]
+        ):
+            continue
+        raw = views["raw"][0]
+        if Decimal(str(raw[inert_start - 1]["c"])) != _inert(raw[inert_start]) or any(
+            not has_traded_observation(values[index : index + 1])
+            for values, _, _ in views.values()
+            for index in (inert_start - 1, stop)
+        ):
+            continue
+        bridge = VacantTickerBridge(
+            expected[0],
+            expected[-1],
+            departure.action_id,
+            arrival_action_id,
+        )
+        candidates.setdefault((bridge.first, bridge.last), []).append(bridge)
+    return tuple(items[0] for _, items in sorted(candidates.items()) if len(items) == 1)
+
+
+def assess_vacant_ticker_bridges(
+    symbol,
+    lineage,
+    intervals,
+    edges,
+    work_items,
+    *,
+    evidence_issues,
+    correlation_loader,
+    source_rows_loader,
+    include_action_anchored_arrivals=False,
+):
+    """Certify complete synthetic observations during a proven ticker vacancy.
+
+    The result is a non-observation disposition only. It never assigns a row,
+    changes a ticker interval, or joins the two identities delimiting the gap.
+    """
+    if evidence_issues or correlation_loader is None or source_rows_loader is None:
+        return ()
+    views = {
+        source["adjustment"]: (download.rows, source, sessions) for download, source, sessions in work_items
+    }
+    if (
+        len(views) != len(work_items)
+        or set(views) != set(ALPACA_ADJUSTMENT_MODES)
+        or any(source.get("recorded_integrity_failure") is not None for _, source, _ in work_items)
+    ):
+        return ()
+    grids = {sessions for _, _, sessions in views.values()}
+    if len(grids) != 1:
+        return ()
+    sessions = next(iter(grids))
+    legacy_evidence_complete = lineage.get("unresolved_cusips") == []
+    departures = (
+        [
+            edge
+            for edge in edges
+            if edge.edge_type == "name_change"
+            and edge.predecessor_symbol == symbol
+            and edge.successor_symbol != symbol
+            and edge.predecessor_asset_id == edge.successor_asset_id
+        ]
+        if legacy_evidence_complete
+        else []
+    )
+    arrivals = (
+        [
+            edge
+            for edge in edges
+            if edge.edge_type == "name_change"
+            and edge.successor_symbol == symbol
+            and edge.predecessor_symbol != symbol
+            and edge.predecessor_asset_id == edge.successor_asset_id
+        ]
+        if legacy_evidence_complete
+        else []
+    )
+    candidates = {}
+    for departure in departures:
+        for arrival in arrivals:
+            first_boundary, end_boundary = departure.effective_date, arrival.effective_date
+            if (
+                first_boundary >= end_boundary
+                or departure.predecessor_asset_id == arrival.successor_asset_id
+                or departure.predecessor_cusip == arrival.successor_cusip
+                or not _complete_corporate_action_query(lineage, first_boundary, end_boundary)
+            ):
+                continue
+            departure_intervals = [
+                item
+                for item in intervals
+                if item.identity_key()
+                == (
+                    symbol,
+                    departure.predecessor_cusip,
+                    departure.predecessor_asset_id,
+                )
+                and item.end_date_exclusive == first_boundary
+            ]
+            arrival_intervals = [
+                item
+                for item in intervals
+                if item.identity_key() == (symbol, arrival.successor_cusip, arrival.successor_asset_id)
+                and item.start_date_inclusive == end_boundary
+            ]
+            if len(departure_intervals) != 1 or len(arrival_intervals) != 1:
+                continue
+            if any(
+                item.historical_symbol == symbol
+                and (item.start_date_inclusive is None or item.start_date_inclusive < end_boundary)
+                and (item.end_date_exclusive is None or item.end_date_exclusive > first_boundary)
+                for item in intervals
+            ):
+                continue
+            touching_edges = {
+                edge
+                for edge in edges
+                if first_boundary <= edge.effective_date <= end_boundary
+                and symbol in (edge.predecessor_symbol, edge.successor_symbol)
+            }
+            if touching_edges != {departure, arrival}:
+                continue
+            occupants = _known_label_occupants(lineage, symbol)
+            expected_occupants = {
+                departure.predecessor_asset_id,
+                arrival.successor_asset_id,
+            }
+            if not expected_occupants <= occupants or not occupants <= expected_occupants:
+                continue
+            allowed_action_ids = set()
+            allowed_value_change_dates = set()
+            for action in lineage.get("corporate_actions", []):
+                if (
+                    action.get("action_type") != "cash_dividend"
+                    or (action.get("symbol"), action.get("cusip")) != (symbol, arrival.successor_cusip)
+                    or not action.get("id")
+                ):
+                    continue
+                try:
+                    when = positive_occupancy_action_date(action, symbol, arrival.successor_cusip)
+                except (KeyError, TypeError, ValueError, InvalidOperation):
+                    continue
+                if when is not None and first_boundary <= when < end_boundary:
+                    allowed_action_ids.add(action["id"])
+                    allowed_value_change_dates.add(when)
+            conflicting_action = False
+            for action in lineage.get("corporate_actions", []):
+                if not any(value == symbol for key, value in action.items() if key.endswith("symbol")):
+                    continue
+                dates = _dated_action_values(action)
+                if dates is None:
+                    conflicting_action = True
+                    break
+                if action.get("id") not in {departure.action_id, arrival.action_id, *allowed_action_ids} and any(
+                    first_boundary <= when < end_boundary for when in dates
+                ):
+                    conflicting_action = True
+                    break
+            if conflicting_action:
+                continue
+            conflicting_occupancy = False
+            for occupancy in lineage.get("symbol_occupancy_evidence", []):
+                if occupancy.get("symbol") != symbol:
+                    continue
+                if occupancy.get("asset_id") not in expected_occupants:
+                    conflicting_occupancy = True
+                    break
+                for record in occupancy.get("evidence", []):
+                    try:
+                        when = date.fromisoformat(record["process_date"])
+                    except (KeyError, TypeError, ValueError):
+                        conflicting_occupancy = True
+                        break
+                    if first_boundary <= when < end_boundary and record.get("action_id") not in {
+                        departure.action_id,
+                        *allowed_action_ids,
+                    }:
+                        conflicting_occupancy = True
+                        break
+                if conflicting_occupancy:
+                    break
+            if conflicting_occupancy:
+                continue
+            try:
+                expected = tuple(
+                    date.fromisoformat(value)
+                    for value in expected_market_session_coverage(
+                        first_boundary.isoformat(), end_boundary.isoformat()
+                    ).session_dates
+                )
+            except (MarketCalendarError, ValueError):
+                continue
+            if not expected or expected[0] != first_boundary:
+                continue
+            positions = [position for position, session in enumerate(sessions) if session in expected]
+            if (
+                not positions
+                or positions != list(range(positions[0], positions[-1] + 1))
+                or tuple(sessions[position] for position in positions) != expected
+            ):
+                continue
+            start, stop = positions[0], positions[-1] + 1
+            if start == 0 or stop >= len(sessions) or sessions[stop] != end_boundary:
+                continue
+            bridges = shared_inert_bridges(
+                work_items,
+                allowed_value_change_dates=frozenset(allowed_value_change_dates),
+            )
+            if (start, stop - 1) not in bridges:
+                continue
+            if any(
+                Decimal(str(row.get("vw", "0"))) != 0
+                for values, _, _ in views.values()
+                for row in values[start:stop]
+            ):
+                continue
+            raw = views["raw"][0]
+            if Decimal(str(raw[start - 1]["c"])) != _inert(raw[start]) or any(
+                not has_traded_observation(values[index : index + 1])
+                for values, _, _ in views.values()
+                for index in (start - 1, stop)
+            ):
+                continue
+            source = views["raw"][1]
+            if not _independently_trades_through_vacancy(
+                departure.successor_symbol,
+                departure.successor_asset_id,
+                departure.successor_cusip,
+                expected,
+                source,
+                correlation_loader=correlation_loader,
+                source_rows_loader=source_rows_loader,
+            ) or not _independently_trades_through_vacancy(
+                arrival.predecessor_symbol,
+                arrival.predecessor_asset_id,
+                arrival.predecessor_cusip,
+                expected,
+                source,
+                correlation_loader=correlation_loader,
+                source_rows_loader=source_rows_loader,
+            ):
+                continue
+            bridge = VacantTickerBridge(
+                expected[0],
+                expected[-1],
+                departure.action_id,
+                arrival.action_id,
+            )
+            candidates.setdefault((bridge.first, bridge.last), []).append(bridge)
+    certified = [items[0] for items in candidates.values() if len(items) == 1]
+    if include_action_anchored_arrivals:
+        certified.extend(
+            _action_anchored_vacant_ticker_bridges(
+                symbol,
+                lineage,
+                intervals,
+                edges,
+                work_items,
+            )
+        )
+        unique = {}
+        for bridge in certified:
+            unique.setdefault((bridge.first, bridge.last), []).append(bridge)
+        certified = [items[0] for items in unique.values() if len(set(items)) == 1]
+    certified.sort(key=lambda item: (item.first, item.last, item.departure_action_id, item.arrival_action_id))
+    if any(left.last >= right.first for left, right in zip(certified, certified[1:])):
+        return ()
+    return tuple(certified)
 
 
 def _positive_competing_owner(symbol, intervals, asset_id, first, last):
@@ -365,6 +951,13 @@ def assess_bridged_traded_episodes(symbol, lineage, intervals, work_items):
             and item.asset_id == asset_id
             and item.start_date_inclusive is not None
             and first < item.start_date_inclusive <= last
+            and not (
+                current_reuse
+                and item.cusip == cusip
+                and item.end_date_exclusive is None
+                and item.applied_rules
+                and all(rule.name == "action_anchored_current_ticker_occupancy" for rule in item.applied_rules)
+            )
             for item in intervals
         ):
             continue

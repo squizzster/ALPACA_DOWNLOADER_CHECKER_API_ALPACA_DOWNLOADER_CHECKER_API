@@ -32,6 +32,53 @@ class Interrupted(BaseException):
 
 
 class ServingCatalogueTests(NativeCase):
+    def test_scoped_recovery_preserves_global_incompleteness_and_unrelated_work(self):
+        from libs.alpaca_lineage_build.context import OperationContext
+
+        self.add_symbol("OTHER")
+        self.bootstrap()
+        before = storage.controls(self.store)["groups"]["OTHER"]
+        storage.initialize(self.store, rebuild=True)
+        for symbol in ("TEST", "OTHER"):
+            self.publish_change(lambda r, _: r["evidence"].update(warnings=["new"]), symbol)
+        pending = work.read(self.store)
+        context = OperationContext(self.store)
+        with (
+            patch.object(storage, "initialize", side_effect=AssertionError("implicit bootstrap")),
+            patch.object(work, "seed", side_effect=AssertionError("unselected work seeded")),
+            patch.object(storage, "finish_bootstrap", side_effect=AssertionError("global completion")),
+        ):
+            result = maintain(self.store, symbols={"TEST"}, context=context)
+            self.assertTrue(result["complete"], result)
+            self.assertFalse(result["catalogue_complete"])
+            self.assertEqual(1, result["evaluated_groups"])
+            self.assertEqual({"OTHER": pending["OTHER"]}, work.read(self.store))
+            self.assertEqual(before, storage.controls(self.store, incomplete=True)["groups"]["OTHER"])
+            self.assertIsNone(context.serving)
+            self.assertTrue(maintain(self.store, symbols={"OTHER"})["complete"])
+            idle = maintain(self.store, symbols={"TEST"})
+            self.assertTrue(idle["complete"])
+            self.assertFalse(idle["catalogue_complete"])
+            with self.assertRaises(CatalogueError):
+                maintain(self.store)
+            with self.assertRaises(CatalogueError):
+                context.select_serving()
+            with self.assertRaises(DataLibraryError):
+                DataLibrary(store=self.store)
+        self.assertTrue(maintain(self.store, rebuild=True)["catalogue_complete"])
+        self.assertEqual(2, DataLibrary(store=self.store).online_count())
+
+    def test_scoped_recovery_still_rejects_incompatible_policy_and_incomplete_queue(self):
+        self.bootstrap()
+        storage.initialize(self.store, rebuild=True)
+        with patch.object(storage, "policy", return_value={"version": -1}):
+            with self.assertRaises(CatalogueError):
+                maintain(self.store, symbols={"TEST"})
+        with closing(connect_sqlite(self.root / "index.sqlite3")) as db, db:
+            db.execute("UPDATE serving_work_state SET complete=0")
+        with self.assertRaisesRegex(CatalogueError, "coverage incomplete"):
+            maintain(self.store, symbols={"TEST"})
+
     def test_scoped_maintenance_leaves_unrelated_pending_work_and_decisions_untouched(self):
         self.add_symbol("OTHER")
         self.bootstrap()
@@ -53,6 +100,7 @@ class ServingCatalogueTests(NativeCase):
 
         self.add_symbol("OTHER")
         self.bootstrap()
+        storage.initialize(self.store, rebuild=True)
         for operation in ("update", "refresh"):
             with self.subTest(operation=operation):
                 for symbol in ("TEST", "OTHER"):
@@ -85,6 +133,7 @@ class ServingCatalogueTests(NativeCase):
                 ):
                     result = dispatch(args)
                 self.assertTrue(result["complete"], result)
+                self.assertFalse(result["serving_catalogue"]["catalogue_complete"])
                 self.assertEqual(result["serving_catalogue"]["evaluated_groups"], 1)
                 self.assertEqual(set(work.read(self.store)), {"OTHER"})
 
@@ -585,6 +634,74 @@ class ServingCatalogueTests(NativeCase):
         self.assertEqual(
             self.catalogue_groups("ALIAS")["ALIAS"]["decisions"][0]["reasons"], ["unresolved_coverage"]
         )
+
+    def test_exact_producer_certified_vacant_bridge_is_not_unresolved_coverage(self):
+        self.add_symbol("ALIAS")
+        entries = lineage.read_index(self.root)["symbols"]
+        sources = {name: entry["source_sha256"] for name, entry in entries.items()}
+        reason = "certified_vacant_ticker_bridge_non_observation"
+        for symbol in ("TEST", "ALIAS"):
+
+            def connect(receipt, boundaries, symbol=symbol):
+                receipt["input_sources"] = sources
+                receipt["dependencies"] = sorted(set(sources) - {symbol})
+                if symbol == "ALIAS":
+                    for boundary in boundaries.values():
+                        for entry in boundary["adjustments"]:
+                            for segment in entry["segments"]:
+                                segment["branch"] = "uncorrelated"
+                                segment.pop("security_identity", None)
+                                segment["candidate_securities"] = [{"asset_id": "TEST-id"}]
+                                segment["reason_codes"] = [reason]
+
+            self.publish_change(connect, symbol)
+        data = self.bootstrap()
+        self.assertEqual(1, data.online_count())
+        self.assertTrue(data.search_securities("TEST"))
+
+        def add_uncertified_reason(_, boundaries):
+            for boundary in boundaries.values():
+                for entry in boundary["adjustments"]:
+                    for segment in entry["segments"]:
+                        segment["reason_codes"].append("additional_unresolved_fact")
+
+        self.publish_change(add_uncertified_reason, "ALIAS")
+        self.assertTrue(maintain(self.store)["complete"])
+        self.assertEqual(0, DataLibrary(store=self.store).online_count())
+
+    def test_exact_producer_certified_pre_entry_carry_is_not_unresolved_coverage(self):
+        self.add_symbol("ALIAS")
+        entries = lineage.read_index(self.root)["symbols"]
+        sources = {name: entry["source_sha256"] for name, entry in entries.items()}
+        reason = "certified_pre_entry_carry_forward_non_observation"
+        for symbol in ("TEST", "ALIAS"):
+
+            def connect(receipt, boundaries, symbol=symbol):
+                receipt["input_sources"] = sources
+                receipt["dependencies"] = sorted(set(sources) - {symbol})
+                if symbol == "ALIAS":
+                    for boundary in boundaries.values():
+                        for entry in boundary["adjustments"]:
+                            for segment in entry["segments"]:
+                                segment["branch"] = "uncorrelated"
+                                segment.pop("security_identity", None)
+                                segment["candidate_securities"] = [{"asset_id": "TEST-id"}]
+                                segment["reason_codes"] = [reason]
+
+            self.publish_change(connect, symbol)
+        data = self.bootstrap()
+        self.assertEqual(1, data.online_count())
+        self.assertTrue(data.search_securities("TEST"))
+
+        def add_uncertified_reason(_, boundaries):
+            for boundary in boundaries.values():
+                for entry in boundary["adjustments"]:
+                    for segment in entry["segments"]:
+                        segment["reason_codes"].append("additional_unresolved_fact")
+
+        self.publish_change(add_uncertified_reason, "ALIAS")
+        self.assertTrue(maintain(self.store)["complete"])
+        self.assertEqual(0, DataLibrary(store=self.store).online_count())
 
     def test_changed_group_retires_old_ids_and_never_recomputes_published_identity(self):
         old = self.bootstrap().list_securities()[0].public_id

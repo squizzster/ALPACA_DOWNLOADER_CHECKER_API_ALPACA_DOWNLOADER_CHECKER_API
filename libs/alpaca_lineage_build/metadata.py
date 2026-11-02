@@ -16,6 +16,63 @@ from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, M
 
 from .contract import LineageError
 
+DEPENDENCY_HANDOFF_CORRELATION_VERSION = 77
+
+
+def mapping_dependencies(evidence, lookup):
+    """The mapping's accepted endpoint baseline, not today's inferred owner."""
+    old_symbols = {
+        item["lookup"]: (item.get("asset") or {}).get("id")
+        for item in evidence.get("asset_lookups", ())
+        if item["lookup_kind"] == "symbol"
+    }
+    identifier = lookup["lookup"]
+
+    def labels(value):
+        if isinstance(value, list):
+            return set().union(*(labels(item) for item in value))
+        if not isinstance(value, dict):
+            return set()
+        result = {
+            value.get(key[:-6] + "_symbol" if key.endswith("_cusip") else "symbol")
+            for key, item in value.items()
+            if (key == "cusip" or key.endswith("_cusip")) and item == identifier
+        }
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                result.update(labels(item))
+        return result
+
+    endpoints = labels(evidence.get("corporate_actions", ()))
+    canonical = lookup.get("asset") or {}
+    if canonical.get("symbol"):
+        endpoints.add(canonical["symbol"])
+        old_symbols.setdefault(canonical["symbol"], canonical.get("id"))
+    result = {label: old_symbols[label] for label in endpoints if label in old_symbols}
+    # These are endpoint observations made when the exact mapping was acquired,
+    # not a decision about its UUID. They also preserve legitimate ticker reuse:
+    # the fresh mapping may still identify the historical occupant.
+    result.update(evidence.get("mapping_endpoint_observations", {}).get(identifier, {}))
+    return result
+
+
+def retained_symbol_observations(evidences):
+    """Collect explicit completed observations without treating them as fresh HTTP."""
+    observed = defaultdict(dict)
+    for evidence in evidences:
+        for lookup in evidence.get("asset_lookups", ()):
+            if lookup["lookup_kind"] == "symbol":
+                observed[lookup["lookup"]][(lookup.get("asset") or {}).get("id")] = lookup
+    return observed
+
+
+def changed_mapping_dependencies(evidence, lookup, observed):
+    return {
+        label
+        for label, prior in mapping_dependencies(evidence, lookup).items()
+        if (current := observed(label)) is not None and (current.get("asset") or {}).get("id") != prior
+    }
+
 
 def action_symbols(value):
     """Include recipients inside reorganization stock_movements, preserving the event."""
@@ -74,6 +131,7 @@ class EvidenceClient:
         self.observation = observation
         self.work_policy = None
         self.restricted_identifiers = set()
+        self.retained_symbols = {}
         if observation is not None:
             self._load_catalogue(observation["records"])
             self.catalogue_attempted = True
@@ -155,7 +213,39 @@ class EvidenceClient:
                 or lookup.get("asset") != (compact_asset(observed["asset"]) if observed.get("asset") else None)
             ):
                 return False
+            if lookup["lookup_kind"] == "cusip" and not self.mapping_current(evidence, lookup):
+                return False
         return True
+
+    def dependency_observation(self, symbol):
+        observed = self.observed_symbol_lookup(symbol)
+        return observed if observed is not None else self.retained_symbols.get(symbol)
+
+    def mapping_current(self, evidence, lookup):
+        # A fresh exact response is authoritative even when historical CUSIP and
+        # current ticker legitimately identify different UUIDs. Only retained
+        # mappings need invalidation after an actually observed endpoint change.
+        return lookup["lookup"] in self.assets or not changed_mapping_dependencies(
+            evidence, lookup, self.dependency_observation
+        )
+
+    def prepare_retained(self, evidences):
+        """One pre-fix complete group's metadata-owner reconciliation."""
+        for symbol, observations in retained_symbol_observations(evidences).items():
+            if len(observations) == 1:
+                self.retained_symbols[symbol] = next(iter(observations.values()))
+            elif self.observed_symbol_lookup(symbol) is None:
+                # Conflicting completed observations select this exact endpoint;
+                # never choose a historical observation by iteration order.
+                self.get_asset_lookup(symbol)
+        mappings = defaultdict(set)
+        for evidence in evidences:
+            for lookup in evidence.get("asset_lookups", ()):
+                if lookup["lookup_kind"] == "cusip":
+                    mappings[lookup["lookup"]].add((lookup.get("asset") or {}).get("id"))
+        for identifier, identities in mappings.items():
+            if len(identities) > 1:
+                self.get_asset_lookup(identifier)
 
     @staticmethod
     def _value(value):
@@ -376,6 +466,52 @@ class _CompletedLookupChanged(RuntimeError):
     """Newly traversed evidence replaced a lookup consumed earlier in this report."""
 
 
+class RetainedReportClient:
+    """Reassemble accepted metadata after selected exact mappings change.
+
+    Completed action coverage and symbol responses are historical inputs, kept
+    separate from this operation's fresh cache. Only a genuinely new label or
+    uncovered interval delegates acquisition to the ordinary metadata owner.
+    """
+
+    def __init__(self, client, evidence):
+        self.client, self.evidence = client, evidence
+        self.symbols = {
+            lookup["lookup"]: lookup for lookup in evidence["asset_lookups"] if lookup["lookup_kind"] == "symbol"
+        }
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+    def covered(self, symbol, start, end):
+        query = self.evidence["query"]
+        return (
+            symbol in self.evidence["queried_symbols"]
+            and query["corporate_actions_data_quality"] == "complete"
+            and query["corporate_actions_start"] <= start <= end <= query["corporate_actions_end"]
+        )
+
+    def prefetch_corporate_actions(self, requests):
+        self.client.prefetch_corporate_actions([request for request in requests if not self.covered(*request)])
+
+    def get_corporate_actions(self, symbol, start, end):
+        if self.covered(symbol, start, end):
+            # The completed report owns this union across its queried labels.
+            # Reassembly consumes that union; it is not a new provider response.
+            return [
+                action for action in self.evidence["corporate_actions"] if start <= action_date(action) <= end
+            ]
+        return self.client.get_corporate_actions(symbol, start, end)
+
+    def get_symbol_lookup(self, symbol):
+        observed = self.client.observed_symbol_lookup(symbol)
+        if observed is not None:
+            return observed
+        if symbol in self.symbols:
+            return self.symbols[symbol]
+        return self.client.get_symbol_lookup(symbol)
+
+
 class WindowClient:
     # Completed mappings remain authoritative until their endpoint/action inputs
     # change. A newly acquired endpoint has the same authority on every route.
@@ -406,36 +542,8 @@ class WindowClient:
             if self.start and identifier not in self.changed_cusips
             else None
         )
-        if previous is not None:
-            # New current endpoint identities are a concrete reason to acquire a
-            # mapping again. Starting a command or advancing a query cutoff is not.
-            old_symbols = {
-                lookup["lookup"]: (lookup.get("asset") or {}).get("id")
-                for lookup in self.previous["evidence"]["asset_lookups"]
-                if lookup["lookup_kind"] == "symbol"
-            }
-            labels = {
-                action.get(key[:-6] + "_symbol")
-                for action in self.completed_actions.values()
-                for key, value in action.items()
-                if key.endswith("_cusip") and value == identifier
-            }
-            labels |= {
-                action.get("symbol")
-                for action in self.completed_actions.values()
-                if action.get("cusip") == identifier
-            }
-            canonical = previous.get("asset") or {}
-            if canonical.get("symbol"):
-                labels.add(canonical["symbol"])
-                old_symbols.setdefault(canonical["symbol"], canonical.get("id"))
-            if any(
-                label in old_symbols
-                and (observed := self.client.observed_symbol_lookup(label)) is not None
-                and (observed.get("asset") or {}).get("id") != old_symbols[label]
-                for label in labels
-            ):
-                previous = None
+        if previous is not None and not self.client.mapping_current(self.previous["evidence"], previous):
+            previous = None
         return previous
 
     def get_asset_lookup(self, identifier):
@@ -507,9 +615,15 @@ def acquire(view, client, previous=None, *, refresh=False):
             )
         except _CompletedLookupChanged:
             continue  # The fresh lookup is now authoritative in this operation's cache.
+        # Complete the producer's dependency baseline before checking coherence.
+        # A retained historical mapping may intentionally differ from today's
+        # ticker occupant; dropping its accepted baseline would reject the same
+        # valid lookup on every retry. Actual endpoint/action changes still
+        # invalidate the retained lookup through WindowClient.
+        evidence = _finish_evidence(evidence, window)
         if not window.evidence_current(evidence):
             continue  # A later symbol lookup changed an earlier retained dependency.
-        return _finish_evidence(evidence, window)
+        return evidence
     raise LineageError("metadata lookup changes exceeded the name-change traversal limit")
 
 
@@ -518,9 +632,32 @@ def _finish_evidence(evidence, window):
     observation = getattr(window.client, "observation", None)
     if observation is not None:
         evidence["catalogue_observed_at_utc"] = observation["catalogue_observed_at_utc"]
+    elif window.previous and "catalogue_observed_at_utc" in window.previous["evidence"]:
+        evidence["catalogue_observed_at_utc"] = window.previous["evidence"]["catalogue_observed_at_utc"]
     for lookup in evidence["asset_lookups"]:
         if lookup["lookup_kind"] == "symbol" and lookup["lookup"] in window.lookup_sources:
             lookup["source"] = window.lookup_sources[lookup["lookup"]]
+    mapping_observations = {}
+    for lookup in evidence["asset_lookups"]:
+        if lookup["lookup_kind"] != "cusip":
+            continue
+        identifier = lookup["lookup"]
+        prior = window.completed_cusip_lookups.get(identifier)
+        baseline = mapping_dependencies(window.previous["evidence"], prior) if prior else {}
+        baseline.update(mapping_dependencies(evidence, lookup))
+        if identifier in window.client.assets:
+            for label in baseline:
+                observed = window.client.dependency_observation(label)
+                if observed is not None:
+                    baseline[label] = (observed.get("asset") or {}).get("id")
+        elif prior:
+            baseline.update(
+                window.previous["evidence"].get("mapping_endpoint_observations", {}).get(identifier, {})
+            )
+        if baseline:
+            mapping_observations[identifier] = baseline
+    if mapping_observations:
+        evidence["mapping_endpoint_observations"] = mapping_observations
     # build_identity_report emits this filesystem warning for logical descriptors too.
     # Preserve the in-memory handoff; do not turn this wording into file authentication.
     evidence["warnings"] = [
@@ -531,14 +668,17 @@ def _finish_evidence(evidence, window):
     return evidence
 
 
-def acquire_unpriced(symbol, request, client):
+def acquire_unpriced(symbol, request, client, *, previous=None):
     """Query metadata independently of bars, without fabricating a pricing input."""
     local = {
         "present": False,
         "directory": None,
         "downloads": [],
     }
-    window = WindowClient(client, symbol, None, True)
+    retained = {"anchor_month": request["end_exclusive"][:7], "evidence": previous} if previous else None
+    if previous:
+        client = RetainedReportClient(client, previous)
+    window = WindowClient(client, symbol, retained, previous is None)
     evidence = build_identity_report(symbol, local, window, query_dates=(request["start"][:10], request["asof"]))
     return _finish_evidence(evidence, window)
 

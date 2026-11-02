@@ -81,6 +81,25 @@ across retries/cutoff extensions; endpoint windows/action discovery use the inde
 Mapping change requires complete generation-bound replacement. Completed acquisition and endpoint responses
 remain distinct handoffs.
 
+A completed serving decision may schedule a provider-late-bar probe for exact unexplained raw-absent
+source/session pairs. The producer records each source generation, checked dates and present raw dates in its
+history checkpoint, then publishes the version-2 scheduling projection in the compact selector. Planning
+consumes that projection without group-body or source reads. Adjusted-only presence is not raw presence;
+present but unassigned raw observations remain lineage work. Contributors and explained gaps retain their
+existing ownership rules; absence alone does not establish that a historical label owns a requested date.
+
+Missing or incompatible projections require explicit `catalogue rebuild`. Projection conversion reads completed
+ineligible bodies, including old empty projections, and only the raw source/date boundaries needed for missing
+provenance. It preserves decisions, decision generations, numerical checkpoints and unrelated pending work.
+Matching pricing generations are required under selected locks. Completed all-view absence may prove raw absence
+for each unchanged source; group-wide presence cannot be attributed to a particular source. Prefix reuse carries
+these facts under producer ancestry and reads only changed or new gap scope.
+
+Exact raw probes remain generation-bound; compact selections include completed online and offline decisions.
+A confirmed late provider row enters the ordinary eight-view retained-span replacement and complete-group
+lineage path. Orchestration does not predict eligibility. Stale pricing or serving generations require
+reselection rather than widening the probe. This projection does not introduce a negative-probe freshness cache.
+
 [validate_activity](../libs/alpaca_pricing_download/activity.py) checks new partitions: trade counts agree across
 views; views without split adjustment preserve raw share volume. Exact decimals preserve units; missing rows are
 not zeroes. `activity_consistent` covers retained history only after full validation or inheritance of that
@@ -90,6 +109,13 @@ completed guarantee. Legacy appends cannot certify untouched cold partitions; re
 possibly changed session across all views/removals; null means identical observations. It survives acknowledgement
 and rollover. Missing/expired ancestry proves no unchanged prefix: reevaluate selected affected histories,
 without a store-wide metadata audit.
+A full refresh can prove identical effective observations from newly acquired rows and accepted logical
+digests/counts, without reading old prices. Same-anchor proof covers all eight views, complete years, the
+active month, and the recorded year-snapshot bounds; the active month overrides its year overlap. New
+non-active-month rows outside those bounds, unproved overlap or rollover keep ordinary changed-span treatment.
+Proven equality preserves retained payload references and controls ancestry, new notices and the returned
+`changed` flag together. An existing pending correction is never erased by an equal retry. Mapping/request
+context still reaches the ordinary lineage doorman.
 
 ## Check summary
 
@@ -208,7 +234,10 @@ prices without upstream authentication or identity-rule replay. Eligibility cove
   no conflicting occupant/event and no source observations in any view, including unresolved rows.
   Exclusions neither assign observations nor merge identities.
 - Unresolved assignments within the advertised identity span veto serving; unrelated/outside-span uncertainty
-  does not discard supported history. Empty/entirely unresolved groups complete without public identities.
+  does not discard supported history. The only additional exceptions are correlation's exact certified vacant-ticker
+  and pre-entry carry-forward non-observation dispositions: serving trusts each producer certificate without replaying
+  it. Any extra reason or ordinary anonymous/candidate-related uncertainty still vetoes. Empty/entirely unresolved
+  groups complete without public identities.
 
 Inactivity, nontradability or missing descriptions alone do not disqualify. Coverage means approved stored history,
 not lifetime completeness/current freshness. Policy version/calendar digest select positive and negative decisions.
@@ -228,10 +257,12 @@ Raw continuity labels remain separate from public all-view labels. Gaps use curr
 refresh bounded gap-presence reads without repeating unaffected numeric checks. Physical aliases share decoding.
 Checkpoints/decisions commit together. Policy changes require explicit rebuild of the single current checkpoint format.
 
-The policy-5→6 exception translates scalar ownership labels to lists and reuses completed facts only when the whole
-group's pricing generations and every row/source/owner/label selection match. Comparison uses selected checkpoints/
-assignments without price reads. Changed groups receive ordinary evaluation; both paths project current metadata.
-Consumers still require current policy. No extension to other policy/calendar changes.
+The policy-5/6/7→8 exception translates policy-5 scalar ownership labels to lists and reuses completed facts only
+when the whole group's pricing generations and every row/source/owner/label selection match. Policies 7 and 8 change
+no numeric history check; eligibility is always recalculated from the current completed receipt and its producer
+dispositions. Comparison uses selected checkpoints/assignments without price reads. Changed histories receive
+ordinary evaluation; both paths project current metadata. Consumers still require current policy. No extension to
+other policy/calendar changes.
 
 ### Publication and maintenance
 
@@ -246,6 +277,12 @@ including absent dependencies, without rediscovering evidence closure. Lineage t
 [serving obligations](../libs/alpaca_serving_catalogue/work.py) before upstream acknowledgement. Catalogue commit
 precedes obligation deletion; retries reuse committed work without history reads. The lineage worker serializes
 maintenance; selected pricing locks span publication. Failures/focused commands leave unrelated obligations pending.
+An exact producer-issued unchanged-decision handoff may accompany a lineage version-header publication.
+The journal persists its old/new complete-group receipt generations and unchanged pricing inputs into the
+version-2 serving work transaction. Serving trusts that guarantee, retargets matching references atomically,
+and preserves decisions and numerical checkpoints. A missing or mismatched handoff retains ordinary selected
+maintenance. Explicit work conversion preserves queued obligations; no implicit universe reconstruction occurs.
+
 Maintenance first accepts the compact catalogue state and complete work queue. An empty queue returns without
 loading catalogue group/member maps or lineage membership; only selected work requires those maps.
 

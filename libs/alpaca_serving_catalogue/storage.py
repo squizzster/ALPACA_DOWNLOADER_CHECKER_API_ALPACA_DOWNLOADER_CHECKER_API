@@ -141,10 +141,127 @@ def read_groups(store, keys, *, generation):
         raise CatalogueError("cannot read selected serving decisions") from error
 
 
-def selector_state(store, *, recover=False):
+def _late_bar_projection(groups):
+    """Publish bounded scheduling evidence while the owning bodies are in memory."""
+    selected, identities, selected_groups = {}, 0, 0
+    for group in groups:
+        group_selected = False
+        decisions = {item["public_id"]: item for item in group["decisions"]}
+        records = {item["public_id"]: item for item in group["history_validation"]["prefix_records"]}
+        coverage = group["history_validation"]["identities"]
+        for public_id, decision in decisions.items():
+            if "unexplained_missing_sessions" not in decision["reasons"]:
+                continue
+            record = records[public_id]
+            sources = {source for order in coverage[public_id].values() for source in order["subsets"]}
+            sessions = set(record["missing_sessions"]) - set(decision["explained_missing_sessions"])
+            identity_selected = False
+            for source in sources:
+                facts = group["history_validation"].get("raw_gap_presence", {}).get(source)
+                if facts is None or not sessions <= set(facts["checked_sessions"]):
+                    raise CatalogueError("raw gap provenance missing; run catalogue rebuild")
+                absent = sessions - set(facts["present_sessions"])
+                if not absent:
+                    continue
+                identity_selected = group_selected = True
+                token = group["references"]["pricing"][source]
+                item = selected.setdefault(source, {"source_sha256": token, "sessions": set()})
+                if item["source_sha256"] != token:
+                    raise CatalogueError("conflicting selected pricing generation for late-bar repair")
+                item["sessions"].update(absent)
+            identities += identity_selected
+        selected_groups += group_selected
+    return {
+        "version": 2,
+        "selected_groups": selected_groups,
+        "selected_identities": identities,
+        "sources": {
+            source: {**item, "sessions": sorted(item["sessions"])} for source, item in sorted(selected.items())
+        },
+    }
+
+
+def publish_projection(store, key, selection, group, accepted_state):
+    """Retain completed decisions while atomically selecting new scheduling facts."""
+    projection = (
+        _late_bar_projection((group,))
+        if group is not None
+        else {
+            "version": 2,
+            "selected_groups": 0,
+            "selected_identities": 0,
+            "sources": {},
+        }
+    )
+    with closing(connect_sqlite(path(store))) as connection, connection:
+        state = _state(connection, incomplete=True)
+        if state["generation"] != accepted_state["generation"]:
+            raise CatalogueError("catalogue changed during projection migration")
+        revised = {**selection, "late_bar_repairs": projection}
+        if group is None:
+            connection.execute("UPDATE groups SET selection=? WHERE group_key=?", (encoded(revised), key))
+        else:
+            connection.execute(
+                "UPDATE groups SET selection=?, body=? WHERE group_key=?",
+                (encoded(revised), encoded(group), key),
+            )
+        return _write_state(connection, complete=state["complete"])
+
+
+def retarget_decision(store, key, handoff, accepted_state):
+    """Trust one producer handoff; preserve every completed serving outcome."""
+    with closing(connect_sqlite(path(store))) as connection, connection:
+        state = _state(connection, incomplete=True)
+        if state["generation"] != accepted_state["generation"]:
+            raise CatalogueError("catalogue changed before unchanged-decision publication")
+        new = encoded(handoff["lineage_after"])
+        connection.execute(
+            "UPDATE groups SET selection=json_set(selection, '$.references.lineage', json(?)), "
+            "body=json_set(body, '$.references.lineage', json(?)) WHERE group_key=?",
+            (new, new, key),
+        )
+        return _write_state(connection, complete=state["complete"])
+
+
+@traced("serving_late_bar_selection")
+def select_late_bar_repairs(store, accepted):
+    """Consume the accepted compact selector; never reopen group decisions.
+
+    The producer has already selected exact source generations and sessions.
+    Legacy selectors need explicit catalogue rebuild, not an implicit body crawl.
+    """
+    selected, identities, selected_groups, inspected = {}, 0, 0, 0
+    for selection in accepted["groups"].values():
+        if not selection["ineligible_identities"]:
+            continue
+        projection = selection.get("late_bar_repairs")
+        if not isinstance(projection, dict) or projection.get("version") != 2:
+            raise CatalogueError(
+                "late-bar selector missing or incompatible; run alpaca-cli-eod catalogue rebuild --store PATH"
+            )
+        inspected += 1
+        identities += projection["selected_identities"]
+        selected_groups += projection["selected_groups"]
+        for symbol, item in projection["sources"].items():
+            target = selected.setdefault(symbol, {"source_sha256": item["source_sha256"], "sessions": set()})
+            if target["source_sha256"] != item["source_sha256"]:
+                raise CatalogueError("conflicting selected pricing generation for late-bar repair")
+            target["sessions"].update(item["sessions"])
+    return {
+        "catalogue_generation": accepted["state"]["generation"],
+        "inspected_groups": inspected,
+        "selected_groups": selected_groups,
+        "selected_identities": identities,
+        "sources": {
+            symbol: {**item, "sessions": sorted(item["sessions"])} for symbol, item in sorted(selected.items())
+        },
+    }
+
+
+def selector_state(store, *, recover=False, incomplete=False):
     """Compact publication token for a previously accepted in-memory view."""
     with closing(connect_sqlite(path(store), readonly=not recover)) as connection:
-        return _state(connection)
+        return _state(connection, incomplete=incomplete)
 
 
 def refresh_controls(store, selected=None, *, recover=False):
@@ -228,6 +345,7 @@ def commit(store, previous, groups):
                     **{name: group[name] for name in ("locator", "policy", "references", "decision_generation")},
                     "online_identities": len(group["securities"]),
                     "ineligible_identities": sum(not d["eligible"] for d in group["decisions"]),
+                    "late_bar_repairs": _late_bar_projection((group,)),
                 }
                 connection.execute(
                     "INSERT INTO groups VALUES(?, ?, ?, ?)",

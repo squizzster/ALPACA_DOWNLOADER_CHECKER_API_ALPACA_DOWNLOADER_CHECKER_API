@@ -28,12 +28,14 @@ from libs.alpaca_lineage_build.contract import VERSION as LINEAGE_VERSION
 
 from .contract import SUPPORTED_POLICY_SCHEMA_VERSIONS, CorrelationPolicyError
 from .correlation_policy_contract import (
-    PRODUCTION_EXECUTION_PROFILE,
-    PRODUCTION_POLICY_ROLE,
-    reusable_policy,
+    PRODUCTION_EXECUTION_PROFILE as PRODUCTION_EXECUTION_PROFILE,
 )
 from .correlation_policy_contract import (
     PRODUCTION_POLICY_ID as PRODUCTION_POLICY_ID,
+)
+from .correlation_policy_contract import (
+    PRODUCTION_POLICY_ROLE,
+    reusable_policy,
 )
 from .correlation_policy_contract import (
     PRODUCTION_POLICY_SEMANTIC_SHA256 as PRODUCTION_POLICY_SEMANTIC_SHA256,
@@ -450,9 +452,9 @@ def _compile_schema_four(
         "implementation.lineage_version",
     )
     implementation_tuple = (correlation_version, lineage_version)
-    if implementation_tuple not in {(59, 33), (CORRELATION_VERSION, LINEAGE_VERSION)}:
+    if implementation_tuple not in {(59, 33), (76, 34), (CORRELATION_VERSION, LINEAGE_VERSION)}:
         raise CorrelationPolicyError(
-            "schema-v4 implementation must be the preserved 59/33 profile or the running "
+            "schema-v4 implementation must be the preserved 59/33 or 76/34 profile or the running "
             f"{CORRELATION_VERSION}/{LINEAGE_VERSION} profile"
         )
 
@@ -566,7 +568,7 @@ def _compile_schema_four(
         fallback_profile = PUBLISHED_PROFILE
         expected_role = (
             PRODUCTION_POLICY_ROLE
-            if implementation_tuple == (CORRELATION_VERSION, LINEAGE_VERSION)
+            if implementation_tuple in {(76, 34), (CORRELATION_VERSION, LINEAGE_VERSION)}
             else "published_reference"
         )
     elif profile_values == (CORRECTED_RECONCILIATION, CORRECTED_SUFFIX, INDEPENDENT_DEPENDENCY):
@@ -686,7 +688,7 @@ def _compile_schema_four(
         policy_version=policy_version,
         policy_role=policy_role,
         execution_profile=(
-            PRODUCTION_EXECUTION_PROFILE
+            f"correlation_v{correlation_version}_policy_engine"
             if policy_role == PRODUCTION_POLICY_ROLE
             else "correlation_v59_two_phase"
         ),

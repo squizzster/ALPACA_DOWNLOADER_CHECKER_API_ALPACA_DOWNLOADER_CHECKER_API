@@ -15,13 +15,13 @@ from test_alpaca_pricing_download import snapshot as files_snapshot
 
 from libs.alpaca_lineage_build import check_summary as projection
 from libs.alpaca_lineage_build import contract as lineage_contract
-from libs.alpaca_lineage_build import pipeline, update
+from libs.alpaca_lineage_build import pipeline, refresh, update
 from libs.alpaca_lineage_build import storage as lineage_storage
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.reader import read_lineage
 from libs.alpaca_lineage_build.transform import ASSIGNMENT_FIELDS
 from libs.alpaca_pricing_download import check_summary, storage
-from libs.alpaca_pricing_download.contract import timestamp
+from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_pricing_download.update_checks import CHECK_FILE, queue_check, read_checks
@@ -146,6 +146,137 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertEqual(rows[1][5], "42")
         self.assertEqual([row[0][:10] for row in rows], ["2016-01-04", "2026-10-14", "2026-10-15", "2026-10-16"])
         self.assert_finished()
+
+    def test_provider_late_bar_uses_exact_serving_handoff_and_normal_replacement(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        store = Path(temporary.name) / "late-bar"
+        initial = {
+            "AAA": [bar("2026-01-05"), bar("2026-01-07")],
+            "BBB": [bar("2026-01-05"), bar("2026-01-06"), bar("2026-01-07")],
+        }
+        assets = {symbol: asset(symbol) for symbol in initial}
+        for symbol, rows in initial.items():
+            download_pricing(store, symbol, "2026-01-08", client=FakeClient(rows))
+        lineage = run_lineage(store, identity_client=IdentityClient(assets))
+        self.assertEqual(lineage["failed"], 0, lineage)
+        projection.rebuild(store)
+
+        from libs.alpaca_serving_catalogue import storage as serving_storage
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        serving = maintain(store, bootstrap=True)
+        self.assertTrue(serving["complete"], serving)
+        controls = serving_storage.controls(store)
+        with patch.object(
+            serving_storage, "read_groups", side_effect=AssertionError("selector expanded into group bodies")
+        ):
+            selected = serving_storage.select_late_bar_repairs(store, controls)
+        self.assertEqual(set(selected["sources"]), {"AAA"})
+        self.assertEqual(selected["sources"]["AAA"]["sessions"], ["2026-01-06"])
+        key = controls["members"]["AAA"]
+        legacy = {
+            **controls,
+            "groups": {
+                **controls["groups"],
+                key: {k: v for k, v in controls["groups"][key].items() if k != "late_bar_repairs"},
+            },
+        }
+        with (
+            patch.object(serving_storage, "read_groups", side_effect=AssertionError("legacy selector crawled")),
+            self.assertRaisesRegex(serving_storage.CatalogueError, "catalogue rebuild"),
+        ):
+            serving_storage.select_late_bar_repairs(store, legacy)
+        before_group = serving_storage.read_groups(store, [key], generation=controls["state"]["generation"])[key]
+        public_id = before_group["decisions"][0]["public_id"]
+        self.assertFalse(before_group["decisions"][0]["eligible"])
+
+        from libs.alpaca_pricing_download.refresh import probe_late_bar_repairs
+
+        unchanged = files_snapshot(store / "end_of_day/pricing/AAA")
+        absent_calls = []
+        absent = BarsClient("test", "test")
+
+        def absent_page(params):
+            absent_calls.append(dict(params))
+            start, end = timestamp(params["start"]), timestamp(params["end"])
+            return {
+                "bars": {
+                    symbol: [row for row in initial[symbol] if start <= timestamp(row["t"]) <= end]
+                    for symbol in params["symbols"].split(",")
+                }
+            }
+
+        with patch.object(absent, "_get", side_effect=absent_page):
+            prepared, negative = probe_late_bar_repairs(store, selected, client=absent)
+        self.assertEqual(prepared, [])
+        self.assertEqual(negative["returned_sessions"], 0)
+        self.assertEqual(len(absent_calls), 1)
+        self.assertEqual(files_snapshot(store / "end_of_day/pricing/AAA"), unchanged)
+        stale = copy.deepcopy(selected)
+        stale["sources"]["AAA"]["source_sha256"] = "0" * 64
+        with patch.object(absent, "execute_plan", side_effect=AssertionError("stale probe executed")):
+            prepared, rejected = probe_late_bar_repairs(store, stale, client=absent)
+        self.assertEqual(prepared, [])
+        self.assertEqual(rejected["stale_sources"], ["AAA"])
+
+        healthy = files_snapshot(store / "end_of_day/pricing/BBB")
+        live = {**initial, "AAA": [bar("2026-01-05"), bar("2026-01-06"), bar("2026-01-07")]}
+        calls = []
+        client = BarsClient("test", "test")
+
+        def page(params):
+            calls.append(dict(params))
+            start, end = timestamp(params["start"]), timestamp(params["end"])
+            return {
+                "bars": {
+                    symbol: [row for row in live[symbol] if start <= timestamp(row["t"]) <= end]
+                    for symbol in params["symbols"].split(",")
+                }
+            }
+
+        with patch.object(client, "_get", side_effect=page):
+            repaired = refresh.refresh_existing(
+                store,
+                pricing_client=client,
+                identity_client=IdentityClient(assets),
+                end_date="2026-01-08",
+                late_bar_repairs=selected,
+            )
+        self.assertTrue(repaired["complete"], repaired)
+        self.assertEqual(repaired["late_bar_check"]["requested_sessions"], 1)
+        self.assertEqual(repaired["late_bar_check"]["returned_sessions"], 1)
+        self.assertEqual([item["symbol"] for item in repaired["pricing"]["results"]], ["AAA"])
+        self.assertEqual(files_snapshot(store / "end_of_day/pricing/BBB"), healthy)
+        exact = [
+            call
+            for call in calls
+            if call["adjustment"] == "raw"
+            and timestamp(call["start"]).astimezone(NEW_YORK).date().isoformat() == "2026-01-06"
+        ]
+        self.assertEqual(len(exact), 1)
+        self.assertEqual(exact[0]["symbols"], "AAA")
+        self.assertFalse(
+            any(
+                call["symbols"] == "BBB" and timestamp(call["start"]).date().isoformat() < "2026-01-07"
+                for call in calls
+            )
+        )
+
+        serving = maintain(store)
+        self.assertTrue(serving["complete"], serving)
+        controls = serving_storage.controls(store)
+        group = serving_storage.read_groups(
+            store,
+            [controls["members"]["AAA"]],
+            generation=controls["state"]["generation"],
+        )[controls["members"]["AAA"]]
+        decision = next(item for item in group["decisions"] if item["public_id"] == public_id)
+        self.assertTrue(decision["eligible"], decision)
+        self.assertEqual(
+            [row[0][:10] for row in read_pricing_views(store, "AAA")["raw"]],
+            ["2026-01-05", "2026-01-06", "2026-01-07"],
+        )
 
     def test_new_action_completes_lineage_and_pricing_keeps_advancing(self):
         action = {

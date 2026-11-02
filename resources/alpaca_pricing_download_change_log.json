@@ -185,5 +185,15 @@
     "modifications": [
       "Expose opt-in entry/exit timing spans for acquisition, append, correction and publication, carrying trace context into append workers without changing pricing publications or approvals."
     ]
+  },
+  {
+    "modifications": [
+      "Probe only exact raw sessions selected by a completed serving handoff, bind each probe to the selected pricing generation and retained request span, and route positive responses through the existing full-span replacement producer. Preserve empty responses, stale selections, all eight replacement views and pricing-31 publications."
+    ]
+  },
+  {
+    "modifications": [
+      "Use authoritative logical boundary digests to recognize identical effective eight-view refreshes without false historical changes or old-payload reads."
+    ]
   }
 ]

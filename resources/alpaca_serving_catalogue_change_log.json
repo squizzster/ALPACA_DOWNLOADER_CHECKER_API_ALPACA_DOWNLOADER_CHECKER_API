@@ -40,6 +40,43 @@
     ]
   },
   {
-    "modifications": ["Accept the compact catalogue state and authoritative serving queue before loading group memberships. Return from empty maintenance without decoding the catalogue-wide controls, while preserving recovery, incomplete-boundary rejection and selected-work publication."]
+    "modifications": [
+      "Accept the compact catalogue state and authoritative serving queue before loading group memberships. Return from empty maintenance without decoding the catalogue-wide controls, while preserving recovery, incomplete-boundary rejection and selected-work publication."
+    ]
+  },
+  {
+    "modifications": [
+      "Project exact unexplained missing sessions and their already selected identity-contributing pricing sources as a generation-bound scheduling handoff. Exclude explained gaps and sessions already present in any selected source without replaying eligibility, reading pricing payloads or changing serving policy 6/schema 2 checkpoints."
+    ]
+  },
+  {
+    "modifications": [
+      "Trust the correlation producer's exact certified vacant-ticker non-observation disposition when evaluating unresolved coverage, without replaying its identity or padding proof. All other anonymous, candidate-related or multiply-reasoned spans retain the existing veto. Publish serving policy 7 and reuse only exact unchanged policy-5/6 numeric and session checkpoints while recalculating eligibility from the current completed receipt."
+    ]
+  },
+  {
+    "modifications": [
+      "Trust the correlation producer's exact certified pre-entry carry-forward non-observation disposition when evaluating unresolved coverage, without replaying its source-overlap or padding proof. All other anonymous, candidate-related or multiply-reasoned spans retain the existing veto. Publish serving policy 8 and reuse only exact unchanged policy-5/6/7 numeric and session checkpoints while recalculating eligibility from the current completed receipt."
+    ]
+  },
+  {
+    "modifications": [
+      "Do not let a bar present only in an unrelated identity's source suppress an exact provider-late probe. Trust the completed group-wide source-presence union only when every selected group source contributes to that identity; otherwise schedule the already bounded missing-session probe against only that identity's producer-selected sources. Preserve serving eligibility, checkpoints and the ordinary positive-response pricing replacement plus complete-lineage path."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish the versioned late-bar scheduling projection in each compact group selector and consume it directly during planning. Never reopen every ineligible group body to rediscover missing-session work. Older incomplete projections require explicit catalogue rebuild, which derives the projection from accepted decision bodies without repeating history validation. Serving policy and completed history checkpoints remain unchanged."
+    ]
+  },
+  {
+    "modifications": [
+      "Allow explicitly scoped serving maintenance to consume completed group selectors and finish its durable obligations while catalogue bootstrap is incomplete. Preserve global incompleteness, strict public/daily selectors, schema/policy checks and unrelated work; report selected-work completion separately from catalogue completeness. Explicit bootstrap or rebuild remains the only owner of global completion."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish source-specific raw-gap provenance, convert legacy projections without numerical reevaluation, and trust exact unchanged-lineage handoffs when retaining serving decisions."
+    ]
   }
 ]

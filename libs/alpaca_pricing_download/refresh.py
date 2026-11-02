@@ -1,6 +1,6 @@
 """Batched acquisition and guarded replacement of existing pricing spans."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -11,6 +11,7 @@ from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
+    NEW_YORK,
     BarsSymbolUnavailable,
     DownloadError,
     digest,
@@ -92,6 +93,102 @@ def prepare_refresh(store, symbols):
     return prepared
 
 
+@traced("provider_late_bar_check")
+def probe_late_bar_repairs(store, selection, *, client, end_date=None, progress=None):
+    """Probe only exact sessions named by a completed serving handoff.
+
+    A positive raw-bar response selects the ordinary generation-bound full-span
+    replacement. Empty responses leave the completed stored decision untouched.
+    """
+    sources = selection["sources"]
+    report = {
+        "catalogue_generation": selection["catalogue_generation"],
+        "inspected_groups": selection["inspected_groups"],
+        "selected_groups": selection["selected_groups"],
+        "selected_identities": selection["selected_identities"],
+        "selected_sources": len(sources),
+        "requested_sources": 0,
+        "requested_sessions": 0,
+        "returned_sources": 0,
+        "returned_sessions": 0,
+        "stale_sources": [],
+        "beyond_target": [],
+        "outside_retained_span": 0,
+        "requests": {},
+    }
+    if not sources:
+        return [], report
+    prepared = {item["symbol"]: item for item in prepare_refresh(store, sources)}
+    needs = []
+    for symbol, selected in sorted(sources.items()):
+        request = prepared[symbol]
+        if request["source_sha256"] != selected["source_sha256"]:
+            report["stale_sources"].append(symbol)
+            continue
+        if end_date is not None and request["end_exclusive"][:10] > end_date:
+            report["beyond_target"].append(symbol)
+            continue
+        ranges = []
+        for value in selected["sessions"]:
+            session = date.fromisoformat(value)
+            start = datetime.combine(session, time.min, tzinfo=NEW_YORK).astimezone(timezone.utc)
+            end = datetime.combine(session + timedelta(days=1), time.min, tzinfo=NEW_YORK).astimezone(
+                timezone.utc
+            )
+            if value < request["start"][:10] or value >= request["end_exclusive"][:10]:
+                report["outside_retained_span"] += 1
+                continue
+            ranges.append(
+                {
+                    "start": start.isoformat(),
+                    "end_exclusive": end.isoformat(),
+                }
+            )
+        if ranges:
+            needs.append(
+                {
+                    "kind": "bars",
+                    "why": "provider_late_bar_check",
+                    "symbols": [symbol],
+                    "asof": request["asof"],
+                    "adjustments": ["raw"],
+                    "ranges": ranges,
+                }
+            )
+    report["requested_sources"] = len(needs)
+    report["requested_sessions"] = sum(len(need["ranges"]) for need in needs)
+    if not needs:
+        return [], report
+    cache, _ = _prefetch(
+        needs,
+        client,
+        check=False,
+        metrics=report["requests"],
+        progress=progress,
+        merge_ranges=False,
+    )
+    returned = {}
+    for need in needs:
+        symbol = need["symbols"][0]
+        for window in need["ranges"]:
+            key = (
+                False,
+                symbol,
+                "raw",
+                timestamp(window["start"]),
+                timestamp(window["end_exclusive"]),
+                need["asof"],
+            )
+            if cache[key].rows:
+                session = timestamp(window["start"]).astimezone(NEW_YORK).date().isoformat()
+                returned.setdefault(symbol, []).append(session)
+    report["returned_sources"] = len(returned)
+    report["returned_sessions"] = sum(len(values) for values in returned.values())
+    return [
+        {**prepared[symbol], "provider_late_sessions": sessions} for symbol, sessions in sorted(returned.items())
+    ], report
+
+
 class PlannedClient:
     """Replay each buffered request once; retries use fresh provider responses."""
 
@@ -131,10 +228,10 @@ def _endpoint_needs(symbol, endpoints, asof, why, *, cutoff=None):
     ]
 
 
-def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None):
+def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, merge_ranges=True):
     started = monotonic()
     pages_before = (metrics or {}).get("page_requests", 0)
-    plan = build_plan({"steps": [{"needs": needs}]})
+    plan = build_plan({"steps": [{"needs": needs}]}, merge_ranges=merge_ranges)
     stage = needs[0]["why"] if needs else "acquisition_check"
     actions = plan["steps"][0]["actions"]
     if progress:

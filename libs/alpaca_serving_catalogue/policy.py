@@ -11,6 +11,10 @@ from libs.common.us_equity_market_session_calendar import expected_market_sessio
 from .contract import policy
 from .reuse import extend_ticker_ranges, select_prefixes
 
+_VACANT_TICKER_BRIDGE_REASON = "certified_vacant_ticker_bridge_non_observation"
+_PRE_ENTRY_CARRY_FORWARD_REASON = "certified_pre_entry_carry_forward_non_observation"
+_TRUSTED_NON_OBSERVATION_REASONS = frozenset((_VACANT_TICKER_BRIDGE_REASON, _PRE_ENTRY_CARRY_FORWARD_REASON))
+
 
 def _bar_reasons(bar, adjustment):
     # Completed pricing publications already guarantee exact, finite numbers.
@@ -345,6 +349,12 @@ def evaluate(group, previous=()):
                         or segment["from"] > last_session
                     ):
                         continue
+                    # The correlation producer proved that this complete source
+                    # span contains no observation to assign. Trust that exact
+                    # disposition; never replay its identity or padding proof here.
+                    segment_reasons = tuple(segment.get("reason_codes") or ())
+                    if len(segment_reasons) == 1 and segment_reasons[0] in _TRUSTED_NON_OBSERVATION_REASONS:
+                        continue
                     candidates = segment.get("candidate_securities") or []
                     candidates_ids = {c.get("asset_id") for c in candidates if isinstance(c, dict)} - {None}
                     if candidates_ids & members or (not candidates_ids and source in security["tickers"]):
@@ -420,7 +430,7 @@ def evaluate(group, previous=()):
                 "ticker_ownership_intervals": _ownership_intervals(group, public_id),
             }
         )
-    return {
+    completed = {
         "locator": min(group.references["pricing"]),
         "references": group.references,
         "policy": policy(),
@@ -430,3 +440,7 @@ def evaluate(group, previous=()):
         "history_validation": validation,
         "validation_work": work,
     }
+    from .gaps import complete_presence
+
+    complete_presence(group, completed, previous)
+    return completed

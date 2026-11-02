@@ -260,9 +260,8 @@ def updated_boundaries(root, previous, anchor, views, *, full_history=False, rea
     year_start = anchor[:4] + "-01"
     changed_views = {}
     if full_history:
-        # Future consideration: retain clipped edges on force when endpoint values match.
-        # Deliberately not implemented: gap/retention semantics need separate review.
-        # For now every full refresh, including force, is a clean authoritative replacement.
+        # Acquisition supplies a complete replacement. The publication owner can
+        # retain identical effective observations using recorded logical digests.
         changed_views["completed_years"] = _select(views, lambda month: month < year_start)
         changed_views["current_year"] = _select(views, lambda month: month >= year_start)
     else:
@@ -300,16 +299,30 @@ def publish_acquired(
 ):
     """Publish through the original recovery, notice and summary transaction."""
     from .activity import validate_activity
-    from .changes import change_history
+    from .changes import change_history, equal_effective_replacement
 
     paths = boundary_paths(anchor)
+    old_documents = {} if old_documents is None else old_documents
+    validated_all = set(changed_views) == set(paths)
+    for content in changed_views.values():
+        validate_activity(content)
+    if previous is not None and previous["anchor_month"] == anchor and validated_all:
+        old = {}
+        for kind, reference in previous["boundaries"].items():
+            relative = reference["manifest"]
+            if relative not in old_documents:
+                old_documents[relative] = boundary_document(root, reference, symbol, kind)
+            old[kind] = old_documents[relative]
+        if equal_effective_replacement(previous, anchor, changed_views, old):
+            update = None
+            if not repair_payloads:
+                changed_views = {}
     references = dict(previous["boundaries"]) if previous is not None else {}
     documents = {}
     payloads = {}
     # New partitions are validated at this producer. Retained boundary
     # references remain authoritative; DO NOT reopen them to extend this check.
     for kind, content in changed_views.items():
-        validate_activity(content)
         document, files = build_boundary(symbol, kind, anchor, content, request)
         relative = paths[kind]
         documents[relative] = document
@@ -332,8 +345,7 @@ def publish_acquired(
         # Changed partitions have just passed the producer's activity contract.
         # An append cannot certify untouched legacy partitions. Carry this
         # guarantee only from a completed guarantee or a complete replacement.
-        "activity_consistent": bool((previous or {}).get("activity_consistent"))
-        or set(changed_views) == set(references),
+        "activity_consistent": bool((previous or {}).get("activity_consistent")) or validated_all,
     }
     evidence = acquisition_evidence_sha256 or (previous or {}).get("acquisition_evidence_sha256")
     if evidence is not None:
@@ -367,6 +379,7 @@ def publish_acquired(
     # Consumers must use the source/endpoints/notice handoff, not reload or
     # re-authenticate the files the publisher just selected.
     return {
+        "changed": update is not None,
         "files_written": written,
         "source": source,
         "source_sha256": digest(json_bytes(source)),
@@ -598,7 +611,7 @@ def download_pricing(
             "recovered": recovered,
             "restarted": restarted,
             "has_data": any(selected_endpoints.values()),
-            "changed": update is not None,
+            "changed": written["changed"],
             "history_start": written["source"]["history_start"],
             "pending_update": written["pending_update"],
         }

@@ -5,7 +5,12 @@ from libs.alpaca_pricing_download.append import select_append_sources
 from libs.alpaca_pricing_download.check_summary import assert_current, describe
 from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.live_check import verify
-from libs.alpaca_pricing_download.refresh import check_retained_source, prepare_refresh, replace_prepared
+from libs.alpaca_pricing_download.refresh import (
+    check_retained_source,
+    prepare_refresh,
+    probe_late_bar_repairs,
+    replace_prepared,
+)
 from libs.common.debug_trace import span, traced
 
 from .context import accept_context, recover_and_accept_correlation_policy
@@ -81,6 +86,7 @@ def refresh_existing(
     register_discoveries=None,
     work_policy=None,
     symbols=None,
+    late_bar_repairs=None,
     context=None,
 ):
     """Check newly eligible members too; approval never expands with the summary."""
@@ -92,7 +98,109 @@ def refresh_existing(
     lineage = {"results": [], "failed": 0}
     beyond, restricted = set(), set()
     snapshot = context.select_summary()
+
+    def replace_and_reconcile(prepared, baseline_token, *, serving_generation=None):
+        def before_publish():
+            assert_current(store, baseline_token)
+            if serving_generation is not None:
+                from libs.alpaca_serving_catalogue.storage import selector_state
+
+                if selector_state(store)["generation"] != serving_generation:
+                    raise DownloadError("selected serving catalogue changed before late-bar repair")
+
+        replaced = replace_prepared(
+            store,
+            prepared,
+            client=pricing_client,
+            cohort_size=cohort_size,
+            progress=progress,
+            before_publish=before_publish,
+            context=pricing_context,
+        )
+        pricing["results"].extend(replaced["results"])
+        pricing["failed"] += replaced["failed"]
+        for key, value in replaced["requests"].items():
+            pricing["requests"][key] = pricing["requests"].get(key, 0) + value
+        if work_policy is not None:
+            work_policy.record_results(replaced, stage="history_correction")
+        selected = [item["symbol"] for item in replaced["results"] if item["status"] == "replaced"]
+        lineage_replacements = {}
+        if selected:
+            value = run_lineage(
+                store,
+                selected,
+                identity_client=identity_client,
+                pricing_client=pricing_client,
+                end_date=end_date,
+                evidence_client=evidence_client,
+                register_discoveries=register_discoveries,
+                work_policy=work_policy,
+                context=context,
+                progress=progress,
+                on_pricing=progress,
+                pricing_handoff={
+                    item["symbol"]: item for item in replaced["results"] if "source_sha256" in item
+                },
+            )
+            lineage["results"].extend(value["results"])
+            lineage["failed"] += value["failed"]
+            for item in value["results"]:
+                lineage_replacements.update(item.get("pricing_replacements", {}))
+        else:
+            assert_current(store, baseline_token)
+        for item in replaced["results"]:
+            if item["status"] == "replaced":
+                generations[item["symbol"]] = item["source_sha256"]
+        # Reconciliation may replace pricing again after observing a changed
+        # identity. Only its completed producer handoff approves that generation.
+        generations.update(lineage_replacements)
+        return selected
+
+    late_bar_check = {
+        "catalogue_generation": None,
+        "inspected_groups": 0,
+        "selected_groups": 0,
+        "selected_identities": 0,
+        "selected_sources": 0,
+        "requested_sources": 0,
+        "requested_sessions": 0,
+        "returned_sources": 0,
+        "returned_sessions": 0,
+        "stale_sources": [],
+        "beyond_target": [],
+        "outside_retained_span": 0,
+        "requests": {},
+    }
+    if late_bar_repairs is not None:
+        repair_sources = {}
+        for symbol, item in late_bar_repairs["sources"].items():
+            if symbols is not None and symbol not in symbols:
+                continue
+            if work_policy is not None and not work_policy.allowed({symbol}):
+                restricted.add(symbol)
+                continue
+            repair_sources[symbol] = item
+        repair_selection = {**late_bar_repairs, "sources": repair_sources}
+        prepared, late_bar_check = probe_late_bar_repairs(
+            store,
+            repair_selection,
+            client=pricing_client,
+            end_date=end_date,
+            progress=progress,
+        )
+        if work_policy is not None:
+            work_policy.require_correction(prepared)
+        if prepared:
+            replace_and_reconcile(
+                prepared,
+                snapshot["token"],
+                serving_generation=late_bar_repairs["catalogue_generation"],
+            )
+            if not pricing["failed"] and not lineage["failed"]:
+                snapshot = context.select_summary()
     for _ in range(100):
+        if pricing["failed"] or lineage["failed"]:
+            break
         candidates = []
         for entry in snapshot["entries"]:
             symbol = entry["symbol"]
@@ -163,46 +271,7 @@ def refresh_existing(
             ]
             work_policy.require_correction(prepared)
         assert_current(store, snapshot["token"])
-        replaced = replace_prepared(
-            store,
-            prepared,
-            client=pricing_client,
-            cohort_size=cohort_size,
-            progress=progress,
-            before_publish=lambda: assert_current(store, snapshot["token"]),
-            context=pricing_context,
-        )
-        pricing["results"].extend(replaced["results"])
-        pricing["failed"] += replaced["failed"]
-        for key, value in replaced["requests"].items():
-            pricing["requests"][key] = pricing["requests"].get(key, 0) + value
-        if work_policy is not None:
-            work_policy.record_results(replaced, stage="history_correction")
-        selected = [item["symbol"] for item in replaced["results"] if item["status"] == "replaced"]
-        lineage_replacements = {}
-        if selected:
-            value = run_lineage(
-                store,
-                selected,
-                identity_client=identity_client,
-                pricing_client=pricing_client,
-                end_date=end_date,
-                evidence_client=evidence_client,
-                register_discoveries=register_discoveries,
-                work_policy=work_policy,
-                context=context,
-                progress=progress,
-                on_pricing=progress,
-                pricing_handoff={
-                    item["symbol"]: item for item in replaced["results"] if "source_sha256" in item
-                },
-            )
-            lineage["results"].extend(value["results"])
-            lineage["failed"] += value["failed"]
-            for item in value["results"]:
-                lineage_replacements.update(item.get("pricing_replacements", {}))
-        else:
-            assert_current(store, snapshot["token"])
+        selected = replace_and_reconcile(prepared, snapshot["token"])
         if pricing["failed"] or lineage["failed"]:
             break
         ready = context.select_summary()
@@ -212,16 +281,8 @@ def refresh_existing(
             if current.get(symbol) == entry or symbol in selected:
                 if symbol in current:
                     verified[symbol] = dict(current[symbol])
-                    if symbol in selected_sources:
+                    if symbol in selected_sources and symbol not in selected:
                         generations[symbol] = selected_sources[symbol]
-        for item in replaced["results"]:
-            if item["status"] == "replaced":
-                generations[item["symbol"]] = item["source_sha256"]
-        # Reconciliation may replace pricing again after observing a changed
-        # identity. Only its completed producer handoff approves that generation.
-        # The replacement producer already validated these exact generations;
-        # a second endpoint request cannot strengthen its completed handoff.
-        generations.update(lineage_replacements)
         snapshot = ready
         # Refresh membership only after publication. New members get a fresh comparison;
         # changing membership cannot promote an unchecked source into approval.
@@ -285,6 +346,7 @@ def refresh_existing(
         "complete": failed == 0,
         "failed": failed,
         "check": {"stats": stats, "requests": requests, "seconds": sum(c["live_seconds"] for c in checks)},
+        "late_bar_check": late_bar_check,
         "pricing": pricing,
         "lineage": lineage,
         "summary": summary,

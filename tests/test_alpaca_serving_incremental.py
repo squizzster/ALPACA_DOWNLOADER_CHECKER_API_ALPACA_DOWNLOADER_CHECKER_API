@@ -20,7 +20,7 @@ from libs.alpaca_pricing_download.changes import MAX_ANCESTORS, change_history, 
 from libs.alpaca_pricing_download.contract import digest, json_bytes, timestamp
 from libs.alpaca_pricing_download.download import download_pricing
 from libs.alpaca_pricing_download.http import BarsClient
-from libs.alpaca_serving_catalogue import policy, work
+from libs.alpaca_serving_catalogue import policy, storage, work
 from libs.alpaca_serving_catalogue.producer import maintain
 
 
@@ -358,6 +358,8 @@ class IncrementalServingTests(NativeCase):
                 current = self.catalogue_groups("GAP")["GAP"]["history_validation"]
                 retained = next(row for row in current["prefix_records"] if row["public_id"] == public_id)
                 self.assertEqual(retained["source_sessions_in_gaps"], [missing_day] if filled else [])
+                selected = storage.select_late_bar_repairs(self.store, storage.controls(self.store))
+                self.assertEqual(selected["sources"]["GAP"]["sessions"], [missing_day])
                 self.assert_full_agreement("GAP")
 
     def test_daily_append_checks_only_new_rows_without_opening_closed_payloads(self):
