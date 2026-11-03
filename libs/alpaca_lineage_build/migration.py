@@ -183,7 +183,7 @@ def migrate_correlation_policy(store: str | Path, *, progress=None) -> dict[str,
     correlation/observation rules. When 34/60 is no longer current, legacy groups
     fail closed without publication.
     """
-    if (PRODUCTION_LINEAGE_VERSION, PRODUCTION_CORRELATION_VERSION) == (34, 77):
+    if (PRODUCTION_LINEAGE_VERSION, PRODUCTION_CORRELATION_VERSION) == (34, 78):
         from .certificate_migration import migrate
 
         return migrate(store, progress=progress)

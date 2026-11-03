@@ -98,11 +98,13 @@ def select_prefixes(group, previous, inputs, offsets):
 
 
 def _unchanged_history_checkpoint(prior_group, inputs):
-    """Translate an unchanged policy-5/6/7 checkpoint at its maintenance owner."""
+    """Translate unchanged earlier numeric checkpoints at their maintenance owner."""
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # Policy 6 changed numerical source selection and made each ownership label
     # a list. Policies 7 and 8 trust producer-owned non-observation dispositions;
-    # neither changes selected numeric history. If the COMPLETE group's published
+    # neither changes selected numeric history. Policy 9 can restrict the public
+    # range after these full-history checks; it still validates the same numbers.
+    # If the COMPLETE group's published
     # pricing generations and EVERY row/source/owner/label selection are
     # unchanged, the completed numeric and session checks still describe the
     # identical history while eligibility is recalculated from today's receipt.
@@ -110,10 +112,11 @@ def _unchanged_history_checkpoint(prior_group, inputs):
     # upstream authentication, or identity calculation belongs in this proof.
     current = policy()
     prior_policy = prior_group["policy"]
-    if current["version"] != 8 or prior_policy not in (
+    if current["version"] != 9 or prior_policy not in (
         {**current, "version": 5},
         {**current, "version": 6},
         {**current, "version": 7},
+        {**current, "version": 8},
     ):
         return None
     completed = prior_group["history_validation"]

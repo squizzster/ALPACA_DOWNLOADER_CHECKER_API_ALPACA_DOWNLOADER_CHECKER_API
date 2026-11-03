@@ -261,5 +261,11 @@
     "modifications": [
       "Complete metadata dependency baselines before checking rebuilt report coherence, preserving accepted historical mappings across current ticker reuse without repeating unchanged assembly. Retain exact acquisition for changed endpoint/action evidence and explicit refresh, with lineage-34 publication compatibility."
     ]
+  },
+  {
+    "modifications": [
+      "Acquire, retain and invalidate sourced event supplements through complete-group evidence publication; support explicit split endpoints and derivative-only event scope. Promote only unchanged v76/v77 decisions and reevaluate affected groups under correlation 78.",
+      "Retain exact sourced listing-transfer dispositions without treating an unchanged ticker and CUSIP as a second equity rename."
+    ]
   }
 ]

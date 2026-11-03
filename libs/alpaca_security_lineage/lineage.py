@@ -4,6 +4,8 @@ from datetime import date
 from typing import Any
 
 from .alpaca_http import AlpacaIdentityClient
+from .event_supplements import SCHEMA_VERSION as EVENT_SUPPLEMENT_SCHEMA_VERSION
+from .event_supplements import project_actions
 from .query_dates import local_query_dates
 from .settings import (
     CUSIP_FIELD_PATTERN,
@@ -163,6 +165,7 @@ def build_identity_report(
     client: AlpacaIdentityClient,
     *,
     query_dates: tuple[str, str] | None = None,
+    event_supplements=(),
 ) -> dict[str, Any]:
     # Metadata can exist for an entitlement which the bars endpoint rejects.
     # Explicit bounds avoid inventing a local download just to query that metadata.
@@ -205,13 +208,16 @@ def build_identity_report(
                     ),
                 ):
                     actions_by_key[action_identity_key(action)] = action
-                    for related_symbol in sorted(related_name_change_symbols(action)):
-                        queue_symbol(related_symbol)
+                    projected, _ = project_actions([action], event_supplements)
+                    for equity_action in projected:
+                        for related_symbol in sorted(related_name_change_symbols(equity_action)):
+                            queue_symbol(related_symbol)
 
-        actions = sorted(
+        provider_corporate_actions = sorted(
             actions_by_key.values(),
             key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
         )
+        actions, applied_supplements = project_actions(provider_corporate_actions, event_supplements)
         cusips = extract_cusips(actions)
         for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
             for identifier in identifiers:
@@ -245,10 +251,11 @@ def build_identity_report(
         for authoritative_symbol in authoritative_symbols:
             queue_symbol(authoritative_symbol)
 
-    actions = sorted(
+    provider_corporate_actions = sorted(
         actions_by_key.values(),
         key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
     )
+    actions, applied_supplements = project_actions(provider_corporate_actions, event_supplements)
     cusips = extract_cusips(actions)
     asset_lookups = [
         asset_lookups_by_key[(lookup_kind, identifier)]
@@ -343,7 +350,7 @@ def build_identity_report(
         input_symbol_occupants,
     )
 
-    return {
+    result = {
         "query": {
             "input_symbol": symbol,
             "corporate_actions_start": start_date,
@@ -363,3 +370,10 @@ def build_identity_report(
         "symbol_disposition": symbol_disposition,
         "warnings": warnings,
     }
+    if applied_supplements:
+        result.update(
+            event_supplement_schema_version=EVENT_SUPPLEMENT_SCHEMA_VERSION,
+            event_supplements=applied_supplements,
+            provider_corporate_actions=provider_corporate_actions,
+        )
+    return result

@@ -151,14 +151,14 @@ class ServingMigrationTests(NativeCase):
         for name, prior, current in cases:
             with self.subTest(name=name):
                 self.assertIsNone(reuse._unchanged_history_checkpoint(prior, current))
-        with patch.object(reuse, "policy", return_value={**reuse.policy(), "version": 9}):
+        with patch.object(reuse, "policy", return_value={**reuse.policy(), "version": 10}):
             self.assertIsNone(reuse._unchanged_history_checkpoint(previous, inputs))
 
-    def test_policy6_and_7_unchanged_checkpoints_reuse_completed_history_for_policy8(self):
+    def test_policy6_7_and_8_unchanged_checkpoints_reuse_completed_history_for_policy9(self):
         self.bootstrap()
         with StandaloneReader(self.store)._open_group("TEST", include_unresolved=True) as group:
             inputs, _ = group.serving_inputs()
-        for version in (6, 7):
+        for version in (6, 7, 8):
             with self.subTest(version=version):
                 previous = deepcopy(self.catalogue_groups("TEST")["TEST"])
                 previous["policy"]["version"] = version

@@ -16,13 +16,18 @@ from libs.alpaca_serving_catalogue import producer, work
 from libs.alpaca_serving_catalogue import storage as catalogue
 
 
-def install_v76(case, *, serving=True):
+def install_v76(case, *, serving=True, correlation=76):
     """Install a complete synthetic frozen publication, not production relabelling."""
     policy = load_policy(
-        Path(__file__).resolve().parents[1] / "resources/alpaca_security_correlation_v76_legacy_policy.yaml"
+        Path(__file__).resolve().parents[1]
+        / f"resources/alpaca_security_correlation_v{correlation}_legacy_policy.yaml"
     )
     index = storage.read_index(case.root)
-    prior_versions = {**versions(), "correlation": 76, "correlation_policy_sha256": policy.semantic_sha256}
+    prior_versions = {
+        **versions(),
+        "correlation": correlation,
+        "correlation_policy_sha256": policy.semantic_sha256,
+    }
     receipts, entries = {}, {}
     for symbol, entry in index["symbols"].items():
         receipt = copy.deepcopy(storage.read_receipt(case.root, symbol, index))
@@ -79,6 +84,29 @@ class CertificateMigrationTests(unittest.TestCase):
             self.enterContext(
                 patch.object(owner, name, side_effect=AssertionError(f"migration repeated {name}"))
             )
+
+    def test_v77_header_promotion_and_conservative_related_query_selection(self):
+        install_v76(self.case, correlation=77)
+        index = storage.read_index(self.case.root)
+        receipt = storage.read_receipt(self.case.root, "TEST", index)
+        self.assertTrue(certificate_migration.can_promote_group({"TEST": receipt}, {"TEST"}))
+        changed = copy.deepcopy(receipt)
+        changed["evidence"]["corporate_actions"].append(
+            {
+                "id": "rename",
+                "action_type": "name_change",
+                "old_symbol": "EARLIER",
+                "new_symbol": "TEST",
+            }
+        )
+        changed["evidence"]["queried_symbols"] = ["EARLIER", "TEST"]
+        changed["evidence"]["query"]["corporate_actions_data_quality"] = "complete"
+        self.assertIn(
+            "completed_related_query_coverage",
+            certificate_migration.affected_inputs({"TEST": changed})["reasons"],
+        )
+        self.forbidden_work()
+        self.assertEqual(certificate_migration.migrate(self.case.store)["promoted_groups"], 1)
 
     def test_exact_header_promotion_retargets_completed_serving_without_payloads(self):
         before = self.case.catalogue_groups("TEST")["TEST"]

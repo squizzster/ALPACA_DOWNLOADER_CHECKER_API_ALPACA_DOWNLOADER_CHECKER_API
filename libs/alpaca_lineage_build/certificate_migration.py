@@ -1,4 +1,4 @@
-"""Exact v76 -> v77 applicability proof and explicit metadata-only migration.
+"""Exact v76/v77 -> v78 applicability proof and metadata-only migration.
 
 This doorman inspects whether the changed producers can apply. It neither
 assigns rows nor predicts a mapping response. Unproved groups use the ordinary
@@ -20,17 +20,21 @@ from .metadata import mapping_dependencies, retained_symbol_observations
 
 
 def retained_version(value):
-    expected = {**versions(), "correlation": 76, "correlation_policy_sha256": RETAINED_V76_SEMANTIC_SHA256}
+    previous = value.get("versions", {}).get("correlation")
+    if previous not in (76, 77):
+        return False
+    semantic = RETAINED_V76_SEMANTIC_SHA256 if previous == 76 else versions()["correlation_policy_sha256"]
+    expected = {**versions(), "correlation": previous, "correlation_policy_sha256": semantic}
     provenance = value.get("correlation_policy")
     old_policy = {
         **expected_policy_identity(),
-        "execution_profile": "correlation_v76_policy_engine",
-        "implementation": {"correlation_version": 76, "lineage_version": 34},
-        "semantic_sha256": RETAINED_V76_SEMANTIC_SHA256,
+        "execution_profile": f"correlation_v{previous}_policy_engine",
+        "implementation": {"correlation_version": previous, "lineage_version": 34},
+        "semantic_sha256": semantic,
     }
     return (
         versions()["lineage"] == 34
-        and versions()["correlation"] == 77
+        and versions()["correlation"] == 78
         and value.get("versions") == expected
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == item for key, item in old_policy.items())
@@ -44,7 +48,7 @@ def group_evidence(receipts):
     ]
 
 
-def affected_inputs(receipts):
+def _v77_affected_inputs(receipts):
     """Only prerequisites and concrete dependency changes, without price reads."""
     evidence = group_evidence(receipts)
     symbols = retained_symbol_observations(evidence)
@@ -122,6 +126,44 @@ def affected_inputs(receipts):
         "cusips": sorted(changed_cusips),
         "symbols": sorted(changed_symbols),
     }
+
+
+def affected_inputs(receipts):
+    """Conservative prerequisites, not a second correlation engine.
+
+    A potential applicability hit requires ordinary complete-group evaluation.
+    It is never interpreted as proof that publication will change.
+    """
+    legacy = any(receipt["versions"]["correlation"] == 76 for receipt in receipts.values())
+    result = _v77_affected_inputs(receipts) if legacy else {"reasons": [], "cusips": [], "symbols": []}
+    evidence = group_evidence(receipts)
+    actions = [action for facts in evidence for action in facts.get("corporate_actions", ())]
+    renames = [action for action in actions if action.get("action_type") == "name_change"]
+    if any(
+        edge.get("old_symbol") == edge.get("new_symbol")
+        and edge.get("old_cusip") != edge.get("new_cusip")
+        and any(
+            action.get("action_type") == "stock_merger"
+            and action.get("acquirer_symbol") == edge.get("old_symbol")
+            for action in actions
+        )
+        for edge in renames
+    ):
+        result["reasons"].append("continuing_acquirer_handoff")
+    if any(
+        action.get("action_type") == "cash_merger"
+        and any(action.get("acquiree_symbol") in action_labels(edge) for edge in renames)
+        for action in actions
+    ):
+        result["reasons"].append("terminal_inference_after_closed_occupant")
+    if renames and any(
+        facts.get("query", {}).get("corporate_actions_data_quality") == "complete"
+        and set(facts.get("queried_symbols", ())) - {facts.get("query", {}).get("input_symbol")}
+        for facts in evidence
+    ):
+        result["reasons"].append("completed_related_query_coverage")
+    result["reasons"] = sorted(set(result["reasons"]))
+    return result
 
 
 def can_promote_group(receipts, group):
@@ -225,7 +267,7 @@ def migrate(store, *, progress=None):
                 current_receipts += len(entries)
             elif not all(retained_version(entry) for entry in entries):
                 failures.append(
-                    {"group": list(group), "reason": "exact version-76 to 77 promotion is unavailable"}
+                    {"group": list(group), "reason": "exact version-76/77 to 78 promotion is unavailable"}
                 )
             else:
                 receipts = _read_group(root, index, group)

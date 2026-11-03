@@ -141,5 +141,10 @@
     "modifications": [
       "Batch completed CSV/digest bytes within a configurable output memory budget, defaulting to half available memory with a 1 GiB floor and 5 GiB ceiling. One coordinator performs source reads and batch writes without overlap; bounded workers encode only in-memory histories. Preserve source payload reuse, deterministic outputs, cancellation cleanup and final publication."
     ]
+  },
+  {
+    "modifications": [
+      "Honor the serving catalogue\u2019s approved date range in public histories, flat CSV and per-identity CSV exports, including supported recent suffixes."
+    ]
   }
 ]

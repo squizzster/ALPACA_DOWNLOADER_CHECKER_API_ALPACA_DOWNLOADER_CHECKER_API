@@ -479,5 +479,10 @@
     "modifications": [
       "Retain unresolved conflicting occupancy and incomplete structural actions in scoped name-change certificate gates, preserving validated component exceptions and frozen version-76 replay."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve same-symbol continuity across exact earlier continuing-acquirer stock mergers; honor completed related-label action queries; prevent terminal events from inventing ownership across established closed unrelated occupants while retaining separately positive-action-anchored later suffixes. Freeze prior policy behavior for replay."
+    ]
   }
 ]

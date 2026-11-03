@@ -406,7 +406,7 @@ def _compare_loaded_group(
         "corrected_candidate",
         "production",
     }:
-        allowed_baselines = {(33, 59), (LINEAGE_VERSION, CORRELATION_VERSION)}
+        allowed_baselines = {(33, 59), (34, 76), (34, 77), (LINEAGE_VERSION, CORRELATION_VERSION)}
         if any(
             (
                 receipt["versions"].get("lineage"),

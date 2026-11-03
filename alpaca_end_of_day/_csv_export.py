@@ -223,6 +223,11 @@ def _publication_lock(output):
 
 
 def _prepare_identity(data, security, views, start, end, memory_bytes):
+    first, last = security.first_session.isoformat(), security.last_session.isoformat()
+    views = {
+        adjustment: {**view, "bars": [bar for bar in view["bars"] if first <= bar["session"] <= last]}
+        for adjustment, view in views.items()
+    }
     raw = views["raw"]["bars"]
     if not raw:
         return None

@@ -18,6 +18,7 @@ from libs.alpaca_lineage_build.acquisition import (
     check_unavailable_pricing,
     unavailable_pricing,
 )
+from libs.alpaca_lineage_build.certificate_migration import affected_inputs
 from libs.alpaca_lineage_build.contract import MAX_CLOSURE, document_digest
 from libs.alpaca_lineage_build.occupancy import (
     may_have_action_anchored_current_suffix,
@@ -300,6 +301,14 @@ def _quality_prefilter(group: _PreparedGroup, policy: CompiledPolicy) -> bool:
             ):
                 return True
     return False
+
+
+def _event_scope_prefilter(group: _PreparedGroup, policy: CompiledPolicy) -> list[str]:
+    if policy.implementation_correlation_version < 78 or all(
+        receipt["versions"]["correlation"] >= 78 for receipt in group.receipts.values()
+    ):
+        return []
+    return affected_inputs(group.receipts)["reasons"]
 
 
 def _suffix_prefilter(
@@ -659,7 +668,7 @@ def _run_audit(
         selected_receipt_count += len(receipts)
         progress["selected_receipt_count"] = selected_receipt_count
         prepared = _validate_receipt_group(group_symbols, receipts, index, policy)
-        preliminary = []
+        preliminary = _event_scope_prefilter(prepared, policy)
         if _quality_prefilter(prepared, policy):
             preliminary.append(
                 "unresolved_complete_group_reconciliation" if policy.schema_version == 4 else "evidence_quality"

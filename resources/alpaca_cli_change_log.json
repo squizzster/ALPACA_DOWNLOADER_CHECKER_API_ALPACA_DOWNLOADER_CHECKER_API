@@ -141,5 +141,10 @@
     "modifications": [
       "Expose CSV --memory-mib and report read/write phase, prepared identities and buffered bytes while batching output on the same drive. CSV workers now encode in memory while one coordinator owns source and destination I/O."
     ]
+  },
+  {
+    "modifications": [
+      "Accept a bounded event-supplement document for explicitly selected lineage updates and report unmatched inputs without silently accepting unused evidence."
+    ]
   }
 ]

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from libs.alpaca_lineage_build.contract import CorrelationPolicyError as PolicyLabError
 
-LAB_VERSION = 10
+LAB_VERSION = 11
 LAB_SCHEMA_VERSION = 8
 SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset((1, 2, 3, 4))
 LAB_REPORT_BOUNDARY = "alpaca_lineage_policy_lab_comparison"
@@ -33,7 +33,8 @@ def replayable_lineage_versions(published):
         "correlation": 76,
         "correlation_policy_sha256": RETAINED_V76_SEMANTIC_SHA256,
     }
-    return published in (current, legacy, retained)
+    retained_v77 = {**retained, "correlation": 77}
+    return published in (current, legacy, retained, retained_v77)
 
 
 @lru_cache(maxsize=1)

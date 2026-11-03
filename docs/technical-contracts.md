@@ -221,7 +221,7 @@ synchronization: process interruption is covered, machine/power failure is not.
 ## Serving catalogue
 
 [policy.py](../libs/alpaca_serving_catalogue/policy.py), `evaluate`, consumes completed IDs/assignments and exact
-prices without upstream authentication or identity-rule replay. Eligibility covers complete selected history:
+prices without upstream authentication or identity-rule replay. Numerical checks cover complete selected history:
 
 - Eight views share one nonempty unique market-session set and deterministic source selection. Conflicts are
   ineligible; unreadable publications leave work pending.
@@ -229,15 +229,19 @@ prices without upstream authentication or identity-rule replay. Eligibility cove
   Nonnegative exact-decimal volume and integral trade count. Ordinary activity requires both positive, except
   split-adjusted volume may round to zero. Flat positive OHLC with zero volume/count/VWAP is the explicit
   zero-activity exception. Upstream already guarantees finite exact numbers.
-- Explain continuity; never fill/trim. A rename gap of at most five sessions requires complete action evidence,
+- Explain continuity; never fill missing sessions. A rename gap of at most five sessions requires complete action evidence,
   unchanged UUID/CUSIP/exchange, one matching dated name-change action, compatible exact symbol/CUSIP lookups,
   no conflicting occupant/event and no source observations in any view, including unresolved rows.
   Exclusions neither assign observations nor merge identities.
-- Unresolved assignments within the advertised identity span veto serving; unrelated/outside-span uncertainty
-  does not discard supported history. The only additional exceptions are correlation's exact certified vacant-ticker
-  and pre-entry carry-forward non-observation dispositions: serving trusts each producer certificate without replaying
-  it. Any extra reason or ordinary anonymous/candidate-related uncertainty still vetoes. Empty/entirely unresolved
-  groups complete without public identities.
+- Relevant unresolved assignments constrain their dates. Explicit candidate UUIDs remain conflicts; anonymous
+  observations under a former ticker are relevant only within its published ownership bounds, when available.
+  If the complete assigned history passes numerical and session checks, serving may publish its assigned suffix
+  strictly after the last relevant unresolved interval. Uncertainty reaching the latest assigned session still
+  vetoes publication. Readers and CSV exports consume only the advertised date range. This assigns no unresolved
+  rows and makes no new identity links.
+- Correlation's exact certified vacant-ticker and pre-entry carry-forward non-observation dispositions are not
+  unresolved observations: serving trusts each producer certificate without replaying it. Additional reasons
+  retain their ordinary uncertainty meaning. Empty/entirely unresolved groups complete without public identities.
 
 Inactivity, nontradability or missing descriptions alone do not disqualify. Coverage means approved stored history,
 not lifetime completeness/current freshness. Policy version/calendar digest select positive and negative decisions.
@@ -251,6 +255,11 @@ numeric outcomes, labels and gap evidence, never copied prices. Reuse is per ide
 independent identity changes do not invalidate it. Proven appends skip old rows/closed payloads; suffix containers
 may contain older rows. Changed adjusted-source selection, ownership, replacement or absent ancestry requires
 affected-history evaluation.
+
+Partial publication retains its full-history numerical checkpoint. When relevant uncertainty still overlaps,
+evaluation reads the selected history to count and project the supported subrange; unchanged maintenance reuses
+the completed decision without reads. Earlier-policy checkpoints migrate only when the complete group's pricing
+generations and row ownership selections are identical; current eligibility is evaluated again.
 
 Reuse covers the latest validated session in every view; changed coverage can clear negative cross-view decisions.
 Raw continuity labels remain separate from public all-view labels. Gaps use current evidence; changed group inputs

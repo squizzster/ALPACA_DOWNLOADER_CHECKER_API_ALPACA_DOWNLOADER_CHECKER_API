@@ -192,10 +192,10 @@ class PolicyCompilerTests(TestCase):
         corrected = load_policy(CURRENT_QUALITY_POLICY)
 
         self.assertEqual(4, production.schema_version)
-        self.assertEqual(77, production.implementation_correlation_version)
+        self.assertEqual(78, production.implementation_correlation_version)
         self.assertEqual(34, production.implementation_lineage_version)
         self.assertEqual("production", production.policy_role)
-        self.assertEqual("correlation_v77_policy_engine", production.execution_profile)
+        self.assertEqual("correlation_v78_policy_engine", production.execution_profile)
         self.assertEqual("published_v59", production.fallback_profile)
         self.assertEqual(4, published.schema_version)
         self.assertEqual(59, published.implementation_correlation_version)

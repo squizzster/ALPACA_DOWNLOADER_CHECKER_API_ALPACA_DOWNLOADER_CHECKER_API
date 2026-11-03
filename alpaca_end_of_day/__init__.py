@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 25
+API_VERSION = 26
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -574,6 +574,13 @@ class DataLibrary:
     def _read_views(self, public_id, adjustments, start, end):
         # All public access paths resolve availability before touching storage.
         security = self.get_security(public_id)
+        # The serving producer may approve only a supported recent span. Its
+        # range is authoritative; resolved standalone rows outside it are not
+        # part of this public history.
+        start = max(start or security.first_session, security.first_session)
+        end = min(end or security.last_session, security.last_session)
+        if start > end:
+            return {adjustment: {"bars": []} for adjustment in adjustments}
         key = self._records[security.public_id]["group_key"]
         expected = self._groups[key]
         try:

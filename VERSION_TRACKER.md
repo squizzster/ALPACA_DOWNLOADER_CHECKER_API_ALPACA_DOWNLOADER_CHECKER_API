@@ -38,7 +38,8 @@ to make numbers agree.
   [canonical YAML](resources/alpaca_security_correlation_policy.yaml).
 - Independent schemas remain with their owners: [CSV](alpaca_end_of_day/_csv_export.py) `SCHEMA_VERSION`,
   [lifecycle](libs/alpaca_heartbeat/__init__.py) `SCHEMA_VERSION`,
-  [identity evidence](libs/alpaca_security_lineage/settings.py) `REPORT_VERSION`.
+  [identity evidence](libs/alpaca_security_lineage/settings.py) `REPORT_VERSION`,
+  [sourced event input](libs/alpaca_security_lineage/event_supplements.py) `SCHEMA_VERSION` (lineage runtime owner).
 
 Dependency pins: [production](requirements.txt), [Parquet](requirements-bloodhound.txt),
 [policy lab](requirements-policy-lab.txt). Verification: [development](docs/development.md#verification).

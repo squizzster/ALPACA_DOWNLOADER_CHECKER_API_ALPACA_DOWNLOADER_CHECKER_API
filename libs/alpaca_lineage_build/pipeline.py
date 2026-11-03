@@ -382,6 +382,14 @@ def process_group(
             }
             selected = {name: storage.document_digest(source) for name, source in sources.items()}
             prior_unavailable = unavailable_pricing(previous.get(seed))
+            retained_evidence = [prior["evidence"] for prior in previous.values() if prior] + [
+                item["evidence"] for item in prior_unavailable.values() if "evidence" in item
+            ]
+            evidence_client.retain_event_supplements(retained_evidence)
+            changed_event_supplements = any(
+                evidence_client.supplements_for(facts) != facts.get("event_supplements", [])
+                for facts in retained_evidence
+            )
             from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
 
             if any(
@@ -404,11 +412,13 @@ def process_group(
                 register_discoveries(group)
             promoted_decision = (
                 reuse_metadata
+                and not changed_event_supplements
                 and can_promote_group(previous, group)
                 and all(evidence_client.evidence_current(facts) for facts in group_evidence(previous))
             )
             if (
                 reuse_metadata
+                and not changed_event_supplements
                 and (
                     promoted_decision
                     or all(
@@ -504,6 +514,7 @@ def process_group(
             if not required:
                 unchanged = (
                     not refresh
+                    and not changed_event_supplements
                     and group == sources.keys()
                     and all(
                         unchanged_source(source, previous[symbol], selected=selected[symbol])
@@ -511,7 +522,8 @@ def process_group(
                     )
                 )
                 resume = unchanged or (
-                    len(group) == 1
+                    not changed_event_supplements
+                    and len(group) == 1
                     and group == sources.keys()
                     and all(
                         reusable_prefix(source, previous[symbol], selected=selected[symbol], refresh=refresh)
@@ -990,7 +1002,14 @@ def run_lineage(
     context=None,
     progress=None,
     pricing_handoff=None,
+    event_supplements=(),
 ):
+    if event_supplements and symbols is None:
+        raise LineageError("event supplements require explicit selected symbols")
+    if event_supplements:
+        from libs.alpaca_security_lineage.event_supplements import validate_supplements
+
+        event_supplements = validate_supplements(list(event_supplements))
     context = accept_context(store, context, work_policy)
     metadata_before = identity_client.request_count
     pricing_metrics = {}
@@ -1072,7 +1091,11 @@ def run_lineage(
                     visited.update(graph.closure({symbol}))
                     groups += 1
             progress("lineage_selection", {"symbols": len(selected), "groups": groups})
-        evidence_client = evidence_client or EvidenceClient(identity_client)
+        if evidence_client is not None and event_supplements:
+            raise LineageError(
+                "supply event supplements when constructing the evidence client or the run, not both"
+            )
+        evidence_client = evidence_client or EvidenceClient(identity_client, event_supplements=event_supplements)
         if work_policy is not None:
             evidence_client.work_policy = work_policy
             for label in selected:
@@ -1260,10 +1283,15 @@ def run_lineage(
                 "pricing_requests": dependency_pricing["requests"],
             },
         )
-    return {
+    result = {
         "workers": 1,
         "recovered": recovered,
         "dependency_pricing": dependency_pricing,
         "results": results,
         "failed": sum(item["status"] in {"failed", "waiting_for_pricing"} for item in results),
     }
+    if event_supplements:
+        unmatched = sorted(evidence_client.event_supplements.keys() - evidence_client.applied_event_supplements)
+        result["unmatched_event_supplements"] = unmatched
+        result["failed"] += bool(unmatched)
+    return result

@@ -5,6 +5,8 @@ from collections import defaultdict
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.alpaca_data_api_solver import build_plan, split_action
 from libs.alpaca_pricing_download.contract import DownloadError, symbol_label
+from libs.alpaca_security_lineage.event_supplements import SCHEMA_VERSION as EVENT_SUPPLEMENT_SCHEMA_VERSION
+from libs.alpaca_security_lineage.event_supplements import provider_actions
 from libs.alpaca_security_lineage.lineage import (
     action_date,
     action_identity_key,
@@ -118,7 +120,7 @@ class EvidenceClient:
     # authoritative within this operation; failed requests remain failures, and
     # conflicting/new evidence is handled by its owning acquisition path below.
 
-    def __init__(self, client, *, observation=None):
+    def __init__(self, client, *, observation=None, event_supplements=()):
         self.client = client
         self.assets = {}
         self.actions = {}
@@ -132,6 +134,9 @@ class EvidenceClient:
         self.work_policy = None
         self.restricted_identifiers = set()
         self.retained_symbols = {}
+        self.event_supplements = {item["match"]["id"]: item for item in event_supplements}
+        self.retained_event_supplements = {}
+        self.applied_event_supplements = set()
         if observation is not None:
             self._load_catalogue(observation["records"])
             self.catalogue_attempted = True
@@ -198,6 +203,8 @@ class EvidenceClient:
 
     def evidence_current(self, evidence):
         """New producer reports must use this operation's acquired observations."""
+        if self.supplements_for(evidence) != evidence.get("event_supplements", []):
+            return False
         for lookup in evidence["asset_lookups"]:
             identifier = lookup["lookup"]
             observed = (
@@ -215,7 +222,34 @@ class EvidenceClient:
                 return False
             if lookup["lookup_kind"] == "cusip" and not self.mapping_current(evidence, lookup):
                 return False
+        self.applied_event_supplements.update(
+            item["match"]["id"] for item in evidence.get("event_supplements", ())
+        )
         return True
+
+    def retain_event_supplements(self, evidences):
+        """Share completed event facts across the selected dependency group."""
+        for evidence in evidences:
+            if evidence.get("event_supplements") and (
+                type(evidence.get("event_supplement_schema_version")) is not int
+                or evidence["event_supplement_schema_version"] != EVENT_SUPPLEMENT_SCHEMA_VERSION
+            ):
+                raise LineageError("unsupported retained event supplement schema")
+            for item in evidence.get("event_supplements", ()):
+                key = item["match"]["id"]
+                prior = self.retained_event_supplements.setdefault(key, item)
+                if prior != item and key not in self.event_supplements:
+                    raise LineageError(f"conflicting retained event supplements: {key}")
+                if self.event_supplements.get(key) == item:
+                    self.applied_event_supplements.add(key)
+
+    def supplements_for(self, evidence):
+        keys = {action.get("id") for action in provider_actions(evidence)}
+        available = self.retained_event_supplements | self.event_supplements
+        return [available[key] for key in sorted(keys & available.keys())]
+
+    def all_event_supplements(self):
+        return list((self.retained_event_supplements | self.event_supplements).values())
 
     def dependency_observation(self, symbol):
         observed = self.observed_symbol_lookup(symbol)
@@ -498,9 +532,7 @@ class RetainedReportClient:
         if self.covered(symbol, start, end):
             # The completed report owns this union across its queried labels.
             # Reassembly consumes that union; it is not a new provider response.
-            return [
-                action for action in self.evidence["corporate_actions"] if start <= action_date(action) <= end
-            ]
+            return [action for action in provider_actions(self.evidence) if start <= action_date(action) <= end]
         return self.client.get_corporate_actions(symbol, start, end)
 
     def get_symbol_lookup(self, symbol):
@@ -521,9 +553,7 @@ class WindowClient:
         self.start = None if refresh or previous is None else previous["anchor_month"] + "-01"
         self.lookup_sources = {}
         evidence = (previous or {}).get("evidence", {}) if client is not None else {}
-        self.completed_actions = {
-            action_identity_key(action): action for action in evidence.get("corporate_actions", ())
-        }
+        self.completed_actions = {action_identity_key(action): action for action in provider_actions(evidence)}
         self.completed_cusip_lookups = {
             lookup["lookup"]: lookup
             for lookup in evidence.get("asset_lookups", ())
@@ -590,13 +620,15 @@ class WindowClient:
         if self.start and symbol == self.symbol:
             historical = [
                 action
-                for action in self.previous["evidence"]["corporate_actions"]
+                for action in provider_actions(self.previous["evidence"])
                 if action_date(action) < self.start
             ]
         return historical + current
 
 
 def acquire(view, client, previous=None, *, refresh=False):
+    if previous:
+        client.retain_event_supplements([previous["evidence"]])
     for _ in range(MAX_NAME_CHANGE_SYMBOLS + 1):
         window = WindowClient(client, view.symbol, previous, refresh)
         try:
@@ -612,6 +644,7 @@ def acquire(view, client, previous=None, *, refresh=False):
                     view.source["history_start"][:10],
                     view.source["latest_request"]["end_exclusive"][:10],
                 ),
+                event_supplements=client.all_event_supplements(),
             )
         except _CompletedLookupChanged:
             continue  # The fresh lookup is now authoritative in this operation's cache.
@@ -677,9 +710,16 @@ def acquire_unpriced(symbol, request, client, *, previous=None):
     }
     retained = {"anchor_month": request["end_exclusive"][:7], "evidence": previous} if previous else None
     if previous:
+        client.retain_event_supplements([previous])
         client = RetainedReportClient(client, previous)
     window = WindowClient(client, symbol, retained, previous is None)
-    evidence = build_identity_report(symbol, local, window, query_dates=(request["start"][:10], request["asof"]))
+    evidence = build_identity_report(
+        symbol,
+        local,
+        window,
+        query_dates=(request["start"][:10], request["asof"]),
+        event_supplements=client.all_event_supplements(),
+    )
     return _finish_evidence(evidence, window)
 
 

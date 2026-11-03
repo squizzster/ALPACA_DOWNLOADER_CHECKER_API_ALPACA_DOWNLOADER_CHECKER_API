@@ -239,6 +239,7 @@ class CorrelationCache:
         single_session_shared_uuid_histories=True,
         early_successor_source_bridges=True,
         complete_certificate_conflicts=True,
+        completed_event_scope=True,
         terminal_carry_forward_exclusions=True,
         post_padding_shared_uuid_suffixes=True,
         split_adjusted_post_padding_aliases=True,
@@ -262,6 +263,7 @@ class CorrelationCache:
         self.single_session_shared_uuid_histories = single_session_shared_uuid_histories
         self.early_successor_source_bridges = early_successor_source_bridges
         self.complete_certificate_conflicts = complete_certificate_conflicts
+        self.completed_event_scope = completed_event_scope
         self.terminal_carry_forward_exclusions = terminal_carry_forward_exclusions
         self.post_padding_shared_uuid_suffixes = post_padding_shared_uuid_suffixes
         self.split_adjusted_post_padding_aliases = split_adjusted_post_padding_aliases
@@ -334,6 +336,7 @@ class CorrelationCache:
                         rules=self.ownership_interval_rules,
                         include_action_anchored_current_suffix=True,
                         allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
+                        closed_prior_terminal_conflicts=self.completed_event_scope,
                     )
                 )
                 intervals = list(prepared.complete)
@@ -348,6 +351,7 @@ class CorrelationCache:
                     rules=self.ownership_interval_rules,
                     include_action_anchored_current_suffix=include_action_anchored_current_suffix,
                     allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
+                    closed_prior_terminal_conflicts=self.completed_event_scope,
                 )
                 phase_intervals = {include_action_anchored_current_suffix: (intervals, interval_issues)}
             assessment = (
@@ -364,6 +368,7 @@ class CorrelationCache:
                     single_session_shared_uuid_histories=self.single_session_shared_uuid_histories,
                     early_successor_source_bridges=self.early_successor_source_bridges,
                     complete_certificate_conflicts=self.complete_certificate_conflicts,
+                    completed_event_scope=self.completed_event_scope,
                     terminal_carry_forward_exclusions=self.terminal_carry_forward_exclusions,
                     post_padding_shared_uuid_suffixes=self.post_padding_shared_uuid_suffixes,
                     split_adjusted_post_padding_aliases=self.split_adjusted_post_padding_aliases,

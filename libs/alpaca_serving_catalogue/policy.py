@@ -52,6 +52,45 @@ def _segments(group, public_id):
     ]
 
 
+def _unresolved_ends(group, security, members, first, last):
+    """Relevant unresolved observations constrain their dates, not every date."""
+    if first is None:
+        return []
+    ownership = _ownership_intervals(group, security["public_id"])
+    ends = []
+    for source, assignments in group.assignments.items():
+        for _, _, segment in assignments:
+            if segment["branch"] != "uncorrelated" or segment["to"] < first or segment["from"] > last:
+                continue
+            reasons = tuple(segment.get("reason_codes") or ())
+            if len(reasons) == 1 and reasons[0] in _TRUSTED_NON_OBSERVATION_REASONS:
+                continue
+            candidates = segment.get("candidate_securities") or []
+            ids = {c.get("asset_id") for c in candidates if isinstance(c, dict)} - {None}
+            label_match = not ids and source in security["tickers"]
+            intervals = [item for item in ownership if item["ticker"] == source]
+            if label_match and intervals:
+                # The lineage producer already bounded this identity's use of
+                # the label. An ownerless observation outside every such bound
+                # is not a conflict with this identity merely because the label
+                # once belonged to it. Explicit UUID conflicts still apply.
+                for item in intervals:
+                    lower = max(first, segment["from"], item["start_inclusive"] or first)
+                    upper = min(
+                        last,
+                        segment["to"],
+                        (date.fromisoformat(item["end_exclusive"]) - timedelta(days=1)).isoformat()
+                        if item["end_exclusive"]
+                        else last,
+                    )
+                    if lower <= upper:
+                        ends.append(upper)
+                continue
+            if ids & members or label_match:
+                ends.append(segment["to"])
+    return ends
+
+
 def _metadata(group, public_id):
     segments = _segments(group, public_id)
     members = {i for s in segments for i in s["security_identity"]["member_alpaca_asset_ids"]}
@@ -268,6 +307,18 @@ def evaluate(group, previous=()):
             decisions.append({"public_id": public_id, "eligible": False, "reasons": ["missing_views"]})
             continue
         prefix = prefixes.get(public_id)
+        members, observations = _metadata(group, public_id)
+        # A partial public range needs its dated bars to count and project the
+        # supported suffix. Full-history checkpoints remain valid numerical
+        # facts, but cannot supply an arbitrary subrange's count without reads.
+        if prefix and _unresolved_ends(
+            group,
+            security,
+            members,
+            prefix["record"]["first_session"],
+            max(s["to"] for s in _segments(group, public_id)),
+        ):
+            prefix = None
         if prefix is None:
             work["full_history_evaluations"] += 1
         try:
@@ -300,7 +351,6 @@ def evaluate(group, previous=()):
                 price_reasons.update(_bar_reasons(bar, adjustment))
                 work["checked_bars"] += 1
         reasons.update(price_reasons)
-        members, observations = _metadata(group, public_id)
         missing = set(prior["missing_sessions"] if prior else ())
         gap_bars = list(prior["gap_bars"] if prior else ())
         source_sessions = set(prior["source_sessions_in_gaps"] if prior else ())
@@ -340,25 +390,10 @@ def evaluate(group, previous=()):
         )
         if missing - explained:
             reasons.add("unexplained_missing_sessions")
-        if first_session is not None:
-            for source, assignments in group.assignments.items():
-                for _, _, segment in assignments:
-                    if (
-                        segment["branch"] != "uncorrelated"
-                        or segment["to"] < first_session
-                        or segment["from"] > last_session
-                    ):
-                        continue
-                    # The correlation producer proved that this complete source
-                    # span contains no observation to assign. Trust that exact
-                    # disposition; never replay its identity or padding proof here.
-                    segment_reasons = tuple(segment.get("reason_codes") or ())
-                    if len(segment_reasons) == 1 and segment_reasons[0] in _TRUSTED_NON_OBSERVATION_REASONS:
-                        continue
-                    candidates = segment.get("candidate_securities") or []
-                    candidates_ids = {c.get("asset_id") for c in candidates if isinstance(c, dict)} - {None}
-                    if candidates_ids & members or (not candidates_ids and source in security["tickers"]):
-                        reasons.add("unresolved_coverage")
+        unresolved_ends = _unresolved_ends(group, security, members, first_session, last_session)
+        cutoff = max(unresolved_ends) if unresolved_ends else None
+        if cutoff is not None and cutoff >= last_session:
+            reasons.add("unresolved_coverage")
         decisions.append(
             {
                 "public_id": public_id,
@@ -412,6 +447,41 @@ def evaluate(group, previous=()):
         )
         if reasons:
             continue
+
+        if cutoff is not None:
+            # Every selected view passed its full numerical/session checks above.
+            # Publish only assigned observations strictly after the last relevant
+            # uncertainty. This never assigns a row or merges an identity.
+            supported = [bar for bar in dated_bars if bar["session"] > cutoff]
+            history_summary = {
+                **history_summary,
+                "first_session": supported[0]["session"],
+                "ticker_ranges": _ticker_ranges(supported),
+                "coverage": {
+                    **history_summary["coverage"],
+                    "session_count": len(supported),
+                    "explained_missing_sessions": sorted(
+                        day for day in explained if supported[0]["session"] < day < last_session
+                    ),
+                },
+            }
+            decisions[-1]["publication_start_after_unresolved"] = cutoff
+            ticker_ranges = history_summary["ticker_ranges"]
+            observations = [
+                {
+                    **item,
+                    "effective_from": max(item["effective_from"], history_summary["first_session"]),
+                    "effective_through": min(item["effective_through"], last_session),
+                }
+                if item["effective_from"] is not None
+                else item
+                for item in observations
+                if item["effective_from"] is None
+                or (
+                    item["effective_through"] >= history_summary["first_session"]
+                    and item["effective_from"] <= last_session
+                )
+            ]
 
         def values(field):
             return sorted({o["value"] for o in observations if o["field"] == field})

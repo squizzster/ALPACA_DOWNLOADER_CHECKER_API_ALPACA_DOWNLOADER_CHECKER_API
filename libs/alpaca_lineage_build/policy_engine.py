@@ -11,6 +11,7 @@ from libs.alpaca_end_of_day_security_correlation.correlation import (
 from libs.alpaca_end_of_day_security_correlation.name_change import (
     BOUNDED_ENTRY_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
     COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION,
+    COMPLETED_EVENT_SCOPE_CORRELATION_VERSION,
     EARLY_SUCCESSOR_SOURCE_BRIDGE_CORRELATION_VERSION,
     EXACT_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
     EXTENDED_COMPONENT_HANDOFF_CORRELATION_VERSION,
@@ -170,6 +171,9 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
 
 def _correlation_cache(policy) -> CorrelationCache:
     return CorrelationCache(
+        completed_event_scope=(
+            policy.implementation_correlation_version >= COMPLETED_EVENT_SCOPE_CORRELATION_VERSION
+        ),
         complete_certificate_conflicts=(
             policy.implementation_correlation_version >= COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION
         ),

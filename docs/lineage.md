@@ -31,11 +31,11 @@ fallback still receives the complete source partition. The original phase integr
 
 ## Policy migration
 
-Correlation-77 repairs scoped certificate conflict gates and retained mapping dependencies. Earlier
+Correlation-78 scopes continuing-acquirer and terminal evidence and consumes completed related-symbol queries. Earlier
 policy-less 33/59 and correlation-60 through 75 decisions still require selected complete-group evaluation;
 the historical 33/59→34/60 proof remains restricted to its original production target.
 
-[Migration](../libs/alpaca_lineage_build/certificate_migration.py) owns the exact 34/76→34/77 transition.
+[Migration](../libs/alpaca_lineage_build/certificate_migration.py) owns the exact 34/76 or 34/77→34/78 transition.
 It tests changed-rule prerequisites and concrete mapping-dependency conflicts using accepted complete-group
 metadata, including unavailable auxiliaries. This is an applicability decision, never a prediction of row
 ownership. A complete singleton group with at most one accepted UUID cannot invoke the changed certificates.
@@ -80,7 +80,12 @@ Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
 [ownership rules](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py).
 
 - **Cash terminal:** a terminal date alone cannot establish unbounded prior ownership across a distinct occupant
-  with positive dated evidence on both sides. Existing dated intervals/accepted split continuity remain
+  with positive dated evidence on both sides, or across an established closed earlier owner of that label.
+  The latter veto applies only to a newly inferred unbounded interval. A separate positive own-CUSIP dividend
+  or component action may still bound a later suffix, including an inactive issue, when closed prior intervals
+  and no rival or unresolved occupancy overlap it. Its first accepted positive action supplies the lower bound;
+  a prior departure or the terminal payment never invents the start.
+  Existing dated intervals/accepted split continuity remain
   authoritative; provider actions/candidate relations remain evidence.
 - **Ticker-reuse gap:** request cutoff is not ownership evidence. A complete current active suffix remains bounded
   to its last observed session when a later request adds no contradictory owner. Requires one exact active-symbol
@@ -140,7 +145,33 @@ Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
 Corporate-action dates retain provider field semantics and exact supported endpoints. Do not rewrite them from
 earliest or next-session dates, bar boundaries, researched marketplace dates or ticker exceptions. A separately
 certified source span may date only its own observed rows; it does not replace the action endpoint. Missing or
-conflicting evidence stays unresolved; external research can audit results but is not lineage input.
+conflicting evidence stays unresolved. Research may supply the exact sourced event facts below; it cannot
+establish an opaque provider UUID, move provider dates or directly assign rows.
+
+### Sourced event facts
+
+`lineage update --symbol SYMBOL --event-supplements FILE.json` accepts a bounded schema-1 JSON document with
+`schema_version` and a nonempty `supplements` array. Each item has `kind`, `match`, `facts` and `sources`;
+[event_supplements.py](../libs/alpaca_security_lineage/event_supplements.py) defines the exact fields. Each source
+records an HTTPS document URL, title, document date and issuer/exchange/clearinghouse/regulator authority.
+The operator establishes those facts through the [research loop](development.md#lineage-research-and-rule-improvement-loop).
+Runtime does not fetch or interpret web pages. Facts must match the provider event ID, type, labels, identifiers,
+dates and applicable ratios; changed or conflicting events fail rather than silently inheriting the disposition.
+
+- `split_endpoints` adds issuer-documented old/new CUSIPs to an ordinary forward/reverse split. The existing
+  continuity rule still requires actual exact provider lookups for both endpoints; the supplement supplies no UUID.
+- `derivative_only` identifies an option-root consolidation by exact underlying CUSIP, effective date and affected
+  option series. The original provider action remains retained, but contributes no equity occupancy, rename,
+  UUID edge or acquisition dependency. Similar labels alone never establish this scope.
+- `listing_transfer_only` identifies a researched exchange transfer with unchanged equity ticker and CUSIP.
+  An exactly matched, incorrectly classified rename stays in raw evidence but contributes no identity event.
+  Distinct exchanges and the provider event date must match the sourced facts; a transfer alone creates no UUID edge.
+
+The metadata producer retains the raw action union, applied facts and equity projection in its completed receipt.
+New facts trigger selected complete-group calculation; unchanged updates reuse the receipt and never reread the
+input file or source documents. Metadata refresh reapplies retained facts to the raw provider events. Only missing
+or invalidated exact mappings require acquisition. Explicit symbol selection is required; unmatched submitted
+facts are reported as failure. Frozen price payloads are unaffected by this input mechanism.
 
 ### Name changes
 
@@ -237,6 +268,17 @@ ownership intervals must meet at the handoff. Missing, duplicated, additional, r
 vetoes the certificate. The continuity owner publishes one accepted action ID; UUID membership and dated row
 chronology consume that same certificate without repeating endpoint authentication. Existing ticker-reuse
 ambiguity guards remain in force.
+
+An earlier stock acquisition does not count as an additional conflicting action for this certificate only when
+the predecessor is its exact continuing acquirer on the same CUSIP; the target has a distinct nonempty label and
+CUSIP outside both endpoints; both exchange ratios are positive finite numbers; effective and process dates are
+present; and every recorded action date lies strictly before the handoff and within any bounded predecessor
+interval. Target history never joins the acquirer. Incomplete evidence, acquiree roles, same-day/later acquisitions
+and other structural actions retain the veto.
+
+Complete action coverage applies to every exact label in the producer's completed `queried_symbols` set, as well
+as the original query label, only within its recorded date window. Partial queries and unqueried labels provide no
+coverage. Certificates consume this completed acquisition guarantee without fetching the same actions again.
 
 Unresolved positive occupancy remains a conflict within the asserted label/date scope for same-symbol,
 component-history and current-source bridge certificates. A validated unit-component anchor permits only its

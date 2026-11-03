@@ -33,6 +33,7 @@ PRE_ENTRY_AND_COMPONENT_HANDOFF_CORRELATION_VERSION = 70
 EXTENDED_COMPONENT_HANDOFF_CORRELATION_VERSION = 71
 INTERNAL_COMPONENT_HANDOFF_CORRELATION_VERSION = 74
 COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION = 77
+COMPLETED_EVENT_SCOPE_CORRELATION_VERSION = 78
 
 PRE_ENTRY_CARRY_FORWARD_REASON = "certified_pre_entry_carry_forward_non_observation"
 
@@ -279,7 +280,7 @@ def _complete_action_query_covers(lineage, symbol, effective):
     query = lineage.get("query")
     if (
         not isinstance(query, dict)
-        or query.get("input_symbol") != symbol
+        or (query.get("input_symbol") != symbol and symbol not in lineage.get("queried_symbols", ()))
         or query.get("corporate_actions_data_quality") != "complete"
     ):
         return False
@@ -1540,6 +1541,29 @@ def _post_padding_shared_uuid_suffix_history(
     )
 
 
+def _earlier_continuing_acquirer(action, edge, predecessor_interval):
+    """An incumbent's earlier stock acquisition is not a replacement of its equity."""
+    dates = _action_dates(action)
+    return (
+        action.get("action_type") == "stock_merger"
+        and bool(action.get("id"))
+        and action.get("acquirer_symbol") == edge.predecessor_symbol
+        and action.get("acquirer_cusip") == edge.predecessor_cusip
+        and action.get("acquiree_symbol") not in (None, "", edge.predecessor_symbol, edge.successor_symbol)
+        and action.get("acquiree_cusip") not in (None, "", edge.predecessor_cusip, edge.successor_cusip)
+        and _positive_decimal(action.get("acquiree_rate")) is not None
+        and _positive_decimal(action.get("acquirer_rate")) is not None
+        and action.get("effective_date") is not None
+        and action.get("process_date") is not None
+        and bool(dates)
+        and max(dates) < edge.effective_date
+        and (
+            predecessor_interval.start_date_inclusive is None
+            or min(dates) >= predecessor_interval.start_date_inclusive
+        )
+    )
+
+
 def _same_symbol_handoff_action_shape(
     actions,
     related_candidates,
@@ -1547,7 +1571,15 @@ def _same_symbol_handoff_action_shape(
     predecessor_interval,
     *,
     bounded_entry_same_symbol_handoffs,
+    continuing_acquirer_handoffs=True,
 ):
+    if continuing_acquirer_handoffs:
+        # The surrounding certificate already owns the exact incumbent endpoint.
+        # Keep acquisition evidence and candidate membership unchanged; only its
+        # role in this substitution's conflict test differs.
+        actions = [
+            action for action in actions if not _earlier_continuing_acquirer(action, edge, predecessor_interval)
+        ]
     if predecessor_interval.start_date_inclusive is None:
         return len(actions) == 1 and actions[0].get("id") == edge.action_id and related_candidates == [edge]
     if not bounded_entry_same_symbol_handoffs or len(actions) != 2 or len(related_candidates) != 2:
@@ -1576,6 +1608,7 @@ def _exact_same_symbol_handoff(
     *,
     bounded_entry_same_symbol_handoffs,
     complete_certificate_conflicts=True,
+    continuing_acquirer_handoffs=True,
 ):
     """Certify one closed predecessor/current-successor substitution.
 
@@ -1659,6 +1692,7 @@ def _exact_same_symbol_handoff(
         edge,
         predecessor_intervals[0],
         bounded_entry_same_symbol_handoffs=bounded_entry_same_symbol_handoffs,
+        continuing_acquirer_handoffs=continuing_acquirer_handoffs,
     )
 
 
@@ -1681,6 +1715,7 @@ def assess_name_change_history(
     extended_component_handoffs=True,
     internal_component_handoffs=True,
     complete_certificate_conflicts=True,
+    completed_event_scope=True,
 ):
     """Certify source bounds without reading reports produced by these edges."""
     # This is the independent continuity producer. Its complete selected source
@@ -1695,6 +1730,11 @@ def assess_name_change_history(
         shared_inert_bridges,
     )
 
+    if not completed_event_scope:
+        # Frozen historical policies recognized only the original query label.
+        # Current certificates consume the producer's completed queried-symbol
+        # set; this projection preserves historical replay without changing facts.
+        lineage = {**lineage, "queried_symbols": ()}
     fields = ("t", "o", "h", "l", "c", "v", "n", "vw")
     grids = {symbol: _grid(work) for symbol, work in sources.items()}
     accepted, histories, independent, excluded, pre_entry_excluded = set(), [], set(), [], []
@@ -1709,6 +1749,7 @@ def assess_name_change_history(
                 edge,
                 bounded_entry_same_symbol_handoffs=bounded_entry_same_symbol_handoffs,
                 complete_certificate_conflicts=complete_certificate_conflicts,
+                continuing_acquirer_handoffs=completed_event_scope,
             ):
                 accepted.add(edge.action_id)
             continue

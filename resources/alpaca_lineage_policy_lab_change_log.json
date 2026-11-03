@@ -48,5 +48,10 @@
     "modifications": [
       "Preserve exact read-only version-76 receipt and policy replay while production uses version-77 certificate and metadata handoffs."
     ]
+  },
+  {
+    "modifications": [
+      "Permit comparison of retained correlation-77 publications with correlation-78 candidates while preserving legacy replay semantics; include changed event-scope and completed-query prerequisites in audit selection."
+    ]
   }
 ]

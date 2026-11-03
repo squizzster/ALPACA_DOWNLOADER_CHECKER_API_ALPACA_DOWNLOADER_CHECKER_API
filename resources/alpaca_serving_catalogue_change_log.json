@@ -78,5 +78,11 @@
     "modifications": [
       "Publish source-specific raw-gap provenance, convert legacy projections without numerical reevaluation, and trust exact unchanged-lineage handoffs when retaining serving decisions."
     ]
+  },
+  {
+    "modifications": [
+      "Publish the assigned recent suffix after the last relevant unresolved interval when the complete assigned history passes numerical and session checks; preserve full-history checkpoints and exact unrelated-identity exclusions.",
+      "Respect accepted ticker ownership bounds when relating anonymous unresolved observations to an identity; explicit candidate UUID conflicts remain authoritative."
+    ]
   }
 ]

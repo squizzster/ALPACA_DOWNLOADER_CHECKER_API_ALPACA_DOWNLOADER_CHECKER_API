@@ -176,6 +176,10 @@ Initialize once. Acquisition requires an explicit compatible/empty store and pub
 start is 2016 unless later `--from`; reject starts before 2016, after the resolved final session or excluding
 held observations before registration/requests. Finish missing boundaries through [setup](#adopt-or-reconstruct-an-existing-store).
 
+Selected lineage updates may include `--event-supplements FILE.json` for researched split endpoints, exact
+derivative-event scope or unchanged-symbol listing transfers. See the
+[sourced event contract](lineage.md#sourced-event-facts) before preparing that input.
+
 | Command | Scope |
 |---|---|
 | `pricing check` | Live summary last-session comparison; no publication. |

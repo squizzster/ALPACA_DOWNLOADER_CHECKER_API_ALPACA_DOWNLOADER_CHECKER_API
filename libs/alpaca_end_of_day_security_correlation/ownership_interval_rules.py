@@ -9,7 +9,11 @@ from .action_identity import (
     exact_symbol_lookup_asset,
 )
 from .name_change import name_change_dates
-from .occupancy_anchor import competing_terminal_anchors, positive_occupancy_action_date
+from .occupancy_anchor import (
+    competing_terminal_anchors,
+    dated_occupancy_anchors,
+    positive_occupancy_action_date,
+)
 from .security_identity import security_identity_for_alpaca_assets
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
 
@@ -79,6 +83,7 @@ class _OwnershipIntervalRuleContext:
     lineage: dict[str, Any]
     uuid_lineage_edges: tuple = ()
     allow_closed_prior_action_anchored_suffix: bool = False
+    closed_prior_terminal_conflicts: bool = True
 
 
 @dataclass(frozen=True)
@@ -473,6 +478,38 @@ def _parse_cash_mergers(
     return cash_mergers, evidence_issues
 
 
+def _bounded_terminal_anchor(context, intervals, proposed, members):
+    """Keep positive later ownership when rejecting an unlimited terminal past.
+
+    The existing positive-anchor producer dates the lower bound. Neither a
+    predecessor departure nor a terminal payment supplies that starting date.
+    Unresolved or rival occupancy within the proposed suffix remains a veto.
+    """
+    anchors = dated_occupancy_anchors(proposed.historical_symbol, context.lineage, (*intervals, proposed))
+    lower = anchors.get(proposed.interval_key())
+    if lower is None:
+        return None
+    for occupant in context.lineage.get("symbol_occupancy_evidence", ()):
+        if occupant.get("symbol") != proposed.historical_symbol or occupant.get("asset_id") in members:
+            continue
+        for record in occupant.get("evidence", ()):
+            try:
+                when = date.fromisoformat(record["process_date"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if lower <= when < proposed.end_date_exclusive:
+                return None
+    supporting = []
+    for action in context.corporate_actions:
+        try:
+            when = positive_occupancy_action_date(action, proposed.historical_symbol, proposed.cusip)
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            continue
+        if when == lower:
+            supporting.append(action["id"])
+    return lower, tuple(sorted(supporting))
+
+
 def _apply_cash_merger_terminal_rule(
     context: _OwnershipIntervalRuleContext,
     existing_intervals: tuple[TickerOwnershipInterval, ...],
@@ -579,6 +616,50 @@ def _apply_cash_merger_terminal_rule(
         conflicts = competing_terminal_anchors(
             symbol, members, merger_date, context.lineage, context.asset_ids_by_symbol_and_cusip
         )
+        prior_occupants = [
+            interval
+            for interval in existing_intervals
+            if context.closed_prior_terminal_conflicts
+            and interval.historical_symbol == symbol
+            and interval.asset_id not in members
+            and interval.end_date_exclusive is not None
+            and interval.end_date_exclusive < merger_date
+        ]
+        if prior_occupants:
+            # An ending date does not establish ownership across an independently
+            # closed earlier occupant. A separate positive action may nevertheless
+            # establish a supported later suffix, including for an inactive issue.
+            proposed = TickerOwnershipInterval(symbol, cusip, asset_id, None, merger_date, (applied_rule,))
+            anchor = None if conflicts else _bounded_terminal_anchor(context, intervals, proposed, members)
+            if anchor is not None:
+                lower, anchor_ids = anchor
+                intervals.append(
+                    TickerOwnershipInterval(
+                        symbol,
+                        cusip,
+                        asset_id,
+                        lower,
+                        merger_date,
+                        (
+                            AppliedOwnershipIntervalRule(
+                                rule_order, rule_name, (*supporting_action_ids, *anchor_ids)
+                            ),
+                        ),
+                    )
+                )
+                continue
+            evidence_issues.append(
+                {
+                    "reason_code": "cash_merger_unbounded_ownership_crosses_closed_occupant",
+                    "ownership_interval_rule": _rule_reference(rule_order, rule_name),
+                    "action_ids": list(supporting_action_ids),
+                    "symbol": symbol,
+                    "cusip": cusip,
+                    "asset_id": asset_id,
+                    "earlier_asset_ids": sorted({interval.asset_id for interval in prior_occupants}),
+                }
+            )
+            continue
         if conflicts:
             evidence_issues.append(
                 {
@@ -1054,6 +1135,7 @@ def prepare_ticker_ownership(
     rules: tuple[OwnershipIntervalRule, ...] | None = None,
     include_action_anchored_current_suffix: bool = False,
     allow_closed_prior_action_anchored_suffix: bool = False,
+    closed_prior_terminal_conflicts: bool = True,
 ) -> PreparedTickerOwnership:
     # This owner translates dated evidence into ticker-ownership intervals.
     # Intervals constrain row allocation; they do not themselves merge provider
@@ -1080,6 +1162,7 @@ def prepare_ticker_ownership(
             build_uuid_lineage_edges(lineage)[0] if uuid_lineage_edges is None else uuid_lineage_edges
         ),
         allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
+        closed_prior_terminal_conflicts=closed_prior_terminal_conflicts,
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
     established = None
@@ -1108,6 +1191,7 @@ def build_ticker_ownership_intervals(
     rules: tuple[OwnershipIntervalRule, ...] | None = None,
     include_action_anchored_current_suffix: bool = False,
     allow_closed_prior_action_anchored_suffix: bool = False,
+    closed_prior_terminal_conflicts: bool = True,
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
     prepared = prepare_ticker_ownership(
         lineage,
@@ -1115,5 +1199,6 @@ def build_ticker_ownership_intervals(
         rules=rules,
         include_action_anchored_current_suffix=include_action_anchored_current_suffix,
         allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
+        closed_prior_terminal_conflicts=closed_prior_terminal_conflicts,
     )
     return list(prepared.complete), list(prepared.complete_issues)
