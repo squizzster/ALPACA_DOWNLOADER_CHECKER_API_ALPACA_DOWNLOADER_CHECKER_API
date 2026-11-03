@@ -24,7 +24,7 @@ from libs.common.store_lock import StoreBusyError, operation_lock
 
 from .registry_commit import commit_registry
 
-VERSION = 27
+VERSION = 28
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -129,7 +129,12 @@ def build_parser():
     p.add_argument("--output", type=Path, default=REPOSITORY / "exports" / "csv")
     p.add_argument("--public-id", action="append", help="online public identity; repeatable; default all")
     p.add_argument(
-        "--workers", type=int, choices=(1, 2, 3, 4), default=2, help="concurrent complete groups; default 2"
+        "--workers", type=int, choices=(1, 2, 3, 4), default=2, help="in-memory CSV encoding workers; default 2"
+    )
+    p.add_argument(
+        "--memory-mib",
+        type=bounded_integer(1, 5120),
+        help="pending output budget; default half available RAM, minimum 1024 and maximum 5120 MiB",
     )
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
@@ -319,6 +324,7 @@ def dispatch(args):
                 "start": args.start,
                 "end": args.end,
                 "workers": args.workers,
+                "memory_bytes": None if args.memory_mib is None else args.memory_mib * 1024**2,
             }
             if reporter is not None:
                 reporter.update("PLAN")

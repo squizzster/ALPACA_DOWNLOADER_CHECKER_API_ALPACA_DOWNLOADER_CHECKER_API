@@ -3,14 +3,16 @@
 import csv
 import fcntl
 import hashlib
+import io
 import json
 import os
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
 from time import monotonic
 
 from libs.alpaca_serving_catalogue import storage as catalogue_storage
@@ -27,6 +29,7 @@ from . import (
 from .standalone import _date
 
 SCHEMA_VERSION = 1
+GIB = 1024**3
 FIELDS = ("open", "high", "low", "close", "volume", "trade_count", "vwap")
 PREFIXES = dict(
     zip(
@@ -78,7 +81,24 @@ def _workers(value):
     return value
 
 
-def _plan(data, selected, groups, start, end, workers):
+def _available_memory():
+    # Linux MemAvailable includes memory reclaimable without swapping. This is
+    # one operating-system observation, not a source-store inventory or cache.
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) * 1024
+    raise RuntimeError("available memory is unknown; specify memory_bytes explicitly")
+
+
+def _memory_budget(value):
+    if value is None:
+        return min(5 * GIB, max(GIB, _available_memory() // 2))
+    if type(value) is not int or value < 1:
+        raise ValueError("memory_bytes must be a positive integer or None")
+    return value
+
+
+def _plan(data, selected, groups, start, end, workers, memory_bytes):
     sources = {symbol for key in groups for symbol in data._groups[key]["references"]["pricing"]}
     lineage = {
         symbol
@@ -92,7 +112,9 @@ def _plan(data, selected, groups, start, end, workers):
         "groups": len(groups),
         "sources": len(sources),
         "workers": workers,
-        "maximum_active_groups": min(workers, len(groups)),
+        "maximum_active_groups": min(1, len(groups)),
+        "memory_bytes": memory_bytes,
+        "io_strategy": "batched_read_then_write",
         "requested_range": _range(start, end),
         "metadata_read_bounds": {
             "source_manifests": len(sources),
@@ -108,9 +130,9 @@ def _plan(data, selected, groups, start, end, workers):
     }
 
 
-def plan_export(data, *, public_ids=None, start=None, end=None, workers=2):
+def plan_export(data, *, public_ids=None, start=None, end=None, workers=2, memory_bytes=None):
     workers = _workers(workers)
-    return _plan(data, *_selection(data, public_ids, start, end), workers)
+    return _plan(data, *_selection(data, public_ids, start, end), workers, _memory_budget(memory_bytes))
 
 
 def _columns(views):
@@ -141,26 +163,49 @@ def _columns(views):
 
 
 class _CsvWriter:
-    """Hash new output bytes as they enter the buffered destination stream."""
+    """Encode and hash new CSV bytes as they enter the in-memory buffer."""
 
-    def __init__(self, stream):
+    def __init__(self, stream, maximum_bytes):
         self.stream = stream
+        self.maximum_bytes = maximum_bytes
         self.digest = hashlib.sha256()
         self.bytes = 0
 
     def write(self, text):
         encoded = text.encode("utf-8")
+        if self.bytes + len(encoded) > self.maximum_bytes:
+            raise MemoryError("one identity CSV/digest exceeds memory_bytes; increase the export budget")
         self.stream.write(encoded)
         self.digest.update(encoded)
         self.bytes += len(encoded)
         return len(text)
 
 
+def _json_bytes(document):
+    return (
+        json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
+    )
+
+
+@dataclass
+class _PreparedIdentity:
+    public_id: str
+    csv: io.BytesIO
+    digest: bytes
+    entry: dict
+
+    @property
+    def size(self):
+        return self.entry["csv_bytes"] + len(self.digest)
+
+    def close(self):
+        self.csv.close()
+
+
 def _write_json(path, document):
-    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    encoded = document if isinstance(document, bytes) else _json_bytes(document)
     with path.open("xb") as stream:
         stream.write(encoded)
-        stream.write(b"\n")
 
 
 @contextmanager
@@ -177,181 +222,203 @@ def _publication_lock(output):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def _write_identity(data, directory, security, views, start, end):
+def _prepare_identity(data, security, views, start, end, memory_bytes):
     raw = views["raw"]["bars"]
     if not raw:
         return None
     columns, aliases, series = _columns(views)
     public_id = security.public_id
-    identity_directory = directory / public_id
-    identity_directory.mkdir()
     csv_name = f"{public_id}_eod.csv"
     digest_name = f"{public_id}_digest.json"
-    with (identity_directory / csv_name).open("xb") as stream:
-        output = _CsvWriter(stream)
+    # This worker consumes only in-memory histories. It never opens a file.
+    buffer = io.BytesIO()
+    output = _CsvWriter(buffer, memory_bytes)
+    try:
         writer = csv.writer(output, lineterminator="\n")
         writer.writerow(columns)
-        # Serving guarantees aligned sessions across the eight views. Only the
-        # new CSV's rectangular shape is enforced by strict transposition.
         writer.writerows(zip((bar["session"] for bar in raw), *series, strict=True))
-    view_columns = {
-        adjustment: {"columns": {field: aliases[column] for field, column in logical.items()}}
-        for adjustment, logical in VIEW_COLUMNS.items()
-    }
-    digest = {
-        "schema_version": SCHEMA_VERSION,
-        "api_version": API_VERSION,
-        "public_id": public_id,
-        "catalogue_generation": data.catalog_generation(),
-        "columns": columns,
-        "column_aliases": aliases,
-        "views": view_columns,
-        "range": {"start": raw[0]["session"], "end": raw[-1]["session"], "inclusive": True},
-        "requested_range": _range(start, end),
-        "rows": len(raw),
-        "csv": {"file": csv_name, "sha256": output.digest.hexdigest(), "bytes": output.bytes},
-        "security": security.to_dict(),
-    }
-    _write_json(identity_directory / digest_name, digest)
-    return {
-        "csv": f"{public_id}/{csv_name}",
-        "digest": f"{public_id}/{digest_name}",
-        "rows": len(raw),
-        "start": raw[0]["session"],
-        "end": raw[-1]["session"],
-        "columns": columns,
-        "csv_bytes": output.bytes,
-    }
+        view_columns = {
+            adjustment: {"columns": {field: aliases[column] for field, column in logical.items()}}
+            for adjustment, logical in VIEW_COLUMNS.items()
+        }
+        digest = {
+            "schema_version": SCHEMA_VERSION,
+            "api_version": API_VERSION,
+            "public_id": public_id,
+            "catalogue_generation": data.catalog_generation(),
+            "columns": columns,
+            "column_aliases": aliases,
+            "views": view_columns,
+            "range": {"start": raw[0]["session"], "end": raw[-1]["session"], "inclusive": True},
+            "requested_range": _range(start, end),
+            "rows": len(raw),
+            "csv": {"file": csv_name, "sha256": output.digest.hexdigest(), "bytes": output.bytes},
+            "security": security.to_dict(),
+        }
+        entry = {
+            "csv": f"{public_id}/{csv_name}",
+            "digest": f"{public_id}/{digest_name}",
+            "rows": len(raw),
+            "start": raw[0]["session"],
+            "end": raw[-1]["session"],
+            "columns": columns,
+            "csv_bytes": output.bytes,
+        }
+
+        prepared = _PreparedIdentity(public_id, buffer, _json_bytes(digest), entry)
+        if prepared.size > memory_bytes:
+            raise MemoryError("one identity CSV/digest exceeds memory_bytes; increase the export budget")
+        return prepared
+    except BaseException:
+        buffer.close()
+        raise
 
 
-def _export_group(data, directory, selected, groups, key, start, end, stopped):
-    """Keep one group's locks, decoded payloads and identity outputs together."""
-    if stopped.is_set():
-        return
+def _write_identity(directory, prepared):
+    # Only the coordinator calls this, while source iteration is suspended.
+    identity_directory = directory / prepared.public_id
+    identity_directory.mkdir()
+    with prepared.csv.getbuffer() as content:
+        with (directory / prepared.entry["csv"]).open("xb") as stream:
+            stream.write(content)
+    _write_json(directory / prepared.entry["digest"], prepared.digest)
+    return prepared.entry
+
+
+def _export_group(data, selected, groups, key, start, end):
+    """The coordinator reads one selected group with its shared payload memo."""
     expected = data._groups[key]
     try:
-        # Keep selected group locks and decoded payloads through its identity
-        # outputs. The worker returns compact completion records; the coordinator
-        # must not reread CSVs or reopen source groups to certify those records.
         with data._reader._open_group(
-            expected["locator"],
-            expected=expected["references"],
-            wait=False,
-            before_payloads=lambda: catalogue_storage.assert_group(
-                data.store, key, expected["decision_generation"]
-            ),
+            expected["locator"], expected=expected["references"], wait=False, export_selection=True
         ) as group:
             with closing(group._iter_export_histories(groups[key], start=start, end=end)) as histories:
-                while not stopped.is_set():
-                    try:
-                        public_id, views = next(histories)
-                    except StopIteration:
-                        break
-                    if stopped.is_set():
-                        return
-                    entry = _write_identity(data, directory, selected[public_id], views, start, end)
-                    del views
-                    yield "identity", public_id, entry
+                for public_id, views in histories:
+                    yield public_id, views
     except ReaderBusyError as error:
         raise ReaderBusyError("CSV export source is busy; retry later") from error
     except (CatalogueError, StandaloneReaderError) as error:
         raise CatalogChangedError(
             "selected serving history is no longer compatible; finish maintenance and open a new DataLibrary"
         ) from error
-    if not stopped.is_set():
-        yield "group", key, None
 
 
-def _group_events(data, directory, selected, groups, start, end, workers):
-    """Bound outstanding groups; only compact completion records cross threads."""
-    stopped = Event()
-    keys = iter(sorted(groups))
-    count = min(workers, len(groups))
-    if count < 2:
-        for key in keys:
-            yield from _export_group(data, directory, selected, groups, key, start, end, stopped)
-        return
+def _group_events(data, directory, selected, groups, start, end, workers, memory_bytes, progress=None):
+    """One I/O owner alternates source consumption and destination batches.
 
-    jobs, completed = Queue(maxsize=count), Queue(maxsize=2 * count)
-    state_lock, failures = Lock(), []
+    Workers only encode already-read histories. Ready output is byte-accounted;
+    at most `workers` additional identity jobs may be in flight. A single output
+    larger than the batch budget fails rather than spilling or rereading sources.
+    No read-ahead thread or destination write can run behind the coordinator.
+    """
+    pending, batch = deque(), deque()
+    buffered, prepared_count, done, batches = 0, 0, 0, 0
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="alpaca-csv")
 
-    def send(record):
-        while not stopped.is_set():
+    def report(phase):
+        if progress:
+            progress(
+                "csv_export_buffer",
+                {
+                    "done": done,
+                    "total": len(selected),
+                    "prepared": prepared_count,
+                    "buffered_bytes": buffered,
+                    "memory_bytes": memory_bytes,
+                    "batches": batches,
+                    "io_phase": phase,
+                    "workers": workers,
+                },
+            )
+
+    def flush():
+        nonlocal buffered, done, batches
+        if not batch:
+            return
+        batches += 1
+        report("write")
+        while batch:
+            kind, key, prepared = batch.popleft()
             try:
-                completed.put(record, timeout=0.05)
-                return
-            except Full:
-                continue
+                entry = _write_identity(directory, prepared) if prepared is not None else None
+            finally:
+                if prepared is not None:
+                    buffered -= prepared.size
+                    prepared.close()
+            if kind == "identity":
+                done += 1
+            report("write")
+            yield kind, key, entry
+        report("read")
 
-    def work():
-        try:
-            while not stopped.is_set():
-                try:
-                    key = jobs.get(timeout=0.05)
-                except Empty:
-                    continue
-                with closing(
-                    _export_group(data, directory, selected, groups, key, start, end, stopped)
-                ) as events:
-                    for record in events:
-                        send(record)
-                        if stopped.is_set():
-                            return
-        except BaseException as error:
-            # Latch the first failure before another group can be dispatched.
-            with state_lock:
-                if not failures:
-                    failures.append(error)
-                stopped.set()
+    def collect():
+        nonlocal buffered, prepared_count
+        kind, key, future = pending[0]
+        prepared = future.result() if future is not None else None
+        # Retain ownership in pending until transferred to batch. An exception
+        # while flushing must still close this completed future's output.
+        if prepared is not None:
+            if prepared.size > memory_bytes:
+                raise MemoryError("one identity CSV/digest exceeds memory_bytes; increase the export budget")
+            if buffered + prepared.size > memory_bytes:
+                yield from flush()
+            buffered += prepared.size
+        batch.append((kind, key, prepared))
+        pending.popleft()
+        if kind == "identity":
+            prepared_count += 1
+            report("read")
+        if buffered >= memory_bytes:
+            yield from flush()
 
-    def dispatch():
-        with state_lock:
-            if failures:
-                raise failures[0]
-            key = next(keys, None)
-            if key is None:
-                return False
-            jobs.put_nowait(key)
-            return True
-
-    threads = [Thread(target=work, name=f"alpaca-csv-{index + 1}") for index in range(count)]
     try:
-        for thread in threads:
-            thread.start()
-        pending = sum(dispatch() for _ in range(count))
+        report("read")
+        for key in sorted(groups):
+            with closing(_export_group(data, selected, groups, key, start, end)) as histories:
+                for public_id, views in histories:
+                    future = pool.submit(
+                        _prepare_identity, data, selected[public_id], views, start, end, memory_bytes
+                    )
+                    pending.append(("identity", public_id, future))
+                    del views, future
+                    # Group completion markers do not consume worker slots.
+                    while sum(item[2] is not None for item in pending) >= workers:
+                        yield from collect()
+            pending.append(("group", key, None))
         while pending:
-            with state_lock:
-                if failures:
-                    raise failures[0]
-            try:
-                record = completed.get(timeout=0.05)
-            except Empty:
-                continue
-            yield record
-            if record[0] == "group":
-                pending -= 1
-                pending += dispatch()
+            yield from collect()
+        yield from flush()
     finally:
-        stopped.set()
-        # Drain while joining: a worker may still be delivering its last result.
-        # No output lock or final publication can outlive an active worker.
-        while any(thread.is_alive() for thread in threads):
-            try:
-                completed.get(timeout=0.05)
-            except Empty:
-                pass
-        for thread in threads:
-            if thread.ident is not None:
-                thread.join()
+        for _, _, future in pending:
+            if future is not None:
+                future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
+        for _, _, future in pending:
+            if future is not None and not future.cancelled():
+                try:
+                    prepared = future.result()
+                except BaseException:
+                    continue
+                if prepared is not None:
+                    prepared.close()
+        for _, _, prepared in batch:
+            if prepared is not None:
+                prepared.close()
+        pending.clear()
+        batch.clear()
 
 
-def write_export(data, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2):
+def write_export(
+    data, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2, memory_bytes=None
+):
     workers = _workers(workers)
+    memory_bytes = _memory_budget(memory_bytes)
     try:
         # The catalogue transaction was released at DataLibrary construction.
         # Compare its token once after acquiring the shared operation lock and
         # retain that lock through final-manifest publication. This pins CLI
-        # maintenance; selected group reads retain their own generation checks.
+        # maintenance. Selected groups consume this accepted view without any
+        # further selector reads or upstream freshness/authentication checks.
         with operation_lock(data.store, exclusive=False):
             try:
                 current = catalogue_storage.selector_state(data.store)["generation"]
@@ -369,14 +436,15 @@ def write_export(data, destination, *, public_ids=None, start=None, end=None, pr
                 end=end,
                 progress=progress,
                 workers=workers,
+                memory_bytes=memory_bytes,
             )
     except StoreBusyError as error:
         raise ReaderBusyError("CSV export source store is busy; retry later") from error
 
 
-def _write_export(data, destination, *, public_ids, start, end, progress, workers):
+def _write_export(data, destination, *, public_ids, start, end, progress, workers, memory_bytes):
     selected, groups, start, end = _selection(data, public_ids, start, end)
-    plan = _plan(data, selected, groups, start, end, workers)
+    plan = _plan(data, selected, groups, start, end, workers, memory_bytes)
     output = Path(destination).absolute()
     if output.resolve().is_relative_to(data.store.resolve()):
         raise ValueError("CSV export destination must be outside the source store")
@@ -390,7 +458,20 @@ def _write_export(data, destination, *, public_ids, start, end, progress, worker
         identities = {}
         counts = {"identities": 0, "groups": 0, "rows": 0, "csv_bytes": 0, "physical_columns": 0}
         done, began = 0, monotonic()
-        with closing(_group_events(data, directory, selected, groups, start, end, workers)) as events:
+        io_state = {}
+        write_started, write_done = began, 0
+
+        def buffer_progress(stage, values):
+            nonlocal write_started, write_done
+            if values["io_phase"] == "write" and io_state.get("io_phase") != "write":
+                write_started, write_done = monotonic(), values["done"]
+            io_state.update(values)
+            if progress:
+                progress(stage, {**counts, **values})
+
+        with closing(
+            _group_events(data, directory, selected, groups, start, end, workers, memory_bytes, buffer_progress)
+        ) as events:
             for kind, public_id, entry in events:
                 if kind == "group":
                     counts["groups"] += 1
@@ -404,15 +485,23 @@ def _write_export(data, destination, *, public_ids, start, end, progress, worker
                 done += 1
                 if progress:
                     elapsed = monotonic() - began
+                    estimate = {}
+                    if io_state.get("prepared") == len(selected) and done > write_done:
+                        # Preparation and publication have different rates. Only
+                        # estimate the final write phase from its own throughput.
+                        estimate["estimated_remaining_seconds"] = round(
+                            (monotonic() - write_started) * (len(selected) - done) / (done - write_done), 2
+                        )
                     progress(
                         "csv_export",
                         {
+                            **io_state,
                             "done": done,
                             "total": len(selected),
                             **counts,
                             "workers": workers,
                             "elapsed_seconds": round(elapsed, 2),
-                            "estimated_remaining_seconds": round(elapsed * (len(selected) - done) / done, 2),
+                            **estimate,
                         },
                     )
         identities = {
@@ -469,5 +558,6 @@ def _write_export(data, destination, *, public_ids, start, end, progress, worker
             "catalogue_generation": data.catalog_generation(),
             "elapsed_seconds": round(monotonic() - began, 2),
             "workers": workers,
+            "memory_bytes": memory_bytes,
             **counts,
         }

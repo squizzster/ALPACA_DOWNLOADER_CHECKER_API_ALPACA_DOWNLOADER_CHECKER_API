@@ -128,9 +128,18 @@
     ]
   },
   {
-    "modifications": ["Lend the focused lineage operation context to its serving stage so completed store and selector acceptance survives the command handoff."]
+    "modifications": [
+      "Lend the focused lineage operation context to its serving stage so completed store and selector acceptance survives the command handoff."
+    ]
   },
   {
-    "modifications": ["Expose the same opt-in --debug FILE.jsonl tracing for focused pricing acquisition, including HTTP request targets and producer timings, so an incremental ticker acquisition and its subsequent lineage update can both be measured."]
+    "modifications": [
+      "Expose the same opt-in --debug FILE.jsonl tracing for focused pricing acquisition, including HTTP request targets and producer timings, so an incremental ticker acquisition and its subsequent lineage update can both be measured."
+    ]
+  },
+  {
+    "modifications": [
+      "Expose CSV --memory-mib and report read/write phase, prepared identities and buffered bytes while batching output on the same drive. CSV workers now encode in memory while one coordinator owns source and destination I/O."
+    ]
   }
 ]

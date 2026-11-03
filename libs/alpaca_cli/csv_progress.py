@@ -18,6 +18,7 @@ _PLAN = {
         "sources",
         "workers",
         "maximum_active_groups",
+        "memory_bytes",
         "source_manifests",
         "lineage_receipts",
         "lineage_boundary_manifests",
@@ -38,6 +39,10 @@ PHASES = {
             **_PLAN,
             **_COUNTS,
             "estimated_remaining_seconds": (int, str),
+            "prepared": int,
+            "buffered_bytes": int,
+            "batches": int,
+            "io_phase": str,
         },
     ),
     "PUBLISH": Phase("Publishing the completed export manifest.", _COUNTS),
@@ -68,9 +73,33 @@ def progress_callback(reporter):
         try:
             if stage == "csv_export_plan":
                 return hold_plan(reporter, values, phase="EXPORT")
+            if stage == "csv_export_buffer":
+                context = {name: value for name, value in values.items() if name in _COUNTS}
+                context.update(
+                    {
+                        name: values[name]
+                        for name in (
+                            "prepared",
+                            "buffered_bytes",
+                            "memory_bytes",
+                            "batches",
+                            "io_phase",
+                            "workers",
+                        )
+                    }
+                )
+                context["estimated_remaining_seconds"] = "TBD"
+                return reporter.update("EXPORT", current=values["done"], total=values["total"], context=context)
             if stage not in {"csv_export", "csv_export_publish"}:
                 return False
             context = {name: value for name, value in values.items() if name in _COUNTS}
+            context.update(
+                {
+                    name: values[name]
+                    for name in ("prepared", "buffered_bytes", "memory_bytes", "batches", "io_phase")
+                    if name in values
+                }
+            )
             if stage == "csv_export" and "workers" in values:
                 context["workers"] = values["workers"]
             phase = "PUBLISH" if stage == "csv_export_publish" else "EXPORT"

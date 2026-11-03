@@ -148,8 +148,8 @@ context. Planning uses the same lifecycle. Authority:
 |---|---|
 | `INIT` | Reporting activation; no context. |
 | `CATALOGUE` | Open online catalogue; no context. |
-| `PLAN` | Catalogue generation, identity/group/source counts, workers/maximum active groups, metadata/payload/output bounds. |
-| `EXPORT` | Plan fields, workers, completed counts, CSV bytes, column counts, estimated seconds remaining. |
+| `PLAN` | Catalogue generation, identity/group/source counts, workers/maximum active groups, output memory budget, metadata/payload/output bounds. |
+| `EXPORT` | Plan fields, read/write I/O phase, prepared identities, buffered bytes, batch count, completed counts and final-write estimate. |
 | `PUBLISH` | Final manifest inside run directory; completed identity/group/row counts, CSV bytes, column counts. |
 | `FINAL_EXIT` | Immediate terminal `status`, `exit_code`, `last_phase`. |
 

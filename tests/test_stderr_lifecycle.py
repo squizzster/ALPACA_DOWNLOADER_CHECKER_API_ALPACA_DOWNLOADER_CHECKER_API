@@ -142,6 +142,35 @@ class LifecycleTests(unittest.TestCase):
         reporter._emit_due()
         self.assertEqual(self.stream.records()[-1]["context"]["estimated_remaining_seconds"], 42)
 
+    def test_csv_buffer_heartbeat_distinguishes_prepared_from_written(self) -> None:
+        self.phases = PHASES
+        reporter = self.reporter()
+        progress = progress_callback(reporter)
+        self.assertTrue(
+            progress(
+                "csv_export_buffer",
+                {
+                    "done": 0,
+                    "total": 20,
+                    "prepared": 12,
+                    "buffered_bytes": 123456,
+                    "memory_bytes": 1024**3,
+                    "batches": 0,
+                    "io_phase": "read",
+                    "workers": 2,
+                },
+            )
+        )
+        self.clock.advance(10)
+        reporter._emit_due()
+        record = self.stream.records()[-1]
+        self.assertEqual(record["current"], 0)
+        self.assertEqual(record["total"], 20)
+        self.assertEqual(record["context"]["prepared"], 12)
+        self.assertEqual(record["context"]["buffered_bytes"], 123456)
+        self.assertEqual(record["context"]["io_phase"], "read")
+        self.assertEqual(record["context"]["estimated_remaining_seconds"], "TBD")
+
     def test_first_heartbeat_overrides_estimate_without_changing_held_status(self) -> None:
         self.phases = PHASES
         for phase in ("INIT", "CATALOGUE", "PLAN", "EXPORT", "PUBLISH"):

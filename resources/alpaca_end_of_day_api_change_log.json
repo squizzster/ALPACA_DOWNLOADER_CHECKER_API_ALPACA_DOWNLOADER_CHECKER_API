@@ -126,5 +126,20 @@
     "modifications": [
       "Consume generation-bound online raw and fully adjusted histories directly in flat CSV export, trusting their completed unique aligned session grids instead of rebuilding session maps, sorting histories or repeating upstream checks. Preserve selected-generation failures, dated metadata ambiguity, output ordering and atomic publication."
     ]
+  },
+  {
+    "modifications": [
+      "Consume CSV export groups directly from the accepted serving catalogue under the store operation lock, reading selected lineage and pricing bodies once without reopening the lineage index, repeating store or decision checks, probing notices or absent inputs, or authenticating upstream generations. Preserve selected reader locks, payload sharing, bounded workers and final-manifest publication."
+    ]
+  },
+  {
+    "modifications": [
+      "Buffer each identity CSV completely in memory while encoding and accumulating its checksum, then write the buffer to its destination in one call without a second full byte copy. Release the buffer before digest publication and retain at most one CSV buffer per active worker; preserve exact output bytes and failure publication guarantees."
+    ]
+  },
+  {
+    "modifications": [
+      "Batch completed CSV/digest bytes within a configurable output memory budget, defaulting to half available memory with a 1 GiB floor and 5 GiB ceiling. One coordinator performs source reads and batch writes without overlap; bounded workers encode only in-memory histories. Preserve source payload reuse, deterministic outputs, cancellation cleanup and final publication."
+    ]
   }
 ]

@@ -19,9 +19,10 @@ and guarantees; destinations must be outside the source store.
 
 Default: all online public IDs, output `exports/csv/`. Repeat `--public-id ID` for selected online identities;
 `--from`/`--through` are inclusive date filters. `--plan` reads only the opened catalogue, reports selected work
-and configured concurrency, and opens no payloads or output files. Library equivalents:
-`DataLibrary.plan_csv_export(*, public_ids=None, start=None, end=None, workers=2)` and
-`write_csv_export(destination, *, public_ids=None, start=None, end=None, progress=None, workers=2)`.
+and configured concurrency, and opens no payloads or output files. Automatic memory sizing reads the operating
+system's available-memory counter once. Library equivalents:
+`DataLibrary.plan_csv_export(*, public_ids=None, start=None, end=None, workers=2, memory_bytes=None)` and
+`write_csv_export(destination, *, public_ids=None, start=None, end=None, progress=None, workers=2, memory_bytes=None)`.
 The latter returns the export report. [CLI lifecycle](cli-reporting.md#csv-lifecycle) also applies to planning.
 
 Each run creates a UTC timestamp directory with microsecond precision:
@@ -62,18 +63,39 @@ and independently retainable/removable.
 
 Export trusts the opened catalogue and selected lineage/pricing manifests, processes each selected group once,
 follows named payloads and shares decoding within the group. No directory discovery, upstream digest calculation
-or identity/eligibility replay. Output checksums accumulate while writing CSV bytes.
+or identity/eligibility replay. Catalogue references select the required receipt bodies directly: export does
+not reopen the lineage index, reread store compatibility, recheck group decision tokens, probe pending/update
+paths or unavailable inputs, or authenticate upstream generations. Each selected receipt and manifest is read
+once and retained for its group's consumption. Each identity's complete CSV is encoded in a memory buffer,
+with its checksum accumulated during encoding, then passed to the destination stream in one write call.
+Completed CSV and digest bytes accumulate in a batch. One coordinator owns source and destination I/O:
+source iteration pauses while it writes the batch, then resumes using the same selected group and payload memo.
+No source reads run in background workers. CSV/digest bytes are released as their files are written; the final
+manifest still publishes only after every batch succeeds. The operating system may split or defer physical I/O;
+application phases introduce no `fsync` or forced writeback.
+
+`--memory-mib` (1–5120) overrides the pending-output budget; the library accepts positive `memory_bytes`.
+The automatic budget is half Linux `MemAvailable`, with a 1 GiB minimum and 5 GiB maximum, sampled once at
+entry. It bounds completed CSV/digest bytes held in the batch, not total process RSS. One active group's decoded
+sources, up to `workers` in-flight identity histories/CSV buffers, Python object overhead and the catalogue/run
+manifest are additional working memory. A single CSV/digest exceeding the budget aborts without a final manifest;
+there is no spill, reread or automatic retry. The 1 GiB floor applies even when available memory is below 1 GiB.
+Small explicit budgets are useful for constrained runs; the default can retain the whole output when it fits.
 
 Groups are consumed under reader locks. A store-wide shared operation lock spans the current catalogue-token
 check through final publication; a previously opened `DataLibrary` must still match that token. Store-writing
 CLI commands take the exclusive side, excluding update/writer overlap. [Lock ownership](technical-contracts.md#publication-and-recovery).
+Internal producers invoked outside the CLI must also respect this gate when exports can run. The accepted
+catalogue is authority for the operation; export does not audit upstream changes behind that boundary.
 
-`workers`: integer 1–4, default 2; each worker processes complete groups from the same accepted catalogue.
-Group identities share decoded payloads; outstanding groups are bounded by worker count. Threads exchange only
-bounded compact completions, without payload prefetch or full catalogue rereads. The coordinator calls progress
-serially on the calling thread and orders manifest entries by original sorted group/identity selection,
-independent of completion order. Publication waits for every group and released worker resources. Progress counts
-completed CSV/digest pairs; no-row identities advance processed count without files.
+`workers`: integer 1–4, default 2; workers only encode in-memory identities. The coordinator opens one group
+at a time and bounds outstanding encoding jobs by worker count. Group identities share decoded payloads even
+when a batch flush splits a group. Encoding completion order does not change output or manifest order.
+Progress callbacks run on the coordinator and distinguish prepared identities/buffered bytes from completed
+CSV/digest pairs. Read/build phases report no time estimate; the final write phase estimates from its own write
+rate. Failure/interruption cancels queued encoding, waits for active jobs and releases their buffers before
+returning. Publication waits for every group and all worker resources. No-row identities advance processed count
+without files.
 
 Source/destination/store locks fail immediately with `ReaderBusyError`, even if `DataLibrary(wait=True)`;
 CLI has no CSV `--wait` and exits 3 when busy. Other reads retain configured waiting. Failure/interruption stops

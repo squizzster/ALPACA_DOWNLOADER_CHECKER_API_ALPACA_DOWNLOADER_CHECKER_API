@@ -4,9 +4,10 @@ This is a resolved-data interface, not DataLibrary's online-availability contrac
 The source symbol scopes a published dependency group; it never becomes an ID.
 """
 
+import fcntl
 import re
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -25,6 +26,7 @@ from libs.alpaca_lineage_build.storage import (
     publication_lock,
     read_boundaries,
     read_index,
+    read_receipt,
     reader_snapshot,
     select_inputs,
 )
@@ -487,8 +489,13 @@ class StandaloneReader:
         before_payloads=None,
         wait=None,
         writer_view=None,
+        export_selection=False,
     ):
         try:
+            if export_selection:
+                with self._export_snapshot(expected) as snapshot:
+                    yield snapshot
+                return
             if writer_view is not None and expected is None:
                 raise StandaloneReaderError("accepted lineage view requires selected generation references")
             loader = self._cache.document if self._cache.maximum_bytes else None
@@ -596,6 +603,40 @@ class StandaloneReader:
             raise
         except (OSError, RuntimeError, ValueError, KeyError, TypeError, StopIteration) as error:
             raise StandaloneReaderError(f"cannot read standalone publication: {error}") from error
+
+    @contextmanager
+    def _export_snapshot(self, expected):
+        """Consume catalogue-selected bodies once while CSV owns the store gate.
+
+        The completed serving selector guarantees membership, generations and
+        compatibility. CSV holds the shared operation lock for this lifetime;
+        writers must take its exclusive side. Do not reopen the lineage index,
+        inspect pending/update paths, authenticate upstream generations, or
+        repeat store acceptance here. Only selected bodies and payloads are work.
+        Selected pricing locks retain the reader's nonblocking busy contract.
+        """
+        root = self.store / "end_of_day/lineage"
+        index = {"symbols": {name: {"sha256": token} for name, token in expected["lineage"].items()}}
+        sources, receipts, assignments, generations = {}, {}, {}, {}
+        with ExitStack() as locks:
+            for name in sorted(expected["pricing"]):
+                pricing = published_path(self.store, f"end_of_day/pricing/{name}")
+                stream = locks.enter_context((pricing / ".download.lock").open("rb"))
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise ReaderBusyError("CSV export source is busy; retry later") from error
+            for name in sorted(expected["pricing"]):
+                pricing = published_path(self.store, f"end_of_day/pricing/{name}")
+                source = load_source(pricing, name)
+                if source is None:
+                    raise StandaloneReaderError("selected pricing publication is missing")
+                receipt = read_receipt(root, name, index)
+                boundaries = read_boundaries(root, receipt)
+                sources[name], receipts[name] = source, receipt
+                assignments[name] = tuple(_assignments(boundaries, receipt))
+                generations[name] = expected["lineage"][name]
+            yield assignments, sources, document_digest(generations), receipts, generations
 
     def resolve_ticker(self, symbol: str) -> dict:
         """List IDs assigned to this source or bearing its historical label in the group.
@@ -713,12 +754,15 @@ class StandaloneReader:
         before_payloads=None,
         wait=None,
         writer_view=None,
+        export_selection=False,
     ):
         """Shared locked consumption for inspection, serving production and reads."""
         from ._standalone_group import GroupSnapshot
 
         symbol = _symbol(symbol)
         options = {"reuse_documents": True}
+        if export_selection:
+            options["export_selection"] = True
         if writer_view is not None:
             options["writer_view"] = writer_view
         if wait is not None:

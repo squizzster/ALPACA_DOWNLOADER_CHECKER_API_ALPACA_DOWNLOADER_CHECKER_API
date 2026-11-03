@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 22
+API_VERSION = 25
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -629,18 +629,29 @@ class DataLibrary:
     def get_history(self, public_id, adjustment="raw", *, start=None, end=None):
         return self.get_histories(public_id, (adjustment,), start=start, end=end)[adjustment]
 
-    def plan_csv_export(self, *, public_ids=None, start=None, end=None, workers=2):
+    def plan_csv_export(self, *, public_ids=None, start=None, end=None, workers=2, memory_bytes=None):
         """Describe a per-identity CSV export using only this catalogue snapshot."""
         from ._csv_export import plan_export
 
-        return plan_export(self, public_ids=public_ids, start=start, end=end, workers=workers)
+        return plan_export(
+            self, public_ids=public_ids, start=start, end=end, workers=workers, memory_bytes=memory_bytes
+        )
 
-    def write_csv_export(self, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2):
+    def write_csv_export(
+        self, destination, *, public_ids=None, start=None, end=None, progress=None, workers=2, memory_bytes=None
+    ):
         """Publish per-ID pricing CSVs, alias digests and a run completion manifest."""
         from ._csv_export import write_export
 
         return write_export(
-            self, destination, public_ids=public_ids, start=start, end=end, progress=progress, workers=workers
+            self,
+            destination,
+            public_ids=public_ids,
+            start=start,
+            end=end,
+            progress=progress,
+            workers=workers,
+            memory_bytes=memory_bytes,
         )
 
     @staticmethod
