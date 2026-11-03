@@ -69,7 +69,9 @@ High-value contract tests:
 
 For documentation-only changes, compare substantive old/new meaning; check links, anchors, paths and complete
 README coverage. Validate examples against parsers and `./alpaca-cli-eod <command> --help`, then inspect the diff.
-Never execute mutating examples for documentation verification; prose-only edits need no runtime-suite rerun.
+Never execute mutating examples for documentation verification. The mandatory boundary-review checks in
+[AGENTS.md](../AGENTS.md#documentation-and-verification) also apply to documentation-only changes; prose-only
+edits need no additional full runtime-suite rerun.
 
 Keep explanations in one README-linked home. Preserve rationale, constraints and gotchas; omit status journals,
 dated test histories, duplicate version tables and speculative plans.

@@ -87,6 +87,13 @@ recovery contracts and [Architecture](docs/ARCHITECTURE.md#daily-update) for the
 Keep each explanation in one guide, linked from the README. Describe current behavior only.
 Do not add status journals, dated test histories, duplicated version tables or speculative plans.
 
+For every modification, including documentation-only changes, you **MUST** read and check the
+[trust-boundary implementation review](docs/trust-boundary-handoff.html), run all owning regression test
+modules linked from it, and verify its links and the accuracy of affected guarantees, evidence and finding
+statuses. Update the review when the change alters them. These checks are mandatory in addition to the
+checks below; report their results before handing off the change. Passing tests alone does not close the
+review's remaining findings.
+
 Run focused tests during implementation and the [full checks](docs/development.md#verification) before a
 code handoff. For documentation-only changes, check links, commands and consistency with code.
 Report failures plainly in the handoff; do not claim checks that were not run.
