@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -157,27 +158,72 @@ def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
     return result
 
 
+class _OutcomeBatch:
+    def __init__(self, store, connection):
+        self.store = Path(store).absolute()
+        self.connection = connection
+        self.owner = (os.getpid(), threading.get_ident())
+        self.active = True
+
+    def require_active(self, store):
+        if (
+            not self.active
+            or self.store != Path(store).absolute()
+            or self.owner != (os.getpid(), threading.get_ident())
+        ):
+            raise LineageError("work outcome batch belongs to another store/owner or is no longer active")
+        return self.connection
+
+
+@contextmanager
+def outcome_batch(store):
+    """Commit accepted outcomes together; interruption rolls back the whole batch."""
+    with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _check(connection)
+        batch = _OutcomeBatch(store, connection)
+        before = connection.total_changes
+        try:
+            yield batch
+            if connection.total_changes != before:
+                connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+        finally:
+            batch.active = False
+
+
 @traced("work_acknowledgement")
-def record_outcome(store, symbol, *, status, outcome, attempts=0):
+def record_outcome(store, symbol, *, status, outcome, attempts=0, batch=None, expected=None):
     # Workflow completion references already accepted publications. DO NOT mint
     # a new lineage/pricing generation just to make this acknowledgement durable;
     # its SQLite transaction owns that durability independently of data publication.
-    with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
-        row = connection.execute("SELECT body FROM work WHERE symbol=?", (symbol,)).fetchone()
-        if row is None:
-            raise LineageError(f"unregistered update work: {symbol}")
-        value = json.loads(row[0])
-        value.update(
-            status=status,
-            outcome=outcome,
-            attempts=value.get("attempts", 0) + attempts,
-            finished_at_utc=now_utc(),
-        )
-        value["retry_after_utc"] = (
-            (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat() if status == "retry" else None
-        )
-        connection.execute("UPDATE work SET body=? WHERE symbol=?", (json.dumps(value), symbol))
-        connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+    if batch is None:
+        with outcome_batch(store) as batch:
+            return record_outcome(
+                store,
+                symbol,
+                status=status,
+                outcome=outcome,
+                attempts=attempts,
+                batch=batch,
+                expected=expected,
+            )
+    connection = batch.require_active(store)
+    row = connection.execute("SELECT body FROM work WHERE symbol=?", (symbol,)).fetchone()
+    if row is None:
+        raise LineageError(f"unregistered update work: {symbol}")
+    value = json.loads(row[0])
+    if expected is not None and value.get("obligation_id") != expected.get("obligation_id"):
+        raise LineageError(f"work changed before acknowledgement: {symbol}")
+    value.update(
+        status=status,
+        outcome=outcome,
+        attempts=value.get("attempts", 0) + attempts,
+        finished_at_utc=now_utc(),
+    )
+    value["retry_after_utc"] = (
+        (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat() if status == "retry" else None
+    )
+    connection.execute("UPDATE work SET body=? WHERE symbol=?", (json.dumps(value), symbol))
     return value
 
 

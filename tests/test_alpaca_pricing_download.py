@@ -657,14 +657,17 @@ class PricingHttpTests(unittest.TestCase):
         ):
             with self.subTest(error=type(error).__name__):
                 with patch(
-                    "urllib.request.urlopen", side_effect=[error, io.BytesIO(b'{"bars":{"GOOG":[]}}')]
+                    "libs.alpaca_pricing_download.http.open_provider_request",
+                    side_effect=[error, io.BytesIO(b'{"bars":{"GOOG":[]}}')],
                 ) as opener:
                     client = FakeClock().client()
                     self.assertEqual(client._get({}), {"bars": {"GOOG": []}})
                     self.assertEqual(opener.call_count, 2)
 
     def test_transport_retries_are_bounded_and_fail_as_download_error(self):
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("timeout")) as opener:
+        with patch(
+            "libs.alpaca_pricing_download.http.open_provider_request", side_effect=TimeoutError("timeout")
+        ) as opener:
             client = FakeClock().client()
             with self.assertRaisesRegex(DownloadError, "transport failed"):
                 client._get({})

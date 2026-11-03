@@ -178,19 +178,22 @@ class ApprovalHandoffTests(unittest.TestCase):
             self.assert_no_serving_work(result)
 
     def test_interruption_after_acknowledgement_does_not_require_data_publication(self):
+        from contextlib import contextmanager
+
         with self.ready_case() as case:
             before = self.publications(case)
             self.deny_check(case)
-            record = universe_state.record_outcome
+            batch = universe_state.outcome_batch
 
-            def interrupted(store, symbol, **kwargs):
-                result = record(store, symbol, **kwargs)
-                if symbol == "AAA" and kwargs["status"] == "complete":
+            @contextmanager
+            def interrupted(store):
+                with batch(store) as connection:
+                    yield connection
+                if universe_state.read_state(store)["work"]["AAA"]["status"] == "complete":
                     raise ProcessInterrupted("after workflow acknowledgement")
-                return result
 
             with (
-                patch.object(universe_state, "record_outcome", interrupted),
+                patch.object(universe_state, "outcome_batch", interrupted),
                 self.assertRaises(ProcessInterrupted),
             ):
                 case.update(retry_blocked=True)

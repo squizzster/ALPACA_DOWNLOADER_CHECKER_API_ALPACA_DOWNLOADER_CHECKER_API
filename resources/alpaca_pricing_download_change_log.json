@@ -195,5 +195,11 @@
     "modifications": [
       "Use authoritative logical boundary digests to recognize identical effective eight-view refreshes without false historical changes or old-payload reads."
     ]
+  },
+  {
+    "modifications": [
+      "Retain immutable views for the lifetime of a locked pricing handoff and expire them on close; lend selected summary endpoints and pending ownership to lineage without endpoint reauthentication.",
+      "Reject HTTP redirects before provider credentials or response authority can cross to an unselected destination."
+    ]
   }
 ]

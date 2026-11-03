@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trust-boundary implementation handoff</title>
+<style>
+body { font: 16px system-ui, sans-serif; max-width: 1200px; margin: 40px auto; padding: 0 20px; color: #18252d; }
+p, li { line-height: 1.5; }
+table { border-collapse: collapse; width: 100%; }
+td, th { text-align: left; vertical-align: top; border-bottom: 1px solid #bbb; padding: 12px; }
+td:nth-child(2), .tests { font-size: 14px; }
+code { font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>Trust-boundary implementation handoff</h1>
+<p><strong>Read this before continuing the boundary audit or changing handoffs.</strong>
+This is the repository copy of the implementation review, including the exact remaining scope.
+The work changes trust boundaries, handoff retention, producer ingress validation, progress carry-through
+and acknowledgement bookkeeping. Lineage rules, correlation policy, conservative reuse gates and retry policy
+are unchanged.</p>
+<p><strong>Eleven of the seventeen findings are fixed and verified.</strong> Two remain partial,
+one remains open, one has its supported scope clarified, and two remain unchanged under the agreed scope.
+The rows below distinguish implementation closure from remaining requirements.</p>
+<h2>Authorities and continuation</h2>
+<p><a href="../AGENTS.md">AGENTS.md</a> owns storage trust and permissions.
+<a href="ARCHITECTURE.md">Architecture</a> identifies the producer for each boundary.
+<a href="technical-contracts.md">Technical contracts</a> owns the artifact, lock and recovery guarantees.
+<a href="development.md">Development</a> owns verification and rule-change requirements.
+<a href="cli-reporting.md">CLI reports</a> explains heartbeats and debug traces.</p>
+<p>Before changing a handoff, identify its producer, selecting artifact, scope, lifetime and actual invalidation
+condition. Preserve an accepted value until one of those conditions changes. Retain the owning regressions
+that forbid repeated upstream reads and exercise newer generations, incomplete publication and expired authority.
+In particular, a passing suite does not close the remaining scope-expansion stop condition or every coverage gap.</p>
+<h2>Verified behavior</h2>
+<ul>
+<li>Selected reader and offline-evidence receipt reads fell from three to one.</li>
+<li>Unchanged and metadata-only lineage work no longer opens the completed summary endpoint validator.</li>
+<li>Recovery retains accepted sources, notices and journal-provided receipts through acknowledgement.</li>
+<li>Locked pricing views are retained for their lifetime; acknowledgement batches bind store, process,
+thread and transaction lifetime, reject newer obligations and roll back before commit.</li>
+<li>HTTP producers reject credential-bearing redirects and malformed metadata completion envelopes.</li>
+<li>Heartbeats retain accepted work estimates, completion counts, selected scope and request totals.</li>
+</ul>
+<p>The implementation passed 1,515 repository tests with optional Parquet support, twelve audit acceptance
+assertions against fresh fixture observations, lint, formatting, whitespace and modified-guide link checks.
+Redirect regressions exercise both actual clients over loopback HTTP. Runtime changelogs each contain one
+owning release entry; persisted pricing and lineage contracts are preserved.</p>
+<h2>Live verification and limits</h2>
+<p>The subsequent authorized update with debug and without a separate plan run completed through the
+November 2, 2026 session in 1,256.5 seconds, with zero failures and zero pending work.
+It made 2,672 pricing and 449 metadata HTTP requests. The 2,560 late-bar probes occupied about sixteen minutes
+(76 percent of the run). All 9,422 append outcomes were unchanged; the live comparison selected one effective
+pricing correction. This same-cutoff run is not a controlled comparison with the earlier four-hour update.</p>
+<p>The debug trace closed all 9,756 started spans without a reported error or abort.
+Raw traces, full runtime results, experiments and the original source inventory remain outside Git.
+They are observations of the exercised paths, not proof of every input or interleaving.
+The earlier four-hour run still lacks its own diagnostic trace.</p>
+<h2>Finding register</h2>
+<table>
+<thead><tr><th>Finding</th><th>Status</th><th>Evidence and remaining scope</th></tr></thead>
+<tbody>
+<tr id="f01"><th scope="row">F01</th><td>fixed and verified</td><td><strong>Unchanged lineage rebuilds an already complete summary input</strong><p>Completed summary endpoints are reused; unchanged lineage does not project membership or reopen endpoint validators.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>, <a href="../tests/test_alpaca_check_summary.py">test_alpaca_check_summary.py</a>, <a href="../tests/test_alpaca_lineage_io.py">test_alpaca_lineage_io.py</a>.</p></td></tr>
+<tr id="f02"><th scope="row">F02</th><td>fixed and verified</td><td><strong>Generic reader selection rediscovers membership and reads the same receipt three times</strong><p>The compact index selects group membership and generations in one transaction. Unchanged revision retains selection across locking; selected receipt bodies are read once.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>, <a href="../tests/test_alpaca_standalone_reader.py">test_alpaca_standalone_reader.py</a>.</p></td></tr>
+<tr id="f03"><th scope="row">F03</th><td>fixed and verified</td><td><strong>Offline inspection repeats whole-index selection and receipt membership expansion</strong><p>Offline inspection retains the accepted index selection and consumes each selected receipt once.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>.</p></td></tr>
+<tr id="f04"><th scope="row">F04</th><td>partial</td><td><strong>Expected work shape is computed but discarded before the operator sees it</strong><p>The confirmed expected_io handoff loss is fixed: an immediate pre-mutation diagnostic exposes the estimate and later heartbeats retain its numeric fields. Automatic detection/stop for unplanned metadata expansion is not implemented; that closure criterion remains open.</p></td></tr>
+<tr id="f05"><th scope="row">F05</th><td>fixed and verified</td><td><strong>Heartbeat adaptation loses completion and scope</strong><p>Heartbeat adaptation preserves completed/selected counts, collection cardinalities and request totals; component completion is explicit.</p><p class="tests">Owning regressions: <a href="../tests/test_heartbeat_commands.py">test_heartbeat_commands.py</a>.</p></td></tr>
+<tr id="f06"><th scope="row">F06</th><td>unchanged by scope</td><td><strong>Historical reuse is deliberately unavailable for many unchanged-prefix groups</strong><p>Conservative lineage reuse gates are unchanged. Broadening identity/prefix validity is outside the user-confirmed trust-only fix scope; no lineage rule change is claimed.</p></td></tr>
+<tr id="f07"><th scope="row">F07</th><td>unchanged by scope</td><td><strong>Negative late-bar probes have no cross-run completion handoff</strong><p>Negative late-bar probe retry policy is unchanged. A new freshness policy is outside the user-confirmed scope.</p></td></tr>
+<tr id="f08"><th scope="row">F08</th><td>fixed and verified</td><td><strong>Work acknowledgements open a SQLite transaction per symbol</strong><p>Requirements and acknowledgements batch owner-controlled writes. Batches bind store/process/thread/lifetime, reject newer obligations, publish one revision, and roll back before commit.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_work_batches.py">test_alpaca_work_batches.py</a>, <a href="../tests/test_alpaca_approval_handoffs.py">test_alpaca_approval_handoffs.py</a>, <a href="../tests/test_alpaca_universe_update.py">test_alpaca_universe_update.py</a>.</p></td></tr>
+<tr id="f09"><th scope="row">F09</th><td>open</td><td><strong>The four-hour run has no retained diagnostic trace and its final result is excessively large</strong><p>The earlier run has no diagnostic trace; exact attribution remains unproven. Existing opt-in debug remains available. Normal full-result stdout and default trace retention are unchanged.</p></td></tr>
+<tr id="f10"><th scope="row">F10</th><td>fixed and verified</td><td><strong>Default HTTP redirects can forward Alpaca credentials to another origin</strong><p>Both default credential-bearing clients reject redirects before a second request. Real loopback tests cover 301, 302, 303, 307 and 308 for both clients.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_transport_boundary.py">test_alpaca_transport_boundary.py</a>.</p></td></tr>
+<tr id="f11"><th scope="row">F11</th><td>fixed and verified</td><td><strong>Malformed falsy metadata page tokens are accepted as exhausted pagination</strong><p>Metadata pagination rejects malformed false-valued and repeated tokens before handing off a completed interval.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_transport_boundary.py">test_alpaca_transport_boundary.py</a>, <a href="../tests/test_alpaca_security_lineage.py">test_alpaca_security_lineage.py</a>.</p></td></tr>
+<tr id="f12"><th scope="row">F12</th><td>fixed and verified</td><td><strong>Metadata JSON parsing silently accepts duplicate keys and nonfinite numbers</strong><p>Metadata ingress rejects duplicate object keys, NaN, Infinity and overflowing numeric literals.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_transport_boundary.py">test_alpaca_transport_boundary.py</a>.</p></td></tr>
+<tr id="f13"><th scope="row">F13</th><td>scope clarified</td><td><strong>CSV export relies on writer cooperation that internal producers do not enforce themselves</strong><p>The supported canonical CLI writers retain the existing operation gate. Documentation now explicitly identifies direct internal producer calls as requiring caller-owned outer exclusion, not independent concurrent writer entrypoints. No new enforcement for unsupported bypasses is claimed.</p></td></tr>
+<tr id="f14"><th scope="row">F14</th><td>fixed and verified</td><td><strong>Serving checkpoint migration documentation describes an older target policy</strong><p>Serving migration documentation matches the existing policy-5/6/7/8 to policy-9 transition; the policy code is unchanged.</p></td></tr>
+<tr id="f15"><th scope="row">F15</th><td>partial</td><td><strong>Passing tests do not establish every handoff path or forbid all redundant work</strong><p>Permanent owning regressions cover repaired boundaries and invalidation/interruption neighbors. The 12 audit assertions pass on fresh probes. This does not close every exported coverage omission or prove every possible input/interleaving.</p></td></tr>
+<tr id="f16"><th scope="row">F16</th><td>fixed and verified</td><td><strong>Lineage recovery reopens source and notice after accepting them under its newly held locks</strong><p>Recovery selects source/notice/hint values once under reacquired locks and carries them through acknowledgement; newly installed receipts come directly from the journal.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>, <a href="../tests/test_alpaca_lineage_build.py">test_alpaca_lineage_build.py</a>, <a href="../tests/test_alpaca_check_summary.py">test_alpaca_check_summary.py</a>.</p></td></tr>
+<tr id="f17"><th scope="row">F17</th><td>fixed and verified</td><td><strong>Repeated reads through one locked PricingUpdate object discard its accepted source and decoded views</strong><p>A locked pricing handoff retains immutable decoded views and releases them on close; returned mutable maps cannot corrupt the retained view.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>.</p></td></tr>
+</tbody>
+</table>
+<p><a href="../README.md">Return to README</a>.</p>
+</body>
+</html>

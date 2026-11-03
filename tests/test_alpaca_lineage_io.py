@@ -51,7 +51,7 @@ class LineageIOTests(unittest.TestCase):
         self.assertEqual(events, [["GOOG"]])
         self.assertEqual(opened[self.root / "GOOG/lineage.manifest.json"], 1)
         self.assertEqual(opened[pricing / "source.manifest.json"], 1)  # Planning uses the accepted index.
-        self.assertEqual(opened[pricing / "validator_first_last_sessions.json"], 1)
+        self.assertEqual(opened[pricing / "validator_first_last_sessions.json"], 0)
         self.assertEqual(provider.calls, [])
         self.assertEqual(before, snapshot(self.store))
 
@@ -73,7 +73,7 @@ class LineageIOTests(unittest.TestCase):
         with patch.object(Path, "read_bytes", counted):
             self.run_build(["GOOG"], client=client, refresh=True)
         self.assertEqual(opened[pricing / "source.manifest.json"], 1)
-        self.assertEqual(opened[pricing / "validator_first_last_sessions.json"], 1)
+        self.assertEqual(opened[pricing / "validator_first_last_sessions.json"], 0)
         self.assertEqual(opened[self.root / "GOOG/lineage.manifest.json"], 1)
         for reference in prior["boundaries"].values():
             self.assertEqual(opened[self.root / "GOOG" / reference["manifest"]], 1)

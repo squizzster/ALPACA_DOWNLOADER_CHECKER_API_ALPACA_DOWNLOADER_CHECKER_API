@@ -99,7 +99,7 @@ class ApiSolverTests(unittest.TestCase):
         )
         response = io.BytesIO(b'[{"id":"one","symbol":"A"}]')
         response.headers = {}
-        with patch("urllib.request.urlopen", return_value=response):
+        with patch("libs.alpaca_security_lineage.alpaca_http.open_provider_request", return_value=response):
             self.assertEqual(client.execute_plan(catalogue)[0][0], [{"id": "one", "symbol": "A"}])
         client.seed_asset_lookup("A", asset={"id": "one", "symbol": "A"}, http_status=200)
         with patch.object(client, "request_json", side_effect=AssertionError("seed must be consumed")):
@@ -154,7 +154,10 @@ class ApiSolverTests(unittest.TestCase):
         before = copy.deepcopy(document)
         with (
             patch.object(Path, "open", side_effect=AssertionError("filesystem")),
-            patch("urllib.request.urlopen", side_effect=AssertionError("network")),
+            patch(
+                "libs.alpaca_security_lineage.alpaca_http.open_provider_request",
+                side_effect=AssertionError("network"),
+            ),
         ):
             result = build_plan(document)
             json.dumps(result, allow_nan=False)

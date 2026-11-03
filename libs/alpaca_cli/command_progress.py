@@ -1,5 +1,7 @@
 """Translate existing command observations into the shared stderr protocol."""
 
+import json
+
 from libs.alpaca_heartbeat import Phase
 
 # Progress is a projection of producer callbacks, not a new observation pass.
@@ -11,6 +13,9 @@ FIELDS = {
     for name in (
         "selected",
         "processed",
+        "completed",
+        "pending_work",
+        "requests",
         "groups",
         "symbols",
         "tickers",
@@ -40,6 +45,30 @@ FIELDS.update(
     {name: str for name in ("stage", "state", "symbol", "status", "unit", "end_exclusive", "path", "commit")}
 )
 FIELDS.update(seconds=(int, float), complete=bool, estimated_remaining_seconds=(int, str))
+EXPECTED_FIELDS = (
+    "boundary_reads",
+    "selected_pricing_manifests",
+    "late_bar_probe_manifest_reads",
+    "late_bar_probe_sources",
+    "late_bar_probe_sessions",
+    "late_bar_probe_actions_upper_bound",
+    "append_approval_manifest_reads",
+    "selected_history_obligation_manifest_reads",
+    "selected_lineage_labels",
+    "existing_lineage_receipts_selected",
+    "catalogue_actions",
+    "selection_metadata_http_requests_observed",
+    "history_check_actions",
+    "initial_or_invalidated_actions_estimate",
+    "empty_coverage_actions_estimate",
+    "acquisition_actions_estimate",
+    "append_actions_before_reconciliation",
+    "http_pages_minimum",
+    "http_pages_dense_history_estimate",
+    "pricing_publications_estimate",
+    "serving_pending_symbols",
+)
+FIELDS.update({"expected_" + name: int for name in EXPECTED_FIELDS})
 PHASES = {
     name: Phase(message, FIELDS)
     for name, message in {
@@ -84,6 +113,8 @@ def progress_callback(reporter):
     if reporter is None:
         return None
 
+    expected_context = {}
+
     def progress(stage, values):
         try:
             phase = "UPDATE"
@@ -105,22 +136,47 @@ def progress_callback(reporter):
                 if fragment in stage:
                     phase = candidate
                     break
+            observed = dict(values)
+            for name in ("symbols", "processed", "pending_work", "required"):
+                if isinstance(observed.get(name), (list, tuple, set, dict)):
+                    observed[name] = len(observed[name])
+            for name in ("requests", "pricing_requests"):
+                if isinstance(values.get(name), dict):
+                    for metric, value in values[name].items():
+                        if metric in FIELDS and type(value) is int:
+                            observed[metric] = value
+            expected = values.get("expected_io")
+            if isinstance(expected, dict):
+                expected_context.clear()
+                for name in EXPECTED_FIELDS:
+                    value = expected.get(name)
+                    if name == "boundary_reads" and isinstance(value, list):
+                        value = len(value)
+                    if type(value) is int:
+                        expected_context["expected_" + name] = value
             context = {
                 name: value
-                for name, value in values.items()
+                for name, value in observed.items()
                 if name in FIELDS
                 and type(value) in (FIELDS[name] if isinstance(FIELDS[name], tuple) else (FIELDS[name],))
             }
-            context.update(stage=stage, estimated_remaining_seconds="TBD")
-            done, total = values.get("done"), values.get("total")
+            context.update(expected_context, stage=stage, estimated_remaining_seconds="TBD")
+            done = values.get("done", values.get("completed"))
+            total = values.get("total", values.get("selected"))
             counts = (
                 {"current": done, "total": total}
                 if type(done) is int and type(total) is int and 0 <= done <= total
                 else {}
             )
-            return reporter.update(
-                phase, message=stage.replace("_", " ").capitalize() + ".", context=context, **counts
-            )
+            message = stage.replace("_", " ").capitalize()
+            if values.get("state") == "completed" or stage.endswith("_complete"):
+                message += " component completed"
+            accepted = reporter.update(phase, message=message + ".", context=context, **counts)
+            if isinstance(expected, dict):
+                # Selection emits this before acquisition/publication, even if the
+                # next timed heartbeat would otherwise miss the planning phase.
+                reporter.diagnostic(json.dumps({"expected_io": expected}, separators=(",", ":")))
+            return accepted
         except Exception:
             return False
 

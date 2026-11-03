@@ -111,6 +111,11 @@ Canonical phase definitions and adapters live in
 [command_progress.py](../libs/alpaca_cli/command_progress.py): `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,
 `PRICING`, `LINEAGE`, `MIGRATE`, `SUMMARY`, `UNIVERSE`, `STATUS`, `READ`, `RESOLVE`, `EXPORT`, `COMMIT`, `PUSH`.
 Existing callbacks replace held status with their stage, supported scalar counters and available counts.
+The adapter carries producer `completed`/`selected` counts into `current`/`total` when coherent, counts supplied
+symbol/processed/pending-work collections, and preserves request totals from producer reports. Component
+completion describes that component, not command completion. Selection emits an immediate diagnostic containing
+the accepted `expected_io` before selected mutation; its numeric estimates remain in later heartbeat context
+under `expected_` names. These are retained observations, with no reporting-driven storage reads.
 Commands without callbacks repeat their operation and elapsed time. The policy lab reports `POLICY` followed by
 `COMPARE` or `AUDIT`, without additional group inspection or invented progress counts.
 The final update `COMMIT` and `PUSH` phases hold `path`, `status` and the selected `commit` when available;

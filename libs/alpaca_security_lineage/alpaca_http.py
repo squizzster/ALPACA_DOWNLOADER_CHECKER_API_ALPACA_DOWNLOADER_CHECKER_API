@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time
 import urllib.error
@@ -8,6 +9,7 @@ from typing import Any
 
 from libs.alpaca_data_api_solver import ACTION_URL, ASSET_URL, build_plan, split_action, validate_version
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
+from libs.common.provider_http import open_provider_request
 
 from .settings import (
     ACTION_TYPE_BY_RESPONSE_KEY,
@@ -42,6 +44,26 @@ class IdentityHttpError(RuntimeError):
     def __init__(self, status, message):
         super().__init__(message)
         self.status = status
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _nonfinite(_value):
+    raise ValueError("non-finite JSON number")
+
+
+def _finite_float(value):
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite JSON number")
+    return result
 
 
 def rate_limit_delay_seconds(response_headers, default_seconds: float = 60.0) -> float:
@@ -109,10 +131,15 @@ class AlpacaIdentityClient:
             self.rate_limiter.wait_until_request_allowed()
             self.request_count += 1
             try:
-                with urllib.request.urlopen(http_request, timeout=60) as http_response:
+                with open_provider_request(http_request, timeout=60) as http_response:
                     try:
-                        response_document = json.load(http_response)
-                    except (json.JSONDecodeError, UnicodeError) as json_error:
+                        response_document = json.load(
+                            http_response,
+                            object_pairs_hook=_unique_object,
+                            parse_constant=_nonfinite,
+                            parse_float=_finite_float,
+                        )
+                    except (ValueError, UnicodeError) as json_error:
                         raise RuntimeError(f"Alpaca returned invalid JSON for {url}") from json_error
                     if http_response.headers.get("X-RateLimit-Remaining") == "0":
                         self.rate_limiter.defer_requests_for_seconds(
@@ -266,12 +293,12 @@ class AlpacaIdentityClient:
                     normalized_actions.append({**action, "action_type": action_type})
 
             next_page_token = response_document.get(api_action["pagination"]["response_field"])
-            if not next_page_token:
+            if next_page_token is None:
                 # Only exhausted pagination hands off a complete action interval.
                 # A failed/partial request must not become evidence of no actions.
                 return normalized_actions
-            if not isinstance(next_page_token, str):
-                raise RuntimeError("corporate-actions response has a non-string next_page_token")
+            if not isinstance(next_page_token, str) or not next_page_token:
+                raise RuntimeError("corporate-actions response has an invalid next_page_token")
             if next_page_token in seen_page_tokens:
                 raise RuntimeError("corporate-actions pagination repeated a page token")
             seen_page_tokens.add(next_page_token)

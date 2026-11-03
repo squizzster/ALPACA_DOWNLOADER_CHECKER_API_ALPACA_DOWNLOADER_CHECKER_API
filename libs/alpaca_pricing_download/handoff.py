@@ -1,7 +1,7 @@
 """Internal pricing handoff; no lineage calculation or public consumer API."""
 
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from .contract import ADJUSTMENTS, SUPPORTED_VERSIONS, DownloadError, decode_csv, month_of, symbol_label
@@ -85,15 +85,19 @@ class PricingUpdate:
     dates: dict
     _root: Path
     _active: bool = True
+    _views: dict | None = field(default=None, init=False, repr=False)
 
     def read_views(self) -> dict:
         """Read inside the already-held lock, without recursively acquiring it."""
         if not self._active:
             raise DownloadError("pricing update is no longer locked")
-        source = load_source(self._root, self._root.name)
-        if source is None:
-            raise DownloadError("no published pricing source")
-        return load_published_views(self._root, source, selected=True)
+        if self._views is None:
+            source = load_source(self._root, self._root.name)
+            if source is None:
+                raise DownloadError("no published pricing source")
+            self._views = load_published_views(self._root, source, selected=True)
+        # Rows are immutable tuples; only the caller's small view map is mutable.
+        return dict(self._views)
 
 
 @contextmanager
@@ -131,3 +135,4 @@ def consume_pricing_update(store: Path | str, symbol: str):
             acknowledge_update(root, dates, selected=True)
         finally:
             batch._active = False
+            batch._views = None

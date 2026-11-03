@@ -679,7 +679,9 @@ class AlpacaIdentityClientTests(unittest.TestCase):
         )
         client = AlpacaIdentityClient("key", "secret", rate_limiter=FakeRateLimiter())
 
-        with mock.patch("urllib.request.urlopen", side_effect=http_error):
+        with mock.patch(
+            "libs.alpaca_security_lineage.alpaca_http.open_provider_request", side_effect=http_error
+        ):
             result = client.get_asset_lookup("MISSING")
 
         self.assertEqual(
@@ -699,7 +701,9 @@ class AlpacaIdentityClientTests(unittest.TestCase):
         )
         client = AlpacaIdentityClient("key", "secret", rate_limiter=FakeRateLimiter())
 
-        with mock.patch("urllib.request.urlopen", side_effect=http_error):
+        with mock.patch(
+            "libs.alpaca_security_lineage.alpaca_http.open_provider_request", side_effect=http_error
+        ):
             result = client.request_json("https://example.test/asset", allow_not_found=True)
 
         self.assertIsNone(result)
@@ -719,7 +723,10 @@ class AlpacaIdentityClientTests(unittest.TestCase):
         rate_limiter = FakeRateLimiter()
         client = AlpacaIdentityClient("key", "secret", rate_limiter=rate_limiter)
 
-        with mock.patch("urllib.request.urlopen", side_effect=[http_error, success_response]):
+        with mock.patch(
+            "libs.alpaca_security_lineage.alpaca_http.open_provider_request",
+            side_effect=[http_error, success_response],
+        ):
             result = client.request_json("https://example.test/asset")
 
         self.assertEqual({"id": "asset-id"}, result)
@@ -731,7 +738,10 @@ class AlpacaIdentityClientTests(unittest.TestCase):
     def test_invalid_json_is_reported_as_runtime_error(self) -> None:
         client = AlpacaIdentityClient("key", "secret", rate_limiter=FakeRateLimiter())
 
-        with mock.patch("urllib.request.urlopen", return_value=FakeHttpResponse(b"not-json")):
+        with mock.patch(
+            "libs.alpaca_security_lineage.alpaca_http.open_provider_request",
+            return_value=FakeHttpResponse(b"not-json"),
+        ):
             with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
                 client.request_json("https://example.test/asset")
 

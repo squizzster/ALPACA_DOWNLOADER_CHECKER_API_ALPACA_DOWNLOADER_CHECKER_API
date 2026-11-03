@@ -146,5 +146,10 @@
     "modifications": [
       "Accept a bounded event-supplement document for explicitly selected lineage updates and report unmatched inputs without silently accepting unused evidence."
     ]
+  },
+  {
+    "modifications": [
+      "Expose accepted expected work before selected mutation and retain its scalar estimates in subsequent heartbeats; carry completion, selected-scope and request counters while distinguishing component completion."
+    ]
   }
 ]

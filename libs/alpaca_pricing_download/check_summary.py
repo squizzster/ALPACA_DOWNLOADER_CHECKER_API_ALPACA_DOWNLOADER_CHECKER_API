@@ -136,6 +136,37 @@ def replace_entries(store, entries, *, pricing_only=False):
             db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
 
 
+def selected_inputs(store, symbols):
+    """Lend completed endpoints and pending ownership to a locked producer.
+
+    A lineage invalidation changes membership, not pricing's accepted endpoint.
+    A pricing invalidation prevents endpoint reuse until that owner completes.
+    Only the named publication's inputs are selected; unrelated pending work
+    neither expands this selection nor invalidates these accepted endpoints.
+    """
+    symbols = tuple(symbols)
+    if not symbols or not summary_path(store).exists():
+        return None
+    placeholders = ",".join("?" for _ in symbols)
+    with _connection(store, readonly=True) as db:
+        complete = bool(db.execute("SELECT complete FROM state WHERE singleton=1").fetchone()[0])
+        entries = {
+            symbol: {"symbol": symbol, "asof": asof, "end_exclusive": end, "last_all": json.loads(row)}
+            for symbol, asof, end, row in db.execute(
+                f"SELECT symbol, asof, end_exclusive, last_all FROM entries WHERE symbol IN ({placeholders})",
+                symbols,
+            )
+        }
+        for entry in entries.values():
+            validate_entry(entry)
+        pending = {symbol: set() for symbol in symbols}
+        for symbol, owner in db.execute(
+            f"SELECT symbol, owner FROM pending WHERE symbol IN ({placeholders})", symbols
+        ):
+            pending[symbol].add(owner)
+    return {"complete": complete, "entries": entries, "pending": pending}
+
+
 def price_entry(root, source, *, published=True, endpoints=None):
     from .storage import read_validator
 

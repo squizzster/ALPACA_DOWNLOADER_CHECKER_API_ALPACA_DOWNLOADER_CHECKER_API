@@ -142,8 +142,62 @@ class HeartbeatCommandTests(unittest.TestCase):
         self.assertEqual(record["phase"], "LINEAGE")
         self.assertEqual((record["current"], record["total"]), (2, 5))
         self.assertEqual(record["context"]["symbol"], "AAA")
-        self.assertNotIn("symbols", record["context"])
+        self.assertEqual(record["context"]["symbols"], 1)
         self.assertEqual(record["context"]["estimated_remaining_seconds"], "TBD")
+        reporter.finish("success", 0)
+
+    def test_expected_work_is_visible_before_work_and_retained_in_later_heartbeats(self):
+        from libs.alpaca_cli.command_progress import PHASES
+
+        now, errors = [0.0], io.StringIO()
+        reporter = LifecycleReporter(PHASES, stream=errors, clock=lambda: now[0])
+        with patch("threading.Thread.start"):
+            reporter.start()
+        progress = progress_callback(reporter)
+        expected = {
+            "boundary_reads": ["lineage_index", "pricing_check_summary"],
+            "selected_lineage_labels": 7,
+            "http_pages_minimum": 4,
+            "pricing_publications_estimate": 3,
+        }
+        progress("selected", {"work": 7, "expected_io": expected})
+        records = self.records(errors)
+        self.assertEqual(records[-1]["schema"], DIAGNOSTIC_SCHEMA)
+        self.assertEqual(json.loads(records[-1]["message"])["expected_io"], expected)
+        progress("lineage_group", {"completed": 2, "selected": 7, "processed": ["A", "B"]})
+        now[0] = 10
+        reporter._emit_due()
+        record = self.records(errors)[-1]
+        self.assertEqual((record["current"], record["total"]), (2, 7))
+        self.assertEqual(record["context"]["completed"], 2)
+        self.assertEqual(record["context"]["processed"], 2)
+        self.assertEqual(record["context"]["expected_http_pages_minimum"], 4)
+        self.assertEqual(record["context"]["expected_boundary_reads"], 2)
+        reporter.finish("success", 0)
+
+    def test_component_completion_preserves_request_counts_and_pending_work(self):
+        from libs.alpaca_cli.command_progress import PHASES
+
+        now, errors = [0.0], io.StringIO()
+        reporter = LifecycleReporter(PHASES, stream=errors, clock=lambda: now[0])
+        with patch("threading.Thread.start"):
+            reporter.start()
+        progress_callback(reporter)(
+            "lineage",
+            {
+                "state": "completed",
+                "pending_work": ["A", "B"],
+                "requests": {"metadata_http_requests": 8, "pricing_http_requests": 4},
+            },
+        )
+        now[0] = 10
+        reporter._emit_due()
+        record = self.records(errors)[-1]
+        self.assertIn("component", record["message"])
+        self.assertEqual(record["context"]["pending_work"], 2)
+        self.assertEqual(record["context"]["metadata_http_requests"], 8)
+        self.assertEqual(record["context"]["pricing_http_requests"], 4)
+        self.assertNotIn("complete", record["context"])
         reporter.finish("success", 0)
 
     def test_diagnostics_are_bounded_immediate_and_do_not_replace_work(self):

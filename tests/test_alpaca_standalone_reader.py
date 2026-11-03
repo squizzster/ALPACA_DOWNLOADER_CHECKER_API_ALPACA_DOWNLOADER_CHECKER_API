@@ -382,8 +382,7 @@ class StandaloneReaderTests(unittest.TestCase):
         original = storage.read_index
         with patch.object(storage, "read_index", wraps=original) as read_index:
             self.reader.resolve_ticker("TEST")
-        self.assertEqual(read_index.call_count, 2)
-        self.assertTrue(all(call.args == (self.root, "TEST") for call in read_index.call_args_list))
+        read_index.assert_called_once_with(self.root, "TEST", group=True)
 
     def test_unrelated_worker_and_all_reader_paths_can_run_and_publish_together(self):
         self.download("OTHER", self.bars)
@@ -446,7 +445,7 @@ class StandaloneReaderTests(unittest.TestCase):
     def test_snapshot_reselects_changed_closure_before_exposing_any_data(self):
         self.download("OTHER", self.bars)
         self.build(["OTHER"], IdentityClient({"OTHER": asset("OTHER")}))
-        single = storage.select_inputs(self.root, "TEST")
+        single = dict(storage.select_inputs(self.root, "TEST"))
         expanded = {**single, **storage.select_inputs(self.root, "OTHER")}
         with patch.object(
             storage, "select_inputs", side_effect=[single, expanded, expanded, expanded]
@@ -477,7 +476,7 @@ class StandaloneReaderTests(unittest.TestCase):
         finish.assert_called_once()
 
     def test_snapshot_churn_has_bounded_retries_and_releases_locks(self):
-        selected = storage.select_inputs(self.root, "TEST")
+        selected = dict(storage.select_inputs(self.root, "TEST"))
         with patch.object(storage, "select_inputs", side_effect=[selected, {}] * 3) as select:
             with self.assertRaises(LineageBusyError):
                 with storage.reader_snapshot(self.store, lambda root: storage.select_inputs(root, "TEST")):

@@ -489,7 +489,7 @@ def process_group(
                 from .check_summary import refresh as refresh_check_summary
 
                 if not published:
-                    refresh_check_summary(store, previous, sources=sources)
+                    refresh_check_summary(store, previous, sources=sources, unchanged=True)
                     acknowledge_checks(store, checks, sources)
                 return {
                     "symbol": seed,

@@ -129,6 +129,11 @@ Pricing owns baselines; lineage owns membership. Missing/incomplete/pending cove
 guard comparisons without ticker enumeration. Authorities: [summary storage](../libs/alpaca_pricing_download/check_summary.py),
 [project / rebuild](../libs/alpaca_lineage_build/check_summary.py).
 
+Unchanged lineage leaves a completed selected summary alone. A changed membership publication reuses an
+accepted endpoint when pricing has no pending change; it does not reopen the endpoint validator. A pricing
+invalidation, new eligibility or incomplete baseline requires the selected pricing owner's endpoint. These
+producer projections read only the named summary entries and pending owners under their held pricing locks.
+
 Daily recovery finishes only named pending inputs and their complete lineage groups before selection. Remaining
 pending inputs block selection; pending summary never means empty membership or permission to check unaffected
 active sources' retained histories.
@@ -158,6 +163,10 @@ Pending work, renewed obligations or changed group generations invalidate that h
 acknowledge the selected publication; they never replace it as data authority. Interruption before acknowledgement
 leaves retry work pending, while interruption afterward does not require republication. Changed evidence,
 pricing, assignments or policy still follow the owning publication path.
+Completion batches share one transaction and compare the accepted obligation ID before acknowledgement;
+a newer obligation rejects the stale batch. A batch is restricted to its store, process, thread and active
+transaction lifetime. Interruption before commit rolls back the batch, while committed
+outcomes survive. Complete dependency groups and maintenance requirements also persist together before requests.
 Recovery reselects acquisition from accepted requirements/completed summary; a saved `acquire` flag cannot divert
 a summarized maintained source from live check → approved append.
 
@@ -176,6 +185,11 @@ scheduling/summary work, and the lineage marker under its shared gate. No payloa
 recovery. [Report meanings and consistency](cli-reporting.md#completion-and-status).
 
 ## API plan
+
+Credential-bearing pricing and metadata transports reject HTTP redirects. The accepted request target does
+not authorize a different destination. Metadata JSON rejects duplicate keys and non-finite numbers at ingress;
+only a missing/null page token completes pagination, while a nonempty new string continues it. Malformed or
+repeated tokens fail the acquisition before it can publish a completed evidence interval.
 
 Pure [build_plan](../libs/alpaca_data_api_solver/__init__.py) maps `steps[].needs[]` to versioned ordered actions;
 code owns fields, strategies, delivery slices and batching limits. Needs require nonempty reasons; within-step
@@ -196,12 +210,18 @@ constraints, metadata continuation and missing auxiliary prices.
 Stable `.download.lock` inodes provide producer-exclusive/reader-shared `flock`; one lineage `.worker.lock`
 serializes writers. Sorted pricing locks plus brief publication gate protect selected groups while allowing
 unrelated reads/publications. Readers select → lock → recheck → consume. Lock-file existence is not ownership.
+The index's completed group membership selects locks without opening receipts. After locking, an unchanged
+index revision preserves that selection; a changed revision reselects before exposing data. Required receipt
+bodies are read once in that coherent view, including offline evidence inspection. Missing group membership
+fails closed into explicit index migration.
 
 [operation_lock](../libs/common/store_lock.py) uses stable `.<store-name>.operation.lock` beside the store. CSV export
 holds nonblocking shared `flock` from catalogue selection through run manifest; every store-writing CLI command
 holds nonblocking exclusive `flock` throughout. Store gate precedes owner locks. Writers exclude writers/exports;
 read-only exports may coexist. Exit, including `SIGKILL`, releases the kernel lock; path remains, with no PID or
 stale-lock recovery.
+Direct internal producer functions require their caller to provide this outer exclusion when used alongside
+exports; they are not independent concurrent writer entrypoints. Public consumers use `alpaca_end_of_day`.
 
 Owners close temporary files and atomically replace journaled outputs: payloads before receipts/index, summary
 before acknowledgement, journal removal last. Acknowledgement cannot consume newer notices/hints. Pricing hands
@@ -209,6 +229,8 @@ accepted source/endpoints downstream, reuses cold references and inventories onl
 reconstructs durable inputs; owners clean abandoned staging under ticker locks. Interrupted multi-file publication
 blocks readers until owner recovery. Authorities: [pricing storage](../libs/alpaca_pricing_download/storage.py),
 [lineage storage](../libs/alpaca_lineage_build/storage.py).
+Lineage recovery reselects journal-named pricing sources, notices and hints once after reacquiring locks,
+then carries them through summary refresh and acknowledgement. The accepted values expire with those locks.
 
 History replacements retain payload files when newly produced bytes match their recorded digests; matching
 files are not reopened, checked or rewritten. Changed payloads, receipt changes and required update notices
@@ -266,8 +288,8 @@ Raw continuity labels remain separate from public all-view labels. Gaps use curr
 refresh bounded gap-presence reads without repeating unaffected numeric checks. Physical aliases share decoding.
 Checkpoints/decisions commit together. Policy changes require explicit rebuild of the single current checkpoint format.
 
-The policy-5/6/7→8 exception translates policy-5 scalar ownership labels to lists and reuses completed facts only
-when the whole group's pricing generations and every row/source/owner/label selection match. Policies 7 and 8 change
+The policy-5/6/7/8→9 exception translates policy-5 scalar ownership labels to lists and reuses completed facts only
+when the whole group's pricing generations and every row/source/owner/label selection match. Policies 7, 8 and 9 change
 no numeric history check; eligibility is always recalculated from the current completed receipt and its producer
 dispositions. Comparison uses selected checkpoints/assignments without price reads. Changed histories receive
 ordinary evaluation; both paths project current metadata. Consumers still require current policy. No extension to
@@ -299,7 +321,7 @@ Serving retains the accepted store compatibility and lineage index in a view own
 lock. Selected readers consume those entries without reopening the index, rechecking its protocol or repeating
 store path checks. The view is restricted to the owning process/thread and expires before the writer lock is
 released. Pricing locks, source-generation checks and pending-publication checks still protect each selected
-group. Ordinary readers without this writer-owned view retain selection, locking and reselection. Runtime-only
+group. Ordinary readers without this writer-owned view retain selection, locking and revision-based reselection. Runtime-only
 changes to this handoff preserve the serving policy and its completed checkpoints.
 
 Explicit bootstrap covers indexed groups and may project missing membership from receipts in bounded batches,

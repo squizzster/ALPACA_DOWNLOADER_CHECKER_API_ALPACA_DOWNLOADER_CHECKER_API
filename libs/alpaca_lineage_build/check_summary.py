@@ -9,6 +9,8 @@ from libs.alpaca_pricing_download.storage import load_source, regular_path, tick
 from . import storage
 from .contract import LineageError
 
+_UNSELECTED = object()
+
 
 def stored_active(receipt):
     # This is stored live-check membership, not serving eligibility or current
@@ -25,32 +27,42 @@ def stored_active(receipt):
     return (asset.get("status"), asset.get("symbol"), asset.get("class")) == ("active", symbol, "us_equity")
 
 
-def project(store, receipt, *, source=None):
+def project(store, receipt, *, source=_UNSELECTED, baseline=None):
     # Lineage owns membership and pricing owns the exact endpoint. An already
     # selected source is the handoff; DO NOT reload it or decode history to build
     # a summary whose endpoint has already been validated by pricing.
     if not stored_active(receipt):
         return None
+    if baseline is not None:
+        return baseline
     symbol = receipt["symbol"]
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
-    source = load_source(root, symbol) if source is None else source
+    source = load_source(root, symbol) if source is _UNSELECTED else source
     if source is None:
         raise LineageError(f"missing published pricing for summary: {symbol}")
     return summary.price_entry(root, source)
 
 
-def refresh(store, receipts, *, sources=None):
+def refresh(store, receipts, *, sources=None, unchanged=False):
     """Caller owns the selected pricing locks and has installed the lineage receipt."""
-    if not summary.summary_path(store).exists():
+    selected = summary.selected_inputs(store, receipts)
+    if selected is None:
         return
     entries = {}
     for symbol, receipt in receipts.items():
+        pending = selected["pending"][symbol]
+        if unchanged and selected["complete"] and not pending:
+            continue  # Neither owner changed this completed membership or endpoint.
         if sources is None:
             root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
             if regular_path(root, ".pending.json").exists():
                 continue  # Recovery must select again after the interruption released locks.
-        entries[symbol] = project(store, receipt, source=None if sources is None else sources[symbol])
-    summary.replace_entries(store, entries)
+        baseline = selected["entries"].get(symbol) if selected["complete"] and "pricing" not in pending else None
+        entries[symbol] = project(
+            store, receipt, source=_UNSELECTED if sources is None else sources[symbol], baseline=baseline
+        )
+    if entries:
+        summary.replace_entries(store, entries)
 
 
 def rebuild(store, *, progress=None):

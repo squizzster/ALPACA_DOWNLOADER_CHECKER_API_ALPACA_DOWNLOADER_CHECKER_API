@@ -5,6 +5,10 @@ catalogue. Incremental checks reuse completed work; journals recover interrupted
 and CSV/Parquet exports consume published histories and evidence. Research and trading decisions stay outside
 the data boundary.
 
+**Before continuing boundary or handoff work, read the [Trust-boundary implementation handoff](docs/trust-boundary-handoff.html).**
+It records the 17 audit findings, the 11 verified fixes, remaining gaps, owning regressions and live verification.
+The agreed scope preserves lineage rules and correlation policy. [AGENTS.md](AGENTS.md) remains authoritative.
+
 Requires Python 3.11, Unix `flock` and `America/New_York` timezone data. Production policy compilation uses
 [PyYAML](requirements.txt); Parquet additionally uses [PyArrow](requirements-bloodhound.txt).
 See [setup and credentials](docs/operations.md#prerequisites). Runtime stores stay outside Git.

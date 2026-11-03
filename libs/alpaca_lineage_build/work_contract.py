@@ -260,13 +260,21 @@ class WorkPolicy:
         }
 
     def require(
-        self, symbol, target, *, reason, acquire=False, refresh=False, group=(), history_check=False, start=None
+        self,
+        symbol,
+        target,
+        *,
+        reason,
+        acquire=False,
+        refresh=False,
+        group=(),
+        history_check=False,
+        start=None,
+        _pending=None,
     ):
         """Persist an obligation before its first request, independently of registration."""
         from libs.alpaca_pricing_download.contract import timestamp
         from libs.alpaca_pricing_download.download import request_start
-
-        from . import universe_state
 
         request_start(start, timestamp(target + "T00:00:00Z"))
         prior = self.work.get(symbol, {})
@@ -290,18 +298,32 @@ class WorkPolicy:
             prior,
         )
         if item != prior:
-            self.work[symbol] = universe_state.put_work(self.store, symbol, item)
+            if _pending is None:
+                self._accept_requirements({symbol: item})
+            else:
+                _pending[symbol] = item
+        return item
+
+    def _accept_requirements(self, items):
+        from . import universe_state
+
+        if not items:
+            return
+        self.work.update(universe_state.put_work_group(self.store, items))
+        changed = set()
+        for symbol, item in items.items():
             linked = set(item["required_group"]) | {symbol}
             for member in linked:
                 self.required_groups.setdefault(member, set()).update(linked)
-            self.graph.update(self._group_entries(linked))
-            if required > self.end:
+            changed.update(linked)
+            if pricing_target(item) > self.end:
                 self.blocked.update(linked)
-        return item
+        self.graph.update(self._group_entries(changed))
 
     def require_dependencies(self, group, target, required=(), *, start=None):
         """Keep acquisition and the complete group even if later evidence omits the link."""
         group = self.graph.closure(set(group))
+        pending = {}
         for symbol in sorted(group):
             self.require(
                 symbol,
@@ -311,12 +333,22 @@ class WorkPolicy:
                 refresh=symbol not in self.index["symbols"],
                 group=group,
                 start=start,
+                _pending=pending,
             )
+        self._accept_requirements(pending)
 
     def require_maintenance(self, entries, target):
+        pending = {}
         for entry in entries:
             if target and entry["end_exclusive"][:10] < target:
-                self.require(entry["symbol"], target, reason="advance_summary_coverage", history_check=True)
+                self.require(
+                    entry["symbol"],
+                    target,
+                    reason="advance_summary_coverage",
+                    history_check=True,
+                    _pending=pending,
+                )
+        self._accept_requirements(pending)
 
     @traced("work_completion")
     def acknowledge(self):
@@ -338,18 +370,26 @@ class WorkPolicy:
                 else storage.refresh_index(root, self.index)
             )
             pending = read_checks(self.store)["checks"]
-        for symbol, item in self.work.items():
-            entry = self.satisfying_entry(symbol, index["symbols"], pending)
-            if symbol not in self.blocked and entry:
-                universe_state.record_outcome(
-                    self.store,
-                    symbol,
-                    status="complete",
-                    outcome={"lineage_generation": entry["sha256"], "source_generation": entry["source_sha256"]}
-                    if symbol in index["symbols"]
-                    else {"lineage_generation": entry["sha256"], "outcome": "unavailable_auxiliary_pricing"},
-                )
-                self.pending_work.discard(symbol)
+        acknowledged = set()
+        with universe_state.outcome_batch(self.store) as batch:
+            for symbol, item in self.work.items():
+                entry = self.satisfying_entry(symbol, index["symbols"], pending)
+                if symbol not in self.blocked and entry:
+                    universe_state.record_outcome(
+                        self.store,
+                        symbol,
+                        batch=batch,
+                        expected=item,
+                        status="complete",
+                        outcome={
+                            "lineage_generation": entry["sha256"],
+                            "source_generation": entry["source_sha256"],
+                        }
+                        if symbol in index["symbols"]
+                        else {"lineage_generation": entry["sha256"], "outcome": "unavailable_auxiliary_pricing"},
+                    )
+                    acknowledged.add(symbol)
+        self.pending_work.difference_update(acknowledged)
 
     def allowed(self, symbols):
         visited = set()
@@ -635,6 +675,7 @@ class WorkPolicy:
             or outcome.get("status") == "blocked"
             else "retry"
         )
+        requirements = {}
         for symbol in sorted(set(symbols)):
             if symbol in self.blocked:
                 continue
@@ -654,10 +695,24 @@ class WorkPolicy:
                 )
             if stage in {"history_check", "history_correction", "append"}:
                 item = {**item, "required_history_check": True, "obligation_id": uuid4().hex}
-            universe_state.put_work(self.store, symbol, item)
-            self.work[symbol] = universe_state.record_outcome(
-                self.store, symbol, status=status, outcome={**outcome, "stage": stage}, attempts=1
-            )
+            requirements[symbol] = item
+        if requirements:
+            accepted = universe_state.put_work_group(self.store, requirements)
+            self.work.update(accepted)
+            outcomes = {}
+            with universe_state.outcome_batch(self.store) as batch:
+                for symbol, item in accepted.items():
+                    outcomes[symbol] = universe_state.record_outcome(
+                        self.store,
+                        symbol,
+                        status=status,
+                        outcome={**outcome, "stage": stage},
+                        attempts=1,
+                        batch=batch,
+                        expected=item,
+                    )
+            self.work.update(outcomes)
+        for symbol in requirements:
             self.blocked.add(symbol)
             self.failures.append({"symbol": symbol, "stage": stage, **outcome})
         self.restricted_identifiers.update(outcome.get("request_identifiers", []))

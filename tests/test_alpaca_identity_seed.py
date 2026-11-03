@@ -15,7 +15,7 @@ class AlpacaIdentitySeedTests(unittest.TestCase):
         client.seed_asset_lookup("AAA", asset=asset, http_status=200)
 
         with patch(
-            "libs.alpaca_security_lineage.alpaca_http.urllib.request.urlopen",
+            "libs.alpaca_security_lineage.alpaca_http.open_provider_request",
             side_effect=AssertionError("seeded lookup must not be requested again"),
         ):
             lookup = client.get_asset_lookup("AAA")

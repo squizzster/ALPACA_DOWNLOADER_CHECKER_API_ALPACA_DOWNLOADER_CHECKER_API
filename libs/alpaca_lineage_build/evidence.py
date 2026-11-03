@@ -18,7 +18,7 @@ from .contract import LineageError, reusable_decision, versions
 from .pipeline import closure, run_lineage
 from .pricing import load_pricing
 
-EVIDENCE_VERSION = 4
+EVIDENCE_VERSION = 5
 
 
 def validate_evidence_version():
@@ -224,12 +224,13 @@ def inspect_offline(store, symbol, capture):
     def select(root):
         index = storage.read_index(root)
         group = closure(index, {symbol})
-        receipts = {name: storage.read_receipt(root, name, index) for name in sorted(group)}
-        if receipts[symbol] is None:
+        if symbol not in index["symbols"]:
             raise LineageError(f"no published lineage for {symbol}; omit --offline to run the pipeline")
-        # Include every recorded input, even if a later index changed dependency links.
-        group.update(name for receipt in receipts.values() if receipt for name in receipt["input_sources"])
-        return {name: index["symbols"].get(name) for name in sorted(group)}
+        # DependencyGraph includes the producer's retained group_members. A
+        # receipt cannot add authority to membership already selected by the index.
+        return storage.SelectedIndex(
+            {name: index["symbols"].get(name) for name in sorted(group)}, root, index.get("projection_state")
+        )
 
     with storage.reader_snapshot(store, select) as snap:
         views, notices = {}, {}

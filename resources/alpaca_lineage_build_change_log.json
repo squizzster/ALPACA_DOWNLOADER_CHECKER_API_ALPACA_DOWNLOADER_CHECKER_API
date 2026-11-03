@@ -267,5 +267,13 @@
       "Acquire, retain and invalidate sourced event supplements through complete-group evidence publication; support explicit split endpoints and derivative-only event scope. Promote only unchanged v76/v77 decisions and reevaluate affected groups under correlation 78.",
       "Retain exact sourced listing-transfer dispositions without treating an unchanged ticker and CUSIP as a second equity rename."
     ]
+  },
+  {
+    "modifications": [
+      "Select reader membership from the completed index once and retain it across an unchanged lock-handshake revision; read selected receipt bodies once without requiring a persistent cache.",
+      "Preserve completed summary endpoints through metadata publication, skip unchanged projections, and carry recovery-selected sources and notices through acknowledgement without repeated reads.",
+      "Batch complete dependency requirements and workflow acknowledgements, reject newer obligations, and preserve atomic interruption recovery without data republication.",
+      "Reject credential-bearing metadata redirects, duplicate JSON keys, non-finite numbers and malformed pagination completion tokens at the HTTP producer boundary."
+    ]
   }
 ]

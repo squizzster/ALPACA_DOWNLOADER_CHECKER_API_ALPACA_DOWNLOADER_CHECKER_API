@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime
 
 from libs.alpaca_data_api_solver import BAR_URL, build_plan, split_action, validate_version
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
+from libs.common.provider_http import open_provider_request
 
 from .contract import BarsSymbolUnavailable, DownloadError, timestamp, transform
 from .responses import CompletedBars
@@ -113,7 +114,7 @@ class BarsClient:
         validate_version()
         self.key = key
         self.secret = secret
-        self.opener = opener or urllib.request.urlopen
+        self.opener = opener or open_provider_request
         self.sleep = sleep
         self.wall_time = wall_time
         self.limiter = limiter if limiter is not None else RequestLimiter(sleep=sleep, monotonic=monotonic)

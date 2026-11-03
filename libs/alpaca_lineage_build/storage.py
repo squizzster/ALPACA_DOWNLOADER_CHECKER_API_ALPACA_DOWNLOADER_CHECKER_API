@@ -195,24 +195,25 @@ def writer_snapshot(store, *, accepted_store=None, context=None):
             view._context = None
 
 
+class SelectedIndex(dict):
+    """Membership accepted under the publication gate, retained across its lock handshake."""
+
+    def __init__(self, entries, root, token):
+        super().__init__(entries)
+        self.root, self.token = root, token
+
+
 def select_inputs(root: Path, symbol: str, *, selected_loader=None) -> dict:
-    """Select the published input group without scanning the universe."""
-    index = read_index(root, symbol)
-    receipt = read_receipt(root, symbol, index, selected_loader=selected_loader)
-    if receipt is None:
+    """The completed index owns membership; receipt bodies are only selected payloads."""
+    index = read_index(root, symbol, group=True)
+    entry = index["symbols"].get(symbol)
+    if entry is None:
         raise LineageError(f"no published lineage for {symbol}")
-    inputs = receipt["input_sources"]
-    absent = unavailable_pricing(receipt)
-    group = set(inputs) | absent.keys()
-    if symbol not in inputs or set(inputs).intersection(absent) or not 1 <= len(group) <= MAX_CLOSURE:
-        raise LineageError("invalid lineage input group")
-    selected = {
-        name: (index if name == symbol else read_index(root, name))["symbols"].get(name)
-        for name in sorted(group)
-    }
-    if any(selected[name] is not None for name in absent):
-        raise LineageError("previously unavailable lineage input changed; run lineage first")
-    return selected
+    return SelectedIndex(
+        {name: index["symbols"].get(name) for name in entry["group_members"]},
+        root,
+        index.get("projection_state"),
+    )
 
 
 @contextmanager
@@ -242,7 +243,7 @@ def reader_snapshot(
     def gate():
         return publication_lock(root, wait=wait) if writer_view is None else nullcontext()
 
-    def selection():
+    def selection(previous=None):
         if writer_view is not None:
             writer_view.require_active(store)
             return select(root)
@@ -252,6 +253,15 @@ def reader_snapshot(
             raise LineageError("lineage lock protocol needs upgrade; run lineage first")
         if path_at(root, ".pending.json").exists():
             raise LineageError("lineage publication incomplete; resume lineage first")
+        if (
+            isinstance(previous, SelectedIndex)
+            and previous.root == root
+            and previous.token is not None
+            and index_state(root) == previous.token
+        ):
+            # Reacquiring locks asks only whether the selecting revision changed.
+            # The accepted membership and bodies need no second discovery pass.
+            return previous
         return select(root)
 
     for _ in range(3):
@@ -276,7 +286,7 @@ def reader_snapshot(
             with gate():
                 if writer_view is not None:
                     writer_view.require_active(store)
-                elif selection() != selected:
+                elif selection(selected) != selected:
                     continue  # Release every price lock before retrying a changed closure.
                 index = {"symbols": {name: entry for name, entry in selected.items() if entry is not None}}
                 receipts = (
@@ -327,7 +337,7 @@ def empty_index() -> dict:
 
 
 @traced("lineage_index_read")
-def read_index(root: Path, symbol: str | None = None) -> dict:
+def read_index(root: Path, symbol: str | None = None, *, group=False) -> dict:
     # The transaction selects membership and generations together. Schema/shape
     # checks belong here; enumerating ticker directories or opening every receipt
     # does not strengthen this completed selector and must not be added here.
@@ -346,6 +356,27 @@ def read_index(root: Path, symbol: str | None = None) -> dict:
             index["symbols"] = {
                 label: json.loads(value) for label, value in connection.execute(statement, parameters)
             }
+            if group and symbol in index["symbols"]:
+                members = index["symbols"][symbol].get("group_members")
+                if (
+                    not isinstance(members, list)
+                    or not 1 <= len(members) <= MAX_CLOSURE
+                    or any(not isinstance(name, str) for name in members)
+                    or members != sorted(set(members))
+                    or symbol not in members
+                ):
+                    raise LineageError(
+                        "lineage group membership incomplete; run alpaca-cli-eod lineage migrate-index"
+                    )
+                remaining = [name for name in members if name != symbol]
+                if remaining:
+                    placeholders = ",".join("?" for _ in remaining)
+                    index["symbols"].update(
+                        (label, json.loads(value))
+                        for label, value in connection.execute(
+                            f"SELECT symbol, receipt FROM symbols WHERE symbol IN ({placeholders})", remaining
+                        )
+                    )
             state = _projection_state(connection)
             if state is not None:
                 index["projection_state"] = state
@@ -591,9 +622,22 @@ def _validate_journal_policy(journal: dict) -> None:
         raise LineageError("lineage transaction receipt policy provenance is inconsistent")
 
 
-def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
+def _recovery_inputs(store, journal):
+    """Select once after reacquiring the interrupted publication's pricing locks."""
+    sources, notices = {}, {}
+    for symbol in sorted(journal["sources"]):
+        root = regular_path(store, f"end_of_day/pricing/{symbol}")
+        if regular_path(root, ".pending.json").exists():
+            continue  # Downloader recovery still owns that input.
+        sources[symbol] = load_source(root, symbol)
+        notices[symbol] = read_update(root)
+    checks = read_checks(store, journal["sources"]) if journal.get("checks") else None
+    return {"sources": sources, "notices": notices, "checks": checks}
+
+
+def _acknowledge(store: Path, journal: dict, *, sources=None, recovered=None) -> None:
     expected_checks = journal.get("checks")
-    if sources is not None:
+    if sources is not None and recovered is None:
         # Selection, publication and acknowledgement share the same pricing locks.
         # Only recovery can encounter a newer source or notice. Hint deletion still
         # compares epoch/revision in its transaction, since that database is disposable.
@@ -602,13 +646,10 @@ def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
         if expected_checks:
             acknowledge_checks(store, expected_checks, journal["sources"])
         return
-    current_checks = read_checks(store, journal["sources"]) if expected_checks else None
+    recovered = _recovery_inputs(store, journal) if recovered is None else recovered
+    current_checks = recovered["checks"]
     acknowledged = []
-    for symbol in sorted(journal["sources"]):
-        root = regular_path(store, f"end_of_day/pricing/{symbol}")
-        if regular_path(root, ".pending.json").exists():
-            continue  # Downloader recovery still owns that input.
-        source = load_source(root, symbol)
+    for symbol, source in recovered["sources"].items():
         if current_checks and (
             current_checks["epoch"] != expected_checks["epoch"]
             or (
@@ -621,9 +662,9 @@ def _acknowledge(store: Path, journal: dict, *, sources=None) -> None:
         # because it has exactly the same from/to dates as the older one.
         if source is not None and document_digest(source) == journal["sources"][symbol]:
             expected = journal["notices"].get(symbol)
-            current = read_update(root)
+            current = recovered["notices"][symbol]
             if expected is not None and current == expected:
-                acknowledge_update(root, expected)
+                acknowledge_update(store / "end_of_day/pricing" / symbol, expected, selected=True)
                 current = None
             if current is None:
                 acknowledged.append(symbol)
@@ -637,17 +678,24 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
 
     from .check_summary import refresh
 
-    if receipts is None:
+    recovering = receipts is None
+    if recovering:
         invalidate(store, journal["sources"], owner="lineage")
     # A fresh journal contains only known changes. Recovery may already have
     # installed some of them, so compare existing files only on that path.
-    state = _install(root, journal, compare=receipts is None)
-    if receipts is None and summary_path(store).exists():
+    state = _install(root, journal, compare=recovering)
+    recovered = _recovery_inputs(store, journal) if recovering else None
+    if recovering:
+        sources = recovered["sources"]
+    if recovering and summary_path(store).exists():
         index = {"symbols": journal["index_updates"]}
-        receipts = {symbol: read_receipt(root, symbol, index) for symbol in journal["sources"]}
+        receipts = {}
+        for symbol in sources:
+            installed = journal["documents"].get(f"{symbol}/lineage.manifest.json")
+            receipts[symbol] = installed if installed is not None else read_receipt(root, symbol, index)
     if receipts is not None:
         refresh(store, receipts, sources=sources)
-    _acknowledge(store, journal, sources=sources)
+    _acknowledge(store, journal, sources=sources, recovered=recovered)
     path_at(root, ".pending.json").unlink()
     return state
 

@@ -230,10 +230,16 @@ def run_update(
         if progress:
             progress("registration", {"state": "completed", **result["stages"]["registration"]})
         registered.update(selection["registration_additions"])
-        for symbol in selection["already_published"]:
-            universe_state.record_outcome(
-                store, symbol, status="complete", outcome={"published_before_acknowledgement": True}
-            )
+        with universe_state.outcome_batch(store) as batch:
+            for symbol in selection["already_published"]:
+                universe_state.record_outcome(
+                    store,
+                    symbol,
+                    status="complete",
+                    outcome={"published_before_acknowledgement": True},
+                    batch=batch,
+                    expected=accepted["state"]["work"][symbol],
+                )
         work = selection["work"]
         # Selection has already accepted catalogue facts, restrictions and group
         # membership. Delegate those exact requirements; later stages must not
@@ -408,27 +414,33 @@ def run_update(
                 return result
             index, pending = boundary
             completed = {s: policy.satisfying_entry(s, index["symbols"], pending) for s in policy.work}
-        for symbol, item in policy.work.items():
-            if symbol in policy.blocked:
-                continue
-            entry = completed[symbol]
-            if entry:
-                universe_state.record_outcome(
-                    store,
-                    symbol,
-                    status="complete",
-                    outcome={
-                        "lineage_generation": entry["sha256"],
-                        "source_generation": entry["source_sha256"],
-                        "source_rows": entry["projection"]["source_rows"],
-                        "unresolved_rows": entry["projection"]["unresolved_rows"],
-                    }
-                    if symbol in index["symbols"]
-                    else {"lineage_generation": entry["sha256"], "outcome": "unavailable_auxiliary_pricing"},
-                    attempts=1,
-                )
-            else:
-                policy.fail({symbol}, {"reason": "required pricing or lineage not complete"}, stage="completion")
+        unfinished = []
+        with universe_state.outcome_batch(store) as batch:
+            for symbol, item in policy.work.items():
+                if symbol in policy.blocked:
+                    continue
+                entry = completed[symbol]
+                if entry:
+                    universe_state.record_outcome(
+                        store,
+                        symbol,
+                        batch=batch,
+                        expected=item,
+                        status="complete",
+                        outcome={
+                            "lineage_generation": entry["sha256"],
+                            "source_generation": entry["source_sha256"],
+                            "source_rows": entry["projection"]["source_rows"],
+                            "unresolved_rows": entry["projection"]["unresolved_rows"],
+                        }
+                        if symbol in index["symbols"]
+                        else {"lineage_generation": entry["sha256"], "outcome": "unavailable_auxiliary_pricing"},
+                        attempts=1,
+                    )
+                else:
+                    unfinished.append(symbol)
+        if unfinished:
+            policy.fail(unfinished, {"reason": "required pricing or lineage not complete"}, stage="completion")
         result["failures"] = policy.failures
         state = universe_state.read_state(store)
         result["pending_work"] = universe_state.pending_count(state)
