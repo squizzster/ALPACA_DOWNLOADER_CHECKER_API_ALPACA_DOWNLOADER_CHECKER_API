@@ -135,7 +135,8 @@ class GroupReplacementTests(unittest.TestCase):
                 case.pages.clear()
 
                 def no_replacement(params):
-                    self.assertGreaterEqual(params["start"][:10], "2026-10-15", params)
+                    self.assertEqual(params["adjustment"], "all")
+                    self.assertEqual(params["start"][:10], params["end"][:10], params)
                     return case.page(params)
 
                 with patch.object(case.pricing, "_get", side_effect=no_replacement):
@@ -170,7 +171,7 @@ class GroupReplacementTests(unittest.TestCase):
                 case.pages.clear()
 
                 def only_unbound_replacement(params):
-                    if params["start"][:10] < "2026-10-15":
+                    if params["start"][:10] < "2026-10-15" and params["start"][:10] != params["end"][:10]:
                         self.assertNotIn("AAA", params["symbols"].split(","))
                     return case.page(params)
 

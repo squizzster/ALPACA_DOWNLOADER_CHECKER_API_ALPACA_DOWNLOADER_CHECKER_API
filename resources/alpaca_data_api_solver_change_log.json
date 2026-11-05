@@ -15,5 +15,10 @@
     "modifications": [
       "Plan explicit complete US-equity catalogue observations covering all statuses without an exchange filter."
     ]
+  },
+  {
+    "modifications": [
+      "Retain corporate-action logical rosters for shared balanced transport subdivision and include the shared 1,000-symbol physical cap in bar merge page estimates; preserve explicit logical and URL limits."
+    ]
   }
 ]

@@ -174,7 +174,12 @@ def newly_eligible_history_appended_without_check():
         return {
             "complete": result["complete"],
             "initial_work": result["plan"]["work"],
-            "checked_tickers": result["stages"]["maintenance"]["stages"]["refresh"]["check"]["stats"]["tickers"],
+            "checked_tickers": sum(
+                stage["check"]["stats"].get("tickers", 0)
+                for name in ("maintenance", "maintenance_after_discovery")
+                for stage in result["stages"][name]["stages"].values()
+                if "check" in stage
+            ),
             "bbb_requested_starts": sorted({p["start"] for p in case.pages if "BBB" in p["symbols"].split(",")}),
             "bbb_stored_closes": [r[4] for r in read_pricing_views(store, "BBB")["all"]],
             "provider_closes": [r["c"] for r in corrected],
@@ -440,7 +445,7 @@ class DurableMaintenanceTests(unittest.TestCase):
             result = case.update()
             self.assertTrue(result["complete"], result)
             self.assertTrue(
-                all(p["adjustment"] == "all" and p["start"][:10] == "2026-10-16" for p in case.pages)
+                all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in case.pages)
             )
 
     def test_old_publication_acknowledgement_cannot_complete_a_new_refresh(self):
@@ -570,7 +575,11 @@ class DurableMaintenanceTests(unittest.TestCase):
             )
             result = case.update("2026-10-20")
             self.assertTrue(result["complete"], result)
-            self.assertIn("refresh_new_members_1", result["stages"]["maintenance"]["stages"])
+            # Newly admitted BBB is checked in the post-discovery phase; AAA's
+            # completed generation-bound approval must not be checked again.
+            checked = result["stages"]["maintenance_after_discovery"]["stages"]["refresh"]["check"]["stats"]
+            self.assertEqual(checked["checked"], 1)
+            self.assertEqual(checked["differed"], 1)
             self.assertEqual([r[4] for r in read_pricing_views(case.store, "BBB")["all"]], ["50"] * 3)
 
     def test_interrupted_refresh_is_performed_when_next_catalogue_omits_label(self):
@@ -662,7 +671,7 @@ class DurableMaintenanceTests(unittest.TestCase):
                 )
                 if boundary != "before_acquisition":
                     self.assertTrue(
-                        all(p["adjustment"] == "all" and p["start"][:10] >= "2026-10-16" for p in case.pages)
+                        all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in case.pages)
                     )
 
     def test_older_invocation_cannot_reopen_accepted_larger_target(self):
@@ -670,7 +679,11 @@ class DurableMaintenanceTests(unittest.TestCase):
             case.records[:] = [{**asset("AAA"), "exchange": "TXSE"}]
             case.identity = CatalogueClient(case.records)
             with (
-                patch("libs.alpaca_lineage_build.universe_update.run_lineage", side_effect=OSError("stop")),
+                # Interrupt after accepting the target but before any producer
+                # work. Existing-summary maintenance now precedes discovery.
+                patch(
+                    "libs.alpaca_lineage_build.universe_update.update_everything", side_effect=OSError("stop")
+                ),
                 self.assertRaises(OSError),
             ):
                 case.update("2026-10-20")

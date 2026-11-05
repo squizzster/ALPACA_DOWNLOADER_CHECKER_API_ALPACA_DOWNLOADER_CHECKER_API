@@ -310,6 +310,10 @@ those IDs, including cached intervals; unrelated symbols in fully acquired/route
 Transport/routing failure leaves affected requests incomplete. Conflicts remain blocking for the invocation;
 no winner is chosen.
 
+A prefetch plan selects maximal requested intervals per symbol so nested needs share their containing
+response. All pagination and routing must complete before that response establishes subset coverage;
+overlapping intervals and gaps do not acquire invented coverage.
+
 Ordinary action continuation starts at the prior active month; older corrections require explicit refresh.
 An unchanged action's completed CUSIP→ID lookup, including a negative result, remains authoritative. Current
 catalogue facts may join an already accepted UUID; name/status changes or absence from the catalogue do not
@@ -353,6 +357,11 @@ row count from equality. Validate the new session grids and their accepted seam,
 the same compiled policy evaluator. No new rows means no rule execution. Closed pricing/assignment payloads stay
 closed except for assignment bodies needed to regroup publication at month/year rollover or project an older
 receipt without a summary. The active pricing partition supplies the added rows.
+
+If newly acquired metadata invalidates this prefix after pricing has been decoded, full-history fallback
+retains the already decoded partitions under the same source generation and locks. It loads only the missing
+partitions. Single-source observation selection skips multi-source ownership/ranking preparation and retains
+the existing legacy activity validation.
 
 Cross-label groups, unresolved or empty prefixes, structural or unknown events, changed facts/context/policy,
 historical corrections and missing equality proof select complete-group work. This selection precedes evaluation;

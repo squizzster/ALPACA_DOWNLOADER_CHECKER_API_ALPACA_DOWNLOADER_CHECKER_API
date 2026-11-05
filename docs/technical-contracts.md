@@ -53,16 +53,33 @@ evidence remains authoritative; selected evidence refresh produces the corrected
 ## Pricing acquisition and continuation
 
 Ordinary downloader updates compare each view's first/last endpoints; mismatch requires full replacement.
-Daily live checks compare only summary `last_all`; any changed field requires all-view retained-span replacement
+Daily live checks compare summary `first_all` and `last_all`; a single-session history needs one comparison.
+Any changed field requires the existing all-view retained-span replacement and producer checks
 before append. Neither check detects every interior historical correction. Replacement notices include removed
 sessions. Authorities: [download_pricing / publish_acquired](../libs/alpaca_pricing_download/download.py),
 [HTTP execution](../libs/alpaca_pricing_download/http.py), [completed responses](../libs/alpaca_pricing_download/responses.py).
 
+Each pricing HTTP attempt uses a 300-second socket timeout for blocking network operations, including
+endpoint checks, pagination and retries. This is not a total operation or retry deadline. An earlier provider
+HTTP 504 remains a server failure; the client timeout cannot extend the provider's own backend deadline.
+
 These owners enforce acquisition stages, row budgets, exact fallbacks, overlap and bounded retries. Completed
 normalized responses are sliced without renormalization; fresh first-session probes remain independent.
-Only after successful full batch pagination do [omitted symbols](https://docs.alpaca.markets/us/reference/stockbars)
-complete empty for the requested range, without
-individual rechecks. Transport, shape or pagination errors leave actions incomplete. Replacement emptying a
+Endpoint checks batch identical session windows across symbols but never widen their date coverage to save
+pages. Acquisition carries immutable accepted endpoints and completed comparison results to execution, bound
+to store, symbol, source generation, cutoff and mapping. Execution rechecks the generation under its lock;
+it does not reread the validator or replay the comparison. Consumed boundary-check responses cannot substitute
+for the independent confirmation of newly acquired output. Failed requests retain ordinary bounded fallback.
+Only after successful full batch pagination do omitted symbols complete empty at the transport boundary.
+Ordinary acquisition consumes that completed response without individual rechecks. The daily comparison owner
+has additional evidence: its summary names an already retained endpoint. Provider batch companions can suppress
+that bar, so a completed omission triggers one singleton confirmation action with the identical session, adjustment
+and mapping date. Returned endpoints are retained; failed batches are not interpreted as absence. A request
+already executed singly, including a 414 subdivision, is not repeated. Confirmations exhaust pagination through
+the same limiter/retry policy; failed confirmations remain failures and completed empty confirmations remain
+missing. Results and debug events identify each missing endpoint; request metrics count probes and recovered
+endpoints. This rule does not infer ticker identity from a companion's returned bar.
+Transport, shape or pagination errors leave actions incomplete. Replacement emptying a
 previously nonempty view needs bounded fresh producer confirmation; ordinary empty appends/initial empty histories
 retain batched acquisition.
 
@@ -119,11 +136,17 @@ context still reaches the ordinary lineage doorman.
 
 ## Check summary
 
-Entries contain only `symbol`, saved mapping `asof`, completed source `end_exclusive`, exact eight-field `last_all`.
+Format-3 entries contain only `symbol`, saved mapping `asof`, completed source `end_exclusive`, and exact
+eight-field `first_all` and `last_all` rows from the fully adjusted view.
 Eligibility: unique stored same-symbol active US-equity lookup and nonempty `all` endpoint; stored activity is not
-online availability. Last-session/asof pairs group checks. Last row defines session window; `asof` independently
+online availability. Endpoint-session/asof pairs group checks, with identical windows requested once. Each row defines its session window; `asof` independently
 selects provider identity; completed exclusive end independently starts append. Epoch/revision/coverage and
-separate owner-pending markers control publication. No identities, other views, first rows or saved comparisons.
+separate owner-pending markers control publication. No identities, other views or saved comparisons.
+
+Format 1/2 requires explicit offline `summary rebuild`; ordinary reads never fill missing first endpoints by
+opening every validator. Frozen publications can finish format-2 pending bookkeeping before rebuilding, but
+format-2 entries cannot approve a live check or append. The rebuild reads indexed eligibility and selected
+source validators, without acquiring prices or rewriting retained histories.
 
 Pricing owns baselines; lineage owns membership. Missing/incomplete/pending coverage fails closed; snapshot tokens
 guard comparisons without ticker enumeration. Authorities: [summary storage](../libs/alpaca_pricing_download/check_summary.py),
@@ -137,6 +160,18 @@ producer projections read only the named summary entries and pending owners unde
 Daily recovery finishes only named pending inputs and their complete lineage groups before selection. Remaining
 pending inputs block selection; pending summary never means empty membership or permission to check unaffected
 active sources' retained histories.
+
+Daily boundary acceptance, work selection and estimation run under a compact-only storage guard. Pricing and
+lineage path owners reject ticker reads, notices, locks and payload paths during those phases before touching
+the filesystem. After selection, the guard permits the selected complete groups, summary maintenance,
+late-bar sources and pending serving components. Completed metadata dependency and serving-component
+handoffs can enlarge that scope explicitly. An unexpected path or inventory aborts the operation through
+the CLI's terminal error path, releases locks and closes debug spans; ordinary per-symbol retry handlers cannot
+swallow it. Worker tasks inherit the scope; a latched violation rejects subsequent owner access and prevents
+successful scope completion even if a worker exception was caught. The guard performs lexical checks only and does not authenticate
+selectors or inspect payloads. It guards the owner APIs, not arbitrary filesystem calls added outside them,
+and does not equate estimated page counts with hard budgets or prove that every selected read is necessary.
+Authority: [work scope](../libs/common/work_scope.py).
 
 ## Universe observation and work state
 
@@ -170,6 +205,18 @@ outcomes survive. Complete dependency groups and maintenance requirements also p
 Recovery reselects acquisition from accepted requirements/completed summary; a saved `acquire` flag cannot divert
 a summarized maintained source from live check → approved append.
 
+Ordinary eligible summary members complete that sequence before discovery advances their dependencies.
+Selection's changed-identity and lost-eligibility facts reconcile before those members enter maintenance.
+Later phases retain each completed comparison even when an independent member fails. A comparison is bound to
+its summary entry and pricing generation; reuse requires the same accepted selectors and current allowed scope.
+Matching comparisons and differing comparisons are distinct from append approval: differences and outstanding
+corrections still use the ordinary replacement producer. Append approval additionally binds the current correction
+obligation, so a renewed correction cannot inherit it. Successful corrections and appends retain their approvals
+once lineage accepts their exact generations, even if a peer fails; incomplete lineage cannot lend that approval.
+Late-bar replacement supplies its completed approval before daily comparison resumes. An interior replacement
+invalidates earlier comparisons even if endpoints are identical. These handoffs are not persisted across restarts,
+and retaining partial successes does not turn a failed overall update into success.
+
 Every lineage entrypoint reconciles used lookup facts before acquisition. Identity changes require complete-group
 replacement, including newly discovered dependency evidence. Pricing binds evidence fingerprint/source generation;
 lineage cannot stamp different facts. Catalogue-versus-exact provenance alone does not invalidate identical facts.
@@ -190,6 +237,27 @@ Credential-bearing pricing and metadata transports reject HTTP redirects. The ac
 not authorize a different destination. Metadata JSON rejects duplicate keys and non-finite numbers at ingress;
 only a missing/null page token completes pagination, while a nonempty new string continues it. Malformed or
 repeated tokens fail the acquisition before it can publish a completed evidence interval.
+
+The shared [HTTP executor](../libs/common/provider_http.py) owns attempt sequencing, balanced symbol
+subdivision and pagination. Pricing and metadata adapters retain endpoint validation, parsing, timeout,
+limiter and retry policies: pricing uses its shared 199/minute budget and retries 429/5xx and transport
+failures up to six attempts; metadata keeps its separate limiter, 60-second timeout and 429-only retries.
+Exact asset lookups and catalogue requests use the same attempt lifecycle without symbol subdivision.
+
+Each logical bars or corporate-action roster is divided into `ceil(symbols / 1000)` sequential physical
+batches, differing by at most one symbol, with smaller batches first. A 3,386-symbol action therefore uses
+846, 846, 847 and 847 symbols. Dates, adjustment, mapping date and other parameters stay unchanged.
+Each batch exhausts its own pagination before the next starts. HTTP 414 further bisects only the rejected
+batch, restarting that batch's pagination and discarding its partial pages. Results cross the logical-action
+boundary only after all batches validate; a later failure discards all results for that action and blocks
+dependent steps. Independent actions retain existing continuation-on-failure behavior. Completed omissions
+remain valid empty results and never trigger individual-symbol fanout. A rejected exact child after a split
+cannot establish unavailability of its siblings.
+
+Page estimates include physical subdivision. Live checks report planned batches, executed batches (including
+414-rejected attempts at a batch), page fetches and 414 splits. Each transport attempt increments the existing
+client request counter, including retries. Existing debug HTTP spans describe each physical page and its attempt count.
+The cap limits workload; it does not guarantee provider latency or prevent backend timeouts.
 
 Pure [build_plan](../libs/alpaca_data_api_solver/__init__.py) maps `steps[].needs[]` to versioned ordered actions;
 code owns fields, strategies, delivery slices and batching limits. Needs require nonempty reasons; within-step

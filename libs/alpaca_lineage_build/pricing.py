@@ -53,6 +53,7 @@ def load_pricing(
     previous_boundaries=None,
     resume_from=None,
     previous=None,
+    partitions=None,
 ) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
     # TRUST BOUNDARY: pricing already validated the selected source and payload
@@ -64,15 +65,26 @@ def load_pricing(
     if source is None:
         raise LineageError(f"no published pricing for {symbol}")
     generation = document_digest(source)
+    # The caller lends this cache only within one selected source and continuous
+    # lock lifetime. Keep whole decoded partitions when selecting a suffix so a
+    # metadata-driven fallback can read only the still-missing partitions.
+    partitions = {} if partitions is None else partitions
+
+    def read(root, source, kind, *, selected=True):
+        key = (str(root), generation, kind)
+        if key not in partitions:
+            partitions[key] = load_published_boundary(root, source, kind, selected=selected)
+        return dict(partitions[key])
+
     views = (
         {adjustment: () for adjustment in ADJUSTMENTS}
         if resume_from is not None and unchanged_rows(source, previous, selected=generation)
-        else _added_views(root, source, resume_from)
+        else _added_views(root, source, resume_from, read=read)
         if resume_from is not None
         else (
-            load_published_boundary(root, source, "current_month", selected=selected)
+            read(root, source, "current_month", selected=selected)
             if active_only
-            else load_published_views(root, source, selected=selected)
+            else load_published_views(root, source, selected=selected, read=read)
         )
     )
     request = source["latest_request"]
@@ -163,7 +175,7 @@ def load_pricing(
     return PricingInput(symbol, source, generation, views, downloads, local, prior_summary)
 
 
-def _added_views(root, source, start):
+def _added_views(root, source, start, *, read=load_published_boundary):
     """Read only pricing partitions intersecting the producer-approved added range."""
     anchor = source["anchor_month"]
     kinds = ["current_month"]
@@ -171,7 +183,7 @@ def _added_views(root, source, start):
         kinds.insert(0, "current_year")
     if start[:4] < anchor[:4]:
         kinds.insert(0, "completed_years")
-    parts = {kind: load_published_boundary(root, source, kind, selected=True) for kind in kinds}
+    parts = {kind: read(root, source, kind, selected=True) for kind in kinds}
     assembled, dates, views = {}, {}, {}
     for adjustment in ADJUSTMENTS:
         key = tuple(id(parts[kind][adjustment]) for kind in kinds)

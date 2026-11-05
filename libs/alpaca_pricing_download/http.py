@@ -15,14 +15,21 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 
-from libs.alpaca_data_api_solver import BAR_URL, build_plan, split_action, validate_version
+from libs.alpaca_data_api_solver import BAR_URL, build_plan, validate_version
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
-from libs.common.provider_http import open_provider_request
+from libs.common.provider_http import (
+    RETRY,
+    fetch_symbol_batches,
+    open_provider_request,
+    paginated_pages,
+    request_with_policy,
+)
 
 from .contract import BarsSymbolUnavailable, DownloadError, timestamp, transform
 from .responses import CompletedBars
 
 REQUESTS_PER_MINUTE = 199
+REQUEST_TIMEOUT_SECONDS = 300
 
 
 class RequestLimiter:
@@ -126,15 +133,15 @@ class BarsClient:
             BAR_URL + "?" + urllib.parse.urlencode(parameters),
             headers={"APCA-API-KEY-ID": self.key, "APCA-API-SECRET-KEY": self.secret},
         )
-        for attempt in range(6):
+
+        def before_attempt():
             # Every page, endpoint probe, and retry uses this same shared budget.
             self.limiter.acquire()
-            try:
-                with self._request_lock:
-                    self.request_count += 1
-                with self.opener(request, timeout=60) as response:
-                    return parse_response(response.read())
-            except urllib.error.HTTPError as error:
+            with self._request_lock:
+                self.request_count += 1
+
+        def on_error(error, attempt, last):
+            if isinstance(error, urllib.error.HTTPError):
                 retry = error.code == 429 or 500 <= error.code < 600
                 if retry:
                     delay = retry_after_seconds((error.headers or {}).get("Retry-After"), self.wall_time())
@@ -152,23 +159,29 @@ class BarsClient:
                         )
                     except (DownloadError, OSError, http.client.HTTPException):
                         pass  # A malformed error is not proof of symbol rejection.
-                error.close()
                 if unavailable:
                     raise BarsSymbolUnavailable(symbol, error.code) from error
-                if not retry or attempt == 5:
+                if not retry or last:
                     target = parameters.get("symbols")
                     if isinstance(target, str) and "," in target:
-                        # Each failed member retains this error. Repeating the full
-                        # roster makes reports and work state grow quadratically.
                         target = f"{target.count(',') + 1} symbols"
                     raise DownloadError(
                         f"Alpaca bars request failed for {target}/{parameters.get('adjustment')}: HTTP {error.code}"
                     ) from error
-            except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
-                if attempt == 5:
+            else:
+                if last:
                     raise DownloadError(f"Alpaca bars transport failed: {type(error).__name__}") from error
                 self.sleep(min(2**attempt, 30))
-        raise DownloadError("provider request exhausted retries")
+            return RETRY
+
+        return request_with_policy(
+            request,
+            opener=self.opener,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            before_attempt=before_attempt,
+            read_response=lambda response: parse_response(response.read()),
+            on_error=on_error,
+        )
 
     def fetch(
         self, symbol: str, adjustment: str, start: datetime, end: datetime, *, asof: str | None = None
@@ -204,19 +217,22 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
 
     def execute(step_index, action):
         parameters = dict(action["request"]["params"])
-        symbols = parameters["symbols"].split(",")
-        bars = {symbol: [] for symbol in symbols}
-        tokens = set()
-        pagination = action["pagination"]
-        try:
-            while True:
-                metrics["page_requests"] += 1
-                try:
-                    document = get_page(dict(parameters))
-                except BarsSymbolUnavailable as error:
-                    if tokens:
-                        raise DownloadError("symbol rejected after a successful pricing page") from error
-                    raise
+
+        def fetch_batch(params):
+            bars = {symbol: [] for symbol in params["symbols"].split(",")}
+
+            def page_error(error, has_pages):
+                if isinstance(error, BarsSymbolUnavailable) and has_pages:
+                    raise DownloadError("symbol rejected after a successful pricing page") from error
+
+            for document in paginated_pages(
+                params,
+                action["pagination"],
+                get_page,
+                error_type=DownloadError,
+                metrics=metrics,
+                on_error=page_error,
+            ):
                 values = document.get("bars") if isinstance(document, dict) else None
                 if not isinstance(values, dict) or set(values) - bars.keys():
                     raise DownloadError("bar response does not belong to the requested ticker set")
@@ -224,37 +240,44 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                     if not isinstance(rows, list):
                         raise DownloadError("provider bars are not an array")
                     bars[symbol].extend(rows)
-                token = document.get(pagination["response_field"])
-                if token is None:
-                    break
-                if not isinstance(token, str) or not token or token in tokens:
-                    raise DownloadError("invalid or repeated pagination token")
-                tokens.add(token)
-                parameters[pagination["parameter"]] = token
-            start = timestamp(parameters["start"])
-            end = timestamp(parameters["end"]) + timedelta(microseconds=1)
-            # Only complete pagination crosses into CompletedBars. Transform is
-            # the owner of exact-number/range/order validation; downstream slices
-            # trust this result rather than rerunning provider normalization.
-            normalized = {
+            start = timestamp(params["start"])
+            end = timestamp(params["end"]) + timedelta(microseconds=1)
+            # Normalize only completed batches, retaining them privately until the
+            # whole original action succeeds. Consumers never see partial success.
+            return {
                 symbol: CompletedBars(
                     symbol,
-                    parameters["adjustment"],
+                    params["adjustment"],
                     start,
                     end,
-                    parameters["asof"],
+                    params["asof"],
                     transform(rows, start, end),
                 )
                 for symbol, rows in bars.items()
             }
-        except (DownloadError, OSError) as error:
+
+        def status_code(error):
             cause = error.__cause__ or error
-            oversize = isinstance(cause, urllib.error.HTTPError) and cause.code == 414 and len(symbols) > 1
-            # A handled exception's traceback must not retain this response frame.
-            del cause
-            if oversize:
-                metrics["oversize_splits"] += 1
-                return split_action(action)
+            return cause.code if isinstance(cause, urllib.error.HTTPError) else None
+
+        try:
+            normalized = {
+                symbol: rows
+                for batch in fetch_symbol_batches(
+                    parameters,
+                    fetch_batch,
+                    status_code=status_code,
+                    metrics=metrics,
+                )
+                for symbol, rows in batch.items()
+            }
+        except (DownloadError, OSError) as error:
+            if isinstance(error, BarsSymbolUnavailable) and "," in parameters["symbols"]:
+                incomplete = DownloadError(f"Alpaca bars action incomplete: member {error.symbol} was rejected")
+                incomplete.http_status = error.http_status
+                if on_failure is None:
+                    raise incomplete from error.__cause__
+                error = incomplete
             if on_failure is None:
                 raise
             failed_steps.add(step_index)
@@ -273,13 +296,8 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                 ].select(symbol, adjustment, lower, upper, parameters["asof"])
 
     for step_index, step in enumerate(plan["steps"]):
-        actions = deque(step["actions"])
-        while actions:
-            replacements = execute(step_index, actions.popleft())
-            if replacements:
-                # Keep split delivery ordered without a recursive closure retaining
-                # every completed response after its consumer releases the plan.
-                actions.extendleft(reversed(replacements))
+        for action in step["actions"]:
+            execute(step_index, action)
         # Callers that continue independent failures must not execute a dependent step.
         if step_index in failed_steps:
             break

@@ -88,9 +88,12 @@ class SameSpanRefreshTests(unittest.TestCase):
         result = self.run_refresh()
         self.assertTrue(result["complete"], result)
         self.assertEqual((result["check"]["stats"]["matched"], result["check"]["stats"]["differed"]), (1, 2))
-        self.assertEqual(result["check"]["stats"]["other_fields_only"], 2)
+        self.assertEqual(result["check"]["stats"]["other_fields_only"], 1)
+        self.assertEqual(result["check"]["stats"]["ohlc_changed"], 1)
         self.assertEqual({item["symbol"] for item in result["pricing"]["results"]}, {"AAA", "BBB"})
-        self.assertEqual(result["pricing"]["requests"]["page_requests"], 16)
+        # Eight shared acquisition pages, then eight exact first-session probes
+        # for each distinct first date; checking endpoints never widens dates.
+        self.assertEqual(result["pricing"]["requests"]["page_requests"], 24)
         self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
         for name in ("AAA", "BBB"):
             source = storage.load_source(self.root(name), name)

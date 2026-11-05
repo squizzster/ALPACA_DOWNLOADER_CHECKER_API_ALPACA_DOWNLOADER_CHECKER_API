@@ -182,7 +182,7 @@ derivative-event scope or unchanged-symbol listing transfers. See the
 
 | Command | Scope |
 |---|---|
-| `pricing check` | Live summary last-session comparison; no publication. |
+| `pricing check` | Live first/latest session comparison in the fully adjusted view; no publication. |
 | `pricing refresh` | Check eligible histories, replace differences, finish lineage. |
 | `pricing refresh --symbol TICKER` | Explicit retained-span replacement; follow with lineage. |
 | `lineage update --symbol TICKER` | Complete selected group; may acquire dependency prices. |

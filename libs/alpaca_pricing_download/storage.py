@@ -17,6 +17,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 
 from libs.common.debug_trace import traced
+from libs.common.work_scope import check_path
 
 from .contract import (
     ADJUSTMENTS,
@@ -58,6 +59,7 @@ def regular_path(root: Path, relative: str, *, published=False) -> Path:
         or any(p in (".", "..") for p in parts)
     ):
         raise DownloadError(f"unsafe pricing path: {relative!r}")
+    check_path(root / relative)
     path = root
     for part in parts:
         path = path / part

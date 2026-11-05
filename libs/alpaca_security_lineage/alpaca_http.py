@@ -7,9 +7,15 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from libs.alpaca_data_api_solver import ACTION_URL, ASSET_URL, build_plan, split_action, validate_version
+from libs.alpaca_data_api_solver import ACTION_URL, ASSET_URL, build_plan, validate_version
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
-from libs.common.provider_http import open_provider_request
+from libs.common.provider_http import (
+    RETRY,
+    fetch_symbol_batches,
+    open_provider_request,
+    paginated_pages,
+    request_with_policy,
+)
 
 from .settings import (
     ACTION_TYPE_BY_RESPONSE_KEY,
@@ -127,45 +133,50 @@ class AlpacaIdentityClient:
 
     def request_json(self, url: str, *, allow_not_found: bool = False, array: bool = False):
         http_request = urllib.request.Request(url, headers=self.headers)
-        for retry_attempt in range(6):
+
+        def before_attempt():
             self.rate_limiter.wait_until_request_allowed()
             self.request_count += 1
+
+        def read_response(http_response):
             try:
-                with open_provider_request(http_request, timeout=60) as http_response:
-                    try:
-                        response_document = json.load(
-                            http_response,
-                            object_pairs_hook=_unique_object,
-                            parse_constant=_nonfinite,
-                            parse_float=_finite_float,
-                        )
-                    except (ValueError, UnicodeError) as json_error:
-                        raise RuntimeError(f"Alpaca returned invalid JSON for {url}") from json_error
-                    if http_response.headers.get("X-RateLimit-Remaining") == "0":
-                        self.rate_limiter.defer_requests_for_seconds(
-                            rate_limit_delay_seconds(http_response.headers)
-                        )
-                if not isinstance(response_document, list if array else dict):
-                    raise RuntimeError(f"Alpaca returned an invalid response shape for {url}")
-                return response_document
-            except urllib.error.HTTPError as http_error:
-                try:
-                    response_body = http_error.read().decode("utf-8", "replace")
-                    if http_error.code == 404 and allow_not_found:
-                        return None
-                    if http_error.code == 429 and retry_attempt < 5:
-                        self.rate_limiter.defer_requests_for_seconds(
-                            rate_limit_delay_seconds(http_error.headers)
-                        )
-                        continue
-                    raise IdentityHttpError(
-                        http_error.code, f"Alpaca returned HTTP {http_error.code} for {url}: {response_body}"
-                    ) from http_error
-                finally:
-                    http_error.close()
-            except urllib.error.URLError as request_error:
-                raise RuntimeError(f"Alpaca request failed for {url}: {request_error.reason}") from request_error
-        raise RuntimeError(f"Alpaca request retry limit reached for {url}")
+                response_document = json.load(
+                    http_response,
+                    object_pairs_hook=_unique_object,
+                    parse_constant=_nonfinite,
+                    parse_float=_finite_float,
+                )
+            except (ValueError, UnicodeError) as json_error:
+                raise RuntimeError(f"Alpaca returned invalid JSON for {url}") from json_error
+            if http_response.headers.get("X-RateLimit-Remaining") == "0":
+                self.rate_limiter.defer_requests_for_seconds(rate_limit_delay_seconds(http_response.headers))
+            if not isinstance(response_document, list if array else dict):
+                raise RuntimeError(f"Alpaca returned an invalid response shape for {url}")
+            return response_document
+
+        def on_error(error, attempt, last):
+            if isinstance(error, urllib.error.HTTPError):
+                response_body = error.read().decode("utf-8", "replace")
+                if error.code == 404 and allow_not_found:
+                    return None
+                if error.code == 429 and not last:
+                    self.rate_limiter.defer_requests_for_seconds(rate_limit_delay_seconds(error.headers))
+                    return RETRY
+                raise IdentityHttpError(
+                    error.code, f"Alpaca returned HTTP {error.code} for {url}: {response_body}"
+                ) from error
+            if isinstance(error, urllib.error.URLError):
+                raise RuntimeError(f"Alpaca request failed for {url}: {error.reason}") from error
+            raise error
+
+        return request_with_policy(
+            http_request,
+            opener=open_provider_request,
+            timeout=60,
+            before_attempt=before_attempt,
+            read_response=read_response,
+            on_error=on_error,
+        )
 
     def get_asset_lookup(self, identifier: str) -> dict[str, Any]:
         """Return an asset plus the explicit HTTP outcome used as evidence."""
@@ -207,7 +218,7 @@ class AlpacaIdentityClient:
         )
         return self.execute_plan(plan)[0][0]
 
-    def execute_plan(self, plan):
+    def execute_plan(self, plan, *, metrics=None):
         """Execute ordered metadata actions; results retain step/action positions."""
         # The solver owns request construction, but this credential-bearing
         # executor owns allowed strategies/targets and complete pagination.
@@ -253,31 +264,36 @@ class AlpacaIdentityClient:
                         )
                     )
                 else:
-                    values.append(self._corporate_action_with_splitting(action))
+                    values.append(self._corporate_action_with_splitting(action, metrics=metrics))
             results.append(values)
         return results
 
-    def _corporate_action_with_splitting(self, action):
-        try:
-            return self._execute_corporate_action(action)
-        except IdentityHttpError as error:
-            if error.status != 414 or len(action["request"]["params"]["symbols"].split(",")) < 2:
-                raise
-            return [row for part in split_action(action) for row in self._corporate_action_with_splitting(part)]
-
-    def _execute_corporate_action(self, api_action):
-        page_token = None
-        seen_page_tokens = set()
-        normalized_actions = []
-        while True:
-            query_parameters = dict(api_action["request"]["params"])
-            if page_token is not None:
-                query_parameters[api_action["pagination"]["parameter"]] = page_token
-
-            response_document = self.request_json(
-                f"{api_action['request']['url']}?{urllib.parse.urlencode(query_parameters)}"
+    def _corporate_action_with_splitting(self, action, *, metrics=None):
+        return [
+            row
+            for batch in fetch_symbol_batches(
+                action["request"]["params"],
+                lambda params: self._execute_corporate_action(action, params, metrics=metrics),
+                status_code=lambda error: error.status if isinstance(error, IdentityHttpError) else None,
+                metrics=metrics,
             )
-            if response_document is None:
+            for row in batch
+        ]
+
+    def _execute_corporate_action(self, api_action, parameters=None, *, metrics=None):
+        normalized_actions = []
+
+        def get_page(params):
+            return self.request_json(f"{api_action['request']['url']}?{urllib.parse.urlencode(params)}")
+
+        for response_document in paginated_pages(
+            parameters if parameters is not None else api_action["request"]["params"],
+            api_action["pagination"],
+            get_page,
+            error_type=RuntimeError,
+            metrics=metrics,
+        ):
+            if not isinstance(response_document, dict):
                 raise RuntimeError("corporate-actions request unexpectedly returned no response")
 
             action_groups = response_document.get("corporate_actions")
@@ -292,14 +308,4 @@ class AlpacaIdentityClient:
                         raise RuntimeError(f"corporate-actions group {response_key!r} contains a non-object")
                     normalized_actions.append({**action, "action_type": action_type})
 
-            next_page_token = response_document.get(api_action["pagination"]["response_field"])
-            if next_page_token is None:
-                # Only exhausted pagination hands off a complete action interval.
-                # A failed/partial request must not become evidence of no actions.
-                return normalized_actions
-            if not isinstance(next_page_token, str) or not next_page_token:
-                raise RuntimeError("corporate-actions response has an invalid next_page_token")
-            if next_page_token in seen_page_tokens:
-                raise RuntimeError("corporate-actions pagination repeated a page token")
-            seen_page_tokens.add(next_page_token)
-            page_token = next_page_token
+        return normalized_actions

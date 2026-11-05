@@ -275,5 +275,24 @@
       "Batch complete dependency requirements and workflow acknowledgements, reject newer obligations, and preserve atomic interruption recovery without data republication.",
       "Reject credential-bearing metadata redirects, duplicate JSON keys, non-finite numbers and malformed pagination completion tokens at the HTTP producer boundary."
     ]
+  },
+  {
+    "modifications": [
+      "Maintain existing eligible summary members before discovery can advance their dependencies; retain operation-local generation-bound approvals for later phases while reconciling changed identity and lost eligibility first.",
+      "Retain decoded pricing partitions across metadata-driven full-history fallback under the same selected locks.",
+      "Deduplicate nested corporate-action needs before acquisition and take the single-source observation path before unused multi-source preparation.",
+      "Enforce compact-only daily planning and accepted selected-storage scope during execution; only explicit metadata dependency and serving-component handoffs enlarge that scope, and unexpected owner access aborts before filesystem work."
+    ]
+  },
+  {
+    "modifications": [
+      "Route metadata HTTP through shared execution and balanced symbol batching with complete-action failure semantics; account for physical subdivisions in universe page estimates while preserving endpoint policies."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain completed per-symbol live comparisons before reporting peer failures, bound to the accepted summary entry and pricing generation within one operation; differences remain correction work, and renewed correction obligations cannot inherit append approval.",
+      "Retain successful correction and append approvals after their exact generations reach lineage, even when an independent peer fails; preserve current scope restrictions, late-bar replacement handoffs and fresh checks after invalidation or restart."
+    ]
   }
 ]

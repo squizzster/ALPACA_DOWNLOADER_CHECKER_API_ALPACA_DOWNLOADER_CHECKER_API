@@ -559,6 +559,7 @@ def process_group(
                     for symbol, prior in previous.items()
                 }
                 inputs = {}
+                partitions = {symbol: {} for symbol in sources}
                 if progress:
                     progress(
                         "lineage_inputs",
@@ -582,6 +583,7 @@ def process_group(
                                 previous_boundaries=old_boundaries[symbol],
                                 resume_from=previous[symbol]["processed_through"][:10] if resume else None,
                                 previous=previous[symbol],
+                                partitions=partitions[symbol],
                             ),
                         )
                         pricing_inputs[symbol] = cached
@@ -642,6 +644,9 @@ def process_group(
                     index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
                 )
                 if expanded != group:
+                    from libs.common.work_scope import accept_expansion
+
+                    accept_expansion(store, expanded, anchors=group, authority="metadata_dependencies")
                     if progress:
                         progress(
                             "dependency_expansion",
@@ -723,7 +728,8 @@ def process_group(
                             missing = prior["boundaries"].keys() - old_boundaries[name].keys()
                             old_boundaries[name].update(storage.read_boundaries(root, prior, kinds=missing))
                         inputs = {
-                            name: load_pricing(store, name, source=source) for name, source in sources.items()
+                            name: load_pricing(store, name, source=source, partitions=partitions[name])
+                            for name, source in sources.items()
                         }
                     resume = not historical_lineage
                     if progress:
@@ -927,6 +933,9 @@ def process_group(
 def local_symbols(store: Path, *, pending: bool, known=()) -> list[str]:
     # Explicit discovery/reconstruction only. Normal selected updates use compact
     # membership/hints; DO NOT insert this census before useful steady-state work.
+    from libs.common.work_scope import forbid_inventory
+
+    forbid_inventory(store)
     directory = regular_path(store, "end_of_day/manifests" if pending else "end_of_day/pricing")
     if not directory.exists():
         return []

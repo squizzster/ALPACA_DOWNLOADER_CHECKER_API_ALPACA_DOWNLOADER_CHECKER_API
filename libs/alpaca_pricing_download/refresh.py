@@ -6,6 +6,7 @@ from time import monotonic
 
 from libs.alpaca_data_api_solver import build_plan
 from libs.common.debug_trace import traced
+from libs.common.provider_http import balanced_batches
 
 from .context import accept_context
 from .contract import (
@@ -231,7 +232,10 @@ def _endpoint_needs(symbol, endpoints, asof, why, *, cutoff=None):
 def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, merge_ranges=True):
     started = monotonic()
     pages_before = (metrics or {}).get("page_requests", 0)
-    plan = build_plan({"steps": [{"needs": needs}]}, merge_ranges=merge_ranges)
+    # Endpoint checks select exact sessions. Saving a page must not expand two
+    # points into years of data that the executor normalizes and then discards.
+    # Compatible identical windows still batch symbols and share pagination.
+    plan = build_plan({"steps": [{"needs": needs}]}, merge_ranges=merge_ranges and not check)
     stage = needs[0]["why"] if needs else "acquisition_check"
     actions = plan["steps"][0]["actions"]
     if progress:
@@ -241,7 +245,10 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, 
                 "state": "started",
                 "symbols": len({need["symbols"][0] for need in needs}),
                 "actions": len(actions),
-                "minimum_pages": len(actions),
+                "minimum_pages": sum(
+                    len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
+                    for action in actions
+                ),
             },
         )
     options = {"on_failure": on_failure} if on_failure is not None else {}
@@ -337,7 +344,7 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
     }
 
 
-def acquire_retained(selected, end, *, client, metrics, progress=None):
+def acquire_retained(selected, end, *, client, metrics, progress=None, on_checked=None):
     """Batch the ordinary downloader's three request stages for selected sources."""
     # These first/last checks and possible history replacements are for explicitly
     # selected retained dependencies. They are not a substitute for the daily
@@ -372,7 +379,10 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
             continue
         start = timestamp(source.get("history_start", HISTORY_START))
         asof = acquisition_asof(source, end)
-        if _endpoints_match(comparison, symbol, endpoints, asof, cutoff=end):
+        matched = _endpoints_match(comparison, symbol, endpoints, asof, cutoff=end)
+        if on_checked is not None:
+            on_checked(symbol, matched)
+        if matched:
             start = max(start, timestamp(source["anchor_month"] + "-01T00:00:00Z"))
             retained[symbol] = endpoints
         needs.append(
@@ -405,7 +415,9 @@ def acquire_retained(selected, end, *, client, metrics, progress=None):
             )
             yield (
                 sorted(symbols),
-                PlannedClient(consumer, {key: value for key, value in cache.items() if key[1] in symbols}),
+                consumer
+                if on_checked is not None
+                else PlannedClient(consumer, {key: value for key, value in cache.items() if key[1] in symbols}),
                 failures,
             )
             del consumer

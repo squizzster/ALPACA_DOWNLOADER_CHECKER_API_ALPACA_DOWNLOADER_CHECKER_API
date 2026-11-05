@@ -663,6 +663,7 @@ class PricingHttpTests(unittest.TestCase):
                     client = FakeClock().client()
                     self.assertEqual(client._get({}), {"bars": {"GOOG": []}})
                     self.assertEqual(opener.call_count, 2)
+                    self.assertEqual([call.kwargs["timeout"] for call in opener.call_args_list], [300, 300])
 
     def test_transport_retries_are_bounded_and_fail_as_download_error(self):
         with patch(
@@ -672,6 +673,7 @@ class PricingHttpTests(unittest.TestCase):
             with self.assertRaisesRegex(DownloadError, "transport failed"):
                 client._get({})
             self.assertEqual(opener.call_count, 6)
+            self.assertEqual([call.kwargs["timeout"] for call in opener.call_args_list], [300] * 6)
 
     def test_exact_json_decimals_and_integer(self):
         result = parse_response(b'{"price":123.123456789012345678901234567890,"volume":9007199254740993}')
@@ -696,6 +698,7 @@ class PricingHttpTests(unittest.TestCase):
 
     def test_pagination_and_symbol_only_endpoint(self):
         requests = []
+        clock = FakeClock()
         responses = [
             json_bytes(
                 {
@@ -710,15 +713,22 @@ class PricingHttpTests(unittest.TestCase):
             for day, token in (("2026-10-01", "page2"), ("2026-10-02", None))
         ]
 
-        def opener(request, **_kwargs):
+        def opener(request, *, timeout):
             requests.append(request)
+            # Both pages take longer than the former client timeout. Completed
+            # pages must be delivered once without an unnecessary retry.
+            clock.sleep(min(120, timeout))
+            if timeout < 120:
+                raise TimeoutError("page exceeded the client socket timeout")
             return io.BytesIO(responses.pop(0))
 
-        client = FakeClock().client(opener=opener)
+        client = clock.client(opener=opener)
         result = client.fetch(
             "GOOG", "raw", timestamp("2026-10-01T00:00:00Z"), timestamp("2026-10-15T00:00:00Z")
         )
         self.assertEqual(len(result.rows), 2)
+        self.assertEqual(client.request_count, 2)
+        self.assertEqual(len(requests), 2)
         self.assertEqual([row[0] for row in result.rows], ["2026-10-01T04:00:00Z", "2026-10-02T04:00:00Z"])
         parameters = [parse_qs(urlparse(request.full_url).query) for request in requests]
         self.assertEqual(parameters[0]["symbols"], ["GOOG"])

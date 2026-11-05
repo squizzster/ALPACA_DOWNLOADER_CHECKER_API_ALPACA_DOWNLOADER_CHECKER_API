@@ -70,7 +70,9 @@ class EvidenceWorkPolicyTests(unittest.TestCase):
                 result = case.update()
                 self.assertTrue(result["complete"], result)
                 self.assertFalse(result["plan"]["work"])
-                self.assertTrue(all(p["start"][:10] >= "2026-10-16" for p in case.pages))
+                self.assertTrue(
+                    all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in case.pages)
+                )
 
     def test_unchanged_identity_and_metadata_only_change_reuse_completed_prices(self):
         for metadata_change in (False, True):

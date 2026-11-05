@@ -334,7 +334,38 @@ class RetainedBatchTests(unittest.TestCase):
         for symbol in self.symbols[1:]:
             self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 3)
 
-    def test_failure_in_each_stage_excludes_only_affected_ticker_and_no_later_requests(self):
+    def test_split_failure_in_each_stage_fails_original_action_without_publication(self):
+        original = self.page
+        for phase in ("boundary_check", "retained_history_acquisition", "acquisition_check"):
+            for status in (403, 500):
+                with self.subTest(phase=phase, status=status):
+                    self.store = self.store.parent / f"{phase}_{status}"
+                    for symbol in self.symbols:
+                        download_pricing(self.store, symbol, "2026-10-15", client=FakeClient(self.old))
+                    calls = []
+
+                    def page(params):
+                        if "," in params["symbols"]:
+                            raise HTTPError("https://example.invalid", 414, "split", {}, None)
+                        calls.append((self.phase, params["symbols"]))
+                        if params["symbols"] == "AAA" and self.phase == phase:
+                            raise HTTPError("https://example.invalid", status, "failed", {}, None)
+                        return original(params)
+
+                    before = snapshot(self.store / "end_of_day/pricing")
+                    with patch.object(self.client, "_get", side_effect=page):
+                        result = self.run_acquire()
+                    self.assertEqual(result["failed"], len(self.symbols), result)
+                    failed = result["results"][0]
+                    self.assertEqual(failed["outcome"]["http_status"], status)
+                    self.assertEqual(failed["status"], "blocked" if status == 403 else "failed")
+                    phases = ["boundary_check", "retained_history_acquisition", "acquisition_check"]
+                    self.assertFalse(any(p in phases[phases.index(phase) + 1 :] for p, s in calls))
+                    self.assertEqual(snapshot(self.store / "end_of_day/pricing"), before)
+                    for symbol in self.symbols[1:]:
+                        self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 2)
+
+    def test_independent_action_failure_excludes_only_affected_ticker(self):
         original = self.page
         for phase in ("boundary_check", "retained_history_acquisition", "acquisition_check"):
             for status in (403, 500):
@@ -353,7 +384,10 @@ class RetainedBatchTests(unittest.TestCase):
                         return original(params)
 
                     before = snapshot(self.store / "end_of_day/pricing/AAA")
-                    with patch.object(self.client, "_get", side_effect=page):
+                    with (
+                        patch.object(append, "MAX_SYMBOLS", 1),
+                        patch.object(self.client, "_get", side_effect=page),
+                    ):
                         result = self.run_acquire()
                     self.assertEqual(result["failed"], 1, result)
                     failed = result["results"][0]

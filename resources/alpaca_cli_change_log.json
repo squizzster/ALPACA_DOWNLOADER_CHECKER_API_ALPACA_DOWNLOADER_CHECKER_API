@@ -151,5 +151,10 @@
     "modifications": [
       "Expose accepted expected work before selected mutation and retain its scalar estimates in subsequent heartbeats; carry completion, selected-scope and request counters while distinguishing component completion."
     ]
+  },
+  {
+    "modifications": [
+      "Report an unexpected selected-storage expansion as a terminal command failure, releasing owner locks and closing debug spans instead of treating it as a recoverable ticker error."
+    ]
   }
 ]

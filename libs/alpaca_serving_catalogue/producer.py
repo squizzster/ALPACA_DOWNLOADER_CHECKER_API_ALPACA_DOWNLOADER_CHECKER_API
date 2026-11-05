@@ -6,6 +6,7 @@ from pathlib import Path
 
 from libs.alpaca_lineage_build import storage as lineage
 from libs.common.debug_trace import span, traced
+from libs.common.work_scope import accept_expansion
 
 from . import storage, work
 from .contract import CatalogueError, policy, validate_version
@@ -225,6 +226,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
         for component in _components(entries, pending if scope is None else scope, controls):
             if not component & pending.keys():
                 continue
+            accept_expansion(store, component, anchors=component & pending.keys(), authority="serving_component")
             selected.update(component)
             previous = {controls["members"][n] for n in component if n in controls["members"]}
             groups, covered = [], set()

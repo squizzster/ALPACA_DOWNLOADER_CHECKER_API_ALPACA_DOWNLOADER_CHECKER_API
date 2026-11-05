@@ -11,6 +11,7 @@ from libs.alpaca_pricing_download.download import request_end
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.common.debug_trace import traced
 
+from . import storage
 from .context import accept_context
 from .pipeline import run_lineage
 from .refresh import refresh_existing
@@ -100,6 +101,7 @@ def update_everything(
     recover_pending=True,
     late_bar_repairs=None,
     context=None,
+    symbols=None,
 ):
     """Fresh check -> same-span replacement/lineage -> append -> lineage -> summary.
 
@@ -151,7 +153,7 @@ def update_everything(
         )
         if recovered["failed"]:
             return result
-        remaining, maintained_symbols = None, set()
+        remaining, maintained_symbols, completed_generations = symbols, set(), {}
         for round_number in range(100):
             ready = []
             checked = stage(
@@ -201,6 +203,11 @@ def update_everything(
                         if "source_sha256" in item
                     }
                 )
+            completed_generations.update(
+                (item["symbol"], item["source_sha256"])
+                for item in appended["results"]
+                if "source_sha256" in item
+            )
             selected = [
                 row["symbol"]
                 for row in appended["results"]
@@ -242,6 +249,7 @@ def update_everything(
                 e["symbol"]
                 for e in latest["entries"]
                 if e["symbol"] not in maintained_symbols
+                and (symbols is None or e["symbol"] in symbols)
                 and e["end_exclusive"][:10] <= end
                 and (work_policy is None or work_policy.allowed({e["symbol"]}))
             }
@@ -252,6 +260,21 @@ def update_everything(
         current_stage = "summary"
         result["summary"] = describe(latest)
         result["complete"] = result["failed"] == 0 and not (work_policy and work_policy.blocked)
+        if completed_generations:
+            with storage.publication_lock(context.accept_store().root):
+                index = context.select_index(context.accept_store().root)
+            # Completion belongs to each pricing -> lineage boundary, even
+            # when a peer failed. Retain only generations accepted by lineage;
+            # a published append awaiting lineage cannot lend its approval.
+            for entry in latest["entries"]:
+                symbol = entry["symbol"]
+                generation = completed_generations.get(symbol)
+                if (
+                    generation is not None
+                    and index["symbols"].get(symbol, {}).get("source_sha256") == generation
+                ):
+                    correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
+                    context.history_checks[symbol] = (dict(entry), generation, correction)
         return result
     except (RuntimeError, OSError, ValueError) as error:
         result["failed"] += 1

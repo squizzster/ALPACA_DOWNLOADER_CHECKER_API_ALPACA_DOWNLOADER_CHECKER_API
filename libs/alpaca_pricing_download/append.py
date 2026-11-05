@@ -11,6 +11,7 @@ from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
 from libs.common.debug_trace import in_context, traced
+from libs.common.provider_http import balanced_batches
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .check_summary import assert_current, validate_entry
@@ -49,7 +50,7 @@ MAX_ROWS = 200000  # Bound acquired rows across eight views per publication coho
 def _validate_append_entry(entry):
     """Accept the active-summary row or an internal empty-source baseline."""
     if entry.get("last_all") is not None:
-        symbol, asof, end, row = validate_entry(entry)
+        symbol, asof, end, row, _ = validate_entry(entry)
         return symbol, asof, timestamp(end), row
     if set(entry) != {"symbol", "asof", "end_exclusive", "last_all"}:
         raise DownloadError("invalid empty append entry")
@@ -248,7 +249,11 @@ def append_entries(
         plan = build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
         if progress:
             actions = len(plan["steps"][0]["actions"])
-            progress("acquiring", {"tickers": len(cohort), "actions": actions, "minimum_pages": actions})
+            minimum_pages = sum(
+                len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
+                for action in plan["steps"][0]["actions"]
+            )
+            progress("acquiring", {"tickers": len(cohort), "actions": actions, "minimum_pages": minimum_pages})
         try:
             acquired = client.execute_plan(plan, metrics=metrics)
         except (RuntimeError, OSError, ValueError) as error:

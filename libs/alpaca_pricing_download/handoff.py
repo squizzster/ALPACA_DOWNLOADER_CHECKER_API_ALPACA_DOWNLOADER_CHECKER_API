@@ -55,13 +55,14 @@ def load_published_boundary(root: Path, source: dict, kind: str, *, selected=Fal
     return views
 
 
-def load_published_views(root: Path, source: dict, *, selected=False) -> dict:
+def load_published_views(root: Path, source: dict, *, selected=False, read=None) -> dict:
     """Assemble the owner's accepted overlap rule, without re-authenticating it."""
     if not selected and regular_path(root, ".pending.json").exists():
         raise DownloadError("pricing publication is incomplete; resume the downloader")
-    cold = load_published_boundary(root, source, "completed_years", selected=True)
-    year = load_published_boundary(root, source, "current_year", selected=True)
-    month = load_published_boundary(root, source, "current_month", selected=True)
+    read = read or load_published_boundary
+    cold = read(root, source, "completed_years", selected=True)
+    year = read(root, source, "current_year", selected=True)
+    month = read(root, source, "current_month", selected=True)
     # Exact-copy aliases are already authenticated by the producing boundary.
     # Preserve that identity while assembling the three chronological parts so
     # downstream adapters parse and materialize each distinct history once.

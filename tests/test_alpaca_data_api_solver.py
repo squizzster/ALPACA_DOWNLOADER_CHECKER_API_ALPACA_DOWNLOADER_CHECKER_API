@@ -69,7 +69,7 @@ class ApiSolverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             plan({**need, "lookup_kind": "unknown"})
 
-    def test_corporate_action_operating_cap_is_independent_of_bar_cap(self):
+    def test_corporate_action_logical_roster_is_preserved_for_transport_batching(self):
         result = plan(
             {
                 "kind": "corporate_actions",
@@ -80,7 +80,7 @@ class ApiSolverTests(unittest.TestCase):
             }
         )
         self.assertEqual(
-            [len(a["request"]["params"]["symbols"].split(",")) for a in result["steps"][0]["actions"]], [1000, 1]
+            [len(a["request"]["params"]["symbols"].split(",")) for a in result["steps"][0]["actions"]], [1001]
         )
 
     def test_catalogue_array_transport_and_seeded_exact_lookup(self):
@@ -379,7 +379,7 @@ class ApiSolverTests(unittest.TestCase):
         rows = execute_bar_plan(result, get_page, metrics=metrics)
         self.assertEqual(result, original)
         self.assertEqual(len(rows), 2)
-        self.assertEqual(metrics, {"page_requests": 3, "oversize_splits": 1})
+        self.assertEqual(metrics, {"page_requests": 3, "oversize_splits": 1, "batches": 3})
 
     def test_completed_responses_are_released_with_their_consumer(self):
         for mode in ("complete", "split", "partial_failure", "omitted"):
@@ -462,7 +462,7 @@ class ApiSolverTests(unittest.TestCase):
             ],
         )
         self.assertEqual({key[3] for key in rows}, {"A", "B", "C", "D", "X"})
-        self.assertEqual(metrics, {"page_requests": 13, "oversize_splits": 3})
+        self.assertEqual(metrics, {"page_requests": 13, "oversize_splits": 3, "batches": 8})
         self.assertEqual(result, original)
 
     def test_invalid_need_is_rejected_before_execution(self):

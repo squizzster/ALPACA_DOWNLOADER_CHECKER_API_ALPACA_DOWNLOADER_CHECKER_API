@@ -136,7 +136,7 @@ class CompletedDecisionTests(unittest.TestCase):
             ):
                 result = case.update()
             self.assertTrue(result["complete"], result)
-            self.assertEqual(len(case.pages), 1)
+            self.assertEqual(len(case.pages), 2)
             self.assertNotIn("approval", result["stages"])
             self.assertTrue(result["stages"]["discovery_lineage"][0]["results"][0]["reused_decision"])
 
@@ -188,7 +188,7 @@ class AcceptedOperationTests(unittest.TestCase):
                 self.assertEqual(approvals.call_count, int(pending))
                 self.assertEqual(bool(result["stages"].get("approval")), pending)
                 self.assertEqual(result["stages"]["discovery_lineage"], [])
-                self.assertEqual(len(case.pages), 9)
+                self.assertEqual(len(case.pages), 10)
 
     def test_progress_covers_phases_and_reconciles_page_and_http_totals(self):
         with fixture() as case:
@@ -280,7 +280,7 @@ class AcceptedOperationTests(unittest.TestCase):
             self.assertEqual(lineage_versions.call_count, 1)
             self.assertEqual(pricing_versions.call_count, 1)
             self.assertEqual(store_acceptances.call_count, 1)
-            self.assertEqual(len(case.pages), 1)
+            self.assertEqual(len(case.pages), 2)
 
     def test_publications_refresh_membership_without_reloading_unchanged_revisions(self):
         with fixture() as case:

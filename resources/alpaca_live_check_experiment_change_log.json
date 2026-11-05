@@ -25,5 +25,21 @@
     "modifications": [
       "Preserve a saved historical as-of value solely as the provider identity selector while deriving the last-row check window from that retained observation's New York session. Do not reinterpret an entity mapping date as an observation cutoff."
     ]
+  },
+  {
+    "modifications": [
+      "Check the first and latest stored fully adjusted sessions from the compact summary, deduplicate a single-session history, and batch only exact session windows. Count outcomes per symbol while identifying each differing endpoint; preserve failed or missing comparison rejection."
+    ]
+  },
+  {
+    "modifications": [
+      "Report planned physical symbol batches and actual batch executions alongside pages and HTTP 414 splits for exact daily endpoint checks."
+    ]
+  },
+  {
+    "modifications": [
+      "Confirm omitted known-present summary endpoints with bounded singleton requests at unchanged session and mapping scope after completed batch pagination; preserve returned comparisons and distinguish failed confirmations from confirmed absence.",
+      "Return completed matching symbols, exact missing endpoint details and omission request/recovery counts for the owning maintenance handoff; emit each confirmed missing endpoint with its session and mapping date in debug traces."
+    ]
   }
 ]

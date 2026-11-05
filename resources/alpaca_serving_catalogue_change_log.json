@@ -84,5 +84,10 @@
       "Publish the assigned recent suffix after the last relevant unresolved interval when the complete assigned history passes numerical and session checks; preserve full-history checkpoints and exact unrelated-identity exclusions.",
       "Respect accepted ticker ownership bounds when relating anonymous unresolved observations to an identity; explicit candidate UUID conflicts remain authoritative."
     ]
+  },
+  {
+    "modifications": [
+      "Declare complete components selected by accepted serving obligations to the daily storage-scope guard before reading their receipt bodies or histories."
+    ]
   }
 ]

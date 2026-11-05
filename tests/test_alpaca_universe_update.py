@@ -147,7 +147,7 @@ class UniverseUpdateTests(unittest.TestCase):
             repeated = self.update()
         self.assertTrue(repeated["complete"], repeated)
         self.assertEqual(self.identity.catalogue_calls, 2)
-        self.assertTrue(all(p["adjustment"] == "all" and p["start"][:10] >= "2026-10-15" for p in self.pages))
+        self.assertTrue(all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in self.pages))
 
     def test_summary_advancement_publishes_lineage_after_checked_append(self):
         self.records[:] = [asset("AAA")]
@@ -257,8 +257,13 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(set(reads_before_selection), {"BBB"})
         self.assertEqual([row["symbol"] for row in result["stages"]["recovery_lineage"]["results"]], ["BBB"])
         self.assertFalse(any(item["acquire"] for item in result["plan"]["work"].values()))
-        self.assertEqual(len(self.pages), 9)  # One last-all batch, then eight one-session append views.
-        self.assertTrue(all(page["start"][:10] >= "2026-10-16" for page in self.pages))
+        self.assertEqual(len(self.pages), 10)  # Two endpoint batches, then eight append views.
+        self.assertTrue(
+            all(
+                page["adjustment"] == "all" and page["start"][:10] == page["end"][:10] for page in self.pages[:2]
+            )
+        )
+        self.assertTrue(all(page["start"][:10] == "2026-10-17" for page in self.pages[2:]))
 
     def test_unfinished_summary_recovery_cannot_select_or_persist_universe_acquisition(self):
         check_summary.invalidate(self.store, ["AAA"], owner="lineage")
@@ -639,7 +644,9 @@ class UniverseUpdateTests(unittest.TestCase):
         self.pages.clear()
         result = self.update()
         self.assertTrue(result["complete"], result)
-        self.assertTrue(all(page["start"][:10] >= "2026-10-16" for page in self.pages))
+        self.assertTrue(
+            all(page["adjustment"] == "all" and page["start"][:10] == page["end"][:10] for page in self.pages)
+        )
         self.assertEqual(result["stages"]["acquisition"]["results"][0]["status"], "covered")
 
     def test_changed_metadata_on_newer_group_is_incomplete_without_rewind(self):

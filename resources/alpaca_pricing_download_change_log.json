@@ -201,5 +201,23 @@
       "Retain immutable views for the lifetime of a locked pricing handoff and expire them on close; lend selected summary endpoints and pending ownership to lineage without endpoint reauthentication.",
       "Reject HTTP redirects before provider credentials or response authority can cross to an unselected destination."
     ]
+  },
+  {
+    "modifications": [
+      "Keep endpoint-check requests within their exact selected sessions while retaining compatible symbol batching.",
+      "Carry immutable source-bound endpoints and completed comparisons from acquisition to execution without rereading validators or replaying checks; preserve independent new-output confirmation and stale-generation rejection.",
+      "Allow locked lineage fallback to assemble full histories from already decoded pricing partitions.",
+      "Publish both first and latest fully adjusted comparison rows in summary format 3. Require an explicit offline summary rebuild for older formats while allowing frozen format-2 publication bookkeeping to finish without migration deadlock."
+    ]
+  },
+  {
+    "modifications": [
+      "Allow up to 300 seconds for each pricing HTTP socket operation, including endpoint checks, pagination and retries; preserve bounded retry behavior and provider HTTP failure classification."
+    ]
+  },
+  {
+    "modifications": [
+      "Use shared HTTP execution with balanced sequential batches of at most 1,000 symbols, independent pagination and atomic logical-action completion, preserving pricing retry, timeout, limiter and validation policies."
+    ]
   }
 ]

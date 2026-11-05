@@ -1,8 +1,38 @@
 """Small publication-owned comparison rows; never a second pricing store."""
 
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from .contract import ADJUSTMENTS, COLUMNS, NEW_YORK, SUPPORTED_VERSIONS, VERSION, DownloadError, timestamp
+
+
+@dataclass(frozen=True)
+class EndpointSelection:
+    """Acquisition's accepted validator and optional completed comparison.
+
+    The immutable values survive network I/O, bound to one store, source,
+    mapping and cutoff. The consumer must recheck that generation under its
+    newly acquired lock. New output confirmation remains independent.
+    """
+
+    store: str
+    symbol: str
+    generation: str | None
+    end: str
+    asof: str
+    points: tuple | None
+    matched: bool | None = None
+
+    def consume(self, store, symbol, generation, end, asof):
+        if (str(store), symbol, generation, end, asof) != (
+            self.store,
+            self.symbol,
+            self.generation,
+            self.end,
+            self.asof,
+        ):
+            raise DownloadError("endpoint selection no longer matches the selected acquisition")
+        return None if self.points is None else dict(self.points)
 
 
 def endpoints_of(views: dict) -> dict:

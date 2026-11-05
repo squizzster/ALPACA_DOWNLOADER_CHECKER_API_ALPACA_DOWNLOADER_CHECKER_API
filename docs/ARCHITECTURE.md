@@ -10,6 +10,13 @@ behavior. Tests use synthetic stores/HTTP doubles; resources hold contracts, cal
 downstream stages trust completed handoffs. [Operations](operations.md#daily-update) owns invocation;
 [technical contracts](technical-contracts.md#trust-and-ownership) own storage guarantees.
 
+After selection, existing eligible summary members complete live check → correction → append before
+discovery acquisition can advance their dependencies. Changed identity or lost eligibility reconciles first.
+The live check compares the first and latest fully adjusted sessions from the compact summary. A difference
+uses the established full retained-span replacement; matching endpoints permit only new-session acquisition.
+After discovery, maintenance checks newly eligible or invalidated members; unchanged completed checks carry
+their summary entry and pricing generation within the operation. Restart obtains fresh approvals.
+
 | Responsibility | Authority |
 |---|---|
 | Accepted boundaries, work selection, estimates | [universe_plan.py](../libs/alpaca_lineage_build/universe_plan.py): `boundaries`, `select_work`, `preview` |
@@ -19,7 +26,8 @@ downstream stages trust completed handoffs. [Operations](operations.md#daily-upd
 | Offline serving maintenance | [producer.py](../libs/alpaca_serving_catalogue/producer.py): `maintain` |
 
 The pure [API solver](../libs/alpaca_data_api_solver/__init__.py), `build_plan`, maps reasoned needs to ordered
-requests. HTTP clients own pagination/retries; dependent needs follow responses. See the
+requests. The shared HTTP executor owns batching, pagination and attempt sequencing; endpoint adapters own
+validation and retry/rate/timeout policies. Dependent needs follow responses. See the
 [API plan contract](technical-contracts.md#api-plan).
 
 ## Lineage and identity
@@ -64,4 +72,4 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
 | [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Shared numerical source selection. |
 | [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |
-| [common](../libs/common/) | Market calendar, SQLite connections, store operation lock. |
+| [common](../libs/common/) | Market calendar, SQLite connections, store operation lock, shared provider HTTP execution. |

@@ -23,6 +23,7 @@ from libs.alpaca_pricing_download.storage import (
 from libs.alpaca_pricing_download.update_checks import acknowledge_checks, read_checks
 from libs.common.debug_trace import traced, traced_context
 from libs.common.sqlite_connections import connect_sqlite
+from libs.common.work_scope import check_path
 
 from .acquisition import unavailable_pricing
 from .contract import (
@@ -51,6 +52,7 @@ def path_at(root: Path, relative: str, *, published=False) -> Path:
         or PurePosixPath(relative).is_absolute()
     ):
         raise LineageError(f"unsafe lineage path: {relative!r}")
+    check_path(root / relative)
     path = root
     for part in parts:
         path = path / part

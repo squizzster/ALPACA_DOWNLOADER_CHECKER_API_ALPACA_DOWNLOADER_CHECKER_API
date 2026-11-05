@@ -106,6 +106,9 @@ def select_observations(inputs, reports):
     no storage discovery, authentication or acquisition. Consumers later use the
     published row choices without repeating any of this work.
     """
+    if len(reports) == 1:
+        return _single_source(inputs, reports)
+
     ownership, rows, own = {}, {}, defaultdict(dict)
     labels = defaultdict(set)
     for symbol, report in reports.items():
@@ -120,16 +123,12 @@ def select_observations(inputs, reports):
                 pid = segment["security_identity"]["security_id"]
                 for index in range(segment["row_start"] - 1, segment["row_end"]):
                     owners[index] = pid
-                    if len(reports) > 1:
-                        labels[(pid, view.views[adjustment][index][0])].add(segment["historical_symbol"])
+                    labels[(pid, view.views[adjustment][index][0])].add(segment["historical_symbol"])
                 if adjustment == "raw" and segment["historical_symbol"] == symbol:
                     last = view.views[adjustment][segment["row_end"] - 1][0]
                     if symbol not in own[pid] or last > own[pid][symbol][0]:
                         own[pid][symbol] = (last, _own_interval(report, segment, last))
             ownership[symbol][adjustment] = owners
-
-    if len(reports) == 1:
-        return _single_source(inputs, reports)
 
     candidates = defaultdict(dict)
     for symbol, views in rows.items():

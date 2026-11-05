@@ -359,6 +359,17 @@ class EvidenceClient:
         pending = [key for key in pending if key[0] not in self.restricted_identifiers]
         if not pending:
             return
+        # Select maximal requested intervals for each symbol. A nested need is
+        # delivered from the completed containing response, including all pages;
+        # it must not become a second request merely because both were pending
+        # when this plan was compiled. Overlap alone establishes no coverage.
+        ordered = sorted(sorted(pending, key=lambda key: key[2], reverse=True), key=lambda key: key[:2])
+        pending, upper = [], {}
+        for key in ordered:
+            symbol, start, end = key
+            if end > upper.get(symbol, ""):
+                pending.append(key)
+                upper[symbol] = end
         plan = build_plan(
             {
                 "steps": [

@@ -405,6 +405,7 @@ class AppendPlanTests(unittest.TestCase):
                     "asof": "2026-10-15",
                     "end_exclusive": "2026-10-15T00:00:00Z",
                     "last_all": list(row),
+                    "first_all": list(row),
                 }
                 for symbol in symbols
             ]
@@ -442,12 +443,14 @@ class AppendPlanTests(unittest.TestCase):
                 "asof": "2026-10-14",
                 "end_exclusive": "2026-10-14T00:00:00Z",
                 "last_all": row,
+                "first_all": row,
             },
             {
                 "symbol": "BBB",
                 "asof": "2026-10-15",
                 "end_exclusive": "2026-10-15T00:00:00Z",
                 "last_all": row,
+                "first_all": row,
             },
         ]
         needs, _ = append.append_needs(entries, timestamp("2026-10-17T00:00:00Z"))

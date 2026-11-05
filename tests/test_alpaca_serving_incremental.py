@@ -98,6 +98,7 @@ class IncrementalServingTests(NativeCase):
             "asof": source["latest_request"]["asof"],
             "end_exclusive": source["latest_request"]["end_exclusive"],
             "last_all": list(endpoints["all"][-1]),
+            "first_all": list(endpoints["all"][0]),
         }
         client = BarsClient("test", "test")
 

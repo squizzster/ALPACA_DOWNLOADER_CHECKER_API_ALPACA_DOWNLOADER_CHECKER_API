@@ -93,9 +93,9 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["stages"]["refresh"]["check"]["stats"]["matched"], 2)
         self.assertEqual(result["stages"]["append"]["requests"]["page_requests"], 8)
-        self.assertEqual(len(self.calls), 9)
+        self.assertEqual(len(self.calls), 10)
         self.assertTrue(all(call["symbols"] == "AAA,BBB" for call in self.calls))
-        self.assertTrue(all(call["start"][:10] == "2026-10-15" for call in self.calls[1:]))
+        self.assertTrue(all(call["start"][:10] == "2026-10-15" for call in self.calls[2:]))
         self.assertEqual(files_snapshot(self.store / "end_of_day/pricing/ZZZ"), inactive)
         self.assert_finished()
         self.calls.clear()
@@ -107,8 +107,8 @@ class UpdateEverythingTests(unittest.TestCase):
         ):
             repeated = self.run_update()
         self.assertTrue(repeated["complete"], repeated)
-        self.assertEqual(len(self.calls), 1, "integrated update must always recheck live")
-        self.assertEqual(self.calls[0]["start"][:10], "2026-10-16")
+        self.assertEqual(len(self.calls), 2, "integrated update must always recheck live")
+        self.assertEqual({p["start"][:10] for p in self.calls}, {"2016-01-04", "2026-10-16"})
         self.assertEqual(self.identity.request_count, identity_calls)
         self.assertEqual(files_snapshot(self.store), before)
 
@@ -140,7 +140,7 @@ class UpdateEverythingTests(unittest.TestCase):
         replaced = refresh["pricing"]["results"]
         self.assertEqual([row["symbol"] for row in replaced], ["AAA"])
         self.assertEqual(replaced[0]["request"]["end_exclusive"], "2026-10-15T00:00:00Z")
-        self.assertEqual(len(self.calls), 25)  # Live check + full history/first checks + append.
+        self.assertEqual(len(self.calls), 26)  # Live check + full history/first checks + append.
         rows = read_pricing_views(self.store, "AAA")["all"]
         self.assertEqual(rows[0][1], "456")
         self.assertEqual(rows[1][5], "42")
@@ -256,12 +256,10 @@ class UpdateEverythingTests(unittest.TestCase):
         ]
         self.assertEqual(len(exact), 1)
         self.assertEqual(exact[0]["symbols"], "AAA")
-        self.assertFalse(
-            any(
-                call["symbols"] == "BBB" and timestamp(call["start"]).date().isoformat() < "2026-01-07"
-                for call in calls
-            )
-        )
+        # The replacement producer already confirmed AAA's new generation.
+        # Only BBB still needs the daily first/latest comparison.
+        self.assertEqual(repaired["check"]["stats"]["tickers"], 1)
+        self.assertEqual(repaired["check"]["stats"]["matched"], 1)
 
         serving = maintain(store)
         self.assertTrue(serving["complete"], serving)
@@ -388,7 +386,7 @@ class UpdateEverythingTests(unittest.TestCase):
             repeated = self.run_update("2026-10-15")
             self.assertTrue(repeated["complete"], repeated)
             self.assertEqual(repeated["stages"]["recovery"]["lineage"]["results"], [])
-        self.assertEqual(len(self.calls), 2, "each invocation only needs its fresh live history check")
+        self.assertEqual(len(self.calls), 4, "each invocation needs its two fresh endpoint comparisons")
         self.assertEqual(self.identity.request_count, 0)
         self.assertEqual(files_snapshot(self.store / "end_of_day/pricing"), pricing)
 
@@ -451,7 +449,7 @@ class UpdateEverythingTests(unittest.TestCase):
             result = self.run_update()
         self.assertFalse(result["complete"])
         self.assertEqual(result["failed_stage"], "append")
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.calls), 2)
         self.assertEqual(files_snapshot(self.store / "end_of_day"), before)
 
     def test_failed_history_replacement_stops_before_append(self):
@@ -459,7 +457,7 @@ class UpdateEverythingTests(unittest.TestCase):
         before = files_snapshot(self.store)
 
         def fail_full_history(params):
-            if params["start"][:4] == "2016":
+            if params["start"][:4] == "2016" and params["start"][:10] != params["end"][:10]:
                 raise OSError("full history request failed")
             return self.page(params)
 
@@ -487,7 +485,7 @@ class UpdateEverythingTests(unittest.TestCase):
         recovered = self.run_update()
         self.assertTrue(recovered["complete"], recovered)
         self.assertEqual(recovered["stages"]["recovery"]["pricing_recovered"], ["AAA"])
-        self.assertEqual(len(self.calls), 1, "recovery must not reacquire completed new sessions")
+        self.assertEqual(len(self.calls), 2, "recovery must not reacquire completed new sessions")
         self.assert_finished()
 
     def test_same_command_recovers_interrupted_databases_before_work_selection(self):
@@ -496,7 +494,7 @@ class UpdateEverythingTests(unittest.TestCase):
         leave_hot_journal(self.store / "end_of_day/lineage/index.sqlite3", "PRAGMA user_version=0")
         result = self.run_update()
         self.assertTrue(result["complete"], result)
-        self.assertEqual(len(self.calls), 9)
+        self.assertEqual(len(self.calls), 10)
         self.assert_finished()
 
     def test_deleted_work_list_restores_pending_lineage_before_the_live_check(self):
@@ -526,7 +524,7 @@ class UpdateEverythingTests(unittest.TestCase):
         recovered = self.run_update()
         self.assertTrue(recovered["complete"], recovered)
         self.assertTrue(recovered["stages"]["recovery"]["lineage"]["recovered"])
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.calls), 2)
         self.assert_finished()
 
     def test_midnight_during_live_check_does_not_extend_the_frozen_target(self):

@@ -1,5 +1,6 @@
 """Discovery, registration and selective reconciliation around pricing/lineage owners."""
 
+from contextlib import ExitStack
 from pathlib import Path
 
 from libs.alpaca_pricing_download import storage as pricing_storage
@@ -9,6 +10,7 @@ from libs.alpaca_pricing_download.download import request_end
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY
 from libs.common.debug_trace import traced
+from libs.common.work_scope import selected_work
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
@@ -100,7 +102,7 @@ def run_update(
     result = {"complete": False, "end_exclusive": end, "failed": 0, "stages": {}}
     metadata_started = identity_client.request_count
     pricing_started = getattr(pricing_client, "request_count", None)
-    with universe_state.update_lock(store):
+    with universe_state.update_lock(store), ExitStack() as scopes:
         # Explicit universe initialization is the outer operation gate. Fail
         # before recovering any owner publication when it is absent; recovery
         # must not silently initialize or otherwise mutate an uninitialized
@@ -212,6 +214,15 @@ def run_update(
             end,
             metadata_requests=identity_client.request_count - metadata_before,
         )
+        # The accepted compact selectors own this scope. New metadata may add a
+        # complete dependency group only at its explicit expansion handoff.
+        seeds = (
+            set(selection["work"])
+            | {entry["symbol"] for entry in accepted["summary"]["entries"] if entry["end_exclusive"][:10] <= end}
+            | set(accepted["late_bar_repairs"]["sources"])
+            | set(accepted["serving_catalogue"]["pending_symbols"])
+        )
+        storage_scope = scopes.enter_context(selected_work(store, ()))
         if progress:
             progress(
                 "selected",
@@ -259,9 +270,54 @@ def run_update(
             end,
             context=context,
         )
+        # Reuse the accepted work policy's graph instead of reconstructing the
+        # entire membership graph just to enforce its selected storage scope.
+        for symbol in seeds:
+            storage_scope.symbols.update(policy.graph.closure({symbol}))
         evidence.work_policy = policy
         for symbol, failure in selection["selection_failures"].items():
             policy.fail({symbol}, failure, stage="selection")
+
+        # Existing summary members belong to live check -> correction -> append
+        # BEFORE discovery can advance one of their dependencies. Otherwise an
+        # empty/new sibling can divert them into all-view ordinary acquisition.
+        # The completed maintenance handoff is retained by this operation;
+        # later phases check only new members or genuinely changed generations.
+        def keeps_summary_membership(symbol):
+            item = work.get(symbol, {})
+            if item.get("invalidate_pricing"):
+                return False
+            if not item.get("refresh_metadata"):
+                return True
+            # Selection already acquired this lookup. Name/exchange changes do
+            # not postpone an otherwise eligible source's history approval;
+            # inactivity, absence or changed identity must reconcile first.
+            current = (item.get("required_lookups", {}).get(symbol) or {}).get("asset") or {}
+            return (
+                current.get("symbol") == symbol
+                and current.get("status") == "active"
+                and current.get("class") == "us_equity"
+            )
+
+        initial_maintenance = update_everything(
+            store,
+            end,
+            pricing_client=pricing_client,
+            identity_client=identity_client,
+            workers=workers,
+            progress=progress,
+            evidence_client=evidence,
+            register_discoveries=register,
+            recover_pending=False,
+            work_policy=policy,
+            context=context,
+            symbols={
+                entry["symbol"]
+                for entry in accepted["summary"]["entries"]
+                if keeps_summary_membership(entry["symbol"])
+            },
+        )
+        result["stages"]["maintenance"] = initial_maintenance
         acquisition_groups = {}
         for symbol, item in work.items():
             # Missing members accepted only through dependency expansion need
@@ -376,7 +432,7 @@ def run_update(
                 context=context,
             )
         )
-        result["stages"]["maintenance"] = maintained
+        result["stages"]["maintenance_after_discovery"] = maintained
 
         @traced("completion_boundary")
         def completion_boundary():
@@ -445,7 +501,10 @@ def run_update(
         state = universe_state.read_state(store)
         result["pending_work"] = universe_state.pending_count(state)
         result["failed"] = (
-            len(policy.failures) + sum(group["failed"] for group in lineage_results) + maintained["failed"]
+            len(policy.failures)
+            + sum(group["failed"] for group in lineage_results)
+            + initial_maintenance["failed"]
+            + maintained["failed"]
         )
         from libs.alpaca_serving_catalogue.producer import maintain
 
@@ -456,7 +515,8 @@ def run_update(
         result["stages"]["serving_catalogue"] = serving
         result["failed"] += serving["failed"]
         result["complete"] = (
-            maintained["complete"]
+            initial_maintenance["complete"]
+            and maintained["complete"]
             and serving["complete"]
             and not result["failed"]
             and not result["pending_work"]

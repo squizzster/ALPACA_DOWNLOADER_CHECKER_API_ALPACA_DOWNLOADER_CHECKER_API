@@ -1,5 +1,6 @@
 """Bounded initial acquisition using the ordinary downloader's producer checks."""
 
+from dataclasses import replace
 from itertools import chain
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .contract import (
     timestamp,
 )
 from .download import acquisition_asof, download_pricing, request_end, request_start
+from .endpoints import EndpointSelection
 from .http import BarsClient
 from .refresh import acquire_full, acquire_retained
 from .storage import load_source, read_update, read_validator, recover, regular_path, ticker_lock
@@ -88,6 +90,7 @@ def acquire_selected(
     context = accept_context(store, context)
     end_text = end.isoformat().replace("+00:00", "Z")
     needs, selected_generations, results, retained, empty = [], {}, [], {}, []
+    endpoint_selections = {}
     for symbol in symbols:
         root = regular_path(store, f"end_of_day/pricing/{symbol}")
         # A selected acquisition may create its own paths. No universe inventory.
@@ -125,6 +128,14 @@ def acquire_selected(
                 )
                 continue
             endpoints = read_validator(root, source, published=True) if source else None
+            endpoint_selections[symbol] = EndpointSelection(
+                str(store),
+                symbol,
+                selected_generations[symbol],
+                end_text,
+                acquisition_asof(source, end),
+                None if endpoints is None else tuple((name, tuple(rows)) for name, rows in endpoints.items()),
+            )
         start = (
             min(stored_start, requested_start)
             if stored_start and requested_start
@@ -225,6 +236,7 @@ def acquire_selected(
                     refresh_all=symbol in invalidate,
                     from_date=need["ranges"][0]["start"][:10],
                     selected_source_sha256=selected_generations[symbol],
+                    endpoint_selection=endpoint_selections[symbol],
                     acquisition_evidence_sha256=evidence_fingerprints.get(symbol),
                     context=context,
                 )
@@ -265,9 +277,20 @@ def acquire_selected(
     for selected in _endpoint_cohorts(retained):
         buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
         completed = set()
+
+        def checked(symbol, matched):
+            endpoint_selections[symbol] = replace(endpoint_selections[symbol], matched=matched)
+
         try:
             batches = (
-                acquire_retained(buffered, end, client=ordinary_client, metrics=metrics, progress=progress)
+                acquire_retained(
+                    buffered,
+                    end,
+                    client=ordinary_client,
+                    metrics=metrics,
+                    progress=progress,
+                    on_checked=checked,
+                )
                 if buffered and callable(getattr(client, "execute_plan", None))
                 else [(list(buffered), ordinary_client, {})]
             )
@@ -285,6 +308,11 @@ def acquire_selected(
                             end_date,
                             client=ordinary_client if failure is not None else consumer,
                             selected_source_sha256=selected_generations[symbol],
+                            endpoint_selection=(
+                                replace(endpoint_selections[symbol], matched=None)
+                                if failure is not None
+                                else endpoint_selections[symbol]
+                            ),
                             context=context,
                         )
                         results.append({**value, "status": "published"})

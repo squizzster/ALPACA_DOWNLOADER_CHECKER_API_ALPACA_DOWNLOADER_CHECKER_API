@@ -89,6 +89,58 @@ class Provider:
 
 
 class LineageBatchingTests(unittest.TestCase):
+    def test_prefetch_nested_windows_share_one_completed_interval(self):
+        provider = Provider(
+            actions=[event("A", "early", process_date="2026-10-02"), event("A", "late")], page_size=1
+        )
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions(
+            [
+                ("A", "2026-10-01", "2026-10-20"),
+                ("A", "2026-10-01", "2026-10-15"),
+                ("A", "2026-10-05", "2026-10-15"),
+            ]
+        )
+        self.assertEqual(len(provider.calls), 2)  # Two pages, one complete interval.
+        self.assertEqual(client.get_corporate_actions("A", "2026-10-05", "2026-10-15"), [])
+        self.assertEqual(len(client.get_corporate_actions("A", "2026-10-01", "2026-10-15")), 2)
+        self.assertEqual(len(provider.calls), 2)
+
+    def test_prefetch_does_not_invent_coverage_across_overlap_or_gaps(self):
+        provider = Provider(actions=[event("A", process_date="2026-10-12")])
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions(
+            [
+                ("A", "2026-10-01", "2026-10-10"),
+                ("A", "2026-10-08", "2026-10-15"),
+                ("A", "2026-10-20", "2026-10-25"),
+            ]
+        )
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(len(client.get_corporate_actions("A", "2026-10-11", "2026-10-14")), 1)
+        self.assertEqual(len(provider.calls), 3)
+        client.get_corporate_actions("A", "2026-10-16", "2026-10-19")
+        self.assertEqual(len(provider.calls), 4)
+
+    def test_failed_containing_pagination_never_completes_a_nested_need(self):
+        provider = Provider(actions=[event("A", "one"), event("A", "two")], page_size=1)
+        original = provider.request
+
+        def fail_second_page(url, **kwargs):
+            if "page_token=" in url:
+                raise RuntimeError("incomplete interval")
+            return original(url, **kwargs)
+
+        provider.client.request_json = fail_second_page
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions([("A", "2026-10-01", "2026-10-20"), ("A", "2026-10-05", "2026-10-15")])
+        with self.assertRaisesRegex(RuntimeError, "incomplete interval"):
+            client.get_corporate_actions("A", "2026-10-01", "2026-10-20")
+        before = len(provider.calls)
+        provider.client.request_json = original
+        self.assertEqual(client.get_corporate_actions("A", "2026-10-05", "2026-10-15"), [])
+        self.assertEqual(len(provider.calls), before + 1)
+
     def test_transport_provenance_alone_does_not_reopen_cold_history(self):
         fields = (
             "identities",

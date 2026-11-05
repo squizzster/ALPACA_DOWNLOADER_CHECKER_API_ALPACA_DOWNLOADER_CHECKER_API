@@ -25,6 +25,11 @@ class OperationContext:
         self.summary = None
         self.serving = None
         self._pricing = None
+        # Live-check producer decisions, including differences awaiting repair.
+        # Bound to the accepted summary and generation for this operation only;
+        # a comparison is not an append approval or a durable completion.
+        self.history_comparisons = {}
+        self.history_checks = {}
 
     @traced("accept_store")
     def accept_store(self):

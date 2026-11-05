@@ -12,7 +12,9 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
-VERSION = 3
+from libs.common.provider_http import balanced_batches
+
+VERSION = 4
 BAR_URL = "https://data.alpaca.markets/v2/stocks/bars"
 ASSET_URL = "https://paper-api.alpaca.markets/v2/assets"
 ACTION_URL = "https://data.alpaca.markets/v1/corporate-actions"
@@ -28,7 +30,6 @@ ADJUSTMENTS = {
 }
 NEW_YORK = ZoneInfo("America/New_York")
 PAGE_LIMIT = 10000
-CORPORATE_SYMBOL_LIMIT = 1000
 ASSET_CATALOGUE_MIN_SYMBOLS = 100
 
 
@@ -89,7 +90,10 @@ def _pages(group):
     days = max(
         1, (group["end"].astimezone(NEW_YORK).date() - group["start"].astimezone(NEW_YORK).date()).days + 1
     )
-    return max(1, math.ceil(days * len(group["symbols"]) / PAGE_LIMIT))
+    return sum(
+        max(1, math.ceil(days * len(batch) / PAGE_LIMIT))
+        for batch in balanced_batches(range(len(group["symbols"])))
+    )
 
 
 def _combine(left, right):
@@ -299,7 +303,7 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
                     "sort": "asc",
                 }
                 size = len(ACTION_URL) + 1 + len(urlencode(params)) + 2048
-                while offset < len(symbols) and len(chunk) < min(max_symbols, CORPORATE_SYMBOL_LIMIT):
+                while offset < len(symbols) and len(chunk) < max_symbols:
                     symbol = symbols[offset]
                     added = len(quote(symbol, safe="")) + (3 if chunk else 0)
                     if size + added > max_url_bytes:

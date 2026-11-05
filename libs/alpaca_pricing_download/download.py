@@ -401,6 +401,7 @@ def download_pricing(
     on_check=None,
     expected_source_sha256: str | None = None,
     selected_source_sha256=_SOURCE_NOT_SELECTED,
+    endpoint_selection=None,
     acquisition_evidence_sha256: str | None = None,
     history_correction_id: str | None = None,
     mapping_asof: str | None = None,
@@ -443,12 +444,16 @@ def download_pricing(
         # Acquisition may have run outside this lock. Its selected generation
         # (including explicit absence) must still be current before publication;
         # matching endpoints alone do not establish that concurrency guarantee.
-        if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
+        if selected_source_sha256 is not _SOURCE_NOT_SELECTED or endpoint_selection is not None:
             current_sha256 = digest(json_bytes(previous)) if previous is not None else None
+        if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
             if current_sha256 != selected_source_sha256:
                 raise DownloadError(
                     "pricing source changed after acquisition selection; reselect before retrying"
                 )
+        accepted_endpoints = None
+        if endpoint_selection is not None:
+            accepted_endpoints = endpoint_selection.consume(store, symbol, current_sha256, end_text, asof)
         if previous is None and any(path.name != ".download.lock" for path in root.iterdir()):
             raise DownloadError("ticker directory contains unowned files; refusing acquisition")
         if previous is not None:
@@ -485,7 +490,13 @@ def download_pricing(
                 "history_start": previous.get("history_start", HISTORY_START),
                 "pending_update": read_update(root, published=True),
             }
-        endpoints = read_validator(root, previous) if previous is not None else None
+        endpoints = (
+            accepted_endpoints
+            if endpoint_selection is not None
+            else read_validator(root, previous)
+            if previous is not None
+            else None
+        )
         if endpoints is None:
             endpoints = (
                 _stored_endpoints(root, previous)
@@ -510,9 +521,10 @@ def download_pricing(
             if not any(endpoints.values()):
                 check = "no_stored_sessions"
             else:
-                check = (
-                    "matched" if _endpoints_match(client, symbol, endpoints, asof, cutoff=end) else "mismatch"
-                )
+                matched = endpoint_selection.matched if endpoint_selection is not None else None
+                if matched is None:
+                    matched = _endpoints_match(client, symbol, endpoints, asof, cutoff=end)
+                check = "matched" if matched else "mismatch"
         full_history = previous is None or refresh_all or extending or check == "mismatch"
         restarted = False
         for attempt in range(2):

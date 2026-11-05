@@ -13,7 +13,9 @@ from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import load_labels
 from libs.alpaca_security_lineage.lineage import compact_asset
 from libs.common.debug_trace import traced
+from libs.common.provider_http import balanced_batches
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
+from libs.common.work_scope import compact_selection
 
 from . import storage, universe_state
 from .catalogue import DISCOVERY_EXCHANGES, by_symbol, discovery_labels
@@ -33,6 +35,7 @@ from .work_contract import (
 
 
 @traced("boundaries")
+@compact_selection
 def boundaries(store, registry, *, context=None):
     # TRUST BOUNDARY: accept the compact owners below before choosing work.
     # The index supplies membership/generations; the summary supplies live-check
@@ -116,6 +119,7 @@ def changed_evidence(index, observation, evidence_client, *, excluded=(), work=N
 
 
 @traced("selection")
+@compact_selection
 def select_work(accepted, observation, evidence_client, end_date, *, retry_blocked=False):
     # Selection consumes the accepted in-memory view. DO NOT turn this pass
     # over compact entries into receipt, source-manifest, notice or lock reads
@@ -352,6 +356,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
 
 
 @traced("plan_estimates")
+@compact_selection
 def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     # Estimates describe accepted work and conditional expansion, not permission
     # to execute it or a reason to probe each ticker to improve an estimate.
@@ -410,6 +415,14 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     def count(plans):
         return sum(len(step["actions"]) for plan in plans for step in plan["steps"])
 
+    def batches(plans):
+        return sum(
+            len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
+            for plan in plans
+            for step in plan["steps"]
+            for action in step["actions"]
+        )
+
     def pages(plans):
         total = 0
         for plan in plans:
@@ -425,7 +438,10 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
                             max(end.date(), start.date() + timedelta(days=1)).isoformat(),
                         ).session_count,
                     )
-                    total += max(1, ceil(sessions * len(params["symbols"].split(",")) / params["limit"]))
+                    total += sum(
+                        max(1, ceil(sessions * len(batch) / params["limit"]))
+                        for batch in balanced_batches(params["symbols"].split(","))
+                    )
         return total
 
     return {
@@ -471,10 +487,10 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "append_actions_before_reconciliation": count(append_plans),
             "http_pages_minimum": metadata_requests
             + bool(late_bar_sessions)
-            + count([history])
-            + count(plans)
-            + count(empty_plans)
-            + count(append_plans),
+            + batches([history])
+            + batches(plans)
+            + batches(empty_plans)
+            + batches(append_plans),
             "http_pages_dense_history_estimate": metadata_requests
             + late_bar_sessions
             + pages([history])

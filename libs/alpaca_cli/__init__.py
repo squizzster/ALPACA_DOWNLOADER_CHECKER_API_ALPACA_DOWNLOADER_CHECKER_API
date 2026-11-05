@@ -21,10 +21,11 @@ from libs.alpaca_security_lineage.alpaca_http import AlpacaIdentityClient
 from libs.common.debug_trace import DebugTrace, enabled, event, span, trace_http, traced
 from libs.common.debug_trace import progress_callback as debug_progress
 from libs.common.store_lock import StoreBusyError, operation_lock
+from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 30
+VERSION = 31
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -633,7 +634,7 @@ def main(argv=None):
         event("command_error", error_type=type(error).__name__)
         finish("error", 3, error=error)
         return 3
-    except (RuntimeError, OSError, ValueError, csv.Error) as error:
+    except (UnexpectedStoreWork, RuntimeError, OSError, ValueError, csv.Error) as error:
         event("command_error", error_type=type(error).__name__)
         finish("error", 1, error=error)
         return 1

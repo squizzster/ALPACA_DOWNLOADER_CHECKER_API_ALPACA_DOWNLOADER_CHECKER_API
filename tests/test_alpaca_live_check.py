@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from libs.alpaca_pricing_download import live_check
 from libs.alpaca_pricing_download.contract import FIELDS
+from libs.common.debug_trace import DebugTrace
 
 
 def bar(day="2026-10-14", **changes):
@@ -34,6 +35,7 @@ def entry(symbol, day="2026-10-14", asof="2026-10-15"):
         "asof": asof,
         "end_exclusive": "2026-10-15T00:00:00Z",
         "last_all": [str(values[key]) for key in FIELDS],
+        "first_all": [str(values[key]) for key in FIELDS],
     }
 
 
@@ -42,6 +44,163 @@ def snapshot(*entries):
 
 
 class LiveCheckTests(unittest.TestCase):
+    def test_debug_names_each_missing_endpoint_without_truncating_the_roster(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            trace = DebugTrace(path)
+            try:
+                with trace.activate():
+                    result = live_check.verify(
+                        snapshot(*(entry(f"S{i}") for i in range(12))), lambda params: {"bars": {}}
+                    )
+            finally:
+                trace.close("complete", 0)
+            events = [json.loads(line) for line in path.read_text().splitlines()]
+            missing = [item["details"] for item in events if item["stage"] == "missing_history_endpoint"]
+            self.assertEqual(sorted(missing, key=lambda item: item["symbol"]), result["missing_endpoints"])
+            self.assertEqual(len(missing), 12)
+
+    def test_414_singleton_empty_result_does_not_trigger_another_probe(self):
+        calls = []
+
+        def get_page(params):
+            calls.append(dict(params))
+            if "," in params["symbols"]:
+                raise urllib.error.HTTPError("https://example.test", 414, "too long", {}, None)
+            return {"bars": {}}
+
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
+        self.assertEqual([p["symbols"] for p in calls], ["A,B", "A", "B"])
+        self.assertEqual(result["missing"], ["A", "B"])
+        self.assertNotIn("omission_probes", result["requests"])
+
+    def test_omitted_endpoint_confirmation_exhausts_pages_and_compares_changed_value(self):
+        calls = []
+
+        def get_page(params):
+            calls.append(dict(params))
+            if params["symbols"] == "A,B":
+                return {"bars": {"B": [bar()]}}
+            if "page_token" not in params:
+                return {"bars": {}, "next_page_token": "last"}
+            return {"bars": {"A": [bar(c=Decimal("99"))]}, "next_page_token": None}
+
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["matched"], ["B"])
+        self.assertEqual(result["stats"]["differed"], 1)
+        self.assertEqual(result["differences"][0]["fields"]["close"]["live"], "99")
+        self.assertEqual([p["symbols"] for p in calls], ["A,B", "A", "A"])
+        self.assertEqual(result["requests"]["page_requests"], 3)
+
+    def test_batch_omission_probes_only_the_missing_known_endpoint(self):
+        a, b = entry("A"), entry("B")
+        a["first_all"] = b["first_all"] = entry("X", "2016-07-05")["last_all"]
+        calls = []
+
+        def get_page(params):
+            calls.append(dict(params))
+            symbols = params["symbols"].split(",")
+            day = params["start"][:10]
+            return {
+                "bars": {
+                    s: [bar(day)] for s in symbols if not (s == "A" and len(symbols) > 1 and day == "2016-07-05")
+                }
+            }
+
+        result = live_check.verify(snapshot(a, b), get_page)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["matched"], ["A", "B"])
+        self.assertEqual(len(calls), 3, calls)
+        self.assertEqual(calls[-1], {**calls[0], "symbols": "A"})
+        self.assertEqual(result["requests"]["omission_probes"], 1)
+        self.assertEqual(result["requests"]["omission_recovered"], 1)
+
+    def test_omission_confirmation_is_bounded_and_reports_exact_missing_endpoint(self):
+        calls = []
+
+        def get_page(params):
+            calls.append(dict(params))
+            return {"bars": {}}
+
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
+        self.assertFalse(result["complete"])
+        self.assertEqual([p["symbols"] for p in calls], ["A,B", "A", "B"])
+        self.assertEqual(result["matched"], [])
+        self.assertEqual(
+            result["missing_endpoints"],
+            [
+                {"symbol": s, "endpoint": "first_and_last", "session": "2026-10-14", "asof": "2026-10-15"}
+                for s in ("A", "B")
+            ],
+        )
+
+    def test_failed_omission_confirmation_does_not_discard_a_matching_peer(self):
+        for failure in ("http", "pagination", "unexpected_symbol", "duplicate"):
+            with self.subTest(failure=failure):
+                calls = []
+
+                def get_page(params):
+                    calls.append(dict(params))
+                    if params["symbols"] == "A,B":
+                        return {"bars": {"A": [bar()]}}
+                    if failure == "http":
+                        raise urllib.error.HTTPError("https://example.test", 400, "bad request", {}, None)
+                    if failure == "pagination":
+                        return {"bars": {}, "next_page_token": "same"}
+                    if failure == "unexpected_symbol":
+                        return {"bars": {"A": [bar()]}}
+                    return {"bars": {"B": [bar(), bar()]}}
+
+                result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
+                self.assertEqual(result["matched"], ["A"])
+                self.assertEqual(result["stats"]["failed"], 1)
+                self.assertEqual(result["missing"], [])
+                self.assertEqual(result["failures"][0]["symbols"], ["B"])
+                self.assertTrue(all(p["symbols"] == "B" for p in calls[1:]))
+
+    def test_failed_batch_is_not_reinterpreted_as_an_omission(self):
+        calls = []
+
+        def get_page(params):
+            calls.append(dict(params))
+            return {"bars": {}, "next_page_token": "same"}
+
+        result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
+        self.assertEqual(result["stats"]["failed"], 2)
+        self.assertEqual([p["symbols"] for p in calls], ["A,B", "A,B"])
+
+    def test_first_last_windows_stay_exact_and_multiple_differences_count_one_symbol(self):
+        a, b = entry("A"), entry("B")
+        a["first_all"] = b["first_all"] = entry("X", "2016-07-05")["last_all"]
+        calls = []
+
+        def get_page(params):
+            calls.append(params)
+            day = params["start"][:10]
+            return {"bars": {"A": [bar(day, c=Decimal("99"))], "B": [bar(day)]}}
+
+        result = live_check.verify(snapshot(a, b), get_page)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["stats"]["checked"], 2)
+        self.assertEqual(result["stats"]["matched"], 1)
+        self.assertEqual(result["stats"]["differed"], 1)
+        self.assertEqual({item["endpoint"] for item in result["differences"]}, {"first", "last"})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({p["start"][:10] for p in calls}, {"2016-07-05", "2026-10-14"})
+        self.assertTrue(all(p["start"][:10] == p["end"][:10] and p["adjustment"] == "all" for p in calls))
+
+    def test_missing_first_endpoint_cannot_approve_matching_last(self):
+        value = entry("A")
+        value["first_all"] = entry("A", "2016-07-05")["last_all"]
+        result = live_check.verify(
+            snapshot(value),
+            lambda params: {"bars": {"A": [] if params["start"][:10] == "2016-07-05" else [bar()]}},
+        )
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["stats"]["matched"], 0)
+        self.assertEqual(result["missing"], ["A"])
+
     def test_plan_batches_exact_dates_and_saved_identity_mapping(self):
         value = snapshot(
             entry("C"), entry("A"), entry("B"), entry("D", asof="2026-10-17"), entry("E", "2026-10-13")
@@ -96,7 +255,7 @@ class LiveCheckTests(unittest.TestCase):
             patch.object(Path, "iterdir", side_effect=AssertionError("directory scan")),
         ):
             result = live_check.verify(value, get_page)
-        self.assertEqual(calls, ["A,B,C,D"])
+        self.assertEqual(calls, ["A,B,C,D", "D"])
         self.assertEqual(
             result["stats"],
             {
@@ -185,7 +344,9 @@ class LiveCheckTests(unittest.TestCase):
         result = live_check.verify(snapshot(entry("A"), entry("B")), get_page)
         self.assertTrue(result["complete"])
         self.assertEqual(result["stats"]["matched"], 2)
-        self.assertEqual(result["requests"], {"planned_batches": 1, "page_requests": 3, "oversize_splits": 1})
+        self.assertEqual(
+            result["requests"], {"planned_batches": 1, "page_requests": 3, "oversize_splits": 1, "batches": 3}
+        )
 
     def test_terminal_http_error_does_not_split_or_claim_missing(self):
         def get_page(parameters):

@@ -74,7 +74,8 @@ class CheckSummaryTests(unittest.TestCase):
         self.assertEqual(result["tickers"], 1)
         self.assertEqual(result["sha256"], digest(json_bytes(current["entries"])))
         entry = current["entries"][0]
-        self.assertEqual(set(entry), {"symbol", "asof", "end_exclusive", "last_all"})
+        self.assertEqual(set(entry), {"symbol", "asof", "end_exclusive", "last_all", "first_all"})
+        self.assertEqual(entry["first_all"][0], "2026-10-01T05:00:00Z")
         self.assertEqual(entry["asof"], "2026-10-14")
         self.assertEqual(entry["end_exclusive"], "2026-10-14T00:00:00Z")
         self.assertEqual(entry["last_all"][0], "2026-10-02T05:00:00Z")
@@ -220,6 +221,29 @@ class CheckSummaryTests(unittest.TestCase):
         projection.rebuild(self.store)
         self.assertEqual(len(self.read()["entries"]), 1)
 
+    def test_v2_recovery_finishes_without_lending_incomplete_endpoints(self):
+        with sqlite3.connect(summary.summary_path(self.store)) as db:
+            db.execute("ALTER TABLE entries DROP COLUMN first_all")
+            db.execute("PRAGMA user_version=2")
+        with self.assertRaisesRegex(DownloadError, "summary rebuild"):
+            self.read()
+        selected = summary.selected_inputs(self.store, ["GOOG"])
+        self.assertFalse(selected["complete"])
+        self.assertEqual(selected["entries"], {})
+        with patch.object(pricing_storage, "_finish_publication", side_effect=OSError("interruption")):
+            with self.assertRaisesRegex(OSError, "interruption"):
+                self.download(rows=[bar("2026-10-01", "50"), self.rows[-1]])
+        self.assertEqual(summary.pending_symbols(self.store), ["GOOG"])
+        with patch.object(FakeClient, "fetch", side_effect=AssertionError("recovery provider request")):
+            self.assertTrue(self.download()["recovered"])
+        with self.assertRaisesRegex(DownloadError, "summary rebuild"):
+            self.read()
+        self.build()
+        before = snapshot(self.store / "end_of_day")
+        projection.rebuild(self.store)
+        self.assertEqual(snapshot(self.store / "end_of_day"), before)
+        self.assertEqual(self.read()["entries"][0]["first_all"][1], "50")
+
     def test_concurrent_publication_during_rebuild_cannot_be_overwritten(self):
         entries = self.read()["entries"]
         token = summary.begin_rebuild(self.store)
@@ -267,13 +291,13 @@ class CheckSummaryTests(unittest.TestCase):
         other["last_all"][0] = "2026-10-03T00:00:00Z"  # Still October 2 in New York.
         summary.replace_entries(self.store, {"OTHER": other})
         result = summary.describe(self.read())
-        self.assertEqual((result["tickers"], result["last_session_dates"], result["query_groups"]), (2, 1, 2))
+        self.assertEqual((result["tickers"], result["last_session_dates"], result["query_groups"]), (2, 1, 4))
 
     def test_invalid_summary_rows_fail_closed_and_have_only_owned_fact_columns(self):
         with sqlite3.connect(summary.summary_path(self.store)) as db:
             self.assertEqual(
                 [row[1] for row in db.execute("PRAGMA table_info(entries)")],
-                ["symbol", "asof", "end_exclusive", "last_all"],
+                ["symbol", "asof", "end_exclusive", "last_all", "first_all"],
             )
             db.execute("UPDATE entries SET last_all='[\"bad\"]'")
         with self.assertRaisesRegex(DownloadError, "invalid pricing check row"):

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from libs import alpaca_cli
 from libs.common.debug_trace import DebugTrace, in_context, progress_callback, trace_http, traced
 from libs.common.store_lock import StoreBusyError
+from libs.common.work_scope import UnexpectedStoreWork
 
 
 class DebugTraceTests(unittest.TestCase):
@@ -116,6 +117,7 @@ class DebugTraceTests(unittest.TestCase):
             (ValueError("invalid"), 1, "error"),
             (OSError("unreadable"), 1, "error"),
             (StoreBusyError("busy"), 3, "error"),
+            (UnexpectedStoreWork("unexpected selection"), 1, "error"),
             (KeyboardInterrupt(), 130, "aborted"),
             (SystemExit(2), 2, "aborted"),
         ):

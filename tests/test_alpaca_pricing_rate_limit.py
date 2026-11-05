@@ -169,8 +169,10 @@ class PricingRateLimitTests(unittest.TestCase):
         for count in (1, 2000, 8000):
             with self.subTest(symbols=count):
                 clock = FakeClock()
+                timeouts = []
 
-                def opener(*_args, **_kwargs):
+                def opener(*_args, timeout):
+                    timeouts.append(timeout)
                     raise HTTPError("https://example.invalid", 504, "timeout", {"Retry-After": "0"}, None)
 
                 client = clock.client(opener=opener)
@@ -182,6 +184,7 @@ class PricingRateLimitTests(unittest.TestCase):
                 self.assertIn("S0/raw" if count == 1 else f"{count} symbols/raw", outcome["error"])
                 self.assertLess(len(outcome["error"]), 200)
                 self.assertEqual(client.request_count, 6)
+                self.assertEqual(timeouts, [300] * 6)
 
     def test_zero_retry_after_cannot_bypass_shared_minute_budget(self):
         clock = FakeClock()
