@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 31
+VERSION = 32
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -308,10 +308,13 @@ def dispatch(args):
     # CLI dispatch delegates to domain owners. DO NOT add receipt/payload audits
     # or independent work selection here; accepted handoffs belong to those owners.
     from .command_progress import count_callback, progress_callback
+    from .update_eta import UpdateEstimate, measured_request
 
     reporter = getattr(args, "_lifecycle", None)
-    progress = debug_progress(progress_callback(reporter))
     command, operation = args.command, getattr(args, "operation", None)
+    estimate = UpdateEstimate() if reporter is not None and command == "update" and not args.plan else None
+    reported_progress = progress_callback(reporter, estimate=estimate)
+    progress = debug_progress(reported_progress)
     if command in {"read", "resolve"}:
         from alpaca_end_of_day.standalone_cli import run_arguments
 
@@ -431,6 +434,8 @@ def dispatch(args):
     if command == "update":
         end = _pricing_end(args)
         pricing, identity = clients()
+        if estimate is not None and callable(getattr(pricing, "_get", None)):
+            pricing._get = measured_request(pricing._get, reported_progress)
         from libs.alpaca_lineage_build.universe_update import plan_update, run_update
 
         if args.plan:

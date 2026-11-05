@@ -10,7 +10,7 @@ Every command in `alpaca-cli-eod` and `alpaca-lineage-lab` uses the shared lifec
 The `maintenance` stage handles existing eligible summary members before discovery; `maintenance_after_discovery`
 handles newly eligible or invalidated members and late-bar work. Reused checks issue no additional comparison
 requests. The final `complete` value includes both stages and serving completion.
-Estimate fields are conditional, not an ETA or a guarantee of total requests; see
+Work-plan fields are conditional, not a guarantee of total requests; see
 [preview scope](operations.md#daily-update). Published unresolved identity may be completed processing.
 
 `status` is offline/read-only; missing/incomplete boundaries report blockers and reconstruction commands:
@@ -105,10 +105,28 @@ Only initial `INIT` includes `ai_agent_read_this`: monitor heartbeats; use other
 is over 10 seconds late; derive reports from heartbeat messages; update the user at each heartbeat unless directed
 otherwise. Later records omit it even if the held phase remains `INIT`.
 
-`context.estimated_remaining_seconds` is `"TBD"` when there is no producer estimate. CSV export supplies an
-approximate estimate from completed identities; numeric estimates are whole seconds. Other commands do not
-recalculate estimates or infer completion from elapsed time. Initial 10-second heartbeat always displays
+`context.estimated_remaining_seconds` is `"TBD"` when there is no estimate. CSV export supplies an
+approximate estimate from completed identities; numeric estimates are whole seconds. Initial 10-second heartbeat always displays
 `"TBD"`, regardless of phase or an available estimate. This overrides display only; later heartbeats retain the estimate.
+
+Daily execution also estimates the remaining **known pricing requests**, identified by
+`eta_scope: "known_pricing_requests"` and `eta_status: "conditional"`. After eight completed page calls,
+the midpoint and `estimated_remaining_lower_seconds` / `estimated_remaining_upper_seconds` combine the
+accepted work-plan assumptions with recent and invocation-wide wall-time throughput, bounded by the shared
+request-rate limit. Worker durations are not added together. Completed calls include their own retries and
+rate waits; a failed call withdraws the numeric estimate. Request counters update held progress without
+changing the phase or heartbeat cadence, and work without debug receives the same reporting.
+
+The exact late-bar request plan replaces its provisional selection estimate. Newly selected request plans
+extend an exhausted estimate. These are conditional estimates, not duration limits: later metadata,
+corrections, dependencies and publication work may extend the command. They do not estimate unknown provider
+work or unmeasured local work. Stalls hold the last observation until another callback arrives; subsequent
+measurements incorporate the delay. Completed/selected counters additionally supply
+`estimated_phase_remaining_seconds` and `eta_phase` after observed progress in that phase; a different phase
+or reset counter starts a new measurement. A completed component does not set the command estimate to zero.
+Exhausted request estimates return `TBD` until more scope is known; only successful data-update completion
+reports zero with `eta_scope: "data_update"`. Subsequent registry Git work has its own lifecycle.
+The estimator reads no store, debug file or provider endpoint and persists no timing cache.
 
 Canonical phase definitions and adapters live in
 [command_progress.py](../libs/alpaca_cli/command_progress.py): `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,

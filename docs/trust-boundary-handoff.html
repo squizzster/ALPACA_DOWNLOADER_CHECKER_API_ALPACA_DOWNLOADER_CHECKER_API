@@ -41,7 +41,10 @@ In particular, a passing suite does not close the remaining historical attributi
 <li>Locked pricing views are retained for their lifetime; acknowledgement batches bind store, process,
 thread and transaction lifetime, reject newer obligations and roll back before commit.</li>
 <li>HTTP producers reject credential-bearing redirects and malformed metadata completion envelopes.</li>
-<li>Heartbeats retain accepted work estimates, completion counts, selected scope and request totals.</li>
+<li>Heartbeats retain accepted work estimates, completion counts, selected scope and request totals.
+Daily updates estimate remaining known pricing requests from those plans and observed wall-time throughput;
+phase estimates use existing completed/selected counts. Reporting adds no store/provider reads or timing cache,
+keeps uncertainty explicit and does not equate an exhausted request estimate with command completion.</li>
 <li>Compact planning rejects ticker-owner I/O. Execution aborts before unselected owner-path access;
 completed metadata and serving component selections explicitly extend its allowed scope.</li>
 <li>Eligible summary members complete approved maintenance before discovery advances dependencies; later phases
@@ -69,6 +72,10 @@ with synthetic HTTP responses, the 3,386-symbol daily check, empty histories, re
 414 fallback and logical-action failure. <a href="../tests/test_alpaca_data_api_solver.py">test_alpaca_data_api_solver.py</a>
 retains ordering, delivery and response-lifetime regressions. These checks do not establish production latency
 or close F15's broader coverage limits.</p>
+<p>Reporting regressions in <a href="../tests/test_alpaca_update_eta.py">test_alpaca_update_eta.py</a>
+cover concurrent request measurement, failed calls, changed request scope, counter resets, heartbeat cadence
+and synthetic update parity through serving. The estimate covers known pricing requests and separately measured
+phases; unselected future work and unmeasured local stages remain outside its numerical range.</p>
 <h2>Live verification and limits</h2>
 <p>The subsequent authorized update with debug and without a separate plan run completed through the
 November 2, 2026 session in 1,256.5 seconds, with zero failures and zero pending work.
@@ -85,19 +92,21 @@ Recovery of the changes below is verified synthetically. A production restart co
 compact selection, then exhausted six attempts on its first 3,386-symbol exact endpoint batch. An identical
 read-only request returned HTTP 504 with a backend timeout; smaller requests completed. A replay using the
 enlarged client timeout still received the backend failure before that timeout. The updater was
-interrupted cleanly before pricing or lineage publication. Successful production completion and a controlled
-live throughput comparison remain unverified.</p>
+interrupted cleanly before pricing or lineage publication. That attempt did not establish production completion;
+a controlled live throughput comparison remains unperformed.</p>
 <p>A bounded read-only live MSGS check exercised exact endpoint planning in all eight retained views: sixteen
 requests returned sixteen matching rows. The revised daily first/latest check then used only the fully adjusted
 view: two requests returned two matching rows, with no pricing publication. This verifies those provider
 requests and comparisons, not universe throughput or every security.</p>
-<p>The latest interrupted advancing-cutoff run checked 9,413 symbols: 9,354 matched, 26 differed and 33 had
+<p>An interrupted advancing-cutoff run checked 9,413 symbols: 9,354 matched, 26 differed and 33 had
 missing endpoints, with no request failures. Controlled read-only replays reproduced all 33 first-endpoint
 omissions in their original rosters; reduced rosters returned all 66 first/latest observations. The original
 run did not save response bodies. One controlled two-symbol case isolated companion-dependent suppression.
 The failed check also discarded completed comparisons, reproduced through a synthetic complete update.
-F25–F26 cover those defects and adjacent partial-publication cases. Production completion with these repairs
-remains unverified; the updater is stopped.</p>
+F25–F26 cover those defects and adjacent partial-publication cases. A subsequent debug update with these repairs
+completed pricing, lineage and serving through November 3, 2026, with zero failures and pending work and all
+33 omissions recovered. Its trace closed every started span. That run also exposed a bounded loss of accepted
+metadata between recovery and discovery; that repeated acquisition remains a coverage gap under F15.</p>
 <p>The <a href="technical-contracts.md#pricing-acquisition-and-continuation">pricing transport contract</a>
 distinguishes the client socket timeout from an earlier provider failure. Owning regressions exercise slow
 paginated responses without redundant requests, bounded timeout retries and preserved HTTP 504 classification:

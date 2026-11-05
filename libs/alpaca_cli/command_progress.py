@@ -1,6 +1,7 @@
 """Translate existing command observations into the shared stderr protocol."""
 
 import json
+import threading
 
 from libs.alpaca_heartbeat import Phase
 
@@ -45,6 +46,15 @@ FIELDS.update(
     {name: str for name in ("stage", "state", "symbol", "status", "unit", "end_exclusive", "path", "commit")}
 )
 FIELDS.update(seconds=(int, float), complete=bool, estimated_remaining_seconds=(int, str))
+FIELDS.update(
+    estimated_remaining_lower_seconds=int,
+    estimated_remaining_upper_seconds=int,
+    eta_pricing_pages_completed=int,
+    eta_scope=str,
+    eta_status=str,
+    estimated_phase_remaining_seconds=int,
+    eta_phase=str,
+)
 EXPECTED_FIELDS = (
     "boundary_reads",
     "selected_pricing_manifests",
@@ -109,14 +119,29 @@ def hold_operation(reporter, args):
         )
 
 
-def progress_callback(reporter):
+def progress_callback(reporter, *, estimate=None):
     if reporter is None:
         return None
 
     expected_context = {}
+    latest = None
+    lock = threading.RLock()
 
-    def progress(stage, values):
+    def observe(stage, values):
+        nonlocal latest
         try:
+            if stage == "eta_request":
+                if estimate is None:
+                    return False
+                estimate.request(values)
+                if latest is None:
+                    return False
+                phase, message, context, counts = latest
+                return reporter.update(
+                    phase, message=message, context={**context, **estimate.context()}, **counts
+                )
+            if estimate is not None:
+                estimate.observe(stage, values)
             phase = "UPDATE"
             for fragment, candidate in (
                 ("recovery", "RECOVERY"),
@@ -171,7 +196,9 @@ def progress_callback(reporter):
             message = stage.replace("_", " ").capitalize()
             if values.get("state") == "completed" or stage.endswith("_complete"):
                 message += " component completed"
-            accepted = reporter.update(phase, message=message + ".", context=context, **counts)
+            latest = phase, message + ".", context, counts
+            displayed = {**context, **estimate.context()} if estimate is not None else context
+            accepted = reporter.update(phase, message=message + ".", context=displayed, **counts)
             if isinstance(expected, dict):
                 # Selection emits this before acquisition/publication, even if the
                 # next timed heartbeat would otherwise miss the planning phase.
@@ -179,6 +206,12 @@ def progress_callback(reporter):
             return accepted
         except Exception:
             return False
+
+    def progress(stage, values):
+        # Request workers may report concurrently with a producer phase change.
+        # Serialize only in-memory reporting; never hold this lock over HTTP.
+        with lock:
+            return observe(stage, values)
 
     return progress
 

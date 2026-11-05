@@ -156,5 +156,10 @@
     "modifications": [
       "Report an unexpected selected-storage expansion as a terminal command failure, releasing owner locks and closing debug spans instead of treating it as a recoverable ticker error."
     ]
+  },
+  {
+    "modifications": [
+      "Report conditional remaining pricing-request estimates from accepted work plans and observed wall-time throughput, refining late-bar plans without extra storage/provider reads; preserve heartbeat cadence and distinguish component work from completed updates."
+    ]
   }
 ]
