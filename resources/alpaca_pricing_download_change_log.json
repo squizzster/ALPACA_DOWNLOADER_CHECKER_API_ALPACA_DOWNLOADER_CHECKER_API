@@ -232,5 +232,10 @@
       "Restore ordered empirical adjustment acquisition: raw then all, then only the dividend/split/spin-off views required by the recorded equivalence patterns, with all-eight fallback for unrecognized observations or contradictory presence. Apply it to initial histories, selected replacements and approved suffixes while retaining exact request windows, pagination, bounded retries and producer confirmations only for directly acquired new full-history views.",
       "Carry completed normalized observations and the completed adjustment decision across acquisition/publication and exact transport fallback without repeated requests, hashes or policy calculations. Record scoped acquisition provenance in the source and debug trace; preserve retained-history approvals, generation rejection, publication recovery and all eight logical outputs."
     ]
+  },
+  {
+    "modifications": [
+      "Extend adaptive acquisition to policy alpaca_adjustment_equivalence_v2: when dividend equals all, acquire split directly and finish after four views for ordinary equality, a separate split view or split equal to all. Preserve exact split values and infer split,spin-off from that observation while retaining the empirical raw/spin-off and dividend-combination aliases. Preserve completed responses, retained-history approvals, first-session confirmation scope, publication recovery and pricing-31 compatibility."
+    ]
   }
 ]

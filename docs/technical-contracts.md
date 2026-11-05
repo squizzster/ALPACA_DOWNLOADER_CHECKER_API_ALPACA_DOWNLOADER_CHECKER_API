@@ -60,11 +60,16 @@ replacement. This boundary does not detect every interior correction. Replacemen
 sessions. Authorities: [download_pricing / publish_acquired](../libs/alpaca_pricing_download/download.py),
 [HTTP execution](../libs/alpaca_pricing_download/http.py), [completed responses](../libs/alpaca_pricing_download/responses.py).
 
-New-range acquisition uses the restored `alpaca_adjustment_equivalence_v1` empirical policy in
+New-range acquisition uses the `alpaca_adjustment_equivalence_v2` empirical policy in
 [adjustment_policy.py](../libs/alpaca_pricing_download/adjustment_policy.py). It requests `raw`, then `all`.
 Equality of their complete newly acquired payloads selects the all-equal pattern after two views. Otherwise,
-`dividend`, then the required split/spin-off observations distinguish the recorded three-, four- and five-view
-patterns. Unrecognized observed patterns fetch the remaining views; contradictory empty/nonempty responses
+`dividend`, then the required split/spin-off observations distinguish the recorded four- and five-view patterns.
+When `dividend` equals `all`, a direct `split` observation completes the four-view branch even if it differs
+from `raw` or coincides with `all`. The remaining aliases are `spin-off` from `raw`, `split,spin-off` from
+`split`, and both dividend combination views from the equal `dividend`/`all` observations. Direct responses
+retain their exact values, including precision differences; the policy applies no rounding or tolerance.
+These aliases remain empirical assumptions and do not establish the economic cause of a difference.
+Unrecognized observed patterns fetch the remaining views; contradictory empty/nonempty responses
 also require all eight direct observations. Counts describe view acquisitions, excluding pagination, retries
 and producer confirmations. The policy infers unrequested views from its empirical patterns; it does not prove
 the absence of an anomaly confined to an unrequested view. Both `raw` and `all` are always direct observations.
@@ -77,6 +82,7 @@ the policy. A fresh scope makes its own decision; old payloads and endpoint appr
 All eight logical views remain available through the existing publication representation. The source's optional
 `latest_adjustment_acquisition` records the latest range/mapping, policy, observed hashes and inferred aliases;
 it is provenance for that acquisition, not authorization to infer later ranges or reinterpret retained partitions.
+Earlier acquisition policy provenance remains readable and does not invalidate completed retained pricing.
 New full histories and selected replacements confirm only directly acquired views at their first session.
 Approved appends retain their existing no-historical-confirmation rule. Debug emits the completed selection;
 stage progress counts each HTTP page once. Planning minima assume two views while action/dense-history estimates

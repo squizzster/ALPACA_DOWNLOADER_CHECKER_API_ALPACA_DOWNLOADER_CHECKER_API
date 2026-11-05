@@ -14,7 +14,7 @@ from .contract import ADJUSTMENTS, BarsSymbolUnavailable, DownloadError, csv_byt
 from .failures import AcquisitionFailure
 from .responses import CompletedBars, completed_bars
 
-POLICY = "alpaca_adjustment_equivalence_v1"
+POLICY = "alpaca_adjustment_equivalence_v2"
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-"""Restored alpaca_adjustment_equivalence_v1 empirical decision tree.
+"""Ordered alpaca_adjustment_equivalence_v2 empirical decision tree.
 
 Only complete newly acquired payload hashes are observations. Historical
 endpoint approvals neither infer view equality nor enter this decision tree.
@@ -14,6 +14,15 @@ _PATTERN_GROUPS = {
     "dividend_only": (
         ("raw", "split", "spin-off", "split,spin-off"),
         ("dividend", "split,dividend", "dividend,spin-off", "all"),
+    ),
+    "dividend_with_separate_split": (
+        ("raw", "spin-off"),
+        ("split", "split,spin-off"),
+        ("dividend", "split,dividend", "dividend,spin-off", "all"),
+    ),
+    "dividend_with_split_equal_all": (
+        ("raw", "spin-off"),
+        ("split", "dividend", "split,dividend", "split,spin-off", "dividend,spin-off", "all"),
     ),
     "split_only": (
         ("raw", "dividend", "spin-off", "dividend,spin-off"),
@@ -171,7 +180,30 @@ def decide_adaptive_adjustment_downloads(
     if "dividend" not in observed:
         return AdaptiveAdjustmentDecision(next_adjustments=("dividend",))
     if observed["dividend"] == observed["all"]:
-        return _complete_known_pattern("dividend_only", observed) or _fallback_decision(observed)
+        # Equal dividend/all does not establish raw/split equality: the provider
+        # can preserve different precision in split views. Acquire that range
+        # directly and retain its values, without a rounding/tolerance transform.
+        if "split" not in observed:
+            return AdaptiveAdjustmentDecision(next_adjustments=("split",))
+        for pattern in ("dividend_only", "dividend_with_separate_split", "dividend_with_split_equal_all"):
+            if _pattern_matches_observations(pattern, observed):
+                # All four representatives were directly observed. Preserve
+                # split's own provenance even when it equals raw or all.
+                return AdaptiveAdjustmentDecision(
+                    next_adjustments=(),
+                    pattern=pattern,
+                    source_adjustments=(
+                        ("raw", "raw"),
+                        ("split", "split"),
+                        ("dividend", "dividend"),
+                        ("spin-off", "raw"),
+                        ("split,dividend", "all"),
+                        ("split,spin-off", "split"),
+                        ("dividend,spin-off", "dividend"),
+                        ("all", "all"),
+                    ),
+                )
+        return _fallback_decision(observed)
 
     if observed["dividend"] == observed["raw"]:
         if "spin-off" not in observed:
