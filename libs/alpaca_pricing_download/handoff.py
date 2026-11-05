@@ -9,6 +9,7 @@ from .storage import (
     STORE_DOCUMENT,
     acknowledge_update,
     load_source,
+    read_artifact,
     read_document,
     read_update,
     regular_path,
@@ -49,7 +50,11 @@ def load_published_boundary(root: Path, source: dict, kind: str, *, selected=Fal
         filename = entry["file"]
         if filename not in decoded:
             decoded[filename] = decode_csv(
-                regular_path(root, str(parent / filename), published=True).read_bytes()
+                read_artifact(
+                    regular_path(root, str(parent / filename), published=True),
+                    purpose="selected_payload",
+                    selector_sha256=reference["sha256"],
+                )
             )
         views[entry["adjustment"]] = decoded[filename]
     return views

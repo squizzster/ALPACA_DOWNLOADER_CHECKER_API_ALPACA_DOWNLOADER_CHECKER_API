@@ -179,15 +179,13 @@ class UpdateObligationRecoveryTests(unittest.TestCase):
                 if boundary == "run_lineage":
                     self.assertFalse(full_requests(case))
 
-    def test_wrapped_retained_symbol_rejection_stays_blocked_after_retry_delay(self):
+    def test_retained_suffix_rejection_stays_blocked_after_retry_delay(self):
         with fixture() as case:
             catalogue(case, asset("AAA"), asset("PARTIAL"))
             case.live["PARTIAL"] = [bar("2026-10-16")]
 
             def partial(params):
                 response = case.page(params)
-                if params["adjustment"] == "all":
-                    response["bars"].pop("PARTIAL", None)
                 return response
 
             with patch.object(case.pricing, "_get", side_effect=partial):
@@ -195,17 +193,19 @@ class UpdateObligationRecoveryTests(unittest.TestCase):
             attempts = []
 
             def reject(params):
-                if "PARTIAL" in params["symbols"].split(",") and params["start"][:10] == "2026-10-01":
+                if "PARTIAL" in params["symbols"].split(",") and params["start"][:10] == "2026-10-17":
                     attempts.append(params)
                     raise BarsSymbolUnavailable("PARTIAL", 400)
                 return partial(params)
 
-            with patch.object(case.pricing, "_get", side_effect=reject):
+            with (
+                patch.object(case.pricing, "_get", side_effect=reject),
+                patch("libs.alpaca_pricing_download.append.MAX_SYMBOLS", 1),
+            ):
                 self.assertFalse(case.update("2026-10-20")["complete"])
                 work = universe_state.read_state(case.store)["work"]["PARTIAL"]
                 self.assertEqual(work["status"], "blocked")
                 self.assertEqual(work["outcome"]["outcome"]["outcome"], "invalid_symbol")
-                self.assertIn("established pricing acquisition", work["outcome"]["outcome"]["error"])
                 before = len(attempts)
                 with patch.object(universe_state, "now_utc", return_value="2099-01-01T00:00:00+00:00"):
                     self.assertFalse(case.update("2026-10-20")["complete"])

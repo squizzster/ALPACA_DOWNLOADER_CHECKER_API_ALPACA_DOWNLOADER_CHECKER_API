@@ -630,13 +630,13 @@ class DurableMaintenanceTests(unittest.TestCase):
         self.assertEqual(result["checked_tickers"], 2)
         self.assertEqual(result["bbb_stored_closes"], ["50"] * 3)
 
-    def test_partial_adjustment_history_is_maintained_outside_summary(self):
+    def test_missing_all_baseline_fails_closed_without_redownloading_other_views(self):
         result = partially_populated_active_source_stalls()
         self.assertEqual(result["source_rows"], 7)
-        self.assertTrue(result["second_complete"])
-        self.assertEqual(result["source_coverage_after_later_target"][:10], "2026-10-20")
-        self.assertGreater(result["pricing_requests_for_partial"], 0)
-        self.assertEqual(result["stored_all_rows"], 2)
+        self.assertFalse(result["second_complete"])
+        self.assertEqual(result["source_coverage_after_later_target"][:10], "2026-10-17")
+        self.assertEqual(result["pricing_requests_for_partial"], 0)
+        self.assertEqual(result["stored_all_rows"], 0)
 
     def test_selection_lookup_denial_is_durable_before_acquisition(self):
         result = metadata_selection_denial_is_not_durable()

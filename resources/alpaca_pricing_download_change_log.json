@@ -219,5 +219,12 @@
     "modifications": [
       "Use shared HTTP execution with balanced sequential batches of at most 1,000 symbols, independent pagination and atomic logical-action completion, preserving pricing retry, timeout, limiter and validation policies."
     ]
+  },
+  {
+    "modifications": [
+      "Use first/latest fully adjusted endpoints as the sole retained-history acceptance boundary for ordinary and dependency acquisition; carry generation-bound approvals into suffix-only acquisition without historical overlap or first-row confirmations. Preserve batch omission handling and producer checks for selected new or replacement histories; fail closed when the compact baseline is unavailable. Avoid decoding unchanged payloads for empty same-month appends.",
+      "Retain accepted validator values and completed comparisons across failed suffix work, including empty sources; exact transport fallback consumes completed adjustment responses and retries only missing views.",
+      "Trace actual validator, gzip, selected-control and producer-publication reads with their purpose and existing selector digests; expose accepted, rejected and published generation bindings without extra filesystem reads, hashing or provider calls."
+    ]
   }
 ]

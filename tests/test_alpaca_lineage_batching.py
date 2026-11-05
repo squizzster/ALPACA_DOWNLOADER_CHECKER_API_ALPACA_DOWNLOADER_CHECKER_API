@@ -89,6 +89,70 @@ class Provider:
 
 
 class LineageBatchingTests(unittest.TestCase):
+    def test_operation_keeps_catalogue_exact_lookups_and_completed_actions(self):
+        provider = Provider(symbols=["A", "B"], actions=[event()], page_size=1)
+        client = EvidenceClient(provider.client)
+        observation = client.observe_catalogue()
+        client.prefetch_corporate_actions([("A", START, END)])
+        found = client.get_asset_lookup("A")
+        missing = client.get_asset_lookup("MISSING")
+        provider.calls.clear()
+        provider.catalogue[0]["name"] = "Later provider name"
+        provider.assets["MISSING"] = asset("MISSING")
+        self.assertIs(client.observe_catalogue(), observation)
+        self.assertEqual(client.get_asset_lookup("A"), found)
+        self.assertEqual(client.get_asset_lookup("MISSING"), missing)
+        with patch.object(client, "_remember", wraps=client._remember) as accepted:
+            client.prefetch_corporate_actions([("A", "2026-10-01", END), ("B", START, END)])
+            self.assertEqual(client.get_corporate_actions("A", "2026-10-01", END), [event()])
+        self.assertEqual([query["symbols"] for kind, query in provider.calls if kind == "actions"], ["B"])
+        self.assertEqual([call.args[0][0] for call in accepted.call_args_list], ["B"])
+        self.assertEqual(len(provider.calls), 1)
+        fresh = EvidenceClient(provider.client)
+        fresh.observe_catalogue()
+        self.assertEqual(fresh.get_symbol_lookup("A")["asset"]["name"], "Later provider name")
+        self.assertEqual(fresh.get_asset_lookup("MISSING")["http_status"], 200)
+
+    def test_operation_preserves_failed_lookup_and_action_conflicts(self):
+        provider = Provider(actions=[event()])
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions([("A", START, END)])
+        error = LineageError("failed pagination")
+        client.actions[("B", START, END)] = error
+        with patch.object(
+            provider.client, "get_asset_lookup", side_effect=LineageError("failed lookup")
+        ) as lookup:
+            for _ in range(2):
+                with self.assertRaisesRegex(LineageError, "failed lookup"):
+                    client.get_asset_lookup("MISSING")
+            self.assertEqual(lookup.call_count, 1)
+        provider.calls.clear()
+        with self.assertRaisesRegex(LineageError, "failed pagination"):
+            client.get_corporate_actions("B", START, END)
+        self.assertEqual(provider.calls, [])
+        provider.actions[0] = event(rate="changed")
+        with self.assertRaisesRegex(LineageError, "conflicting corporate-action"):
+            client.get_corporate_actions("A", START, "2026-10-16")
+        with self.assertRaisesRegex(LineageError, "conflicting corporate-action"):
+            client.get_corporate_actions("A", START, END)
+
+    def test_prefetched_catalogue_is_not_requested_again_for_discovery(self):
+        provider = Provider(symbols=[f"S{i}" for i in range(100)])
+        client = EvidenceClient(provider.client)
+        client.prefetch_symbols(provider.assets)
+        provider.calls.clear()
+        self.assertEqual(len(client.observe_catalogue()["records"]), 100)
+        self.assertEqual(provider.calls, [])
+
+    def test_failed_catalogue_is_not_retried_by_next_phase(self):
+        provider = Provider(catalogue={"invalid": "array"})
+        client = EvidenceClient(provider.client)
+        client.prefetch_symbols([f"S{i}" for i in range(100)])
+        provider.calls.clear()
+        with self.assertRaises(LineageError):
+            client.observe_catalogue()
+        self.assertEqual(provider.calls, [])
+
     def test_prefetch_nested_windows_share_one_completed_interval(self):
         provider = Provider(
             actions=[event("A", "early", process_date="2026-10-02"), event("A", "late")], page_size=1

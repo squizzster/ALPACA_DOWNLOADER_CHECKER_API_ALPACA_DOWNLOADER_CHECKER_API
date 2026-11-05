@@ -14,6 +14,7 @@ class CompletedBars:
     end: datetime
     asof: str
     rows: tuple[Row, ...]
+    singleton: bool = False
 
     def select(self, symbol, adjustment, start, end, asof):
         # The HTTP executor owns complete pagination and normalization. Match
@@ -34,6 +35,7 @@ class CompletedBars:
             end,
             asof,
             tuple(row for row in self.rows if start <= timestamp(row[0]) < end),
+            self.singleton,
         )
 
 

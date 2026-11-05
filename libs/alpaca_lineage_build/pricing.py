@@ -20,7 +20,7 @@ from libs.alpaca_pricing_download.contract import (
 )
 from libs.alpaca_pricing_download.evidence import PublishedPricingEvidence
 from libs.alpaca_pricing_download.handoff import load_published_boundary, load_published_views
-from libs.alpaca_pricing_download.storage import load_source, regular_path
+from libs.alpaca_pricing_download.storage import load_source, regular_path, trace_source_selection
 from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
@@ -65,6 +65,7 @@ def load_pricing(
     if source is None:
         raise LineageError(f"no published pricing for {symbol}")
     generation = document_digest(source)
+    trace_source_selection(source, generation, symbol=symbol, reason="lineage_input")
     # The caller lends this cache only within one selected source and continuous
     # lock lifetime. Keep whole decoded partitions when selecting a suffix so a
     # metadata-driven fallback can read only the still-missing partitions.

@@ -36,6 +36,149 @@ class DebugTraceTests(unittest.TestCase):
                 self.assertIn(record["parent"], enters)
         return records
 
+    def test_pricing_reads_and_generation_bindings_preserve_complete_update_work(self):
+        from collections import Counter
+
+        from test_alpaca_durable_maintenance import fixture
+        from test_alpaca_pricing_download import bar
+
+        from libs.alpaca_pricing_download.download import read_pricing_views
+
+        runs = []
+        for debugging in (False, True):
+            with fixture() as case:
+                case.live["AAA"] = case.old + [bar("2026-10-19")]
+                case.pages.clear()
+                actual_reads = []
+                read = Path.read_bytes
+
+                def reading(path):
+                    if case.store in path.parents:
+                        actual_reads.append(str(path.relative_to(case.store)))
+                    return read(path)
+
+                trace = DebugTrace(self.path) if debugging else None
+                try:
+                    with patch.object(Path, "read_bytes", reading):
+                        if trace is None:
+                            result = case.update("2026-10-20")
+                        else:
+                            with trace.activate():
+                                result = case.update("2026-10-20")
+                finally:
+                    if trace is not None:
+                        trace.close("success", 0)
+                self.assertTrue(result["complete"], result)
+                self.assertTrue(result["stages"]["serving_catalogue"]["complete"])
+                runs.append((list(case.pages), Counter(actual_reads), read_pricing_views(case.store, "AAA")))
+                if not debugging:
+                    self.assertFalse(self.path.exists())
+                    continue
+                records = self.records()
+                traced_reads = [
+                    v for v in records if v["event"] == "enter" and v["stage"] == "pricing_storage_read"
+                ]
+                paths = Counter(str(Path(v["details"]["path"]).relative_to(case.store)) for v in traced_reads)
+                # Every validator/gzip read is recorded exactly where it happens,
+                # including producer validation, with no extra diagnostic reads.
+                for path, count in Counter(actual_reads).items():
+                    if path.endswith((".gz", "validator_first_last_sessions.json")):
+                        self.assertEqual(paths[path], count, path)
+                for path, count in paths.items():
+                    self.assertEqual(Counter(actual_reads)[path], count, path)
+                validators = [v for v in traced_reads if v["details"]["artifact"] == "validator"]
+                payloads = [v for v in traced_reads if v["details"]["artifact"] == "gzip"]
+                self.assertTrue(validators)
+                self.assertTrue(payloads)
+                self.assertTrue(all(v["details"]["purpose"] for v in traced_reads))
+                selected = {
+                    v["details"]["source_generation"] for v in records if v["stage"] == "pricing_source_selected"
+                }
+                comparisons = [v["details"] for v in records if v["stage"] == "history_comparison"]
+                approvals = [v["details"] for v in records if v["stage"] == "append_approval_binding"]
+                self.assertTrue(comparisons)
+                self.assertTrue(approvals)
+                for approval in approvals:
+                    self.assertTrue(approval["applicable"])
+                    self.assertEqual(approval["source_generation"], approval["approved_generation"])
+                    self.assertIn(approval["source_generation"], selected)
+                    self.assertTrue(
+                        any(
+                            c["symbol"] == approval["symbol"]
+                            and c["matched"]
+                            and c["source_generation"] == approval["source_generation"]
+                            for c in comparisons
+                        )
+                    )
+                self.assertTrue(
+                    all(
+                        c["summary_token"] and c["asof"] and c["first_session"] and c["last_session"]
+                        for c in comparisons
+                    )
+                )
+        self.assertEqual(runs[0], runs[1])
+
+    def test_changed_endpoint_trace_names_fields_and_replacement_generation(self):
+        from test_alpaca_durable_maintenance import fixture
+        from test_alpaca_pricing_download import bar
+
+        with fixture() as case:
+            case.live["AAA"] = [bar("2016-01-04", "50"), case.old[-1], bar("2026-10-19")]
+            trace = DebugTrace(self.path)
+            try:
+                with trace.activate():
+                    result = case.update("2026-10-20")
+            finally:
+                trace.close("success", 0)
+            self.assertTrue(result["complete"], result)
+            self.assertTrue(result["stages"]["serving_catalogue"]["complete"])
+        records = self.records()
+        differences = [v["details"] for v in records if v["stage"] == "history_endpoint_difference"]
+        first = next(v for v in differences if v["symbol"] == "AAA" and v["endpoint"] == "first")
+        self.assertIn("close", first["fields"]["sample"])
+        comparisons = [v["details"] for v in records if v["stage"] == "history_comparison"]
+        comparison = next(v for v in comparisons if v["symbol"] == "AAA" and not v["matched"])
+        bindings = [v["details"] for v in records if v["stage"] == "pricing_generation_check"]
+        self.assertTrue(
+            any(
+                v["symbol"] == "AAA"
+                and v["applicable"]
+                and v["selected_generation"] == comparison["source_generation"]
+                for v in bindings
+            )
+        )
+
+    def test_stale_endpoint_binding_and_failed_payload_read_are_recorded(self):
+        from libs.alpaca_pricing_download.contract import DownloadError
+        from libs.alpaca_pricing_download.endpoints import EndpointSelection
+        from libs.alpaca_pricing_download.storage import read_artifact
+
+        handoff = EndpointSelection(
+            "/synthetic", "AAA", "accepted-generation", "2026-10-20", "2026-10-20", (), True
+        )
+        trace = DebugTrace(self.path)
+        try:
+            with trace.activate():
+                with self.assertRaises(DownloadError):
+                    handoff.consume("/synthetic", "AAA", "replacement-generation", "2026-10-20", "2026-10-20")
+                with self.assertRaises(FileNotFoundError):
+                    read_artifact(
+                        self.path.parent / "missing.csv.gz",
+                        purpose="selected_payload",
+                        selector_sha256="selected-boundary",
+                    )
+        finally:
+            trace.close("success", 0)
+        records = self.records()
+        binding = next(v["details"] for v in records if v["stage"] == "endpoint_selection_binding")
+        self.assertFalse(binding["applicable"])
+        self.assertEqual(binding["selected_generation"], "accepted-generation")
+        self.assertEqual(binding["source_generation"], "replacement-generation")
+        failed = next(
+            v["details"] for v in records if v["stage"] == "pricing_storage_read" and v["event"] == "exit"
+        )
+        self.assertEqual(failed["error_type"], "FileNotFoundError")
+
     def test_http_targets_are_complete_debug_only_and_do_not_log_responses(self):
         class Client:
             request_count = 0

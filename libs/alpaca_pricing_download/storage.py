@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path, PurePosixPath
 
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import enabled, event, span, traced
 from libs.common.work_scope import check_path
 
 from .contract import (
@@ -44,6 +44,56 @@ STORE_DOCUMENT = {
     "pricing": "end_of_day/pricing",
     "updates": "end_of_day/manifests",
 }
+
+
+def read_artifact(path, *, purpose, selector_sha256=None, output_path=None):
+    """Trace one actual read using held names only; never stat/hash for diagnostics."""
+    if not enabled():
+        return path.read_bytes()
+    logical = output_path or path
+    parts = logical.parts
+    symbol = None
+    for index in range(len(parts) - 2):
+        if parts[index] == "end_of_day" and parts[index + 1] in {"pricing", "manifests"}:
+            symbol = parts[index + 2]
+            break
+    artifact = (
+        "gzip"
+        if logical.suffix == ".gz"
+        else "validator"
+        if logical.name == VALIDATOR_FILE
+        else "source"
+        if logical.name == "source.manifest.json"
+        else "document"
+    )
+    with span(
+        "pricing_storage_read",
+        symbol=symbol,
+        path=str(path),
+        artifact=artifact,
+        purpose=purpose,
+        selector_sha256=selector_sha256,
+        output_path=str(output_path) if output_path is not None else None,
+    ) as result:
+        data = path.read_bytes()
+        result["bytes"] = len(data)
+        return data
+
+
+def trace_source_selection(source, generation, *, symbol, reason):
+    """Link existing generation decisions to their payload/validator selectors."""
+    if not enabled():
+        return
+    event(
+        "pricing_source_selected",
+        symbol=symbol,
+        source_generation=generation,
+        reason=reason,
+        validator_sha256=(source or {}).get("validator", {}).get("sha256"),
+        boundary_generations={
+            kind: entry.get("sha256") for kind, entry in (source or {}).get("boundaries", {}).items()
+        },
+    )
 
 
 def regular_path(root: Path, relative: str, *, published=False) -> Path:
@@ -85,7 +135,11 @@ def read_document(path: Path, *, data: bytes | None = None, published=True) -> d
     if not published and path.is_symlink():
         raise DownloadError(f"manifest cannot be a symlink: {path}")
     try:
-        document = json.loads(path.read_bytes() if data is None else data)
+        document = json.loads(
+            read_artifact(path, purpose="published_document" if published else "explicit_authentication")
+            if data is None
+            else data
+        )
     except (ValueError, OSError) as error:
         raise DownloadError(f"cannot read manifest: {path}") from error
     if not isinstance(document, dict):
@@ -156,7 +210,7 @@ def read_update(root: Path, *, published=True) -> dict | None:
         # A completed pricing publication owns this fixed-name handoff. Open it
         # directly; directory inventory and existence probes add no information.
         try:
-            data = path.read_bytes()
+            data = read_artifact(path, purpose="selected_control")
         except FileNotFoundError:
             return None
         return validate_update(read_document(path, data=data, published=True))
@@ -198,7 +252,7 @@ def load_source(root: Path, symbol: str) -> dict | None:
     # replace acceptance with a payload inventory or authenticate_* calls.
     path = regular_path(root, "source.manifest.json", published=True)
     try:
-        data = path.read_bytes()
+        data = read_artifact(path, purpose="selected_control")
     except FileNotFoundError:
         return None
     source = read_document(path, data=data)
@@ -260,7 +314,11 @@ def read_validator(root: Path, source: dict, *, published=True) -> dict | None:
     path = regular_path(root, VALIDATOR_FILE, published=published)
     if reference.get("file") != VALIDATOR_FILE:
         raise DownloadError("first/last-session validator checksum differs")
-    data = path.read_bytes()
+    data = read_artifact(
+        path,
+        purpose="validator_consume" if published else "explicit_authentication",
+        selector_sha256=reference.get("sha256"),
+    )
     if not published and digest(data) != reference.get("sha256"):
         raise DownloadError("first/last-session validator checksum differs")
     return validator_endpoints(read_document(path, data=data, published=published), source["symbol"])
@@ -286,7 +344,7 @@ def boundary_document(root: Path, reference: dict, symbol: str, kind: str) -> di
 
 def authenticate_boundary_document(root: Path, reference: dict, symbol: str, kind: str) -> dict:
     path = regular_path(root, reference["manifest"])
-    data = path.read_bytes()
+    data = read_artifact(path, purpose="explicit_authentication")
     if digest(data) != reference["sha256"]:
         raise DownloadError(f"boundary manifest changed: {path}")
     document = read_document(path, data=data)
@@ -371,7 +429,11 @@ def authenticate_boundary(root: Path, source: dict, kind: str) -> dict:
         else:
             filename = entry["file"]
             if filename not in decoded:
-                packed = regular_path(root, str(directory / filename)).read_bytes()
+                packed = read_artifact(
+                    regular_path(root, str(directory / filename)),
+                    purpose="explicit_authentication",
+                    selector_sha256=reference.get("sha256"),
+                )
                 if len(packed) != entry["bytes"] or digest(packed) != entry["sha256"]:
                     raise DownloadError("pricing payload checksum differs")
                 decoded[filename] = decode_csv(packed)
@@ -474,11 +536,14 @@ def _finish_publication(
         target = regular_path(root, entry["path"])
         staged = regular_path(root, f".staging/write-{index:03d}")
         if staged.exists():
-            if digest(staged.read_bytes()) != entry["sha256"]:
+            if (
+                digest(read_artifact(staged, purpose="publication_staged_validation", output_path=target))
+                != entry["sha256"]
+            ):
                 raise DownloadError("staged pricing output failed verification")
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged, target)
-        if digest(target.read_bytes()) != entry["sha256"]:
+        if digest(read_artifact(target, purpose="publication_installed_validation")) != entry["sha256"]:
             raise DownloadError("installed pricing output failed verification")
     # No prior month/year is retired until the complete replacement is selected.
     parents = set()
@@ -489,7 +554,7 @@ def _finish_publication(
             # idempotent; neither publication nor recovery re-audits old payloads.
             path.unlink(missing_ok=True)
         elif path.exists():
-            if digest(path.read_bytes()) != expected:
+            if digest(read_artifact(path, purpose="legacy_retirement_authentication")) != expected:
                 raise DownloadError(f"retired pricing file changed; refusing deletion: {relative}")
             path.unlink()
         parents.update(parent for parent in path.parents if parent != root and root in parent.parents)
@@ -500,12 +565,15 @@ def _finish_publication(
         target = update_path(root)
         staged = regular_path(root, f".staging/write-{len(writes):03d}")
         if staged.exists():
-            if digest(staged.read_bytes()) != update["sha256"]:
+            if (
+                digest(read_artifact(staged, purpose="publication_staged_validation", output_path=target))
+                != update["sha256"]
+            ):
                 raise DownloadError("staged update manifest failed verification")
             validate_update(read_document(staged))
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged, target)
-        if digest(target.read_bytes()) != update["sha256"]:
+        if digest(read_artifact(target, purpose="publication_installed_validation")) != update["sha256"]:
             raise DownloadError("installed update manifest failed verification")
     from .check_summary import refresh_prices
 

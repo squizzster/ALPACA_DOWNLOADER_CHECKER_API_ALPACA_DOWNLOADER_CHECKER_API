@@ -302,7 +302,7 @@ class LineageRequiredTests(unittest.TestCase):
         self.assertEqual(case.receipt()["unresolved_rows"], 0)
         self.assert_full_parity(client, ("GOOG", "OTHER"))
 
-    def test_unchanged_prices_do_not_hide_a_changed_mapping_context(self):
+    def test_normal_cutoff_advance_preserves_accepted_structural_history(self):
         case = self.case
         old, other = fixture.asset("GOOG", "old"), fixture.asset("OTHER", "other")
         action = {
@@ -323,18 +323,35 @@ class LineageRequiredTests(unittest.TestCase):
         case.download(bars=bars)
         case.download(symbol="OTHER", bars=[])
         case.run_build(client=client)
+        accepted = {s: self.decisions(s) for s in ("GOOG", "OTHER")}
         case.download(end="2026-10-16", bars=bars)
         case.download(symbol="OTHER", end="2026-10-16", bars=[])
         with patch.object(pipeline, "event", wraps=pipeline.event) as events:
             case.run_build(client=client)
         self.assertEqual(
             [call.kwargs["required"] for call in events.call_args_list if call.args == ("lineage_required",)],
-            [True],
+            [False],
         )
-        self.assertEqual(
-            {s["correlation_method"] for s in case.assignments()}, {"requested_symbol_dated_uuid_interval"}
-        )
-        self.assert_full_parity(client, ("GOOG", "OTHER"))
+        self.assertEqual({s: self.decisions(s) for s in accepted}, accepted)
+
+        def ownership():
+            # Full replay can choose another equally valid rule after the known
+            # terminal date. That does not invalidate the completed historical
+            # owner or permit replay merely to replace its original provenance.
+            return {
+                s: {
+                    a: [
+                        {k: v for k, v in row.items() if k not in {"correlation_rule", "correlation_method"}}
+                        for row in rows
+                    ]
+                    for a, rows in self.decisions(s).items()
+                }
+                for s in accepted
+            }
+
+        before = ownership()
+        case.run_build(symbols=list(accepted), client=client, refresh=True)
+        self.assertEqual(ownership(), before)
 
     def test_new_historical_rows_get_the_owning_series_identity(self):
         case = self.case

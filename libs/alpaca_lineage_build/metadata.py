@@ -129,6 +129,9 @@ class EvidenceClient:
         self.catalogue = None
         self.catalogue_assets = {}
         self.catalogue_attempted = False
+        self.catalogue_error = None
+        self.catalogue_records = None
+        self.catalogue_plan = None
         self.action_conflicts = set()
         self.observation = observation
         self.work_policy = None
@@ -140,6 +143,34 @@ class EvidenceClient:
         if observation is not None:
             self._load_catalogue(observation["records"])
             self.catalogue_attempted = True
+
+    def observe_catalogue(self):
+        """One completed observation per operation, including recovery and discovery.
+
+        The producer validates it once. Later phases consume that exact observation
+        and its exact-lookup cache; a phase transition is not an invalidation.
+        An attempted failed observation cannot become permission to request it again.
+        """
+        from .catalogue import completed_catalogue, observe_catalogue
+
+        if self.observation is None:
+            if self.catalogue_error is not None:
+                raise self.catalogue_error
+            self.catalogue_attempted = True
+            try:
+                if self.catalogue_records is None:
+                    observation = observe_catalogue(self.client)
+                    self._load_catalogue(observation["records"])
+                else:
+                    # Optional lookup prefetch accepts a partial catalogue. The
+                    # full discovery producer must establish its stronger schema,
+                    # but must not request the completed response again.
+                    observation = completed_catalogue(self.catalogue_records, self.catalogue_plan)
+            except (RuntimeError, OSError, ValueError) as error:
+                self.catalogue_error = error
+                raise
+            self.observation = observation
+        return self.observation
 
     @property
     def supports_plans(self):
@@ -308,8 +339,10 @@ class EvidenceClient:
             if action["strategy"] == "asset_catalogue":
                 self.catalogue_attempted = True
                 try:
+                    self.catalogue_plan = plan
                     self._load_catalogue(self._execute(action))
-                except (RuntimeError, OSError, ValueError):
+                except (RuntimeError, OSError, ValueError) as error:
+                    self.catalogue_error = error
                     # An optional optimization cannot manufacture a missing-asset outcome.
                     self.catalogue = None
             else:
@@ -348,6 +381,7 @@ class EvidenceClient:
             )
         self.catalogue = catalogue
         self.catalogue_assets = assets_by_id
+        self.catalogue_records = assets
 
     def prefetch_corporate_actions(self, requests):
         if not self.supports_plans:

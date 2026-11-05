@@ -4,7 +4,7 @@ from dataclasses import replace
 from itertools import chain
 from pathlib import Path
 
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import event, traced
 
 from . import append
 from .append import _cohorts, append_entries
@@ -24,7 +24,15 @@ from .download import acquisition_asof, download_pricing, request_end, request_s
 from .endpoints import EndpointSelection
 from .http import BarsClient
 from .refresh import acquire_full, acquire_retained
-from .storage import load_source, read_update, read_validator, recover, regular_path, ticker_lock
+from .storage import (
+    load_source,
+    read_update,
+    read_validator,
+    recover,
+    regular_path,
+    ticker_lock,
+    trace_source_selection,
+)
 
 
 class MeasuredRequests:
@@ -77,9 +85,9 @@ def acquire_selected(
     context=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
-    # This route checks historical endpoints in all views before acquisition.
-    # A daily summary member belongs to approved append instead. Callers must not
-    # select the whole store here because a compact boundary is temporarily pending.
+    # First/latest all is the sole retained-history acceptance boundary, including
+    # dependencies outside the daily summary. Accepted generations acquire only
+    # missing sessions; consumers must not replay historical checks.
     store = Path(store).absolute()
     evidence_fingerprints = evidence_fingerprints or {}
     from_dates = from_dates or {}
@@ -99,6 +107,9 @@ def acquire_selected(
             recover(root)
             source = load_source(root, symbol)
             selected_generations[symbol] = digest(json_bytes(source)) if source is not None else None
+            trace_source_selection(
+                source, selected_generations[symbol], symbol=symbol, reason="acquisition_selection"
+            )
             covered = timestamp(source["latest_request"]["end_exclusive"]) if source else None
             stored_start = source.get("history_start", HISTORY_START)[:10] if source else None
             requested_start = from_dates.get(symbol)
@@ -127,15 +138,28 @@ def acquire_selected(
                     }
                 )
                 continue
-            endpoints = read_validator(root, source, published=True) if source else None
-            endpoint_selections[symbol] = EndpointSelection(
-                str(store),
-                symbol,
-                selected_generations[symbol],
-                end_text,
-                acquisition_asof(source, end),
-                None if endpoints is None else tuple((name, tuple(rows)) for name, rows in endpoints.items()),
-            )
+            accepted = context.endpoint_selections.get(symbol)
+            mapping = acquisition_asof(source, end)
+            if accepted is not None and accepted.applies(
+                store, symbol, selected_generations[symbol], end_text, mapping
+            ):
+                endpoints = accepted.consume(store, symbol, selected_generations[symbol], end_text, mapping)
+                endpoint_selections[symbol] = accepted
+            else:
+                endpoints = read_validator(root, source, published=True) if source else None
+                endpoint_selections[symbol] = EndpointSelection(
+                    str(store),
+                    symbol,
+                    selected_generations[symbol],
+                    end_text,
+                    mapping,
+                    None
+                    if endpoints is None
+                    else tuple((name, tuple(rows)) for name, rows in endpoints.items()),
+                )
+            # Validator acceptance survives later provider failures, including
+            # empty baselines. This does not claim an unfinished comparison.
+            context.endpoint_selections[symbol] = endpoint_selections[symbol]
         start = (
             min(stored_start, requested_start)
             if stored_start and requested_start
@@ -267,6 +291,7 @@ def acquire_selected(
             workers=workers,
             progress=progress,
             approved_generations=selected_generations,
+            endpoint_selections=endpoint_selections,
             context=context,
         )
         for item in extended["results"]:
@@ -280,6 +305,15 @@ def acquire_selected(
 
         def checked(symbol, matched):
             endpoint_selections[symbol] = replace(endpoint_selections[symbol], matched=matched)
+            context.endpoint_selections[symbol] = endpoint_selections[symbol]
+            event(
+                "retained_history_comparison",
+                symbol=symbol,
+                source_generation=endpoint_selections[symbol].generation,
+                matched=matched,
+                asof=endpoint_selections[symbol].asof,
+                end_exclusive=endpoint_selections[symbol].end,
+            )
 
         try:
             batches = (
@@ -290,6 +324,11 @@ def acquire_selected(
                     metrics=metrics,
                     progress=progress,
                     on_checked=checked,
+                    approved={
+                        symbol: endpoint_selections[symbol].matched
+                        for symbol in buffered
+                        if endpoint_selections[symbol].matched is not None
+                    },
                 )
                 if buffered and callable(getattr(client, "execute_plan", None))
                 else [(list(buffered), ordinary_client, {})]
@@ -306,13 +345,14 @@ def acquire_selected(
                             store,
                             symbol,
                             end_date,
-                            client=ordinary_client if failure is not None else consumer,
+                            # Each completed action remains usable even when a
+                            # peer action requires exact transport fallback.
+                            client=consumer,
                             selected_source_sha256=selected_generations[symbol],
-                            endpoint_selection=(
-                                replace(endpoint_selections[symbol], matched=None)
-                                if failure is not None
-                                else endpoint_selections[symbol]
-                            ),
+                            # Exact suffix fallback changes transport only. A
+                            # completed comparison remains authoritative; an
+                            # endpoint-stage failure already has matched=None.
+                            endpoint_selection=endpoint_selections[symbol],
                             context=context,
                         )
                         results.append({**value, "status": "published"})

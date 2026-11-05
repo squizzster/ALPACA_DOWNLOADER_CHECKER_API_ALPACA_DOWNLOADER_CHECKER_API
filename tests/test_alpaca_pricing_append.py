@@ -355,13 +355,13 @@ with patch.object(storage, 'write_file', side_effect=interrupted):
         self.assertEqual(file_snapshot(self.store), before)
         self.assertEqual(read_pricing_views(self.store, "AAA")["all"][0][4], "75")
 
-    def test_baseline_change_is_isolated_and_no_old_prices_are_replaced(self):
-        self.ready["entries"][0]["last_all"][1] = "999"
-        before = file_snapshot(self.store / "end_of_day/pricing/AAA")
-        result = self.run_append()
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(result["results"][1]["status"], "updated")
-        self.assertEqual(file_snapshot(self.store / "end_of_day/pricing/AAA"), before)
+    def test_accepted_baseline_is_not_compared_again_during_append(self):
+        with patch.object(
+            append, "same_row", create=True, side_effect=AssertionError("accepted comparison replayed")
+        ):
+            result = self.run_append()
+        self.assertEqual(result["failed"], 0, result)
+        self.assertTrue(all(item["status"] == "updated" for item in result["results"]))
 
     def test_month_and_year_rollover_preserve_approved_month_and_cold_history(self):
         for end, dates in (

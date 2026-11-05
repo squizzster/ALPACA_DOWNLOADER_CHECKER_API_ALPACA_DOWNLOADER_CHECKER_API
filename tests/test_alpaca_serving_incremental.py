@@ -590,8 +590,10 @@ class IncrementalServingTests(NativeCase):
                 )
                 independent = self.catalogue_groups("TEST")["TEST"]
 
-                published = download_pricing(self.store, symbol, "2026-10-15", client=FakeClient(self.bars))
-                self.assertEqual(published["mode"], "update")
+                published = download_pricing(
+                    self.store, symbol, "2026-10-15", client=FakeClient(self.bars), refresh_all=True
+                )
+                self.assertEqual(published["mode"], "full_refresh")
                 result = run_lineage(
                     self.store, [symbol], identity_client=IdentityClient({symbol: asset(symbol)})
                 )

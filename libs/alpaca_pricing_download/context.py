@@ -1,6 +1,6 @@
 """Store and package compatibility accepted for one pricing operation."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .contract import DownloadError, validate_version
@@ -10,6 +10,7 @@ from .storage import initialize_store
 @dataclass(frozen=True)
 class PricingContext:
     store: Path
+    endpoint_selections: dict = field(default_factory=dict, compare=False)
 
 
 def accept_context(store, context=None):

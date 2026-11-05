@@ -52,10 +52,11 @@ evidence remains authoritative; selected evidence refresh produces the corrected
 
 ## Pricing acquisition and continuation
 
-Ordinary downloader updates compare each view's first/last endpoints; mismatch requires full replacement.
-Daily live checks compare summary `first_all` and `last_all`; a single-session history needs one comparison.
-Any changed field requires the existing all-view retained-span replacement and producer checks
-before append. Neither check detects every interior historical correction. Replacement notices include removed
+Retained pricing uses only the first/latest fully adjusted (`all`) comparison to select history reuse,
+including ordinary downloads, dependencies and daily-summary members. A single-session history needs one
+comparison. A match approves the selected generation and only missing sessions are acquired; other historical
+views, overlap and old first-session confirmations are forbidden. Any changed field selects full retained-span
+replacement. This boundary does not detect every interior correction. Replacement notices include removed
 sessions. Authorities: [download_pricing / publish_acquired](../libs/alpaca_pricing_download/download.py),
 [HTTP execution](../libs/alpaca_pricing_download/http.py), [completed responses](../libs/alpaca_pricing_download/responses.py).
 
@@ -63,16 +64,18 @@ Each pricing HTTP attempt uses a 300-second socket timeout for blocking network 
 endpoint checks, pagination and retries. This is not a total operation or retry deadline. An earlier provider
 HTTP 504 remains a server failure; the client timeout cannot extend the provider's own backend deadline.
 
-These owners enforce acquisition stages, row budgets, exact fallbacks, overlap and bounded retries. Completed
-normalized responses are sliced without renormalization; fresh first-session probes remain independent.
+These owners enforce acquisition stages, row budgets, exact fallbacks and bounded retries. Completed
+normalized responses are sliced without renormalization. Only newly acquired full histories or selected
+replacements receive independent producer confirmation; an approved append never confirms old history again.
 Endpoint checks batch identical session windows across symbols but never widen their date coverage to save
 pages. Acquisition carries immutable accepted endpoints and completed comparison results to execution, bound
 to store, symbol, source generation, cutoff and mapping. Execution rechecks the generation under its lock;
-it does not reread the validator or replay the comparison. Consumed boundary-check responses cannot substitute
-for the independent confirmation of newly acquired output. Failed requests retain ordinary bounded fallback.
+it does not reread the validator or replay the comparison. Completed comparisons survive a peer or suffix
+acquisition failure within the same operation and binding. Missing endpoint validators fail closed without
+decoding retained prices to reconstruct them. Failed requests retain bounded failure handling.
 Only after successful full batch pagination do omitted symbols complete empty at the transport boundary.
-Ordinary acquisition consumes that completed response without individual rechecks. The daily comparison owner
-has additional evidence: its summary names an already retained endpoint. Provider batch companions can suppress
+Ordinary acquisition consumes that completed response without individual rechecks. The history-comparison owner
+has additional evidence: its compact baseline names an already retained endpoint. Provider batch companions can suppress
 that bar, so a completed omission triggers one singleton confirmation action with the identical session, adjustment
 and mapping date. Returned endpoints are retained; failed batches are not interpreted as absence. A request
 already executed singly, including a 414 subdivision, is not repeated. Confirmations exhaust pagination through
@@ -90,7 +93,8 @@ completed response buffers.
 
 [Append approval](../libs/alpaca_pricing_download/append.py) binds checked generations to selected missing intervals.
 Publication rechecks generations under ticker locks even when the last row matches; new summary membership cannot
-inherit approval. Empty append requires all eight retained views empty; partial views require ordinary checks.
+inherit approval. Empty append requires all eight retained views empty; a nonempty source without an `all`
+baseline requires explicit replacement. Empty same-month suffixes advance coverage without decoding payloads.
 Buffered acquisition binds a generation or explicit absence; concurrent replacement requires reselection.
 
 Retained-span refresh preserves start, end and mapping date. Explicit historical entity mappings remain pinned
@@ -156,6 +160,10 @@ Unchanged lineage leaves a completed selected summary alone. A changed membershi
 accepted endpoint when pricing has no pending change; it does not reopen the endpoint validator. A pricing
 invalidation, new eligibility or incomplete baseline requires the selected pricing owner's endpoint. These
 producer projections read only the named summary entries and pending owners under their held pricing locks.
+
+Recovery and discovery share one accepted provider catalogue and exact asset/action lookup cache for the
+operation. A completed lookup, negative outcome or failed request is not discarded at a phase transition.
+New invocations acquire fresh observations. [Lineage](lineage.md) owns this evidence lifetime.
 
 Daily recovery finishes only named pending inputs and their complete lineage groups before selection. Remaining
 pending inputs block selection; pending summary never means empty membership or permission to check unaffected

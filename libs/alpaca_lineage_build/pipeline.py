@@ -696,7 +696,7 @@ def process_group(
                         pricing_unchanged=resume
                         and (unchanged or all(complete_append(view) for view in inputs.values())),
                         refresh=refresh,
-                        append=resume and not unchanged,
+                        append=resume,
                     )
                     no_new_rows = not historical_lineage and not any(
                         rows for view in inputs.values() for rows in view.views.values()

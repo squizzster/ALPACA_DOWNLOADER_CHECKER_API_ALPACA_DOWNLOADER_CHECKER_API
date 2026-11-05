@@ -40,7 +40,13 @@ from libs.alpaca_pricing_download.contract import (
     symbol_label,
     timestamp,
 )
-from libs.alpaca_pricing_download.storage import load_source, published_path, read_document, read_update
+from libs.alpaca_pricing_download.storage import (
+    load_source,
+    published_path,
+    read_artifact,
+    read_document,
+    read_update,
+)
 
 from ._standalone_cache import GenerationCache
 
@@ -241,7 +247,11 @@ def _rows(root, source, kind, adjustment, cache, retained=None):
     payload = _selected_path(cache, root, relative)
     if payload not in cache:
         cache[payload] = (
-            retained.rows(payload, entry["sha256"]) if retained is not None else decode_csv(payload.read_bytes())
+            retained.rows(payload, entry["sha256"])
+            if retained is not None
+            else decode_csv(
+                read_artifact(payload, purpose="reader_selected_payload", selector_sha256=entry["sha256"])
+            )
         )
     elif retained is not None:
         retained.ledger.record("payload_reuses")

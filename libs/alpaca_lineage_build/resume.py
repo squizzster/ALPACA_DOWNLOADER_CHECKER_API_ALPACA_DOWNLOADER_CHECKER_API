@@ -17,14 +17,24 @@ def request_context(request):
 
 
 def unchanged_source(source, previous, *, selected=None):
-    """Trust pricing's row proof and compare the mapping/request inputs too."""
-    return (
-        previous is not None
-        and reusable_decision(previous)
-        and request_context(previous.get("pricing_request", {}))
-        == request_context({**source["latest_request"], "history_start": source.get("history_start")})
-        and unchanged_rows(source, previous, selected=selected)
-    )
+    """Unchanged pricing stays unchanged when only accepted coverage advances."""
+    if (
+        not previous
+        or not reusable_decision(previous)
+        or not unchanged_rows(source, previous, selected=selected)
+    ):
+        return False
+    before = request_context(previous.get("pricing_request", {}))
+    after = request_context({**source["latest_request"], "history_start": source.get("history_start")})
+    old_end, new_end = before.pop("end_exclusive", None), after.pop("end_exclusive", None)
+    old_asof, new_asof = before.pop("asof", None), after.pop("asof", None)
+    if not old_end or not new_end or new_end < old_end:
+        return False
+    # Normal current-label mappings advance with coverage; historical mappings
+    # remain pinned. A genuinely changed mapping still selects reconciliation.
+    if old_asof != new_asof and (old_asof != old_end[:10] or new_asof != new_end[:10]):
+        return False
+    return before == after
 
 
 def unchanged_rows(source, previous, *, selected=None):
@@ -155,9 +165,9 @@ def stable_evidence(previous, current, *, append=False):
         for lookup in result.get("asset_lookups", ()):
             lookup.pop("source", None)
         if append:
-            # The isolated-prefix gate already selects the wider acquisition
-            # window/new rows. Actual actions, disposition and coverage quality
-            # still participate. These diagnostics cannot invalidate its prefix.
+            # The accepted pricing handoff already covers this advancement.
+            # Actual actions, disposition and coverage quality still participate;
+            # acquisition bookkeeping cannot invalidate accepted assignments.
             query = result.get("query", {})
             query.pop("corporate_actions_start", None)
             query.pop("corporate_actions_end", None)

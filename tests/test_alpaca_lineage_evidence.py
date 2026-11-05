@@ -146,16 +146,15 @@ class LineageEvidenceTests(unittest.TestCase):
             len(self.bars) * 8,
         )
 
-    def test_changed_request_context_reports_lineage_even_without_new_rows(self):
+    def test_coverage_only_advance_reports_reused_lineage(self):
         self.publish()
         self.download(self.bars, "2026-10-15")
         with patch("libs.alpaca_lineage_build.pipeline.correlate", wraps=correlate) as calculate:
             result = self.output(identity_client=IdentityClient())
-        self.assertEqual(calculate.call_count, 1)
-        self.assertEqual(result["status"], "calculated")
-        self.assertEqual(result["actual_calculation_scope"], "full_history")
-        self.assertEqual(result["actual_report"]["source_row_count"], len(self.bars) * 8)
-        self.assertTrue(all(s["decision_origin"] == "calculated" for s in result["assignments"]))
+        self.assertEqual(calculate.call_count, 0)
+        self.assertEqual(result["status"], "reused_publication")
+        self.assertIsNone(result["actual_report"])
+        self.assertTrue(all(s["decision_origin"] == "reused_publication" for s in result["assignments"]))
 
     def test_cli_runs_actual_missing_seed_and_dependency_downloads(self):
         from cli_support import initialize_command_registration

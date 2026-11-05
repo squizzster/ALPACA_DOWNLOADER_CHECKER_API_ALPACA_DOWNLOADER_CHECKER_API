@@ -198,7 +198,7 @@ class PricingValidatorTests(unittest.TestCase):
         with (
             patch.object(Path, "read_bytes", no_cold),
             patch(
-                "libs.alpaca_pricing_download.download._stored_endpoints",
+                "libs.alpaca_pricing_download.download.read_boundary",
                 side_effect=AssertionError("bootstrap"),
             ),
         ):
@@ -209,7 +209,7 @@ class PricingValidatorTests(unittest.TestCase):
         self.assertEqual(storage.load_source(self.root, "GOOG")["schema_version"], VERSION)
         self.assert_validator()
 
-    def test_legacy_source_bootstraps_once_without_cold_rewrites(self):
+    def test_legacy_source_fails_closed_without_reconstructing_endpoints(self):
         self.run_download()
         source = storage.read_document(self.root / "source.manifest.json")
         source["schema_version"] = 3
@@ -217,16 +217,16 @@ class PricingValidatorTests(unittest.TestCase):
         source.pop("history_start")
         (self.root / "source.manifest.json").write_bytes(json_bytes(source))
         (self.root / VALIDATOR_FILE).unlink()
-        cold = (self.root / "completed_years.raw.csv.gz").stat()
-        self.run_download(end="2026-10-15")
-        self.assert_validator()
-        self.assertEqual((self.root / "completed_years.raw.csv.gz").stat().st_ino, cold.st_ino)
-        self.assertEqual((self.root / "completed_years.raw.csv.gz").stat().st_mtime_ns, cold.st_mtime_ns)
-        with patch(
-            "libs.alpaca_pricing_download.download._stored_endpoints",
-            side_effect=AssertionError("repeated bootstrap"),
+        before = snapshot(self.store)
+        with (
+            patch(
+                "libs.alpaca_pricing_download.download.read_boundary", side_effect=AssertionError("payload read")
+            ),
+            patch.object(FakeClient, "fetch", side_effect=AssertionError("provider request")),
+            self.assertRaisesRegex(DownloadError, "published endpoint validator"),
         ):
-            self.run_download(end="2026-10-16")
+            self.run_download(end="2026-10-15")
+        self.assertEqual(snapshot(self.store), before)
 
     def test_validator_damage_fails_without_provider_calls(self):
         self.run_download()
@@ -236,15 +236,19 @@ class PricingValidatorTests(unittest.TestCase):
             download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertFalse(client.calls)
 
-    def test_post_acquisition_probes_only_first_session_in_each_view(self):
+    def test_approved_append_has_no_post_acquisition_historical_probes(self):
         self.run_download()
         client = FakeClient(self.rows)
-        download_pricing(self.store, "GOOG", "2026-10-15", client=client)
-        self.assertEqual(len(client.calls), 32)
-        self.assertEqual({call[2] for call in client.calls[-8:]}, {timestamp("2016-01-04T05:00:00Z")})
-        self.assertEqual(set(client.asofs), {"2026-10-15"})
+        with patch(
+            "libs.alpaca_pricing_download.download.read_boundary",
+            side_effect=AssertionError("empty append payload read"),
+        ):
+            download_pricing(self.store, "GOOG", "2026-10-15", client=client)
+        self.assertEqual(len(client.calls), 10)
+        self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
+        self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls[2:]))
 
-    def test_changed_provider_after_probes_restarts_once_as_full_history(self):
+    def test_accepted_history_is_not_rechecked_after_append_acquisition(self):
         self.run_download()
         revised = [bar(row["t"][:10], "50") for row in self.rows]
         client = FakeClient(self.rows)
@@ -257,25 +261,19 @@ class PricingValidatorTests(unittest.TestCase):
 
         with patch.object(client, "fetch", side_effect=flip):
             result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
-        self.assertTrue(result["restarted"])
-        self.assertEqual(result["mode"], "full_refresh")
-        self.assertTrue(all(row[4] == "50" for row in read_pricing_views(self.store, "GOOG")["raw"]))
+        self.assertFalse(result["restarted"])
+        self.assertEqual(result["mode"], "update")
+        self.assertEqual(len(client.calls), 10)
+        self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"][0][4], str(self.rows[0]["c"]))
         self.assert_validator()
 
-    def test_changed_last_overlap_restarts_even_when_first_still_matches(self):
+    def test_changed_last_all_endpoint_selects_replacement(self):
         self.run_download()
-        client = FakeClient(self.rows)
-        original = client.fetch
-
-        def change_tail(symbol, adjustment, start, end, **kwargs):
-            if not kwargs.get("asof"):
-                client.bars = self.rows[:-1] + [bar("2026-10-01", "50")]
-            return original(symbol, adjustment, start, end, **kwargs)
-
-        with patch.object(client, "fetch", side_effect=change_tail):
-            result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
-        self.assertTrue(result["restarted"])
+        client = FakeClient(self.rows[:-1] + [bar("2026-10-01", "50")])
+        result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
+        self.assertFalse(result["restarted"])
         self.assertEqual(result["mode"], "full_refresh")
+        self.assertEqual(result["consistency_check"], "mismatch")
 
     def test_repeated_instability_fails_without_publishing(self):
         self.run_download()
@@ -285,19 +283,19 @@ class PricingValidatorTests(unittest.TestCase):
 
         def unstable(symbol, adjustment, start, end, **kwargs):
             rows = original(symbol, adjustment, start, end, **kwargs)
-            if len(client.calls) > 24 and kwargs.get("asof"):
+            if len(client.calls) > 8 and kwargs.get("asof"):
                 return [bar(row["t"][:10], "999") for row in rows]
             return rows
 
         with patch.object(client, "fetch", side_effect=unstable), self.assertRaisesRegex(DownloadError, "twice"):
-            download_pricing(self.store, "GOOG", "2026-10-15", client=client)
-        self.assertEqual(len(client.calls), 48)
+            download_pricing(self.store, "GOOG", "2026-10-15", client=client, refresh_all=True)
+        self.assertEqual(len(client.calls), 32)
         self.assertEqual(snapshot(self.store), before)
 
     def test_replacement_notice_includes_removed_edges_and_unconsumed_dates(self):
         self.run_download()
         self.consume()
-        self.run_download(self.rows[1:2], end="2026-10-15")
+        self.run_download(self.rows[1:2], end="2026-10-15", refresh_all=True)
         self.assertEqual(storage.read_update(self.root), {"from": "2016-01-04", "to": "2026-10-01"})
         self.run_download(self.rows[1:2], end="2026-10-15", refresh_all=True)
         self.assertEqual(storage.read_update(self.root), {"from": "2016-01-04", "to": "2026-10-01"})
@@ -373,7 +371,7 @@ class PricingValidatorTests(unittest.TestCase):
                 raise OSError("validator interrupted")
             return original(source, target)
 
-        updated = self.rows + [bar("2026-10-13")]
+        updated = self.rows + [bar("2026-10-14")]
         with patch.object(storage.os, "replace", side_effect=interrupted), self.assertRaises(OSError):
             self.run_download(updated, end="2026-10-15")
         with patch.object(FakeClient, "fetch", side_effect=AssertionError("recovery fetched")):

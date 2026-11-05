@@ -14,6 +14,8 @@ After selection, existing eligible summary members complete live check → corre
 discovery acquisition can advance their dependencies. Changed identity or lost eligibility reconciles first.
 The live check compares the first and latest fully adjusted sessions from the compact summary. A difference
 uses the established full retained-span replacement; matching endpoints permit only new-session acquisition.
+Selected retained dependencies and ordinary downloads use the same first/latest `all` acceptance rule from
+their compact endpoint handoff. They do not check other historical views or confirm approved history again.
 After discovery, maintenance checks newly eligible or invalidated members; unchanged completed checks carry
 their summary entry and pricing generation within the operation. Restart obtains fresh approvals.
 

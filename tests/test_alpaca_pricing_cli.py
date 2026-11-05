@@ -218,7 +218,7 @@ class PricingCliTests(unittest.TestCase):
             code, result, _ = self.invoke("--symbol", "GOOG")
             self.assertEqual(code, 0)
             self.assertEqual(result["results"][0]["consistency_check"], "matched")
-            self.assertEqual(len(self.client.calls), 32)
+            self.assertEqual(len(self.client.calls), 10)
             self.client.calls.clear()
             result = download_pricing(self.store, "GOOG", "2026-10-15", client=self.client, refresh_all=True)
             self.assertEqual(result["mode"], "full_refresh")

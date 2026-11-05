@@ -252,6 +252,7 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
                     end,
                     params["asof"],
                     transform(rows, start, end),
+                    singleton="," not in params["symbols"],
                 )
                 for symbol, rows in bars.items()
             }

@@ -150,14 +150,20 @@ def run_update(
         if not read_checks(store)["complete"]:
             raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
         pending = pending_symbols(store)
+        recovery_evidence = None
         if pending:
             # Recovery selects the summary's named inputs and their complete groups.
             # Pass an explicit selection: the default lineage command also selects
             # every durable obligation, including ordinary next-session appends.
             # Never plan a universe against a missing/temporarily pending summary.
             recovery_policy = command_policy(store, end, context=context, retry_blocked=retry_blocked)
+            recovery_evidence = EvidenceClient(identity_client)
             callback = (lambda stage, values: progress("recovery_" + stage, values)) if progress else None
             recoverable = [symbol for symbol in pending if recovery_policy.allowed({symbol})]
+            if recoverable:
+                # The full update needs one catalogue. Accept it before selected
+                # recovery so every phase shares the same identity observation.
+                recovery_evidence.observe_catalogue()
             value = (
                 run_lineage(
                     store,
@@ -166,6 +172,7 @@ def run_update(
                     pricing_client=pricing_client,
                     end_date=end,
                     work_policy=recovery_policy,
+                    evidence_client=recovery_evidence,
                     register_discoveries=register,
                     context=context,
                     progress=callback,
@@ -194,7 +201,12 @@ def run_update(
         metadata_before = identity_client.request_count
         if progress:
             progress("catalogue", {"state": "started"})
-        observation = observe_catalogue(identity_client)
+        evidence = recovery_evidence or EvidenceClient(identity_client)
+        # Retain every accepted observation and lookup across recovery. Only the
+        # scheduling policy is replaced by the newly accepted work selection.
+        evidence.work_policy = None
+        evidence.restricted_identifiers.clear()
+        observation = evidence.observe_catalogue()
         if progress:
             progress(
                 "catalogue",
@@ -204,7 +216,6 @@ def run_update(
                     "http_requests": identity_client.request_count - metadata_before,
                 },
             )
-        evidence = EvidenceClient(identity_client, observation=observation)
         registered.update(accepted["registry"])
         selection = universe_plan.select_work(accepted, observation, evidence, end, retry_blocked=retry_blocked)
         result["plan"] = universe_plan.preview(
@@ -280,7 +291,7 @@ def run_update(
 
         # Existing summary members belong to live check -> correction -> append
         # BEFORE discovery can advance one of their dependencies. Otherwise an
-        # empty/new sibling can divert them into all-view ordinary acquisition.
+        # empty/new sibling could select them through another acquisition path.
         # The completed maintenance handoff is retained by this operation;
         # later phases check only new members or genuinely changed generations.
         def keeps_summary_membership(symbol):

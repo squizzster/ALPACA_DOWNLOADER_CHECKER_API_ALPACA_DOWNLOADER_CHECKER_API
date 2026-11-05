@@ -346,17 +346,28 @@ still participate. Adding or updating the baselines alone does not reopen lineag
 automatically, including disposition changes.
 
 When the accepted inputs are unchanged, `lineage_required=false` carries completed decisions forward without
-pricing payload reads or rule execution, regardless of ambiguity or candidate count. The latest HTTP window's
-`start` is transport bookkeeping; the source's `history_start` supplies the effective retained start.
+pricing payload reads or rule execution, including linked groups, ambiguity and empty histories. Producer-proven
+unchanged observations remain reusable when only coverage and its normal current-label mapping cutoff advance.
+Pinned mappings must stay identical. Changed actual metadata still selects reconciliation; action-query bounds
+and diagnostic row counts alone are acquisition bookkeeping within this accepted continuation scope.
+The latest HTTP window's `start` is transport bookkeeping; the source's `history_start` supplies the retained start.
 
 An isolated nonempty, fully resolved single-identity history with only cash distributions or forward/reverse
 splits may retain its completed prefix when pricing ancestry proves that prefix unchanged. Effective source
 context must match, allowing only advancing observation/mapping cutoffs. Fresh identity, action, disposition and
-coverage-quality facts must match; only this append scope excludes action-query bounds and the diagnostic maximum
+coverage-quality facts must match; accepted continuation excludes action-query bounds and the diagnostic maximum
 row count from equality. Validate the new session grids and their accepted seam, then send only added rows through
 the same compiled policy evaluator. No new rows means no rule execution. Closed pricing/assignment payloads stay
 closed except for assignment bodies needed to regroup publication at month/year rollover or project an older
 receipt without a summary. The active pricing partition supplies the added rows.
+
+One accepted catalogue and evidence client serve recovery and discovery within an update. Recovery acquires
+the catalogue once when it has selected work; discovery consumes that completed observation, exact positive
+and negative asset lookups, completed corporate-action intervals, failed requests and conflict latches.
+A phase transition neither invalidates these facts nor permits reacquisition or repeated normalization.
+Optional lookup prefetch retains its completed catalogue response for the full discovery producer; the
+stronger discovery schema must still succeed without a second provider request. A new invocation obtains
+fresh observations. Action coverage never approves an unqueried date interval.
 
 If newly acquired metadata invalidates this prefix after pricing has been decoded, full-history fallback
 retains the already decoded partitions under the same source generation and locks. It loads only the missing

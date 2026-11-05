@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
-from libs.common.debug_trace import in_context, traced
+from libs.common.debug_trace import event, in_context, traced
 from libs.common.provider_http import balanced_batches
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
@@ -34,10 +34,10 @@ from .download import (
     request_end,
     updated_boundaries,
 )
-from .endpoints import endpoints_of, same_row, session_extent
+from .endpoints import endpoints_of, session_extent
 from .handoff import load_published_boundary
 from .responses import completed_bars
-from .storage import load_source, read_validator, recover, regular_path, ticker_lock
+from .storage import load_source, read_validator, recover, regular_path, ticker_lock, trace_source_selection
 
 # Bound provider work, not just URL length. A valid but oversized request can
 # exhaust gateway retries before publishing anything; fewer requests can take
@@ -120,11 +120,12 @@ def select_append_sources(store, entries, end_date, *, required_symbols=()):
             if source is None:
                 raise DownloadError(f"{symbol}: selected append source missing")
             result[symbol] = digest(json_bytes(source))
+            trace_source_selection(source, result[symbol], symbol=symbol, reason="append_selection")
     return result
 
 
 @traced("pricing_publication")
-def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
+def _publish_append(store, entry, need, bars, *, approved_source_sha256=None, endpoint_selection=None):
     symbol = entry["symbol"]
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     window = need["ranges"][0]
@@ -142,7 +143,24 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
         # The history-check owner approved one generation before this lock was
         # acquired. Recheck that generation, not historical payload correctness:
         # the same last row alone cannot detect an intervening history replacement.
-        if approved_source_sha256 is not None and digest(json_bytes(previous)) != approved_source_sha256:
+        generation = (
+            digest(json_bytes(previous))
+            if approved_source_sha256 is not None or endpoint_selection is not None
+            else None
+        )
+        trace_source_selection(previous, generation, symbol=symbol, reason="append_execution")
+        event(
+            "append_approval_binding",
+            symbol=symbol,
+            store=str(store),
+            source_generation=generation,
+            approved_generation=approved_source_sha256,
+            applicable=approved_source_sha256 is not None and generation == approved_source_sha256,
+            start=start.isoformat(),
+            end_exclusive=end.isoformat(),
+            asof=need["asof"],
+        )
+        if approved_source_sha256 is not None and generation != approved_source_sha256:
             raise DownloadError(f"{symbol}: source generation changed after the approved handoff")
         if (
             previous is None
@@ -150,26 +168,34 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None):
             or previous["latest_request"]["asof"] != entry["asof"]
         ):
             raise DownloadError(f"{symbol}: source coverage changed after the approved handoff")
-        endpoints = read_validator(root, previous, published=True)
+        endpoints = (
+            endpoint_selection.consume(
+                store, symbol, generation, end.isoformat().replace("+00:00", "Z"), need["asof"]
+            )
+            if endpoint_selection is not None
+            else read_validator(root, previous, published=True)
+        )
         expected, actual = entry["last_all"], endpoints["all"] if endpoints else None
         if not endpoints or (expected is None and actual) or (expected is not None and not actual):
             raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
-        if expected is not None and not same_row(actual[-1], expected):
-            raise DownloadError(f"{symbol}: source baseline changed after the approved handoff")
         if expected is None and any(endpoints.values()):
-            raise DownloadError(f"{symbol}: partial adjustment history requires retained-history checking")
+            raise DownloadError(
+                f"{symbol}: partial adjustment history without all requires explicit replacement"
+            )
         for name, rows in views.items():
             if rows and endpoints[name] and timestamp(rows[0][0]) <= timestamp(endpoints[name][-1][0]):
                 raise DownloadError(f"{symbol}: append would overlap approved {name} history")
         # Read only the hot month. Approved history is retained, never requested again.
         old_documents = {}
         read_selected = partial(load_published_boundary, selected=True, documents=old_documents)
-        month = read_selected(root, previous, "current_month")
-        combined = _join(month, views)
         anchor = (end - timedelta(days=1)).strftime("%Y-%m")
-        changed_views = updated_boundaries(root, previous, anchor, combined, read=read_selected)
         selected = _incremental_endpoints(endpoints, views, start)
         update = session_extent(endpoints_of(views))
+        changed_views = {}
+        if update or anchor != previous["anchor_month"]:
+            month = read_selected(root, previous, "current_month")
+            combined = _join(month, views)
+            changed_views = updated_boundaries(root, previous, anchor, combined, read=read_selected)
         request = {
             "symbol": symbol,
             "start": start.isoformat().replace("+00:00", "Z"),
@@ -217,6 +243,7 @@ def append_entries(
     end_by_symbol=None,
     before_publish=None,
     approved_generations=None,
+    endpoint_selections=None,
     context=None,
 ):
     """Batch explicit trusted baselines through the ordinary append publisher."""
@@ -288,7 +315,12 @@ def append_entries(
             try:
                 bars = {name: responses[(0, index, 0, symbol, name)] for name in ADJUSTMENTS}
                 return _publish_append(
-                    store, by_symbol[symbol], need, bars, approved_source_sha256=approved_generations.get(symbol)
+                    store,
+                    by_symbol[symbol],
+                    need,
+                    bars,
+                    approved_source_sha256=approved_generations.get(symbol),
+                    endpoint_selection=(endpoint_selections or {}).get(symbol),
                 )
             except (RuntimeError, OSError, ValueError, KeyError) as error:
                 return {
@@ -322,7 +354,7 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
     """Consume the approved handoff directly; no disk discovery or history recheck.
 
     Input is the existing minimal summary snapshot, optionally selection-filtered.
-    Publication checks its covered end and last row under the normal ticker lock.
+    Publication checks the selected generation and coverage under the normal ticker lock.
     Any new lineage/CUSIP work is still owned by the unchanged lineage consumer.
     """
     # Approval covers only the supplied members/generations. DO NOT enlarge the

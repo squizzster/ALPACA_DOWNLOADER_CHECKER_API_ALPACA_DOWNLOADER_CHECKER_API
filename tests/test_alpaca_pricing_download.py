@@ -118,16 +118,10 @@ class PricingDownloadTests(unittest.TestCase):
         self.assertEqual(result["mode"], "update")
         self.assertEqual(result["consistency_check"], "matched")
         self.assertEqual(result["updated_boundaries"], ["current_month"])
-        self.assertEqual(len(client.calls), 32)
-        for index, adjustment in enumerate(ADJUSTMENTS):
-            self.assertEqual(
-                client.calls[index * 2 : index * 2 + 2],
-                [
-                    ("GOOG", adjustment, timestamp("2016-01-04T05:00:00Z"), timestamp("2016-01-05T05:00:00Z")),
-                    ("GOOG", adjustment, timestamp("2026-10-01T04:00:00Z"), timestamp("2026-10-02T04:00:00Z")),
-                ],
-            )
-        self.assertTrue(all(call[2] == timestamp("2026-10-01T00:00:00Z") for call in client.calls[16:24]))
+        self.assertEqual(len(client.calls), 10)
+        self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
+        self.assertEqual({call[2].date().isoformat() for call in client.calls[:2]}, {"2016-01-04", "2026-10-01"})
+        self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls[2:]))
         self.assertEqual(set(client.asofs), {"2026-10-15"})
         for relative in before:
             if relative not in ("source.manifest.json", VALIDATOR_FILE) and not relative.startswith("2026/Oct/"):
@@ -142,7 +136,7 @@ class PricingDownloadTests(unittest.TestCase):
         updated = self.bars + [bar("2026-10-30"), bar("2026-11-02")]
         client, result = self.run_download("2026-11-03", updated)
         self.assertEqual(result["updated_boundaries"], ["current_year", "current_month"])
-        self.assertEqual(client.calls[16][2], timestamp("2026-10-01T00:00:00Z"))
+        self.assertEqual(client.calls[2][2], timestamp("2026-10-14T00:00:00Z"))
         self.assertFalse((self.root / "2026/Oct").exists())
         self.assertTrue((self.root / "2026/Nov/month.manifest.json").exists())
         self.assertEqual(cold.st_ino, (self.root / "completed_years.raw.csv.gz").stat().st_ino)
@@ -194,10 +188,8 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertEqual(
                     result["updated_boundaries"], ["completed_years", "current_year", "current_month"]
                 )
-                self.assertEqual(len(client.calls), 32)
-                self.assertTrue(
-                    all(call[2] == timestamp("2016-01-01T00:00:00Z") for call in client.calls[16:24])
-                )
+                self.assertEqual(len(client.calls), 18)
+                self.assertTrue(all(call[2] == timestamp("2016-01-01T00:00:00Z") for call in client.calls[2:10]))
                 expected = transform(revised, timestamp("2016-01-01T00:00:00Z"), timestamp(end + "T00:00:00Z"))
                 self.assertTrue(
                     all(rows == expected for rows in read_pricing_views(self.store, "GOOG").values())
@@ -206,10 +198,10 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertFalse((self.root / ".staging").exists())
                 self.run_download(end, self.bars, refresh_all=True)
 
-    def test_mismatch_in_any_adjustment_or_field_triggers_full_refresh(self):
+    def test_mismatch_in_any_all_endpoint_field_triggers_full_refresh(self):
         self.run_download()
         end = date(2026, 10, 14)
-        for adjustment in ADJUSTMENTS:
+        for adjustment in ("all",):
             for field in ("o", "h", "l", "c", "v", "n", "vw"):
                 with self.subTest(adjustment=adjustment, field=field):
                     end += timedelta(days=1)
@@ -242,7 +234,7 @@ class PricingDownloadTests(unittest.TestCase):
                     self.assertEqual(result["consistency_check"], "mismatch")
                     self.run_download(end.isoformat(), refresh_all=True)
 
-    def test_single_session_checked_once_per_view_and_empty_history_has_no_probes(self):
+    def test_single_all_session_checked_once_and_empty_history_has_no_probes(self):
         self.run_download(bars=[])
         client, result = self.run_download("2026-10-15", bars=[bar("2026-10-01")])
         self.assertEqual(result["consistency_check"], "no_stored_sessions")
@@ -251,24 +243,46 @@ class PricingDownloadTests(unittest.TestCase):
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"], ())
         client, result = self.run_download("2026-10-16", bars=[bar("2026-10-15")])
         self.assertEqual(result["consistency_check"], "no_stored_sessions")
-        self.assertEqual(len(client.calls), 16)
+        self.assertEqual(len(client.calls), 8)
         self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), 1)
+
+        client, result = self.run_download("2026-10-17", bars=[bar("2026-10-15")])
+        self.assertEqual(len(client.calls), 9)
+        self.assertEqual(client.calls[0][1], "all")
+        self.assertTrue(all(call[2] == timestamp("2026-10-16T00:00:00Z") for call in client.calls[1:]))
+
+    def test_other_historical_views_cannot_trigger_rechecks_after_all_approval(self):
+        self.run_download()
+        for offset, adjustment in enumerate(ADJUSTMENTS[:-1]):
+            with self.subTest(adjustment=adjustment):
+                client = FakeClient(self.bars)
+                fetch = client.fetch
+
+                def forbidden(symbol, selected, start, end, **kwargs):
+                    if selected != "all" and start < timestamp(f"2026-10-{14 + offset:02d}T00:00:00Z"):
+                        self.fail(f"historical {selected} requested after all approval")
+                    return fetch(symbol, selected, start, end, **kwargs)
+
+                with patch.object(client, "fetch", side_effect=forbidden):
+                    result = download_pricing(self.store, "GOOG", f"2026-10-{15 + offset:02d}", client=client)
+                self.assertFalse(result["changed"])
+                self.assertEqual(len(client.calls), 10)
 
     def test_only_endpoints_are_probed_not_the_last_five_sessions(self):
         rows = [bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13)]
         self.run_download(bars=rows)
         client, result = self.run_download("2026-10-15", bars=rows)
         self.assertEqual(result["consistency_check"], "matched")
-        starts = {call[2] for call in client.calls[:16]}
+        starts = {call[2] for call in client.calls[:2]}
         self.assertEqual(starts, {timestamp("2026-10-01T04:00:00Z"), timestamp("2026-10-13T04:00:00Z")})
 
     def test_last_session_comes_from_authoritative_month_not_stale_year(self):
         self.run_download()
-        updated = self.bars + [bar("2026-10-13")]
+        updated = self.bars + [bar("2026-10-14")]
         self.run_download("2026-10-15", bars=updated)
         client, result = self.run_download("2026-10-16", bars=updated)
         self.assertEqual(result["mode"], "update")
-        self.assertEqual({call[2] for call in client.calls[1:16:2]}, {timestamp("2026-10-13T04:00:00Z")})
+        self.assertEqual({call[2] for call in client.calls[1:2]}, {timestamp("2026-10-14T04:00:00Z")})
 
     def test_empty_active_month_uses_year_or_completed_endpoints(self):
         for offset, rows in enumerate((self.bars[:-1], self.bars[:2])):
@@ -278,14 +292,14 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertEqual(result["consistency_check"], "matched")
                 self.assertEqual(client.calls[1][2].date(), timestamp(rows[-1]["t"]).date())
 
-    def test_missing_endpoint_triggers_full_replacement(self):
+    def test_missing_endpoint_fails_without_replacing_accepted_history(self):
         self.run_download()
-        _client, result = self.run_download("2026-10-15", bars=self.bars[1:])
-        self.assertEqual(result["consistency_check"], "mismatch")
-        self.assertEqual(result["mode"], "full_refresh")
-        self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), len(self.bars) - 1)
+        before = snapshot(self.store)
+        with self.assertRaisesRegex(DownloadError, "endpoint missing"):
+            self.run_download("2026-10-15", bars=self.bars[1:])
+        self.assertEqual(snapshot(self.store), before)
 
-    def test_adjustment_views_use_their_own_endpoints_without_assuming_equal_grids(self):
+    def test_all_approval_reuses_other_views_without_rechecking_their_grids(self):
         client = FakeClient(self.bars)
         original_fetch = client.fetch
 
@@ -298,7 +312,9 @@ class PricingDownloadTests(unittest.TestCase):
             client.calls.clear()
             result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertEqual(result["mode"], "update")
-        self.assertEqual(client.calls[4][2], timestamp("2025-12-31T05:00:00Z"))
+        self.assertEqual(len(client.calls), 10)
+        self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
+        self.assertEqual(len(read_pricing_views(self.store, "GOOG")["dividend"]), len(self.bars) - 1)
 
     def test_exact_numeric_equality_does_not_depend_on_json_spelling(self):
         rows = [bar("2016-01-04", "123.000"), bar("2026-10-01", "123.000")]
@@ -500,7 +516,7 @@ class PricingDownloadTests(unittest.TestCase):
 
     def test_complete_empty_replacement_removes_old_history_and_notifies(self):
         self.run_download()
-        _, result = self.run_download("2026-10-15", [])
+        _, result = self.run_download("2026-10-15", [], refresh_all=True)
         self.assertEqual(result["mode"], "full_refresh")
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"], ())
         self.assertEqual(storage.read_update(self.root), {"from": "2016-01-04", "to": "2026-10-01"})
@@ -583,9 +599,9 @@ class PricingDownloadTests(unittest.TestCase):
             return [{**row, "c": Decimal("555.001")} for row in rows] if adjustment == "dividend" else rows
 
         with patch.object(client, "fetch", side_effect=different_dividend):
-            download_pricing(self.store, "GOOG", "2026-10-15", client=client)
+            download_pricing(self.store, "GOOG", "2026-10-15", client=client, refresh_all=True)
         self.assertTrue((self.root / "2026/Oct/dividend.csv.gz").exists())
-        self.run_download("2026-10-16")
+        self.run_download("2026-10-16", refresh_all=True)
         self.assertFalse((self.root / "2026/Oct/dividend.csv.gz").exists())
         self.assertEqual(
             read_pricing_views(self.store, "GOOG")["raw"], read_pricing_views(self.store, "GOOG")["dividend"]

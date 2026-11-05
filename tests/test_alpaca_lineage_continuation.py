@@ -327,15 +327,15 @@ class LineageContinuationTests(unittest.TestCase):
         case.run_build(symbols=["GOOG"], client=client, refresh=True)
         self.assertEqual(assignments, {name: assigned_rows(name) for name in names})
 
-    def test_empty_histories_with_changed_context_still_reach_lineage(self):
+    def test_empty_histories_reuse_decisions_when_only_coverage_advances(self):
         case = self.case
         case.download(bars=[])
         case.run_build()
         case.download(end="2027-01-06", bars=[])
         with patch.object(pipeline, "correlate", wraps=pipeline.correlate) as owner:
             result = case.run_build()
-        self.assertFalse(result["results"][0]["reused_decision"])
-        self.assertEqual(owner.call_count, 1)
+        self.assertTrue(result["results"][0]["reused_decision"])
+        self.assertEqual(owner.call_count, 0)
         self.assertEqual(case.receipt()["source_rows"], 0)
         self.assertEqual(case.receipt()["processed_through"][:10], "2027-01-06")
 

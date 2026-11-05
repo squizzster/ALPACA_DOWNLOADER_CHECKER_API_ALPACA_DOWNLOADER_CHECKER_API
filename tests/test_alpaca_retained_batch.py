@@ -1,4 +1,4 @@
-"""Retained acquisitions share requests without changing the ordinary producer checks."""
+"""Retained acquisitions trust first/latest all and request only missing sessions."""
 
 import copy
 import gc
@@ -149,7 +149,7 @@ class RetainedBatchTests(unittest.TestCase):
                 self.assertIsNone(second.__traceback__)
                 self.assertEqual(failure_outcome(record.exception()), expected)
 
-    def test_four_histories_use_32_shared_requests_instead_of_128_and_keep_cold_payloads(self):
+    def test_four_histories_use_two_all_checks_and_eight_suffix_requests(self):
         before = snapshot(self.store)
         original = Path.read_bytes
         original_iterdir = Path.iterdir
@@ -173,12 +173,12 @@ class RetainedBatchTests(unittest.TestCase):
         ):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(len(self.pages), 32)
-        self.assertEqual(result["requests"]["page_requests"], 32)
+        self.assertEqual(len(self.pages), 10)
+        self.assertEqual(result["requests"]["page_requests"], 10)
         self.assertTrue(all(params["symbols"] == "AAA,BBB,CCC,DDD" for _, params in self.pages))
         self.assertEqual(
             [stage for stage, values in self.progress if values.get("state") == "started"],
-            ["boundary_check", "retained_history_acquisition", "acquisition_check"],
+            ["boundary_check", "retained_history_acquisition"],
         )
         for item in result["results"]:
             self.assertEqual((item["mode"], item["consistency_check"]), ("update", "matched"))
@@ -193,8 +193,8 @@ class RetainedBatchTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "covered" for item in repeated["results"]))
         self.assertEqual(self.pages, [])
 
-    def test_one_adjustment_mismatch_replaces_only_its_ticker(self):
-        self.live["AAA"]["spin-off"][0]["c"] += 1
+    def test_all_endpoint_mismatch_replaces_only_its_ticker(self):
+        self.live["AAA"]["all"][0]["c"] += 1
         result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
         by_symbol = {item["symbol"]: item for item in result["results"]}
@@ -202,10 +202,10 @@ class RetainedBatchTests(unittest.TestCase):
         self.assertEqual(by_symbol["AAA"]["consistency_check"], "mismatch")
         self.assertTrue(all(by_symbol[s]["mode"] == "update" for s in self.symbols[1:]))
         self.assertEqual(
-            read_pricing_views(self.store, "AAA")["spin-off"][0][4], str(self.live["AAA"]["spin-off"][0]["c"])
+            read_pricing_views(self.store, "AAA")["all"][0][4], str(self.live["AAA"]["all"][0]["c"])
         )
 
-    def test_sparse_tail_retains_first_rows_and_checks_each_view(self):
+    def test_empty_suffix_trusts_approval_and_keeps_retained_rows(self):
         for views in self.live.values():
             for name in ADJUSTMENTS:
                 views[name] = views[name][:1]
@@ -224,24 +224,22 @@ class RetainedBatchTests(unittest.TestCase):
                 }
             return original(params)
 
-        # Removing the retained last row from the tail is an overlap failure;
-        # the ordinary full retry must resolve it, including the removed notice.
+        # Once accepted, later empty responses cannot reopen or remove history.
         with patch.object(self.client, "_get", side_effect=page):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
-        self.assertTrue(all(item["restarted"] for item in result["results"]))
+        self.assertFalse(any(item["restarted"] or item["changed"] for item in result["results"]))
+        self.assertEqual(len(self.pages), 10)
         for symbol in self.symbols:
-            self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 1)
-            notice = storage.read_document(self.store / f"end_of_day/manifests/{symbol}/update.json")
-            self.assertEqual(notice["to"], "2026-10-14")
+            self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 2)
 
-    def test_first_session_change_retries_fresh_and_counts_fallback_requests(self):
+    def test_provider_change_after_approval_does_not_trigger_historical_reverification(self):
         original = self.page
         changed = False
 
         def page(params):
             nonlocal changed
-            if self.phase == "acquisition_check" and not changed:
+            if self.phase == "retained_history_acquisition" and not changed:
                 changed = True
                 for name in ADJUSTMENTS:
                     self.live["AAA"][name][0] = bar("2016-01-04", "75")
@@ -251,13 +249,15 @@ class RetainedBatchTests(unittest.TestCase):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
         by_symbol = {item["symbol"]: item for item in result["results"]}
-        self.assertTrue(by_symbol["AAA"]["restarted"])
-        self.assertEqual(by_symbol["AAA"]["consistency_check"], "changed_during_acquisition")
-        self.assertFalse(any(by_symbol[s]["restarted"] for s in self.symbols[1:]))
-        self.assertEqual(read_pricing_views(self.store, "AAA")["all"][0][4], "75")
+        self.assertFalse(any(item["restarted"] for item in by_symbol.values()))
+        self.assertEqual(by_symbol["AAA"]["consistency_check"], "matched")
+        self.assertEqual(len(self.pages), 10)
+        self.assertEqual(read_pricing_views(self.store, "AAA")["all"][0][4], str(self.old[0]["c"]))
         self.assertEqual(result["requests"]["page_requests"], len(self.pages))
 
-    def test_repeated_change_does_not_publish(self):
+    def test_repeated_change_in_selected_replacement_does_not_publish(self):
+        for symbol in self.symbols:
+            self.live[symbol]["all"][0]["c"] += 1
         before = snapshot(self.store)
         original = self.page
 
@@ -342,6 +342,9 @@ class RetainedBatchTests(unittest.TestCase):
                     self.store = self.store.parent / f"{phase}_{status}"
                     for symbol in self.symbols:
                         download_pricing(self.store, symbol, "2026-10-15", client=FakeClient(self.old))
+                    if phase == "acquisition_check":
+                        for symbol in self.symbols:
+                            self.live[symbol]["all"][0]["c"] += 1
                     calls = []
 
                     def page(params):
@@ -373,6 +376,9 @@ class RetainedBatchTests(unittest.TestCase):
                     self.store = self.store.parent / f"{phase}_{status}"
                     for symbol in self.symbols:
                         download_pricing(self.store, symbol, "2026-10-15", client=FakeClient(self.old))
+                    if phase == "acquisition_check":
+                        for symbol in self.symbols:
+                            self.live[symbol]["all"][0]["c"] += 1
                     calls = []
 
                     def page(params):
@@ -408,7 +414,7 @@ class RetainedBatchTests(unittest.TestCase):
 
                 def page(params):
                     self.pages.append((self.phase, params))
-                    status = first_status if params["adjustment"] == "all" else 403
+                    status = first_status if params["start"][:10] == "2016-01-04" else 403
                     raise HTTPError("https://example.invalid", status, "rejected", {}, None)
 
                 with patch.object(self.client, "_get", side_effect=page):
@@ -421,7 +427,7 @@ class RetainedBatchTests(unittest.TestCase):
                 )
                 self.assertEqual(snapshot(self.store), before)
 
-    def test_partial_views_check_retained_and_new_first_sessions(self):
+    def test_missing_all_baseline_fails_without_historical_requests(self):
         self.store = self.store.parent / "partial"
 
         class PartialClient(FakeClient):
@@ -434,12 +440,12 @@ class RetainedBatchTests(unittest.TestCase):
         self.live["AAA"]["all"] = [bar("2026-10-16")]
         with patch.object(self.client, "fetch", side_effect=AssertionError("unbuffered partial view")):
             result = self.run_acquire(["AAA"])
-        self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(result["results"][0]["mode"], "update")
+        self.assertEqual(result["failed"], 1, result)
+        self.assertIn("no all-adjusted baseline", result["results"][0]["outcome"]["error"])
+        self.assertEqual(self.pages, [])
         views = read_pricing_views(self.store, "AAA")
-        self.assertEqual(len(views["raw"]), 3)
-        self.assertEqual(len(views["all"]), 1)
-        self.assertFalse(views["split"])
+        self.assertEqual(len(views["raw"]), 2)
+        self.assertFalse(views["all"])
 
     def test_pagination_finishes_before_following_stages(self):
         original = self.page
@@ -458,7 +464,7 @@ class RetainedBatchTests(unittest.TestCase):
         with patch.object(self.client, "_get", side_effect=page):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
-        self.assertGreater(len(self.pages), 32)
+        self.assertGreater(len(self.pages), 10)
         self.assertEqual(result["requests"]["page_requests"], len(self.pages))
         self.assertTrue(any("page_token" in params for _, params in self.pages))
         for symbol in self.symbols:
@@ -483,7 +489,7 @@ class RetainedBatchTests(unittest.TestCase):
 
     def test_mixed_replacements_are_bounded_after_shared_endpoint_checks(self):
         for symbol in ("AAA", "CCC"):
-            self.live[symbol]["raw"][0]["c"] += 1
+            self.live[symbol]["all"][0]["c"] += 1
         with patch.object(append, "MAX_ROWS", 30000):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import event, traced
 from libs.common.us_equity_market_session_calendar import (
     MarketCalendarError,
     expected_market_session_coverage,
@@ -30,7 +31,15 @@ from .contract import (
     symbol_label,
     timestamp,
 )
-from .endpoints import endpoints_of, merge_ranges, same_row, session_extent, validator_document
+from .endpoints import (
+    EndpointSelection,
+    endpoints_of,
+    history_check_endpoints,
+    merge_ranges,
+    same_row,
+    session_extent,
+    validator_document,
+)
 from .responses import fetch_rows
 from .storage import (
     STORE_DOCUMENT,
@@ -45,6 +54,7 @@ from .storage import (
     recover,
     regular_path,
     ticker_lock,
+    trace_source_selection,
 )
 
 _SOURCE_NOT_SELECTED = object()
@@ -159,27 +169,6 @@ def _join(left: dict, right: dict) -> dict:
     return result
 
 
-def _stored_endpoints(root: Path, source: dict) -> dict:
-    """Read the first/last effective row per view, opening only needed boundaries."""
-    cached = {}
-
-    def rows(kind: str, adjustment: str) -> tuple:
-        if kind not in cached:
-            views = read_boundary(root, source, kind)
-            if kind == "current_year":
-                views = _select(views, lambda month: month < source["anchor_month"])
-            cached[kind] = views
-        return cached[kind][adjustment]
-
-    order = ("completed_years", "current_year", "current_month")
-    endpoints = {}
-    for adjustment in ADJUSTMENTS:
-        first = next((values[0] for kind in order if (values := rows(kind, adjustment))), None)
-        last = next((values[-1] for kind in reversed(order) if (values := rows(kind, adjustment))), None)
-        endpoints[adjustment] = () if first is None else (first,) if first == last else (first, last)
-    return endpoints
-
-
 def _endpoint_window(row, asof, *, cutoff=None):
     day = timestamp(row[0]).astimezone(NEW_YORK).date()
     start = datetime(day.year, day.month, day.day, tzinfo=NEW_YORK)
@@ -194,12 +183,16 @@ def _endpoint_window(row, asof, *, cutoff=None):
     return start.astimezone(timezone.utc), end
 
 
-def _endpoints_match(client, symbol: str, endpoints: dict, asof: str, *, cutoff=None) -> bool:
+def _endpoints_match(
+    client, symbol: str, endpoints: dict, asof: str, *, cutoff=None, require_present=False
+) -> bool:
     matched = True
     for adjustment, stored in endpoints.items():
         for expected in stored:
             start, end = _endpoint_window(expected, asof, cutoff=cutoff)
             actual = fetch_rows(client, symbol, adjustment, start, end, asof=asof)
+            if require_present and len(actual) != 1:
+                raise DownloadError(f"{symbol}: retained {adjustment} endpoint missing or ambiguous")
             # Compare exact values, not incidental JSON number or timezone spelling.
             same = len(actual) == 1 and same_row(actual[0], expected)
             matched = matched and same
@@ -218,16 +211,6 @@ def _manifest_extent(root: Path, source: dict) -> dict | None:
     return {"from": min(days), "to": max(days)} if days else None
 
 
-def _overlap_matches(endpoints: dict, views: dict, start: datetime) -> bool:
-    for name, rows in endpoints.items():
-        acquired = {timestamp(row[0]): row for row in views[name]}
-        for row in rows:
-            instant = timestamp(row[0])
-            if instant >= start and (instant not in acquired or not same_row(row, acquired[instant])):
-                return False
-    return True
-
-
 def _incremental_endpoints(endpoints: dict, views: dict, start: datetime) -> dict:
     result = {}
     for name in ADJUSTMENTS:
@@ -238,20 +221,6 @@ def _incremental_endpoints(endpoints: dict, views: dict, start: datetime) -> dic
             first = old[0] if old and timestamp(old[0][0]) < start else new[0]
             result[name] = (first,) if first == new[-1] else (first, new[-1])
     return result
-
-
-def _changed_range(views: dict, previous: dict | None = None) -> dict | None:
-    changed = set()
-    for adjustment in ADJUSTMENTS:
-        new = {timestamp(row[0]): row[1:] for row in views[adjustment]}
-        old = {timestamp(row[0]): row[1:] for row in previous[adjustment]} if previous is not None else {}
-        changed.update(instant for instant in old.keys() | new.keys() if old.get(instant) != new.get(instant))
-    if not changed:
-        return None
-    return {
-        "from": min(changed).astimezone(NEW_YORK).date().isoformat(),
-        "to": max(changed).astimezone(NEW_YORK).date().isoformat(),
-    }
 
 
 def updated_boundaries(root, previous, anchor, views, *, full_history=False, read=None):
@@ -378,11 +347,13 @@ def publish_acquired(
     # Publication has completed before returning these accepted outputs.
     # Consumers must use the source/endpoints/notice handoff, not reload or
     # re-authenticate the files the publisher just selected.
+    source_generation = digest(json_bytes(source))
+    trace_source_selection(source, source_generation, symbol=symbol, reason="publication_completed")
     return {
         "changed": update is not None,
         "files_written": written,
         "source": source,
-        "source_sha256": digest(json_bytes(source)),
+        "source_sha256": source_generation,
         "endpoints": selected_endpoints,
         "pending_update": handoff["pending_update"],
     }
@@ -447,10 +418,25 @@ def download_pricing(
         if selected_source_sha256 is not _SOURCE_NOT_SELECTED or endpoint_selection is not None:
             current_sha256 = digest(json_bytes(previous)) if previous is not None else None
         if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
+            trace_source_selection(previous, current_sha256, symbol=symbol, reason="acquisition_execution")
+            event(
+                "pricing_generation_check",
+                symbol=symbol,
+                selected_generation=selected_source_sha256,
+                source_generation=current_sha256,
+                applicable=current_sha256 == selected_source_sha256,
+                asof=asof,
+                end_exclusive=end_text,
+            )
             if current_sha256 != selected_source_sha256:
                 raise DownloadError(
                     "pricing source changed after acquisition selection; reselect before retrying"
                 )
+        if endpoint_selection is None and symbol in context.endpoint_selections:
+            accepted = context.endpoint_selections[symbol]
+            current_sha256 = digest(json_bytes(previous)) if previous is not None else None
+            if accepted.applies(store, symbol, current_sha256, end_text, asof):
+                endpoint_selection = accepted
         accepted_endpoints = None
         if endpoint_selection is not None:
             accepted_endpoints = endpoint_selection.consume(store, symbol, current_sha256, end_text, asof)
@@ -463,7 +449,19 @@ def download_pricing(
         stored_start = timestamp(previous.get("history_start", HISTORY_START)) if previous is not None else None
         history_start = requested_start or stored_start or timestamp(HISTORY_START)
         if expected_source_sha256 is not None:
-            if previous is None or digest(json_bytes(previous)) != expected_source_sha256:
+            current_sha256 = digest(json_bytes(previous)) if previous is not None else None
+            trace_source_selection(previous, current_sha256, symbol=symbol, reason="replacement_execution")
+            event(
+                "pricing_generation_check",
+                symbol=symbol,
+                store=str(store),
+                selected_generation=expected_source_sha256,
+                source_generation=current_sha256,
+                applicable=current_sha256 == expected_source_sha256,
+                asof=asof,
+                end_exclusive=end_text,
+            )
+            if previous is None or current_sha256 != expected_source_sha256:
                 raise DownloadError("pricing source changed after refresh planning; repeat the live check")
             if (
                 not refresh_all
@@ -498,11 +496,9 @@ def download_pricing(
             else None
         )
         if endpoints is None:
-            endpoints = (
-                _stored_endpoints(root, previous)
-                if previous is not None and not refresh_all
-                else {name: () for name in ADJUSTMENTS}
-            )
+            if previous is not None and not refresh_all:
+                history_check_endpoints(None)  # Missing handoff never authorizes a payload crawl.
+            endpoints = {name: () for name in ADJUSTMENTS}
         old_extent = (
             _manifest_extent(root, previous)
             if previous is not None and refresh_all and not previous.get("validator")
@@ -517,24 +513,34 @@ def download_pricing(
             )
         extending = stored_start is not None and history_start < stored_start
         check = "not_required"
-        if previous is not None and not refresh_all:
+        if previous is not None and not refresh_all and not extending:
             if not any(endpoints.values()):
                 check = "no_stored_sessions"
             else:
                 matched = endpoint_selection.matched if endpoint_selection is not None else None
                 if matched is None:
-                    matched = _endpoints_match(client, symbol, endpoints, asof, cutoff=end)
+                    matched = _endpoints_match(
+                        client,
+                        symbol,
+                        history_check_endpoints(endpoints),
+                        asof,
+                        cutoff=end,
+                        require_present=True,
+                    )
+                selected_check = endpoint_selection or EndpointSelection(
+                    str(store),
+                    symbol,
+                    digest(json_bytes(previous)),
+                    end_text,
+                    asof,
+                    tuple((name, tuple(rows)) for name, rows in endpoints.items()),
+                )
+                context.endpoint_selections[symbol] = replace(selected_check, matched=matched)
                 check = "matched" if matched else "mismatch"
         full_history = previous is None or refresh_all or extending or check == "mismatch"
         restarted = False
         for attempt in range(2):
-            start = (
-                history_start
-                if full_history
-                else previous_end
-                if check == "no_stored_sessions"
-                else max(history_start, timestamp(previous["anchor_month"] + "-01T00:00:00Z"))
-            )
+            start = history_start if full_history else previous_end
             request = {
                 "symbol": symbol,
                 "start": start.isoformat().replace("+00:00", "Z"),
@@ -568,32 +574,38 @@ def download_pricing(
                 for row in rows
             ):
                 raise DownloadError("provider rows do not fit the requested session-month range")
-            overlap_ok = full_history or _overlap_matches(endpoints, views, start)
             selected_endpoints = (
                 endpoints_of(views) if full_history else _incremental_endpoints(endpoints, views, start)
             )
-            first_only = {name: rows[:1] for name, rows in selected_endpoints.items()}
-            first_ok = _endpoints_match(client, symbol, first_only, asof, cutoff=end)
+            # Matching first/latest all already approved the old generation.
+            # Append never requests overlap or confirms its historical first rows again.
+            first_ok = not full_history or _endpoints_match(
+                client, symbol, {name: rows[:1] for name, rows in selected_endpoints.items()}, asof, cutoff=end
+            )
             empties_history = full_history and any(
                 name in prior_nonempty and not rows for name, rows in views.items()
             )
             # Removing published history requires a fresh confirmation. The planned
             # response is consumed once, so the bounded retry makes exact requests.
             # Ordinary empty appends must never enter this replacement-only guard.
-            if overlap_ok and first_ok and not (empties_history and not attempt):
+            if first_ok and not (empties_history and not attempt):
                 break
             if attempt:
                 raise DownloadError("provider pricing changed during acquisition twice; publication unchanged")
             full_history, restarted, check = True, True, "changed_during_acquisition"
         old_documents = {}
         read_selected = partial(read_boundary, documents=old_documents)
-        changed_views = updated_boundaries(
-            root, previous, anchor, views, full_history=full_history, read=read_selected
+        acquired_extent = session_extent(endpoints_of(views))
+        if not full_history and (acquired_extent or anchor != previous["anchor_month"]):
+            # Decode only for output assembly, never to re-prove accepted history.
+            views = _join(read_selected(root, previous, "current_month"), views)
+        changed_views = (
+            updated_boundaries(root, previous, anchor, views, full_history=full_history, read=read_selected)
+            if full_history or acquired_extent or anchor != previous["anchor_month"]
+            else {}
         )
         update = (
-            merge_ranges(old_extent, session_extent(selected_endpoints))
-            if full_history
-            else _changed_range(views, read_selected(root, previous, "current_month"))
+            merge_ranges(old_extent, session_extent(selected_endpoints)) if full_history else acquired_extent
         )
         written = publish_acquired(
             root,

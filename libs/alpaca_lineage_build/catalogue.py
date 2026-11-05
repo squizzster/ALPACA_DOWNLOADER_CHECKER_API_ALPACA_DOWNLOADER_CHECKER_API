@@ -19,6 +19,11 @@ def observe_catalogue(client):
     # or interpret an omitted ticker as proof of inactivity/deletion.
     plan = build_plan({"steps": [{"needs": [{"kind": "asset_catalogue", "why": "universe_discovery"}]}]})
     records = client.execute_plan(plan)[0][0]
+    return completed_catalogue(records, plan)
+
+
+def completed_catalogue(records, plan):
+    """Accept the full discovery contract from an already completed response."""
     if not isinstance(records, list) or not records:
         raise LineageError("complete US-equity catalogue must be a nonempty array")
     for asset in records:

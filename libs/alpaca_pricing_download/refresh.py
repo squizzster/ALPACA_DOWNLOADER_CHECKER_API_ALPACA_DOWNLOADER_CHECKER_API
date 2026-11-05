@@ -24,15 +24,14 @@ from .contract import (
 from .download import (
     _endpoint_window,
     _endpoints_match,
-    _incremental_endpoints,
     acquisition_asof,
     download_pricing,
     established_pricing_rejection,
 )
-from .endpoints import endpoints_of
+from .endpoints import endpoints_of, history_check_endpoints
 from .failures import AcquisitionFailure
 from .responses import completed_bars
-from .storage import load_source, read_validator, regular_path, ticker_lock
+from .storage import load_source, read_validator, regular_path, ticker_lock, trace_source_selection
 
 
 @traced("retained_history_check")
@@ -51,8 +50,13 @@ def check_retained_source(store, symbol, end_date, *, client):
         endpoints = read_validator(root, source, published=True)
         if endpoints is None:
             raise DownloadError(f"{symbol}: retained-history checking requires published endpoints")
-        matched = not any(endpoints.values()) or _endpoints_match(
-            client, symbol, endpoints, request["asof"], cutoff=timestamp(request["end_exclusive"])
+        matched = _endpoints_match(
+            client,
+            symbol,
+            history_check_endpoints(endpoints),
+            request["asof"],
+            cutoff=timestamp(request["end_exclusive"]),
+            require_present=True,
         )
         return {**request, "matched": matched}
 
@@ -90,7 +94,9 @@ def prepare_refresh(store, symbols):
             source = load_source(root, symbol)
         if source is None:
             raise DownloadError(f"{symbol}: no existing pricing to replace")
-        prepared.append(_refresh_request(symbol, source))
+        request = _refresh_request(symbol, source)
+        trace_source_selection(source, request["source_sha256"], symbol=symbol, reason="replacement_selection")
+        prepared.append(request)
     return prepared
 
 
@@ -304,7 +310,7 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, 
 
 @traced("pricing_full_history")
 def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progress=None, on_failure=None):
-    """Acquire shared ranges, then batch the resulting history's first-session checks.
+    """Acquire shared ranges; only new/replaced histories need producer confirmation.
 
     The returned client feeds the normal downloader; its existing bounded retry
     requests a fresh plan if the provider changed during acquisition.
@@ -320,8 +326,11 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
         if any(key not in cache for key in keys.values()):
             continue
         views = {name: cache[key].rows for name, key in keys.items()}
-        prior = (retained_endpoints or {}).get(symbol)
-        endpoints = _incremental_endpoints(prior, views, start) if prior is not None else endpoints_of(views)
+        if symbol in (retained_endpoints or {}):
+            # A completed first/latest all comparison already approved this
+            # generation. These are new-session rows only. No historical probes.
+            continue
+        endpoints = endpoints_of(views)
         # These are fresh producer checks for newly acquired output, not a
         # revalidation of completed stored history. Their independent responses
         # must not be replaced with the acquisition body being checked.
@@ -334,8 +343,10 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
                 cutoff=end,
             )
         )
-    checked, checks = _prefetch(
-        probes, client, check=True, metrics=metrics, progress=progress, on_failure=on_failure
+    checked, checks = (
+        _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=on_failure)
+        if probes
+        else ({}, {"steps": []})
     )
     cache.update(checked)
     return PlannedClient(client, cache), {
@@ -344,12 +355,10 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
     }
 
 
-def acquire_retained(selected, end, *, client, metrics, progress=None, on_checked=None):
-    """Batch the ordinary downloader's three request stages for selected sources."""
-    # These first/last checks and possible history replacements are for explicitly
-    # selected retained dependencies. They are not a substitute for the daily
-    # summary's single last-all check or permission to revalidate its other views.
+def acquire_retained(selected, end, *, client, metrics, progress=None, on_checked=None, approved=None):
+    """First/latest all approval -> missing sessions, or selected full replacement."""
     failures, probes = {}, []
+    approved = approved or {}
 
     def failed(_step, action, error):
         outcome = failure_outcome(error)
@@ -369,9 +378,41 @@ def acquire_retained(selected, end, *, client, metrics, progress=None, on_checke
                     failures[symbol] = (AcquisitionFailure.from_error(failure), exact_fallback)
 
     for symbol, (source, endpoints) in selected.items():
+        if symbol in approved:
+            continue
         asof = acquisition_asof(source, end)
-        probes.extend(_endpoint_needs(symbol, endpoints, asof, "boundary_check", cutoff=end))
-    cache, _ = _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed)
+        try:
+            points = history_check_endpoints(endpoints)
+        except DownloadError as error:
+            failures[symbol] = (AcquisitionFailure.from_error(error), False)
+            continue
+        probes.extend(_endpoint_needs(symbol, points, asof, "boundary_check", cutoff=end))
+    cache, _ = (
+        _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed)
+        if probes
+        else ({}, None)
+    )
+    # A completed batch omission cannot erase a known retained observation.
+    # Confirm only omitted endpoints, once singly. Physical singleton responses
+    # (including 414 splits) already establish their result and must not repeat.
+    for key, value in list(cache.items()):
+        _, symbol, adjustment, start, stop, asof = key
+        if symbol in failures or value.rows or value.singleton:
+            continue
+        try:
+            metrics["omission_probes"] = metrics.get("omission_probes", 0) + 1
+            cache[key] = completed_bars(
+                client.fetch(symbol, adjustment, start, stop, asof=asof),
+                symbol,
+                adjustment,
+                start,
+                stop,
+                asof,
+            )
+            if cache[key].rows:
+                metrics["omission_recovered"] = metrics.get("omission_recovered", 0) + 1
+        except (RuntimeError, OSError, ValueError) as error:
+            failures[symbol] = (AcquisitionFailure.from_error(error), False)
     comparison = PlannedClient(client, dict(cache))
     needs, retained = [], {}
     for symbol, (source, endpoints) in selected.items():
@@ -379,11 +420,26 @@ def acquire_retained(selected, end, *, client, metrics, progress=None, on_checke
             continue
         start = timestamp(source.get("history_start", HISTORY_START))
         asof = acquisition_asof(source, end)
-        matched = _endpoints_match(comparison, symbol, endpoints, asof, cutoff=end)
+        try:
+            matched = (
+                approved[symbol]
+                if symbol in approved
+                else _endpoints_match(
+                    comparison,
+                    symbol,
+                    history_check_endpoints(endpoints),
+                    asof,
+                    cutoff=end,
+                    require_present=True,
+                )
+            )
+        except (RuntimeError, OSError, ValueError) as error:
+            failures[symbol] = (AcquisitionFailure.from_error(error), False)
+            continue
         if on_checked is not None:
             on_checked(symbol, matched)
         if matched:
-            start = max(start, timestamp(source["anchor_month"] + "-01T00:00:00Z"))
+            start = timestamp(source["latest_request"]["end_exclusive"])
             retained[symbol] = endpoints
         needs.append(
             {

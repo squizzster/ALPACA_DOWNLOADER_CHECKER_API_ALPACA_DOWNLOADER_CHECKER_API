@@ -55,15 +55,13 @@ class UpdateCheckTests(unittest.TestCase):
                 self.assertEqual(result["files_written"], 0)
         self.assertEqual(before, snapshot(self.store))
 
-    def test_advancing_boundary_still_probes_old_first_and_last_in_every_view(self):
+    def test_advancing_boundary_checks_only_first_and_last_all(self):
         self.download()
         client = FakeClient(self.rows)
         result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertEqual(result["consistency_check"], "matched")
-        self.assertEqual(len(client.calls), 32)
-        self.assertEqual(
-            {call[2].date().isoformat() for call in client.calls[:16]}, {"2026-10-01", "2026-10-02"}
-        )
+        self.assertEqual(len(client.calls), 10)
+        self.assertEqual({call[2].date().isoformat() for call in client.calls[:2]}, {"2026-10-01", "2026-10-02"})
 
     def test_complete_work_list_avoids_all_individual_receipts_on_repeated_runs(self):
         self.download()

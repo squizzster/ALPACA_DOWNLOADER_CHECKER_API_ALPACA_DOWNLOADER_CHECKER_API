@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+from libs.common.debug_trace import event
+
 from .contract import ADJUSTMENTS, COLUMNS, NEW_YORK, SUPPORTED_VERSIONS, VERSION, DownloadError, timestamp
 
 
@@ -12,7 +14,8 @@ class EndpointSelection:
 
     The immutable values survive network I/O, bound to one store, source,
     mapping and cutoff. The consumer must recheck that generation under its
-    newly acquired lock. New output confirmation remains independent.
+    newly acquired lock. Approved appends do not confirm history again; a
+    selected full replacement retains its independent producer confirmation.
     """
 
     store: str
@@ -23,14 +26,33 @@ class EndpointSelection:
     points: tuple | None
     matched: bool | None = None
 
-    def consume(self, store, symbol, generation, end, asof):
-        if (str(store), symbol, generation, end, asof) != (
+    def applies(self, store, symbol, generation, end, asof):
+        applicable = (str(store), symbol, generation, end, asof) == (
             self.store,
             self.symbol,
             self.generation,
             self.end,
             self.asof,
-        ):
+        )
+        event(
+            "endpoint_selection_binding",
+            symbol=symbol,
+            store=str(store),
+            source_generation=generation,
+            selected_generation=self.generation,
+            selected_store=self.store,
+            selected_symbol=self.symbol,
+            end_exclusive=end,
+            selected_end_exclusive=self.end,
+            asof=asof,
+            selected_asof=self.asof,
+            applicable=applicable,
+            comparison_matched=self.matched,
+        )
+        return applicable
+
+    def consume(self, store, symbol, generation, end, asof):
+        if not self.applies(store, symbol, generation, end, asof):
             raise DownloadError("endpoint selection no longer matches the selected acquisition")
         return None if self.points is None else dict(self.points)
 
@@ -40,6 +62,15 @@ def endpoints_of(views: dict) -> dict:
         name: () if not rows else (rows[0],) if len(rows) == 1 else (rows[0], rows[-1])
         for name, rows in views.items()
     }
+
+
+def history_check_endpoints(endpoints):
+    """Only first/latest all may select reuse of completed retained pricing."""
+    if endpoints is None:
+        raise DownloadError("retained pricing requires a published endpoint validator; explicitly rebuild it")
+    if not endpoints["all"] and any(endpoints.values()):
+        raise DownloadError("retained pricing has no all-adjusted baseline; explicit replacement required")
+    return {"all": endpoints["all"]}
 
 
 def same_row(left: tuple, right: tuple) -> bool:

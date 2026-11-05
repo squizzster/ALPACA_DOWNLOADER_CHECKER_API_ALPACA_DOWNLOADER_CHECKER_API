@@ -146,5 +146,10 @@
     "modifications": [
       "Honor the serving catalogue\u2019s approved date range in public histories, flat CSV and per-identity CSV exports, including supported recent suffixes."
     ]
+  },
+  {
+    "modifications": [
+      "Report actual selected gzip reads from the shared reader, including cache misses used by serving, in opt-in update debug traces. Retain existing cache behavior, public results and storage/provider work."
+    ]
   }
 ]

@@ -294,5 +294,11 @@
       "Retain completed per-symbol live comparisons before reporting peer failures, bound to the accepted summary entry and pricing generation within one operation; differences remain correction work, and renewed correction obligations cannot inherit append approval.",
       "Retain successful correction and append approvals after their exact generations reach lineage, even when an independent peer fails; preserve current scope restrictions, late-bar replacement handoffs and fresh checks after invalidation or restart."
     ]
+  },
+  {
+    "modifications": [
+      "Reuse completed lineage decisions when pricing proves unchanged observations and only coverage advances, including unresolved, empty and multi-member groups. Keep actual mapping, metadata, policy and historical-price changes on the owning reconciliation path without treating acquisition-window bookkeeping as changed evidence.",
+      "Keep one accepted catalogue, exact asset lookups, completed corporate-action intervals, failures and conflict latches throughout recovery and discovery. Reuse complete observations across phase transitions; new invocations obtain fresh facts. Debug records per-symbol endpoint decisions and their summary/source bindings using held values only."
+    ]
   }
 ]

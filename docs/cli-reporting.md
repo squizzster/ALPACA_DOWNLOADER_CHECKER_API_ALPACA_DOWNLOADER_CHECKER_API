@@ -63,6 +63,19 @@ Prefix decisions explain incompatible or
 unresolved histories, changed ancestry/evidence, incomplete session seams and changed suffix identity/source priority. Group
 exits report rows processed versus reused; serving exits report reused prefixes and full-history evaluations.
 
+`pricing_storage_read` brackets each actual read through the pricing owner and the shared reader's gzip
+loader. It identifies the path, symbol, artifact kind, purpose, available selector digest and byte count.
+Purposes distinguish selected payload/validator consumption from staged or installed producer validation
+and explicit authentication. Cache hits emit no physical-read span; exact-copy views share their existing
+physical reads. Staged reads identify their output path. Failed reads close with the error type.
+`pricing_source_selected` links an already computed source generation to its validator and boundary digests.
+`endpoint_selection_binding`, `pricing_generation_check` and `append_approval_binding` record the held
+selected/current generations and applicable request scope, including rejected stale bindings.
+`history_comparison` records each completed symbol's matching/differing result, source generation, summary
+token, endpoint sessions and mapping; `history_endpoint_difference` names the endpoint and changed fields.
+No response bodies, extra file reads, digests or provider requests are produced for these diagnostics.
+These are owning-path observations, not a filesystem sandbox or proof that every recorded operation is necessary.
+
 Normal returns (including unchanged, blocked and incomplete results), exceptions and keyboard interruption
 close their started spans. A killed process leaves open spans identifying its last active work. A trace write
 failure disables tracing and emits a stderr warning while preserving the update outcome; missing records then

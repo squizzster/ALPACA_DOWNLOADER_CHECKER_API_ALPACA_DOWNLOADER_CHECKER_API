@@ -6,6 +6,54 @@ You **MUST** always seek user confirmed permission to edit this file.
 Read [README.md](README.md), then [Architecture](docs/ARCHITECTURE.md) and the guide relevant to the task.
 Check `git status` before editing. Preserve existing work and verify claims against current code and tests.
 
+## Non-negotiable: never re-prove accepted work
+
+**THIS IS AN UNCONDITIONAL CORRECTNESS REQUIREMENT, NOT A PERFORMANCE SUGGESTION.**
+
+**NEVER CHECK AGAIN WHAT A COMPLETED, APPLICABLE PRODUCER HANDOFF ALREADY ESTABLISHES.**
+Trust it from its first successful acceptance. Carry its values, selected scope and completed decision to
+every downstream consumer. Losing that handoff is a defect to fix, never permission to repeat its work.
+Existing code, documentation, passing tests, defensive programming, a new phase, a retry, a missing workflow
+acknowledgement or a desire for extra confidence cannot override this rule. Do not defend redundant checks
+because the implementation already performs them. Remove conflicting documentation and fix the implementation.
+
+For retained pricing, **the first and latest fully adjusted (`all`) session comparisons are the acceptance
+boundary**. A single-session history needs one comparison. Matching endpoints approve reuse of the selected
+stored generation and acquisition of missing sessions only. This applies to ordinary acquisition and retained
+dependencies as well as daily-summary members. It is forbidden to:
+
+- Check the other seven historical adjustment views after that approval.
+- Request intervening history, overlap or old first-session confirmations to verify approved history again.
+- Open, decode, hash or scan retained gzip payloads to establish endpoints or authenticate approved prices.
+- Reread accepted validators, manifests or receipts, replay their calculations, or repeat a completed comparison
+  merely because execution moved to another consumer, lock scope, cohort or phase.
+- Rename repeated historical verification as an acquisition check, producer check, safety check or fallback.
+
+Keep the approval bound to its actual store, source generation, identity mapping and permitted request scope.
+After lock reacquisition, the required selector/generation check establishes whether that binding still applies;
+it must not expand into upstream verification. An actual changed generation or mapping invalidates the affected
+approval. A changed endpoint selects the owning replacement path. Missing required evidence fails closed into
+the explicit owning recovery/rebuild path; it never authorizes a hidden history audit or store crawl.
+
+New rows and newly constructed artifacts are validated at their producer boundary. Reading an existing hot
+partition to construct an append or rollover is data assembly, not permission to authenticate its accepted
+contents again. Neither operation may repeat the historical acceptance decision. Consumers trust the resulting
+completed handoff. Preserve accepted comparisons across peer failures within their valid operation scope.
+
+**Enforce this in tests:** assert the correct result AND fail on forbidden provider requests, historical payload
+reads, repeated boundary reads and repeated calculations. Cover the nearest actual invalidation and interruption.
+Tests that require redundant verification must be corrected; their previous expectations are not authority.
+Do not claim compliance from successful results, absence of scope alerts or a warm filesystem cache alone.
+
+The primary acceptance rule is **zero unnecessary checks, reads, calculations or downloads**, including
+lineage and metadata work. Runtime is a consequence, not a substitute: redundant work is a failure even when
+the update finishes quickly. The operational target for a normal one-session update is **60 minutes, with
+90 minutes the maximum**.
+Exceeding 90 minutes is a failed performance acceptance, even if pricing, lineage and serving eventually finish.
+Attribute the excess from debug evidence and fix its cause; do not normalize it as expected work or repeatedly
+restart without diagnosis. This target never authorizes dropping required output, hiding failures or weakening
+the accepted publication contract.
+
 ## Boundaries
 
 - Consumer applications import only `alpaca_end_of_day`. Modules under `libs/` are internal.

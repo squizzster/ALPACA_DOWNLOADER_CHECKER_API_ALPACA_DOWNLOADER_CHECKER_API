@@ -7,6 +7,7 @@ from threading import RLock
 
 from libs.alpaca_lineage_build.contract import LineageError, selected_document
 from libs.alpaca_pricing_download.contract import decode_csv, json_bytes
+from libs.alpaca_pricing_download.storage import read_artifact
 
 
 def _size(value):
@@ -121,7 +122,7 @@ class GenerationCache:
 
         # Decoded tuples and strings are immutable. Aliases share this exact entry.
         def load():
-            packed = path.read_bytes()
+            packed = read_artifact(path, purpose="reader_selected_payload", selector_sha256=generation)
             self.ledger.record("cached_file_loads")
             self.ledger.record("cached_file_bytes", len(packed))
             return decode_csv(packed)

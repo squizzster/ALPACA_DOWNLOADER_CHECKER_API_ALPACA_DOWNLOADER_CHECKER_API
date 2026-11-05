@@ -590,8 +590,8 @@ class UpdateHandoffRegressions(unittest.TestCase):
             ):
                 result = acquire_selected(case.store, ["AAA"], "2026-10-20", client=case.pricing)
             self.assertEqual(result["failed"], 0, result)
-            # The independent first-session confirmation of NEW output remains.
-            self.assertEqual(compare.call_count, 1)
+            # Accepted history must not be confirmed again during append.
+            self.assertEqual(compare.call_count, 0)
             self.assertEqual(result["results"][0]["consistency_check"], "matched")
 
     def test_metadata_fallback_reuses_decoded_active_partition(self):

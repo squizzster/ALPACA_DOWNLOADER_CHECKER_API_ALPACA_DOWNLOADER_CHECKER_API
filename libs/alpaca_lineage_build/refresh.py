@@ -11,7 +11,7 @@ from libs.alpaca_pricing_download.refresh import (
     probe_late_bar_repairs,
     replace_prepared,
 )
-from libs.common.debug_trace import span, traced
+from libs.common.debug_trace import event, span, traced
 
 from . import storage
 from .context import accept_context, recover_and_accept_correlation_policy
@@ -320,9 +320,31 @@ def refresh_existing(
         matched = set(handoff["matched"])
         differing = {item["symbol"] for item in handoff["differences"]}
         completed = matched | differing
+        for difference in handoff["differences"]:
+            event(
+                "history_endpoint_difference",
+                symbol=difference["symbol"],
+                endpoint=difference["endpoint"],
+                session=difference["session"],
+                kind=difference["kind"],
+                fields=tuple(difference["fields"]),
+            )
         for entry in candidates:
             symbol = entry["symbol"]
             generation = selected_sources.get(symbol, accepted_generations.get(symbol))
+            if symbol in completed:
+                event(
+                    "history_comparison",
+                    symbol=symbol,
+                    store=str(store),
+                    source_generation=generation,
+                    matched=symbol in matched,
+                    summary_token=snapshot["token"],
+                    asof=entry["asof"],
+                    end_exclusive=entry["end_exclusive"],
+                    first_session=entry["first_all"][0],
+                    last_session=entry["last_all"][0],
+                )
             if symbol in completed and generation is not None:
                 context.history_comparisons[symbol] = (dict(entry), generation, symbol in differing)
                 compared[symbol] = symbol in differing
