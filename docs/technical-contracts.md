@@ -60,6 +60,28 @@ replacement. This boundary does not detect every interior correction. Replacemen
 sessions. Authorities: [download_pricing / publish_acquired](../libs/alpaca_pricing_download/download.py),
 [HTTP execution](../libs/alpaca_pricing_download/http.py), [completed responses](../libs/alpaca_pricing_download/responses.py).
 
+New-range acquisition uses the restored `alpaca_adjustment_equivalence_v1` empirical policy in
+[adjustment_policy.py](../libs/alpaca_pricing_download/adjustment_policy.py). It requests `raw`, then `all`.
+Equality of their complete newly acquired payloads selects the all-equal pattern after two views. Otherwise,
+`dividend`, then the required split/spin-off observations distinguish the recorded three-, four- and five-view
+patterns. Unrecognized observed patterns fetch the remaining views; contradictory empty/nonempty responses
+also require all eight direct observations. Counts describe view acquisitions, excluding pagination, retries
+and producer confirmations. The policy infers unrequested views from its empirical patterns; it does not prove
+the absence of an anomaly confined to an unrequested view. Both `raw` and `all` are always direct observations.
+
+[Adaptive acquisition](../libs/alpaca_pricing_download/adaptive.py) applies to new tickers, selected replacements
+and missing-session appends. Each response-dependent stage batches only its selected symbols at their exact
+requested ranges. Completed pagination precedes the next decision. Successful observations survive an exact
+transport fallback, and completed decisions cross into publication without rehashing, renormalizing or replaying
+the policy. A fresh scope makes its own decision; old payloads and endpoint approvals are not equivalence inputs.
+All eight logical views remain available through the existing publication representation. The source's optional
+`latest_adjustment_acquisition` records the latest range/mapping, policy, observed hashes and inferred aliases;
+it is provenance for that acquisition, not authorization to infer later ranges or reinterpret retained partitions.
+New full histories and selected replacements confirm only directly acquired views at their first session.
+Approved appends retain their existing no-historical-confirmation rule. Debug emits the completed selection;
+stage progress counts each HTTP page once. Planning minima assume two views while action/dense-history estimates
+budget eight; the actual dependent plans report their selected work as responses arrive.
+
 Each pricing HTTP attempt uses a 300-second socket timeout for blocking network operations, including
 endpoint checks, pagination and retries. This is not a total operation or retry deadline. An earlier provider
 HTTP 504 remains a server failure; the client timeout cannot extend the provider's own backend deadline.

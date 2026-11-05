@@ -487,7 +487,7 @@ class LineageBuildTests(unittest.TestCase):
             result = self.run_build(["GOOG"], client=identities, pricing_client=pricing)
         self.assertEqual(result["dependency_pricing"]["requested"], 1)
         self.assertEqual(result["dependency_pricing"]["failed"], 0)
-        self.assertGreater(len(calls), 8)
+        self.assertEqual(len(calls), 4)
         self.assertTrue(any(call["start"][:10] < "2026-10-15" for call in calls))
         self.assertTrue(all(call["symbols"] == "OLD" for call in calls))
         source = storage.load_source(self.store / "end_of_day/pricing/OLD", "OLD")

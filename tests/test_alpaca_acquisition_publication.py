@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from libs.alpaca_pricing_download import acquire, storage
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS, timestamp
+from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
 
@@ -96,12 +96,12 @@ class AcquisitionPublicationTests(unittest.TestCase):
                 self.pages.clear()
                 result = self.acquire(store, mode)
                 self.assertEqual(result["failed"], 0, result)
-                self.assertEqual(len(self.pages), 16)  # Eight full views and their producer probes.
+                self.assertEqual(len(self.pages), 4)  # Two direct views and their producer probes.
                 for rows in read_pricing_views(store, "AAA").values():
                     self.assertEqual([row[4] for row in rows], ["50"] * 3)
                 source = storage.load_source(store / "end_of_day/pricing/AAA", "AAA")
                 self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
-                self.assertEqual({page["adjustment"] for page in self.pages}, set(ADJUSTMENTS))
+                self.assertEqual({page["adjustment"] for page in self.pages}, {"raw", "all"})
 
     def test_exact_fallback_also_rejects_a_changed_source_before_fetching(self):
         store = self.directory / "fallback"
@@ -142,7 +142,7 @@ class AcquisitionPublicationTests(unittest.TestCase):
         self.assertIn("changed after acquisition selection", result["results"][0]["outcome"]["error"])
         self.assertFalse((store / "end_of_day/pricing/AAA/.pending.json").exists())
         self.assertEqual([row[4] for row in read_pricing_views(store, "AAA")["all"]], ["75"] * 3)
-        self.assertEqual(len(self.pages), 16)
+        self.assertEqual(len(self.pages), 4)
 
 
 if __name__ == "__main__":

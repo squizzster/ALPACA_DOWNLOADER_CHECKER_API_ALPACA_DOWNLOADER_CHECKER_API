@@ -163,7 +163,10 @@ class CsvExportTests(NativeCase):
                     for row in rows
                 ]
 
-        self.refresh(ChangedVolumeClient(self.bars))
+        from test_alpaca_pricing_download import direct_adjustment_observations
+
+        with direct_adjustment_observations():
+            self.refresh(ChangedVolumeClient(self.bars))
         self.add_symbol("OTHER")
         data = self.bootstrap()
         test_id = data.resolve_ticker("TEST")[0].public_id
@@ -195,7 +198,10 @@ class CsvExportTests(NativeCase):
                     for row in rows
                 ]
 
-        self.refresh(MiddleChangeClient(self.bars))
+        from test_alpaca_pricing_download import direct_adjustment_observations
+
+        with direct_adjustment_observations():
+            self.refresh(MiddleChangeClient(self.bars))
         data = self.bootstrap()
         public_id = data.list_securities()[0].public_id
         _, _, documents = self.exported(data)

@@ -226,5 +226,11 @@
       "Retain accepted validator values and completed comparisons across failed suffix work, including empty sources; exact transport fallback consumes completed adjustment responses and retries only missing views.",
       "Trace actual validator, gzip, selected-control and producer-publication reads with their purpose and existing selector digests; expose accepted, rejected and published generation bindings without extra filesystem reads, hashing or provider calls."
     ]
+  },
+  {
+    "modifications": [
+      "Restore ordered empirical adjustment acquisition: raw then all, then only the dividend/split/spin-off views required by the recorded equivalence patterns, with all-eight fallback for unrecognized observations or contradictory presence. Apply it to initial histories, selected replacements and approved suffixes while retaining exact request windows, pagination, bounded retries and producer confirmations only for directly acquired new full-history views.",
+      "Carry completed normalized observations and the completed adjustment decision across acquisition/publication and exact transport fallback without repeated requests, hashes or policy calculations. Record scoped acquisition provenance in the source and debug trace; preserve retained-history approvals, generation rejection, publication recovery and all eight logical outputs."
+    ]
   }
 ]

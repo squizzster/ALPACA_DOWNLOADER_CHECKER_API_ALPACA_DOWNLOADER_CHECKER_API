@@ -607,8 +607,8 @@ class DurableMaintenanceTests(unittest.TestCase):
         self.assertTrue(result["update_reported_complete"])
         self.assertEqual(result["known_active_empty_coverage_after_later_target"][:10], "2026-10-20")
         self.assertEqual(result["stored_empty_row_count"], 1)
-        self.assertEqual(result["empty_tail_calls"], 8)
-        self.assertEqual(result["bar_calls_for_empty"], 24)  # Eight tails, then first-row and overlap checks.
+        self.assertEqual(result["empty_tail_calls"], 2)
+        self.assertEqual(result["bar_calls_for_empty"], 6)  # Raw/all ranges across the selected stages.
 
     def test_maintenance_denial_creates_durable_restricted_work(self):
         result = maintenance_denial_is_not_durable()

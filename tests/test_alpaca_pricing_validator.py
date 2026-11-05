@@ -244,7 +244,7 @@ class PricingValidatorTests(unittest.TestCase):
             side_effect=AssertionError("empty append payload read"),
         ):
             download_pricing(self.store, "GOOG", "2026-10-15", client=client)
-        self.assertEqual(len(client.calls), 10)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
         self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls[2:]))
 
@@ -263,7 +263,7 @@ class PricingValidatorTests(unittest.TestCase):
             result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertFalse(result["restarted"])
         self.assertEqual(result["mode"], "update")
-        self.assertEqual(len(client.calls), 10)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"][0][4], str(self.rows[0]["c"]))
         self.assert_validator()
 
@@ -283,13 +283,13 @@ class PricingValidatorTests(unittest.TestCase):
 
         def unstable(symbol, adjustment, start, end, **kwargs):
             rows = original(symbol, adjustment, start, end, **kwargs)
-            if len(client.calls) > 8 and kwargs.get("asof"):
+            if kwargs.get("asof"):
                 return [bar(row["t"][:10], "999") for row in rows]
             return rows
 
         with patch.object(client, "fetch", side_effect=unstable), self.assertRaisesRegex(DownloadError, "twice"):
             download_pricing(self.store, "GOOG", "2026-10-15", client=client, refresh_all=True)
-        self.assertEqual(len(client.calls), 32)
+        self.assertEqual(len(client.calls), 8)
         self.assertEqual(snapshot(self.store), before)
 
     def test_replacement_notice_includes_removed_edges_and_unconsumed_dates(self):
@@ -334,7 +334,11 @@ class PricingValidatorTests(unittest.TestCase):
 
         def distinct(symbol, adjustment, start, end, **kwargs):
             rows = original(symbol, adjustment, start, end, **kwargs)
-            return [bar(row["t"][:10], "999") for row in rows] if adjustment == "dividend" else rows
+            return (
+                [bar(row["t"][:10], "999") for row in rows]
+                if "dividend" in adjustment or adjustment == "all"
+                else rows
+            )
 
         with patch.object(client, "fetch", side_effect=distinct):
             download_pricing(self.store, "GOOG", "2026-10-14", client=client)
@@ -358,7 +362,7 @@ class PricingValidatorTests(unittest.TestCase):
         client = FakeClient([bar(row["t"][:10], "25") for row in self.rows])
         result = download_pricing(self.store, "GOOG", "2026-10-14", client=client, refresh_all=True)
         self.assertTrue(result["recovered"])
-        self.assertEqual(len(client.calls), 16)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"][0][4], "25")
         self.assert_validator()
 

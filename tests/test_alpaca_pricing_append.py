@@ -75,7 +75,7 @@ class AppendTests(unittest.TestCase):
     def run_append(self, end="2026-10-17", **kwargs):
         return append.append_ready(self.store, self.ready, end, client=self.client, **kwargs)
 
-    def test_eight_calls_for_shared_two_day_append_preserves_history_and_handoff(self):
+    def test_two_calls_for_shared_two_day_append_preserves_history_and_handoff(self):
         root = self.store / "end_of_day/pricing/AAA"
         cold = {str(path): (path.read_bytes(), path.stat().st_ino) for path in root.glob("completed_years*")}
         year = {str(path): (path.read_bytes(), path.stat().st_ino) for path in (root / "2026").glob("year*")}
@@ -85,9 +85,9 @@ class AppendTests(unittest.TestCase):
         ):
             result = self.run_append()
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(len(self.calls), 8)
+        self.assertEqual(len(self.calls), 2)
         self.assertTrue(all(call["symbols"] == "AAA,BBB" for call in self.calls))
-        self.assertEqual({call["adjustment"] for call in self.calls}, set(ADJUSTMENTS))
+        self.assertEqual([call["adjustment"] for call in self.calls], ["raw", "all"])
         for path, previous in {**cold, **year}.items():
             self.assertEqual((Path(path).read_bytes(), Path(path).stat().st_ino), previous)
         for symbol in self.assets:
@@ -149,7 +149,7 @@ class AppendTests(unittest.TestCase):
             end_by_symbol={"EMPTY": timestamp("2026-10-17T00:00:00Z")},
         )
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(len(self.calls), 8)
+        self.assertEqual(len(self.calls), 2)
         self.assertTrue(all(call["symbols"] == "EMPTY" for call in self.calls))
         source = storage.load_source(self.store / "end_of_day/pricing/EMPTY", "EMPTY")
         self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
@@ -211,7 +211,7 @@ class AppendTests(unittest.TestCase):
         with patch.object(self.client, "_get", side_effect=paged):
             result = self.run_append()
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(result["requests"]["page_requests"], 16)
+        self.assertEqual(result["requests"]["page_requests"], 4)
         for symbol in self.assets:
             self.assertTrue(all(len(rows) == 4 for rows in read_pricing_views(self.store, symbol).values()))
 
@@ -219,8 +219,8 @@ class AppendTests(unittest.TestCase):
         with patch.object(append, "MAX_ROWS", 16):
             result = self.run_append()
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(result["requests"]["page_requests"], 16)
-        self.assertEqual([call["symbols"] for call in self.calls], ["AAA"] * 8 + ["BBB"] * 8)
+        self.assertEqual(result["requests"]["page_requests"], 4)
+        self.assertEqual([call["symbols"] for call in self.calls], ["AAA"] * 2 + ["BBB"] * 2)
 
     def test_interrupted_append_uses_normal_recovery_without_downloading_again(self):
         self.ready["entries"] = [self.ready["entries"][0]]
@@ -293,7 +293,7 @@ with patch.object(storage, 'write_file', side_effect=interrupted):
         )
         result = self.run_append()
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(len(self.calls), 8)
+        self.assertEqual(len(self.calls), 2)
         self.assertFalse((root / ".staging").exists())
         self.assertEqual(len(read_pricing_views(self.store, "AAA")["all"]), 4)
 

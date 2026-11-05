@@ -92,8 +92,8 @@ class UpdateEverythingTests(unittest.TestCase):
         result = self.run_update()
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["stages"]["refresh"]["check"]["stats"]["matched"], 2)
-        self.assertEqual(result["stages"]["append"]["requests"]["page_requests"], 8)
-        self.assertEqual(len(self.calls), 10)
+        self.assertEqual(result["stages"]["append"]["requests"]["page_requests"], 2)
+        self.assertEqual(len(self.calls), 4)
         self.assertTrue(all(call["symbols"] == "AAA,BBB" for call in self.calls))
         self.assertTrue(all(call["start"][:10] == "2026-10-15" for call in self.calls[2:]))
         self.assertEqual(files_snapshot(self.store / "end_of_day/pricing/ZZZ"), inactive)
@@ -140,7 +140,7 @@ class UpdateEverythingTests(unittest.TestCase):
         replaced = refresh["pricing"]["results"]
         self.assertEqual([row["symbol"] for row in replaced], ["AAA"])
         self.assertEqual(replaced[0]["request"]["end_exclusive"], "2026-10-15T00:00:00Z")
-        self.assertEqual(len(self.calls), 26)  # Live check + full history/first checks + append.
+        self.assertEqual(len(self.calls), 8)  # Live check + full history/first checks + append.
         rows = read_pricing_views(self.store, "AAA")["all"]
         self.assertEqual(rows[0][1], "456")
         self.assertEqual(rows[1][5], "42")
@@ -404,7 +404,7 @@ class UpdateEverythingTests(unittest.TestCase):
 
         def malformed(params):
             response = self.page(params)
-            if params["start"][:10] == "2026-10-15" and params["adjustment"] == "dividend":
+            if params["start"][:10] == "2026-10-15" and params["adjustment"] == "all":
                 response["bars"]["AAA"].insert(0, bar("2026-10-14"))
             return response
 
@@ -494,7 +494,7 @@ class UpdateEverythingTests(unittest.TestCase):
         leave_hot_journal(self.store / "end_of_day/lineage/index.sqlite3", "PRAGMA user_version=0")
         result = self.run_update()
         self.assertTrue(result["complete"], result)
-        self.assertEqual(len(self.calls), 10)
+        self.assertEqual(len(self.calls), 4)
         self.assert_finished()
 
     def test_deleted_work_list_restores_pending_lineage_before_the_live_check(self):

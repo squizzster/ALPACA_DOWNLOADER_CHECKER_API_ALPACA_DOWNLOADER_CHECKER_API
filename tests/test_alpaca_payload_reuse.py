@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from test_alpaca_pricing_download import bar
+from test_alpaca_pricing_download import bar, direct_adjustment_observations
 
 from libs.alpaca_pricing_download import storage
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, timestamp
@@ -19,6 +19,7 @@ from libs.alpaca_pricing_download.refresh import prepare_refresh, replace_prepar
 
 class PayloadReuseTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(direct_adjustment_observations())
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.store = Path(temporary.name) / "store"

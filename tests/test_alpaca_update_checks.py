@@ -60,7 +60,7 @@ class UpdateCheckTests(unittest.TestCase):
         client = FakeClient(self.rows)
         result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertEqual(result["consistency_check"], "matched")
-        self.assertEqual(len(client.calls), 10)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual({call[2].date().isoformat() for call in client.calls[:2]}, {"2026-10-01", "2026-10-02"})
 
     def test_complete_work_list_avoids_all_individual_receipts_on_repeated_runs(self):

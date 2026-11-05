@@ -92,7 +92,7 @@ class RetainedAcceptanceTests(unittest.TestCase):
                 old = [p for p in requests if p["start"][:10] < "2026-10-17"]
                 self.assertEqual(len(old), 2, (symbol, requests))
                 self.assertEqual({p["adjustment"] for p in old}, {"all"})
-                self.assertEqual(len(requests), 10, (symbol, requests))
+                self.assertEqual(len(requests), 4, (symbol, requests))
                 self.assertTrue(
                     all(len(rows) == 3 for rows in download.read_pricing_views(store, symbol).values())
                 )
@@ -125,7 +125,7 @@ class RetainedAcceptanceTests(unittest.TestCase):
                     case.store, ["AAA"], "2026-10-20", client=case.pricing, context=context
                 )
             self.assertEqual(second["failed"], 0, second)
-            self.assertEqual(len(case.pages), 8)
+            self.assertEqual(len(case.pages), 2)
             self.assertTrue(all(p["start"][:10] == "2026-10-17" for p in case.pages))
 
     def test_empty_suffix_does_not_open_any_pricing_payload(self):
@@ -134,7 +134,7 @@ class RetainedAcceptanceTests(unittest.TestCase):
                 result = acquire.acquire_selected(case.store, ["AAA"], "2026-10-20", client=case.pricing)
             self.assertEqual(result["failed"], 0, result)
             self.assertFalse(result["results"][0]["changed"])
-            self.assertEqual(len(case.pages), 10)
+            self.assertEqual(len(case.pages), 4)
 
     def test_empty_baseline_survives_failed_suffix_without_validator_reread(self):
         with fixture() as case:
@@ -158,7 +158,7 @@ class RetainedAcceptanceTests(unittest.TestCase):
                     case.store, ["EMPTY"], "2026-10-20", client=case.pricing, context=context
                 )
             self.assertEqual(second["failed"], 0, second)
-            self.assertEqual(len(case.pages), 8)
+            self.assertEqual(len(case.pages), 2)
 
     def test_standalone_failed_suffix_keeps_the_completed_approval(self):
         with fixture() as case:
@@ -182,7 +182,7 @@ class RetainedAcceptanceTests(unittest.TestCase):
                     case.store, "AAA", "2026-10-20", client=client, context=context
                 )
             self.assertFalse(result["changed"])
-            self.assertEqual(len(client.calls), 8)
+            self.assertEqual(len(client.calls), 2)
 
     def test_batch_omission_rechecks_only_the_missing_all_endpoint(self):
         with fixture() as case:
@@ -235,24 +235,24 @@ class RetainedAcceptanceTests(unittest.TestCase):
             download.download_pricing(case.store, "BBB", "2026-10-17", client=FakeClient(case.old))
             case.live = {s: case.old + [bar("2026-10-19")] for s in ("AAA", "BBB")}
 
-            def rejected_raw_batch(params):
+            def rejected_all_batch(params):
                 if (
                     "," in params["symbols"]
                     and params["start"][:10] >= "2026-10-17"
-                    and params["adjustment"] == "raw"
+                    and params["adjustment"] == "all"
                 ):
                     raise HTTPError("https://invalid", 400, "batch rejected", {}, None)
                 return case.page(params)
 
-            with patch.object(case.pricing, "_get", side_effect=rejected_raw_batch):
+            with patch.object(case.pricing, "_get", side_effect=rejected_all_batch):
                 result = acquire.acquire_selected(case.store, ["AAA", "BBB"], "2026-10-20", client=case.pricing)
             self.assertEqual(result["failed"], 0, result)
             old = [p for p in case.pages if p["start"][:10] < "2026-10-17"]
             self.assertEqual(len(old), 2)
             self.assertTrue(all(p["symbols"] == "AAA,BBB" and p["adjustment"] == "all" for p in old))
             suffix = [p for p in case.pages if p not in old]
-            self.assertEqual(len(suffix), 9)  # Seven completed batch views plus two raw singleton fallbacks.
-            self.assertEqual({p["adjustment"] for p in suffix if "," not in p["symbols"]}, {"raw"})
+            self.assertEqual(len(suffix), 3)  # Completed raw batch plus two all singleton fallbacks.
+            self.assertEqual({p["adjustment"] for p in suffix if "," not in p["symbols"]}, {"all"})
             for symbol in ("AAA", "BBB"):
                 self.assertTrue(
                     all(len(rows) == 3 for rows in download.read_pricing_views(case.store, symbol).values())

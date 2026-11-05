@@ -300,5 +300,10 @@
       "Reuse completed lineage decisions when pricing proves unchanged observations and only coverage advances, including unresolved, empty and multi-member groups. Keep actual mapping, metadata, policy and historical-price changes on the owning reconciliation path without treating acquisition-window bookkeeping as changed evidence.",
       "Keep one accepted catalogue, exact asset lookups, completed corporate-action intervals, failures and conflict latches throughout recovery and discovery. Reuse complete observations across phase transitions; new invocations obtain fresh facts. Debug records per-symbol endpoint decisions and their summary/source bindings using held values only."
     ]
+  },
+  {
+    "modifications": [
+      "Estimate adaptive pricing acquisition minima from raw/all requests while retaining eight-view action and dense-history budgets until dependent observations select the remaining work. Preserve compact planning and all lineage ownership, continuation and publication rules."
+    ]
   }
 ]

@@ -415,12 +415,13 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     def count(plans):
         return sum(len(step["actions"]) for plan in plans for step in plan["steps"])
 
-    def batches(plans):
+    def batches(plans, *, adaptive=False):
         return sum(
             len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
             for plan in plans
             for step in plan["steps"]
             for action in step["actions"]
+            if not adaptive or action["request"]["params"]["adjustment"] in {"raw", "all"}
         )
 
     def pages(plans):
@@ -488,16 +489,16 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "http_pages_minimum": metadata_requests
             + bool(late_bar_sessions)
             + batches([history])
-            + batches(plans)
-            + batches(empty_plans)
-            + batches(append_plans),
+            + batches(plans, adaptive=True)
+            + batches(empty_plans, adaptive=True)
+            + batches(append_plans, adaptive=True),
             "http_pages_dense_history_estimate": metadata_requests
             + late_bar_sessions
             + pages([history])
             + pages(plans)
             + pages(empty_plans)
             + pages(append_plans),
-            "http_page_assumptions": "known work only, not an ETA: one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
+            "http_page_assumptions": "known work only, not an ETA: acquisition minimum assumes raw/all equivalence; action and dense-history estimates budget all eight views before adaptive decisions; one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
             "conditional_work": "exact producer-selected late-bar probes trigger the ordinary full-span replacement only on a positive raw response; retained dependency endpoint checks and their selected incremental/replacement acquisitions, same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions, dependency expansion and publications for every resulting complete group may dominate the known minimum",
             "pricing_publications_estimate": len(initial) + len(empty) + len(append),
             "lineage_publications": "complete affected groups; dependency expansion may add work",

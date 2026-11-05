@@ -31,6 +31,9 @@ The pure [API solver](../libs/alpaca_data_api_solver/__init__.py), `build_plan`,
 requests. The shared HTTP executor owns batching, pagination and attempt sequencing; endpoint adapters own
 validation and retry/rate/timeout policies. Dependent needs follow responses. See the
 [API plan contract](technical-contracts.md#api-plan).
+Pricing's [adaptive acquisition owner](../libs/alpaca_pricing_download/adaptive.py) selects each dependent
+adjustment stage and carries its completed eight-view handoff into publication; the
+[pricing contract](technical-contracts.md#pricing-acquisition-and-continuation) defines its empirical policy.
 
 ## Lineage and identity
 

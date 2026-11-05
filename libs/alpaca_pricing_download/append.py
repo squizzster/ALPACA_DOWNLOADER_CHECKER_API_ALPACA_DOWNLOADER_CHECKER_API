@@ -9,11 +9,10 @@ from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
-from libs.alpaca_data_api_solver import build_plan
 from libs.common.debug_trace import event, in_context, traced
-from libs.common.provider_http import balanced_batches
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
+from .adaptive import acquire_adjustments
 from .check_summary import assert_current, validate_entry
 from .context import accept_context
 from .contract import (
@@ -125,7 +124,16 @@ def select_append_sources(store, entries, end_date, *, required_symbols=()):
 
 
 @traced("pricing_publication")
-def _publish_append(store, entry, need, bars, *, approved_source_sha256=None, endpoint_selection=None):
+def _publish_append(
+    store,
+    entry,
+    need,
+    bars,
+    *,
+    approved_source_sha256=None,
+    endpoint_selection=None,
+    adjustment_acquisition=None,
+):
     symbol = entry["symbol"]
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     window = need["ranges"][0]
@@ -216,6 +224,7 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None, en
             changed_views,
             update,
             old_documents=old_documents,
+            adjustment_acquisition=adjustment_acquisition,
         )
         return {
             "symbol": symbol,
@@ -228,6 +237,7 @@ def _publish_append(store, entry, need, bars, *, approved_source_sha256=None, en
             "source_sha256": written["source_sha256"],
             "history_start": written["source"]["history_start"],
             "pending_update": written["pending_update"],
+            "adjustment_acquisition": adjustment_acquisition.proof if adjustment_acquisition else None,
         }
 
 
@@ -273,16 +283,10 @@ def append_entries(
     for cohort in _cohorts(needs):
         pages_before = metrics.get("page_requests", 0)
         # Different starts remain separate: never overfetch another ticker's approved dates.
-        plan = build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
-        if progress:
-            actions = len(plan["steps"][0]["actions"])
-            minimum_pages = sum(
-                len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
-                for action in plan["steps"][0]["actions"]
-            )
-            progress("acquiring", {"tickers": len(cohort), "actions": actions, "minimum_pages": minimum_pages})
         try:
-            acquired = client.execute_plan(plan, metrics=metrics)
+            acquired, _ = acquire_adjustments(
+                cohort, client, metrics=metrics, progress=progress, merge_ranges=False
+            )
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
                 {
@@ -296,13 +300,13 @@ def append_entries(
             if progress:
                 progress(
                     "append_acquisition",
-                    {"state": "failed", "page_requests": metrics.get("page_requests", 0) - pages_before},
+                    {"state": "failed", "cohort_page_requests": metrics.get("page_requests", 0) - pages_before},
                 )
             continue
         if progress:
             progress(
                 "append_acquisition",
-                {"state": "completed", "page_requests": metrics.get("page_requests", 0) - pages_before},
+                {"state": "completed", "cohort_page_requests": metrics.get("page_requests", 0) - pages_before},
             )
         if not publishing:
             if before_publish is not None:
@@ -313,7 +317,10 @@ def append_entries(
             index, need = item
             symbol = need["symbols"][0]
             try:
-                bars = {name: responses[(0, index, 0, symbol, name)] for name in ADJUSTMENTS}
+                state = responses[index]
+                if state.completed is None:
+                    raise state.failure.exception()
+                bars = {value.adjustment: value for value in state.completed.bars}
                 return _publish_append(
                     store,
                     by_symbol[symbol],
@@ -321,6 +328,7 @@ def append_entries(
                     bars,
                     approved_source_sha256=approved_generations.get(symbol),
                     endpoint_selection=(endpoint_selections or {}).get(symbol),
+                    adjustment_acquisition=state.completed,
                 )
             except (RuntimeError, OSError, ValueError, KeyError) as error:
                 return {

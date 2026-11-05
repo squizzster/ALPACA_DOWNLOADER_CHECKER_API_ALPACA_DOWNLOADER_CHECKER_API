@@ -130,7 +130,7 @@ class PricingCliTests(unittest.TestCase):
         self.assertEqual(result["requested"], 3)
         self.assertTrue(all(len(threads) == 1 for threads in owners.values()))
         self.assertEqual(len(set.union(*owners.values())), 3)
-        self.assertTrue(all(count == 16 for count in calls.values()))
+        self.assertTrue(all(count == 4 for count in calls.values()))
         for symbol in owners:
             self.assertEqual(len(read_pricing_views(self.store, symbol)["raw"]), 2)
             notice = self.store / f"end_of_day/manifests/{symbol}/update.json"
@@ -218,7 +218,7 @@ class PricingCliTests(unittest.TestCase):
             code, result, _ = self.invoke("--symbol", "GOOG")
             self.assertEqual(code, 0)
             self.assertEqual(result["results"][0]["consistency_check"], "matched")
-            self.assertEqual(len(self.client.calls), 10)
+            self.assertEqual(len(self.client.calls), 4)
             self.client.calls.clear()
             result = download_pricing(self.store, "GOOG", "2026-10-15", client=self.client, refresh_all=True)
             self.assertEqual(result["mode"], "full_refresh")

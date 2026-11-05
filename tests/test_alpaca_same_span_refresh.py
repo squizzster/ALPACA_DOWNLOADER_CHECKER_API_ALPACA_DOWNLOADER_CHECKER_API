@@ -19,7 +19,7 @@ from libs.alpaca_lineage_build import refresh
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download import check_summary as summary
 from libs.alpaca_pricing_download import storage
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS, DownloadError, timestamp
+from libs.alpaca_pricing_download.contract import DownloadError, timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_pricing_download.refresh import prepare_refresh, replace_prepared
@@ -91,9 +91,14 @@ class SameSpanRefreshTests(unittest.TestCase):
         self.assertEqual(result["check"]["stats"]["other_fields_only"], 1)
         self.assertEqual(result["check"]["stats"]["ohlc_changed"], 1)
         self.assertEqual({item["symbol"] for item in result["pricing"]["results"]}, {"AAA", "BBB"})
-        # Eight shared acquisition pages, then eight exact first-session probes
-        # for each distinct first date; checking endpoints never widens dates.
-        self.assertEqual(result["pricing"]["requests"]["page_requests"], 24)
+        # Raw/all at each exact retained range, then their first-session probes.
+        self.assertEqual(result["pricing"]["requests"]["page_requests"], 8)
+        histories = [
+            p for p in self.calls if (timestamp(p["end"]) - timestamp(p["start"])).total_seconds() >= 86400
+        ]
+        self.assertEqual(
+            {(p["symbols"], p["start"][:10]) for p in histories}, {("AAA", "2026-10-01"), ("BBB", "2026-10-03")}
+        )
         self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
         for name in ("AAA", "BBB"):
             source = storage.load_source(self.root(name), name)
@@ -133,6 +138,18 @@ class SameSpanRefreshTests(unittest.TestCase):
         self.check_omitted_replacement(adjustment="all")
 
     def check_omitted_replacement(self, adjustment=None):
+        # Equal retained request ranges exercise true symbol batching. Different
+        # ranges stay separate and must not be widened to create this fixture.
+        download_pricing(
+            self.store,
+            "BBB",
+            "2026-10-15",
+            from_date="2026-10-01",
+            client=FakeClient([self.rows[-1]]),
+            refresh_all=True,
+        )
+        lineage = run_lineage(self.store, ["BBB"], identity_client=IdentityClient(self.assets))
+        self.assertEqual(lineage["failed"], 0, lineage)
         unchanged = files_snapshot(self.root("CCC"))
 
         def omitted(params):
@@ -149,6 +166,7 @@ class SameSpanRefreshTests(unittest.TestCase):
         with patch.object(self.client, "_get", side_effect=omitted):
             result = self.run_refresh()
         self.assertTrue(result["complete"], result)
+        self.assertTrue(next(r for r in result["pricing"]["results"] if r["symbol"] == "BBB")["restarted"])
         self.assertTrue(all(item["has_data"] for item in result["pricing"]["results"]))
         for rows in read_pricing_views(self.store, "BBB").values():
             self.assertEqual([row[0][:10] for row in rows], ["2026-10-13"])
@@ -161,7 +179,7 @@ class SameSpanRefreshTests(unittest.TestCase):
             and call["end"][:19] == "2026-10-14T23:59:59"
         ]
         self.assertEqual({call["symbols"] for call in exact_histories}, {"BBB"})
-        self.assertEqual(len(exact_histories), len(ADJUSTMENTS))
+        self.assertEqual(len(exact_histories), 2 if adjustment is None else 8)
         self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
 
     def test_confirmed_empty_full_replacement_is_bounded_and_can_remove_old_rows(self):
@@ -175,7 +193,7 @@ class SameSpanRefreshTests(unittest.TestCase):
             for call in self.calls
             if call["start"][:10] == "2026-10-03" and call["end"][:19] == "2026-10-14T23:59:59"
         ]
-        self.assertEqual(len(full), 2 * len(ADJUSTMENTS))
+        self.assertEqual(len(full), 4)
 
     def test_incomplete_live_check_publishes_nothing(self):
         self.live["BBB"] = []

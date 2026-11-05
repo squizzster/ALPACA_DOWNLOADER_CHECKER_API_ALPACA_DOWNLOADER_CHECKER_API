@@ -79,6 +79,9 @@ class RetainedBatchTests(unittest.TestCase):
             root = self.store / "end_of_day/pricing" / symbol
             source = storage.load_source(root, symbol)
             selected[symbol] = source, storage.read_validator(root, source)
+        # Distinct new views exercise the full eight-view fallback and its late failure.
+        for i, name in enumerate(ADJUSTMENTS):
+            self.live["AAA"][name][-1] = bar("2026-10-16", str(100 + i))
         observations, second_batch_alive = [], []
         original_completed = http.CompletedBars
         acquisition_pages = 0
@@ -149,7 +152,7 @@ class RetainedBatchTests(unittest.TestCase):
                 self.assertIsNone(second.__traceback__)
                 self.assertEqual(failure_outcome(record.exception()), expected)
 
-    def test_four_histories_use_two_all_checks_and_eight_suffix_requests(self):
+    def test_four_histories_use_two_all_checks_and_two_suffix_requests(self):
         before = snapshot(self.store)
         original = Path.read_bytes
         original_iterdir = Path.iterdir
@@ -173,12 +176,12 @@ class RetainedBatchTests(unittest.TestCase):
         ):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(len(self.pages), 10)
-        self.assertEqual(result["requests"]["page_requests"], 10)
+        self.assertEqual(len(self.pages), 4)
+        self.assertEqual(result["requests"]["page_requests"], 4)
         self.assertTrue(all(params["symbols"] == "AAA,BBB,CCC,DDD" for _, params in self.pages))
         self.assertEqual(
             [stage for stage, values in self.progress if values.get("state") == "started"],
-            ["boundary_check", "retained_history_acquisition"],
+            ["boundary_check", "retained_history_acquisition", "retained_history_acquisition"],
         )
         for item in result["results"]:
             self.assertEqual((item["mode"], item["consistency_check"]), ("update", "matched"))
@@ -229,7 +232,7 @@ class RetainedBatchTests(unittest.TestCase):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
         self.assertFalse(any(item["restarted"] or item["changed"] for item in result["results"]))
-        self.assertEqual(len(self.pages), 10)
+        self.assertEqual(len(self.pages), 4)
         for symbol in self.symbols:
             self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 2)
 
@@ -251,7 +254,7 @@ class RetainedBatchTests(unittest.TestCase):
         by_symbol = {item["symbol"]: item for item in result["results"]}
         self.assertFalse(any(item["restarted"] for item in by_symbol.values()))
         self.assertEqual(by_symbol["AAA"]["consistency_check"], "matched")
-        self.assertEqual(len(self.pages), 10)
+        self.assertEqual(len(self.pages), 4)
         self.assertEqual(read_pricing_views(self.store, "AAA")["all"][0][4], str(self.old[0]["c"]))
         self.assertEqual(result["requests"]["page_requests"], len(self.pages))
 
@@ -464,7 +467,7 @@ class RetainedBatchTests(unittest.TestCase):
         with patch.object(self.client, "_get", side_effect=page):
             result = self.run_acquire()
         self.assertEqual(result["failed"], 0, result)
-        self.assertGreater(len(self.pages), 10)
+        self.assertEqual(len(self.pages), 8)
         self.assertEqual(result["requests"]["page_requests"], len(self.pages))
         self.assertTrue(any("page_token" in params for _, params in self.pages))
         for symbol in self.symbols:
@@ -483,7 +486,9 @@ class RetainedBatchTests(unittest.TestCase):
         acquisitions = [
             values
             for phase, values in self.progress
-            if phase == "retained_history_acquisition" and values.get("state") == "started"
+            if phase == "retained_history_acquisition"
+            and values.get("state") == "started"
+            and values.get("adaptive_stage") == 1
         ]
         self.assertEqual([values["symbols"] for values in acquisitions], [4])
 
@@ -500,7 +505,9 @@ class RetainedBatchTests(unittest.TestCase):
         acquisitions = [
             v
             for phase, v in self.progress
-            if phase == "retained_history_acquisition" and v.get("state") == "started"
+            if phase == "retained_history_acquisition"
+            and v.get("state") == "started"
+            and v.get("adaptive_stage") == 1
         ]
         self.assertEqual([v["symbols"] for v in acquisitions], [2, 2])
         self.assertEqual(

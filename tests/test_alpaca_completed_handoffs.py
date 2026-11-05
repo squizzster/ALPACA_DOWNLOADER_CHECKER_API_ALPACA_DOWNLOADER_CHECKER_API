@@ -188,7 +188,7 @@ class AcceptedOperationTests(unittest.TestCase):
                 self.assertEqual(approvals.call_count, int(pending))
                 self.assertEqual(bool(result["stages"].get("approval")), pending)
                 self.assertEqual(result["stages"]["discovery_lineage"], [])
-                self.assertEqual(len(case.pages), 10)
+                self.assertEqual(len(case.pages), 4)
 
     def test_progress_covers_phases_and_reconciles_page_and_http_totals(self):
         with fixture() as case:

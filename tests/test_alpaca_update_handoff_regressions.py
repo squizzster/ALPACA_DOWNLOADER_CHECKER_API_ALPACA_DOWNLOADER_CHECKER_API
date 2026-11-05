@@ -288,7 +288,7 @@ class UpdateHandoffRegressions(unittest.TestCase):
             self.assertFalse(result["complete"], result)
             self.assertEqual(len(read_pricing_views(store, "AAA")["all"]), 3)
             self.assertEqual(len(read_pricing_views(store, "BBB")["all"]), 2)
-            self.assertEqual(len([p for p in case.pages if "AAA" in p["symbols"].split(",")]), 10, case.pages)
+            self.assertEqual(len([p for p in case.pages if "AAA" in p["symbols"].split(",")]), 4, case.pages)
 
     def test_batch_omission_update_completes_append_lineage_and_serving(self):
         with fixture() as case:
@@ -551,7 +551,7 @@ class UpdateHandoffRegressions(unittest.TestCase):
             self.assertTrue(
                 all((timestamp(p["end"]) - timestamp(p["start"])).total_seconds() < 86400 for p in checks)
             )
-            self.assertEqual(len(aaa), 10)
+            self.assertEqual(len(aaa), 4)
             self.assertEqual(len(read_pricing_views(store, "AAA")["raw"]), 3)
             self.assertEqual(read_pricing_views(store, "BBB")["raw"], ())
             self.assertTrue(result["stages"]["serving_catalogue"]["complete"])

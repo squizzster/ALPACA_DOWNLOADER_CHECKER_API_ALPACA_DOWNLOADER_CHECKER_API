@@ -8,6 +8,7 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.common.debug_trace import traced
 from libs.common.provider_http import balanced_batches
 
+from .adaptive import AdjustmentAcquisition, acquire_adjustments
 from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
@@ -199,8 +200,16 @@ def probe_late_bar_repairs(store, selection, *, client, end_date=None, progress=
 class PlannedClient:
     """Replay each buffered request once; retries use fresh provider responses."""
 
-    def __init__(self, client, cache):
+    def __init__(self, client, cache, adjustments=None):
         self.client, self.cache = client, cache
+        self.adjustments = adjustments or {}
+
+    def take_adjustments(self, symbol, start, end, asof):
+        key = symbol, start, end, asof
+        if key in self.adjustments:
+            return self.adjustments.pop(key)
+        take = getattr(self.client, "take_adjustments", None)
+        return take(symbol, start, end, asof) if take else AdjustmentAcquisition(*key)
 
     def fetch(self, symbol, adjustment, start, end, *, asof=None):
         key = (asof is not None, symbol, adjustment, start, end, asof or end.date().isoformat())
@@ -315,17 +324,15 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
     The returned client feeds the normal downloader; its existing bounded retry
     requests a fresh plan if the provider changed during acquisition.
     """
-    cache, acquisition = _prefetch(
-        needs, client, check=False, metrics=metrics, progress=progress, on_failure=on_failure
+    states, acquisition = acquire_adjustments(
+        needs, client, metrics=metrics, progress=progress, on_failure=on_failure
     )
     probes = []
-    for need in needs:
-        symbol, window = need["symbols"][0], need["ranges"][0]
-        start, end = timestamp(window["start"]), timestamp(window["end_exclusive"])
-        keys = {name: (False, symbol, name, start, end, need["asof"]) for name in ADJUSTMENTS}
-        if any(key not in cache for key in keys.values()):
+    for need, state in zip(needs, states, strict=True):
+        symbol, end = state.symbol, state.end
+        if state.completed is None:
             continue
-        views = {name: cache[key].rows for name, key in keys.items()}
+        views = state.completed.views
         if symbol in (retained_endpoints or {}):
             # A completed first/latest all comparison already approved this
             # generation. These are new-session rows only. No historical probes.
@@ -337,7 +344,7 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
         probes.extend(
             _endpoint_needs(
                 symbol,
-                {name: rows[:1] for name, rows in endpoints.items()},
+                {name: endpoints[name][:1] for name in state.observed},
                 need["asof"],
                 "acquisition_check",
                 cutoff=end,
@@ -348,8 +355,7 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
         if probes
         else ({}, {"steps": []})
     )
-    cache.update(checked)
-    return PlannedClient(client, cache), {
+    return PlannedClient(client, checked, {state.key: state for state in states}), {
         "schema_version": acquisition["schema_version"],
         "steps": acquisition["steps"] + checks["steps"],
     }

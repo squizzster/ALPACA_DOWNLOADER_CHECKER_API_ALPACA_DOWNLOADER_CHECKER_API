@@ -257,7 +257,7 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertEqual(set(reads_before_selection), {"BBB"})
         self.assertEqual([row["symbol"] for row in result["stages"]["recovery_lineage"]["results"]], ["BBB"])
         self.assertFalse(any(item["acquire"] for item in result["plan"]["work"].values()))
-        self.assertEqual(len(self.pages), 10)  # Two endpoint batches, then eight append views.
+        self.assertEqual(len(self.pages), 4)  # Two endpoint batches, then raw/all append views.
         self.assertTrue(
             all(
                 page["adjustment"] == "all" and page["start"][:10] == page["end"][:10] for page in self.pages[:2]
@@ -494,7 +494,7 @@ class UniverseUpdateTests(unittest.TestCase):
         result = self.update("2026-10-20")
         self.assertTrue(result["complete"], result)
         empty = [p for p in self.pages if "EMPTY" in p["symbols"].split(",")]
-        self.assertEqual(len(empty), 8)
+        self.assertEqual(len(empty), 2)
         self.assertTrue(
             all(
                 p["start"] == "2026-10-17T00:00:00+00:00"

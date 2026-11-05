@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -56,6 +57,27 @@ class FakeClient:
         return [row for row in self.bars if start <= timestamp(row["t"]) < end]
 
 
+@contextmanager
+def direct_adjustment_observations():
+    """Seed arbitrary eight-view consumer fixtures independently of empirical inference.
+
+    Export/storage tests must still cover retained data outside the restored
+    policy's patterns. This reference producer downloads every supplied view;
+    the consumer assertions stay unchanged.
+    """
+    from libs.alpaca_pricing_download import adaptive
+    from libs.alpaca_pricing_download.adjustment_policy import AdaptiveAdjustmentDecision
+
+    original = adaptive.decide_adaptive_adjustment_downloads
+
+    def direct(observed):
+        missing = tuple(name for name in ADJUSTMENTS if name not in observed)
+        return AdaptiveAdjustmentDecision(missing) if missing else original(observed)
+
+    with patch.object(adaptive, "decide_adaptive_adjustment_downloads", direct):
+        yield
+
+
 def snapshot(root):
     return {
         str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino)
@@ -85,7 +107,7 @@ class PricingDownloadTests(unittest.TestCase):
 
     def test_initial_three_boundaries_and_exact_values(self):
         client, result = self.run_download()
-        self.assertEqual(len(client.calls), 16)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual(result["updated_boundaries"], ["completed_years", "current_year", "current_month"])
         self.assertTrue((self.root / "completed_years.manifest.json").is_file())
         self.assertTrue((self.root / "2026/year.manifest.json").is_file())
@@ -118,7 +140,7 @@ class PricingDownloadTests(unittest.TestCase):
         self.assertEqual(result["mode"], "update")
         self.assertEqual(result["consistency_check"], "matched")
         self.assertEqual(result["updated_boundaries"], ["current_month"])
-        self.assertEqual(len(client.calls), 10)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
         self.assertEqual({call[2].date().isoformat() for call in client.calls[:2]}, {"2016-01-04", "2026-10-01"})
         self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls[2:]))
@@ -168,7 +190,7 @@ class PricingDownloadTests(unittest.TestCase):
         revised = [bar("2016-01-04", "777.1234567890123456789")] + self.bars[1:]
         client, result = self.run_download(bars=revised, refresh_all=True)
         self.assertEqual(client.calls[0][2], timestamp("2016-01-01T00:00:00Z"))
-        self.assertEqual(len(client.calls), 16)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual(result["mode"], "full_refresh")
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"][0][1], "777.1234567890123456789")
 
@@ -188,8 +210,8 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertEqual(
                     result["updated_boundaries"], ["completed_years", "current_year", "current_month"]
                 )
-                self.assertEqual(len(client.calls), 18)
-                self.assertTrue(all(call[2] == timestamp("2016-01-01T00:00:00Z") for call in client.calls[2:10]))
+                self.assertEqual(len(client.calls), 6)
+                self.assertTrue(all(call[2] == timestamp("2016-01-01T00:00:00Z") for call in client.calls[2:4]))
                 expected = transform(revised, timestamp("2016-01-01T00:00:00Z"), timestamp(end + "T00:00:00Z"))
                 self.assertTrue(
                     all(rows == expected for rows in read_pricing_views(self.store, "GOOG").values())
@@ -238,16 +260,16 @@ class PricingDownloadTests(unittest.TestCase):
         self.run_download(bars=[])
         client, result = self.run_download("2026-10-15", bars=[bar("2026-10-01")])
         self.assertEqual(result["consistency_check"], "no_stored_sessions")
-        self.assertEqual(len(client.calls), 8)
+        self.assertEqual(len(client.calls), 2)
         self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls))
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"], ())
         client, result = self.run_download("2026-10-16", bars=[bar("2026-10-15")])
         self.assertEqual(result["consistency_check"], "no_stored_sessions")
-        self.assertEqual(len(client.calls), 8)
+        self.assertEqual(len(client.calls), 2)
         self.assertEqual(len(read_pricing_views(self.store, "GOOG")["raw"]), 1)
 
         client, result = self.run_download("2026-10-17", bars=[bar("2026-10-15")])
-        self.assertEqual(len(client.calls), 9)
+        self.assertEqual(len(client.calls), 3)
         self.assertEqual(client.calls[0][1], "all")
         self.assertTrue(all(call[2] == timestamp("2026-10-16T00:00:00Z") for call in client.calls[1:]))
 
@@ -266,7 +288,7 @@ class PricingDownloadTests(unittest.TestCase):
                 with patch.object(client, "fetch", side_effect=forbidden):
                     result = download_pricing(self.store, "GOOG", f"2026-10-{15 + offset:02d}", client=client)
                 self.assertFalse(result["changed"])
-                self.assertEqual(len(client.calls), 10)
+                self.assertEqual(len(client.calls), 4)
 
     def test_only_endpoints_are_probed_not_the_last_five_sessions(self):
         rows = [bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13)]
@@ -305,14 +327,18 @@ class PricingDownloadTests(unittest.TestCase):
 
         def shorter_dividend(symbol, adjustment, start, end, **kwargs):
             rows = original_fetch(symbol, adjustment, start, end, **kwargs)
-            return [row for row in rows if row["t"] != self.bars[0]["t"]] if adjustment == "dividend" else rows
+            return (
+                [row for row in rows if row["t"] != self.bars[0]["t"]]
+                if "dividend" in adjustment or adjustment == "all"
+                else rows
+            )
 
         with patch.object(client, "fetch", side_effect=shorter_dividend):
             download_pricing(self.store, "GOOG", "2026-10-14", client=client)
             client.calls.clear()
             result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertEqual(result["mode"], "update")
-        self.assertEqual(len(client.calls), 10)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
         self.assertEqual(len(read_pricing_views(self.store, "GOOG")["dividend"]), len(self.bars) - 1)
 
@@ -596,7 +622,11 @@ class PricingDownloadTests(unittest.TestCase):
 
         def different_dividend(symbol, adjustment, start, end, **kwargs):
             rows = original_fetch(symbol, adjustment, start, end, **kwargs)
-            return [{**row, "c": Decimal("555.001")} for row in rows] if adjustment == "dividend" else rows
+            return (
+                [{**row, "c": Decimal("555.001")} for row in rows]
+                if "dividend" in adjustment or adjustment == "all"
+                else rows
+            )
 
         with patch.object(client, "fetch", side_effect=different_dividend):
             download_pricing(self.store, "GOOG", "2026-10-15", client=client, refresh_all=True)

@@ -14,6 +14,7 @@ from libs.common.us_equity_market_session_calendar import (
     expected_market_session_coverage,
 )
 
+from .adaptive import AdjustmentAcquisition
 from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
@@ -265,6 +266,7 @@ def publish_acquired(
     acquisition_evidence_sha256=None,
     history_correction_id=None,
     old_documents=None,
+    adjustment_acquisition=None,
 ):
     """Publish through the original recovery, notice and summary transaction."""
     from .activity import validate_activity
@@ -316,6 +318,8 @@ def publish_acquired(
         # guarantee only from a completed guarantee or a complete replacement.
         "activity_consistent": bool((previous or {}).get("activity_consistent")) or validated_all,
     }
+    if adjustment_acquisition is not None:
+        source["latest_adjustment_acquisition"] = adjustment_acquisition.proof
     evidence = acquisition_evidence_sha256 or (previous or {}).get("acquisition_evidence_sha256")
     if evidence is not None:
         if len(evidence) != 64 or any(c not in "0123456789abcdef" for c in evidence):
@@ -550,24 +554,27 @@ def download_pricing(
                 "currency": "USD",
                 "timeframe": "1Day",
             }
-            views = {}
-            for adjustment in ADJUSTMENTS:
-                try:
-                    views[adjustment] = fetch_rows(
-                        client,
+            take = getattr(client, "take_adjustments", None)
+            acquisition = (
+                take(symbol, start, end, asof) if take else AdjustmentAcquisition(symbol, start, end, asof)
+            )
+            fetch = getattr(client, "fetch_acquired", client.fetch)
+            try:
+                acquired = acquisition.finish(
+                    lambda adjustment: fetch(
                         symbol,
                         adjustment,
                         start,
                         end,
                         asof=asof if asof != end.date().isoformat() else None,
-                        acquisition=True,
                     )
-                except BarsSymbolUnavailable as error:
-                    if previous is None and attempt == 0 and not views and error.symbol == symbol:
-                        raise InitialPricingUnavailable(request, error) from error
-                    # Held prices or an earlier successful view are contradictory
-                    # evidence, even when that earlier view happened to be empty.
-                    raise established_pricing_rejection(symbol, error) from error
+                )
+            except BarsSymbolUnavailable as error:
+                if previous is None and attempt == 0 and not acquisition.observed and error.symbol == symbol:
+                    raise InitialPricingUnavailable(request, error) from error
+                # A completed observation, even empty, contradicts a later rejection.
+                raise established_pricing_rejection(symbol, error) from error
+            views = acquired.views
             if any(
                 month_of(row) < start.strftime("%Y-%m") or month_of(row) > anchor
                 for rows in views.values()
@@ -580,7 +587,11 @@ def download_pricing(
             # Matching first/latest all already approved the old generation.
             # Append never requests overlap or confirms its historical first rows again.
             first_ok = not full_history or _endpoints_match(
-                client, symbol, {name: rows[:1] for name, rows in selected_endpoints.items()}, asof, cutoff=end
+                client,
+                symbol,
+                {name: selected_endpoints[name][:1] for name, _ in acquired.observed},
+                asof,
+                cutoff=end,
             )
             empties_history = full_history and any(
                 name in prior_nonempty and not rows for name, rows in views.items()
@@ -622,6 +633,7 @@ def download_pricing(
             acquisition_evidence_sha256=acquisition_evidence_sha256,
             history_correction_id=history_correction_id,
             old_documents=old_documents,
+            adjustment_acquisition=acquired,
         )
         return {
             "symbol": symbol,
@@ -635,6 +647,7 @@ def download_pricing(
             "recovered": recovered,
             "restarted": restarted,
             "has_data": any(selected_endpoints.values()),
+            "adjustment_acquisition": acquired.proof,
             "changed": written["changed"],
             "history_start": written["source"]["history_start"],
             "pending_update": written["pending_update"],
