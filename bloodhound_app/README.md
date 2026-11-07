@@ -124,6 +124,11 @@ checks apply at the accepted handoff. Published CSV checksums are retained as pr
 not recomputed to authenticate completed upstream work. Newly produced Parquet is still
 validated and hashed by this converter.
 
+The current CSV adapter constructs every view from the same accepted session and dated-label base, including
+any explicit metadata override. The history consumer retains that alignment guarantee without comparing the
+shared arrays again. Independently loaded legacy frames establish alignment once per distinct frame; aliases
+reuse it for that history load.
+
 Current CSVs contain dates and numeric columns, without a per-row ticker column. Schema 2 supplies the
 completed observed-label decision in `security.ticker_ranges`, with inclusive `first_session` and
 `last_session` endpoints. The adapter projects those ranges once into row labels shared by all eight views.

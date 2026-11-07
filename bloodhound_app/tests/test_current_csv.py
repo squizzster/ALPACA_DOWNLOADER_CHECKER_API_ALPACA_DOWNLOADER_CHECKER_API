@@ -108,6 +108,75 @@ def write_current(root, views=None, pid=SOURCE_ID, intervals=True, schema_versio
 
 
 class CurrentCSVTests(unittest.TestCase):
+    def test_current_views_carry_alignment_without_session_or_label_comparisons(self):
+        for schema in (1, 2):
+            for override in (False, True):
+                with self.subTest(schema=schema, metadata_override=override):
+                    source = self.source / f"{schema}-{override}"
+                    write_current(source, schema_version=schema)
+                    history = app.discover_histories(source)[0]
+                    metadata = None
+                    if override:
+                        path = self.root / "metadata.csv"
+                        path.write_text(
+                            f"public_id,start_date,end_date,symbol\n{SOURCE_ID},2024-01-02,2024-01-04,OVERRIDE\n"
+                        )
+                        metadata = app.DatedMetadata(path)
+                    with (
+                        patch.object(
+                            app.pd.Series,
+                            "equals",
+                            side_effect=AssertionError("accepted session grid compared again"),
+                        ),
+                        patch.object(
+                            app.np, "array_equal", side_effect=AssertionError("accepted labels compared again")
+                        ),
+                        patch.object(
+                            app.pd.DataFrame,
+                            "sort_values",
+                            side_effect=AssertionError("accepted session grid sorted again"),
+                        ),
+                    ):
+                        frames, _, _ = app.load_history(history, metadata)
+                    self.assertEqual(set(frames), set(app.ADJUSTMENTS))
+                    for frame in frames.values():
+                        self.assertEqual(frame["session"].tolist(), ["2024-01-02", "2024-01-03", "2024-01-04"])
+                        self.assertEqual(
+                            frame["symbol"].tolist(), ["OVERRIDE"] * 3 if override else ["OLD", "OLD", "NEW"]
+                        )
+
+    def test_legacy_alignment_is_checked_once_per_distinct_frame(self):
+        folder = self.root / "legacy"
+        write_manifest(folder)
+        history = app.discover_histories(folder)[0]
+        equals = app.pd.Series.equals
+        comparisons = []
+
+        def count(left, right):
+            if left.name == "session":
+                comparisons.append((left.tolist(), right.tolist()))
+            return equals(left, right)
+
+        with patch.object(app.pd.Series, "equals", count):
+            frames, _, _ = app.load_history(history)
+        self.assertEqual(len(comparisons), len({id(frame) for frame in frames.values()}) - 1)
+
+    def test_independent_legacy_views_still_reject_session_and_label_mismatches(self):
+        for field in ("session", "tickers"):
+            with self.subTest(field=field):
+                views = example_views()
+                if field == "session":
+                    views["split"][-1].update(session="2024-01-05", timestamp="2024-01-05T05:00:00Z")
+                else:
+                    views["split"][-1]["tickers"] = "DIFFERENT"
+                folder = self.root / field
+                write_manifest(folder, views)
+                history = app.discover_histories(folder)[0]
+                with self.assertRaisesRegex(
+                    app.ConversionError, "session keys do not exactly align|dated ticker labels differ"
+                ):
+                    app.load_history(history)
+
     def test_completed_export_grid_is_not_sorted_again_for_each_view(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

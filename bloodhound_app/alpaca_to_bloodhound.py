@@ -32,7 +32,7 @@ from bloodhound_actions import load_action_evidence
 from bloodhound_factors import infer_split_factors, validate_split_factors
 
 VERSION = "1.2.0"
-RUNTIME_VERSION = 3
+RUNTIME_VERSION = 4
 ADJUSTMENTS = (
     "raw",
     "split",
@@ -338,6 +338,10 @@ def load_history(
         frames, payloads = load(
             history.directory, history.public_id, current["selector"], current["entry"], validate_frame, metadata
         )
+        # The adapter projects every view from one completed session/label base,
+        # including any dated-metadata override applied before projection. Carry
+        # that alignment decision for this returned bundle, without rescanning it.
+        alignment_complete = True
     else:
         cache: dict[Path, tuple[pd.DataFrame, dict[str, Any]]] = {}
         frames = {}
@@ -368,17 +372,22 @@ def load_history(
                     )
             frames[name] = frame
         payloads = [item[1] for item in cache.values()]
+        alignment_complete = False
 
     raw = frames["raw"]
     issues = []
+    aligned_frames = {id(raw)}
     for name, frame in frames.items():
-        if len(frame) != len(raw) or not frame["session"].equals(raw["session"]):
-            raise ConversionError(f"{name}: session keys do not exactly align with raw")
-        if not np.array_equal(frame["symbol"].to_numpy(), raw["symbol"].to_numpy()):
-            raise ConversionError(f"{name}: dated ticker labels differ from raw")
-        for column in ("timestamp",):
-            if column in raw and column in frame and not raw[column].equals(frame[column]):
-                raise ConversionError(f"{name}: {column} values differ from raw")
+        if not alignment_complete and id(frame) not in aligned_frames:
+            # Legacy files are independent inputs. Accept each loaded frame once;
+            # physical aliases retain that acceptance for this history lifetime.
+            if len(frame) != len(raw) or not frame["session"].equals(raw["session"]):
+                raise ConversionError(f"{name}: session keys do not exactly align with raw")
+            if not np.array_equal(frame["symbol"].to_numpy(), raw["symbol"].to_numpy()):
+                raise ConversionError(f"{name}: dated ticker labels differ from raw")
+            if "timestamp" in raw and "timestamp" in frame and not raw["timestamp"].equals(frame["timestamp"]):
+                raise ConversionError(f"{name}: timestamp values differ from raw")
+            aligned_frames.add(id(frame))
         if name == "raw":
             continue
         if "trade_count" in raw and "trade_count" in frame:

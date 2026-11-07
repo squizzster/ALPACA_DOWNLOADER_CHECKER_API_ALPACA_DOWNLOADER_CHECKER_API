@@ -13,5 +13,10 @@
     "modifications": [
       "Remove forced filesystem synchronization; reject normal and failure-report output collisions with selected inputs, including aliases, before writing; share the completed CSV export session grid across all adjustment views without sorting or validating it repeatedly."
     ]
+  },
+  {
+    "modifications": [
+      "Carry the current CSV adapter's shared session and dated-label alignment into history consumption without repeating array comparisons. Preserve independent legacy alignment checks once per distinct loaded frame, including alias reuse, and test both supported schemas, metadata overrides and actual mismatches."
+    ]
   }
 ]
