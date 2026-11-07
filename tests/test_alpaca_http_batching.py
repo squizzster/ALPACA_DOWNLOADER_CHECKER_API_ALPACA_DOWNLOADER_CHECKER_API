@@ -290,6 +290,8 @@ class HttpBatchingTests(unittest.TestCase):
                         "asof": "2026-10-10",
                         "first_all": stored,
                         "last_all": stored,
+                        "tail_all": [stored],
+                        "tail_version": 32,
                         "end_exclusive": "2026-10-10T00:00:00Z",
                     }
                     for s in symbols(3386)
@@ -338,7 +340,15 @@ class HttpBatchingTests(unittest.TestCase):
         snapshot = {
             "sha256": "synthetic",
             "entries": [
-                {"symbol": s, "asof": "2026-10-15", "first_all": stored, "last_all": stored}
+                {
+                    "symbol": s,
+                    "asof": "2026-10-15",
+                    "first_all": stored,
+                    "last_all": stored,
+                    "tail_all": [stored],
+                    "tail_version": 32,
+                    "end_exclusive": "2026-10-15T00:00:00Z",
+                }
                 for s in symbols(3386)
             ],
         }

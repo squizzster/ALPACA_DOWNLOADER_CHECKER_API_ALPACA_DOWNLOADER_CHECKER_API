@@ -1,0 +1,17 @@
+[
+  {
+    "modifications": [
+      "Scope completed CSV ticker ownership intervals once to the published input range and actual sessions before checking relevant labels; preserve single-ticker fallback and active-label conflicts without repeated boundary reads or interval selection."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume schema-2 CSV digests' completed dated ticker ranges directly, sharing row labels across all views without replaying ownership evidence or auditing label membership. Preserve genuine ambiguity, explicit dated metadata overrides and schema-1 compatibility; missing schema-2 label handoffs fail before CSV reads."
+    ]
+  },
+  {
+    "modifications": [
+      "Remove forced filesystem synchronization; reject normal and failure-report output collisions with selected inputs, including aliases, before writing; share the completed CSV export session grid across all adjustment views without sorting or validating it repeatedly."
+    ]
+  }
+]

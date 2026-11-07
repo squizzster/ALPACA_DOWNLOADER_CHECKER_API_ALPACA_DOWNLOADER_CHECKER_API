@@ -1,5 +1,6 @@
 """Batched acquisition and guarded replacement of existing pricing spans."""
 
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -24,22 +25,26 @@ from .contract import (
 )
 from .download import (
     _endpoint_window,
-    _endpoints_match,
     acquisition_asof,
     download_pricing,
     established_pricing_rejection,
+    publish_acquired,
+    request_end,
 )
-from .endpoints import endpoints_of, history_check_endpoints
+from .endpoints import EndpointSelection, comparison_rows, fetch_history, history_windows
 from .failures import AcquisitionFailure
-from .responses import completed_bars
+from .history_tail import publish_legacy_tail
+from .responses import CompletedBars, completed_bars
 from .storage import load_source, read_validator, regular_path, ticker_lock, trace_source_selection
 
 
 @traced("retained_history_check")
-def check_retained_source(store, symbol, end_date, *, client):
+def check_retained_source(store, symbol, end_date, *, client, pending=None):
     """Check a selected source independently of active-summary eligibility."""
-    root = regular_path(Path(store), f"end_of_day/pricing/{symbol}", published=True)
-    with ticker_lock(root, exclusive=False):
+    store = Path(store).absolute()
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+    pending = pending or {}
+    with ticker_lock(root, exclusive=True):
         if regular_path(root, ".pending.json").exists():
             raise DownloadError(f"{symbol}: finish interrupted pricing publication before checking")
         source = load_source(root, symbol)
@@ -48,21 +53,105 @@ def check_retained_source(store, symbol, end_date, *, client):
         request = _refresh_request(symbol, source)
         if request["end_exclusive"][:10] > end_date:
             raise DownloadError(f"{symbol}: required history check exceeds requested cutoff")
+        correction_id = pending.get("correction_id")
+        contract = pending.get("pricing_correction")
+        if correction_id is not None and source.get("history_correction_id") == correction_id:
+            return {**request, "matched": True}
+        if correction_id is not None:
+            if contract is not None and (
+                contract.get("schema_version") != 1
+                or contract.get("scope") not in ("latest_session", "full_history")
+            ):
+                raise DownloadError("unsupported pending pricing correction; owning recovery required")
+            if contract is None or contract["scope"] == "full_history" or pending.get("invalidate_pricing"):
+                # The old generic correction ID does not establish a narrower
+                # cause. Its existing replacement obligation remains authoritative.
+                return {
+                    **request,
+                    "matched": False,
+                    "correction_scope": "full_history",
+                    "correction_cause": (contract or {}).get("cause", "legacy_unspecified_replacement"),
+                }
+            selection = EndpointSelection.from_document(contract["selection"])
+            if selection.applies(
+                store, symbol, request["source_sha256"], contract["end_exclusive"], contract["asof"]
+            ):
+                if contract["end_exclusive"][:10] > end_date:
+                    raise DownloadError("pending correction exceeds the requested cutoff")
+                return {
+                    **request,
+                    "asof": contract["asof"],
+                    "end_exclusive": contract["end_exclusive"],
+                    "comparison_end_exclusive": contract["comparison_end_exclusive"],
+                    "comparison_asof": selection.comparison_asof or selection.asof,
+                    "matched": False,
+                    "comparison": selection.comparison,
+                    "correction_scope": selection.comparison.decision,
+                    "correction_cause": contract["cause"],
+                    "endpoint_selection": selection,
+                }
         endpoints = read_validator(root, source, published=True)
         if endpoints is None:
             raise DownloadError(f"{symbol}: retained-history checking requires published endpoints")
-        matched = _endpoints_match(
+        if endpoints.tail_all is None:
+            publication, endpoints = publish_legacy_tail(
+                root, source, endpoints, source_sha256=request["source_sha256"]
+            )
+            source = publication["source"]
+            request = _refresh_request(symbol, source, source_sha256=publication["source_sha256"])
+        comparison = fetch_history(
             client,
             symbol,
-            history_check_endpoints(endpoints),
+            endpoints,
             request["asof"],
             cutoff=timestamp(request["end_exclusive"]),
-            require_present=True,
         )
-        return {**request, "matched": matched}
+        if comparison.matched and correction_id is not None:
+            # A changed generation invalidated a scoped pending decision. Its
+            # fresh completed comparison now establishes unchanged current rows;
+            # publish only the obligation acknowledgement, never a history fetch.
+            publication = publish_acquired(
+                root,
+                source,
+                symbol,
+                source["anchor_month"],
+                source["latest_request"],
+                timestamp(source.get("history_start", HISTORY_START)),
+                endpoints,
+                {},
+                None,
+                history_correction_id=correction_id,
+                previous_source_sha256=request["source_sha256"],
+            )
+            request = _refresh_request(symbol, publication["source"], source_sha256=publication["source_sha256"])
+        result = {
+            **request,
+            "matched": comparison.matched,
+            "comparison": comparison,
+            "correction_scope": comparison.decision,
+            "correction_cause": "selected_all_rows_changed",
+        }
+        if comparison.decision == "latest_session":
+            result.update(
+                comparison_asof=request["asof"],
+                comparison_end_exclusive=request["end_exclusive"],
+                endpoint_selection=EndpointSelection(
+                    str(store),
+                    symbol,
+                    request["source_sha256"],
+                    request["end_exclusive"],
+                    request["asof"],
+                    tuple(endpoints.items()),
+                    matched=False,
+                    tail_all=endpoints.tail_all,
+                    comparison=comparison,
+                    comparison_asof=request["asof"],
+                ),
+            )
+        return result
 
 
-def _refresh_request(symbol, source):
+def _refresh_request(symbol, source, *, source_sha256=None):
     start = timestamp(source.get("history_start", HISTORY_START))
     end = timestamp(source["latest_request"]["end_exclusive"])
     asof = source["latest_request"]["asof"]
@@ -72,7 +161,7 @@ def _refresh_request(symbol, source):
         raise DownloadError(f"{symbol}: stored range/asof is incompatible with exact-span replacement")
     return {
         "symbol": symbol,
-        "source_sha256": digest(json_bytes(source)),
+        "source_sha256": source_sha256 or digest(json_bytes(source)),
         "history_correction_id": source.get("history_correction_id"),
         "start": start.isoformat().replace("+00:00", "Z"),
         "end_exclusive": end.isoformat().replace("+00:00", "Z"),
@@ -80,7 +169,16 @@ def _refresh_request(symbol, source):
     }
 
 
-def prepare_refresh(store, symbols):
+def prepare_refresh(
+    store,
+    symbols,
+    *,
+    comparisons=None,
+    approved_generations=None,
+    selections=None,
+    end_date=None,
+    correction_ids=None,
+):
     """Read only selected receipts; retain the complete original request coverage."""
     # Selection is already owned by the live-check/correction caller. Read only
     # those ticker receipts and carry their generation/scope into replacement;
@@ -93,9 +191,61 @@ def prepare_refresh(store, symbols):
             if regular_path(root, ".pending.json").exists():
                 raise DownloadError(f"{symbol}: finish interrupted pricing publication before checking")
             source = load_source(root, symbol)
+            decision = (comparisons or {}).get(symbol)
+            selection = (selections or {}).get(symbol)
+            endpoints = (
+                read_validator(root, source, published=True)
+                if source
+                and decision is not None
+                and decision.decision in ("latest_session", "unchanged")
+                and selection is None
+                else None
+            )
         if source is None:
             raise DownloadError(f"{symbol}: no existing pricing to replace")
         request = _refresh_request(symbol, source)
+        correction_id = (correction_ids or {}).get(symbol)
+        if correction_id and source.get("history_correction_id") == correction_id:
+            request["completed_correction"] = True
+            request["required_correction_id"] = correction_id
+        approved = (approved_generations or {}).get(symbol)
+        if approved is not None and approved != request["source_sha256"]:
+            raise DownloadError(f"{symbol}: pricing changed after completed comparison")
+        if decision is not None:
+            request["comparison"] = decision
+            request["correction_scope"] = decision.decision
+            request["correction_cause"] = (
+                "selected_all_rows_unchanged" if decision.matched else "selected_all_rows_changed"
+            )
+        else:
+            request["correction_scope"] = "full_history"
+            request["correction_cause"] = "retained_replacement_required"
+        if request["correction_scope"] == "latest_session":
+            request["comparison_end_exclusive"] = request["end_exclusive"]
+            request["comparison_asof"] = request["asof"]
+            target = request_end(end_date) if end_date else timestamp(request["end_exclusive"])
+            if selection is not None:
+                target = timestamp(selection.end)
+            if target < timestamp(request["end_exclusive"]):
+                raise DownloadError("correction target cannot precede selected coverage")
+            request["end_exclusive"] = target.isoformat().replace("+00:00", "Z")
+            request["asof"] = acquisition_asof(source, target)
+        if endpoints is not None:
+            request["endpoint_selection"] = EndpointSelection(
+                str(store),
+                symbol,
+                request["source_sha256"],
+                request["end_exclusive"],
+                request["asof"],
+                tuple(endpoints.items()),
+                matched=False,
+                tail_all=endpoints.tail_all,
+                comparison=decision,
+                comparison_asof=request.get("comparison_asof", request["asof"]),
+            )
+        elif selection is not None:
+            selection.consume(store, symbol, request["source_sha256"], request["end_exclusive"], request["asof"])
+            request["endpoint_selection"] = selection
         trace_source_selection(source, request["source_sha256"], symbol=symbol, reason="replacement_selection")
         prepared.append(request)
     return prepared
@@ -318,26 +468,41 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, 
 
 
 @traced("pricing_full_history")
-def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progress=None, on_failure=None):
+def acquire_full(
+    needs,
+    client,
+    *,
+    metrics=None,
+    retained_endpoints=None,
+    progress=None,
+    on_failure=None,
+    acquired=None,
+    observations=None,
+):
     """Acquire shared ranges; only new/replaced histories need producer confirmation.
 
     The returned client feeds the normal downloader; its existing bounded retry
     requests a fresh plan if the provider changed during acquisition.
     """
     states, acquisition = acquire_adjustments(
-        needs, client, metrics=metrics, progress=progress, on_failure=on_failure
+        needs,
+        client,
+        metrics=metrics,
+        progress=progress,
+        on_failure=on_failure,
+        acquired=acquired,
+        observations=observations,
     )
     probes = []
     for need, state in zip(needs, states, strict=True):
         symbol, end = state.symbol, state.end
         if state.completed is None:
             continue
-        views = state.completed.views
         if symbol in (retained_endpoints or {}):
             # A completed first/latest all comparison already approved this
             # generation. These are new-session rows only. No historical probes.
             continue
-        endpoints = endpoints_of(views)
+        endpoints = state.completed.endpoints
         # These are fresh producer checks for newly acquired output, not a
         # revalidation of completed stored history. Their independent responses
         # must not be replaced with the acquisition body being checked.
@@ -361,7 +526,17 @@ def acquire_full(needs, client, *, metrics=None, retained_endpoints=None, progre
     }
 
 
-def acquire_retained(selected, end, *, client, metrics, progress=None, on_checked=None, approved=None):
+def acquire_retained(
+    selected,
+    end,
+    *,
+    client,
+    metrics,
+    progress=None,
+    on_checked=None,
+    approved=None,
+    acquired=None,
+):
     """First/latest all approval -> missing sessions, or selected full replacement."""
     failures, probes = {}, []
     approved = approved or {}
@@ -388,11 +563,21 @@ def acquire_retained(selected, end, *, client, metrics, progress=None, on_checke
             continue
         asof = acquisition_asof(source, end)
         try:
-            points = history_check_endpoints(endpoints)
+            windows = history_windows(endpoints, cutoff=end)
         except DownloadError as error:
             failures[symbol] = (AcquisitionFailure.from_error(error), False)
             continue
-        probes.extend(_endpoint_needs(symbol, points, asof, "boundary_check", cutoff=end))
+        probes.extend(
+            {
+                "kind": "bars",
+                "why": "boundary_check",
+                "symbols": [symbol],
+                "asof": asof,
+                "adjustments": ["all"],
+                "ranges": [{"start": start.isoformat(), "end_exclusive": stop.isoformat()}],
+            }
+            for start, stop in windows
+        )
     cache, _ = (
         _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed)
         if probes
@@ -403,20 +588,36 @@ def acquire_retained(selected, end, *, client, metrics, progress=None, on_checke
     # (including 414 splits) already establish their result and must not repeat.
     for key, value in list(cache.items()):
         _, symbol, adjustment, start, stop, asof = key
-        if symbol in failures or value.rows or value.singleton:
+        if symbol in failures or value.singleton:
+            continue
+        endpoints = selected[symbol][1]
+        days = {timestamp(row[0]).astimezone(NEW_YORK).date() for row in value.rows}
+        missing = [
+            row
+            for row in comparison_rows(endpoints["all"][0], endpoints.tail_all)
+            if start <= timestamp(row[0]) < stop and timestamp(row[0]).astimezone(NEW_YORK).date() not in days
+        ]
+        windows = (
+            [(start, stop)] if not value.rows else [_endpoint_window(row, asof, cutoff=stop) for row in missing]
+        )
+        if not missing:
             continue
         try:
-            metrics["omission_probes"] = metrics.get("omission_probes", 0) + 1
-            cache[key] = completed_bars(
-                client.fetch(symbol, adjustment, start, stop, asof=asof),
-                symbol,
-                adjustment,
-                start,
-                stop,
-                asof,
-            )
-            if cache[key].rows:
-                metrics["omission_recovered"] = metrics.get("omission_recovered", 0) + 1
+            rows = list(value.rows)
+            for probe_start, probe_stop in windows:
+                metrics["omission_probes"] = metrics.get("omission_probes", 0) + 1
+                confirmed = completed_bars(
+                    client.fetch(symbol, adjustment, probe_start, probe_stop, asof=asof),
+                    symbol,
+                    adjustment,
+                    probe_start,
+                    probe_stop,
+                    asof,
+                )
+                rows.extend(confirmed.rows)
+                if confirmed.rows:
+                    metrics["omission_recovered"] = metrics.get("omission_recovered", 0) + 1
+            cache[key] = replace(value, rows=tuple(sorted(rows, key=lambda row: timestamp(row[0]))))
         except (RuntimeError, OSError, ValueError) as error:
             failures[symbol] = (AcquisitionFailure.from_error(error), False)
     comparison = PlannedClient(client, dict(cache))
@@ -427,24 +628,23 @@ def acquire_retained(selected, end, *, client, metrics, progress=None, on_checke
         start = timestamp(source.get("history_start", HISTORY_START))
         asof = acquisition_asof(source, end)
         try:
-            matched = (
+            decision = (
                 approved[symbol]
                 if symbol in approved
-                else _endpoints_match(
+                else fetch_history(
                     comparison,
                     symbol,
-                    history_check_endpoints(endpoints),
+                    endpoints,
                     asof,
                     cutoff=end,
-                    require_present=True,
                 )
             )
         except (RuntimeError, OSError, ValueError) as error:
             failures[symbol] = (AcquisitionFailure.from_error(error), False)
             continue
         if on_checked is not None:
-            on_checked(symbol, matched)
-        if matched:
+            on_checked(symbol, decision)
+        if decision.decision != "full_history":
             start = timestamp(source["latest_request"]["end_exclusive"])
             retained[symbol] = endpoints
         needs.append(
@@ -474,6 +674,7 @@ def acquire_retained(selected, end, *, client, metrics, progress=None, on_checke
                 retained_endpoints=retained,
                 progress=progress,
                 on_failure=failed,
+                acquired=acquired,
             )
             yield (
                 sorted(symbols),
@@ -511,9 +712,49 @@ def replace_prepared(
                 "ranges": [{"start": item["start"], "end_exclusive": item["end_exclusive"]}],
             }
             for item in cohort
+            if item.get("correction_scope") not in ("latest_session", "unchanged")
+            and not item.get("completed_correction")
         ]
+        retained, observations = {}, {}
+        for item in cohort:
+            if item.get("correction_scope") != "latest_session" or item.get("completed_correction"):
+                continue
+            symbol = item["symbol"]
+            decision = item["comparison"]
+            day = timestamp(decision.correction_session).astimezone(NEW_YORK).date()
+            row = next(row for row in decision.live_all if timestamp(row[0]).astimezone(NEW_YORK).date() == day)
+            covered = timestamp(item["comparison_end_exclusive"])
+            asof = item["comparison_asof"]
+            start, stop = _endpoint_window(row, asof, cutoff=covered)
+            observations[symbol, start, stop, asof] = (CompletedBars(symbol, "all", start, stop, asof, (row,)),)
+            scopes = [(start, stop, asof)]
+            if covered < timestamp(item["end_exclusive"]):
+                scopes.append((covered, timestamp(item["end_exclusive"]), item["asof"]))
+            needs.extend(
+                {
+                    "kind": "bars",
+                    "why": "latest_session_correction",
+                    "symbols": [symbol],
+                    "asof": mapping,
+                    "adjustments": list(ADJUSTMENTS),
+                    "ranges": [{"start": lower.isoformat(), "end_exclusive": upper.isoformat()}],
+                }
+                for lower, upper, mapping in scopes
+            )
+            retained[symbol] = item["endpoint_selection"]
         try:
-            consumer, _ = acquire_full(needs, client, metrics=metrics, progress=progress)
+            consumer, _ = (
+                acquire_full(
+                    needs,
+                    client,
+                    metrics=metrics,
+                    progress=progress,
+                    retained_endpoints=retained,
+                    observations=observations,
+                )
+                if needs
+                else (client, None)
+            )
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
                 {
@@ -533,15 +774,18 @@ def replace_prepared(
             checked_baseline = True
         for item in cohort:
             try:
+                local = item.get("correction_scope") in ("latest_session", "unchanged")
                 result = download_pricing(
                     store,
                     item["symbol"],
                     item["end_exclusive"][:10],
                     client=consumer,
-                    refresh_all=True,
+                    refresh_all=not local,
                     from_date=item["start"][:10],
                     # Preserve the selected generation across network I/O.
-                    expected_source_sha256=item["source_sha256"],
+                    expected_source_sha256=None if local else item["source_sha256"],
+                    selected_source_sha256=item["source_sha256"],
+                    endpoint_selection=item.get("endpoint_selection"),
                     history_correction_id=item.get("required_correction_id"),
                     context=context,
                 )

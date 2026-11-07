@@ -13,6 +13,7 @@ from libs.alpaca_lineage_build import pipeline, pricing, storage
 from libs.alpaca_lineage_build.transform import ASSIGNMENT_FIELDS
 from libs.alpaca_lineage_build.universe_update import run_update
 from libs.alpaca_pricing_download import acquire, append, check_summary, download
+from libs.alpaca_pricing_download import storage as pricing_storage
 from libs.alpaca_pricing_download.context import accept_context
 from libs.alpaca_pricing_download.contract import DownloadError
 
@@ -96,6 +97,32 @@ class RetainedAcceptanceTests(unittest.TestCase):
                 self.assertTrue(
                     all(len(rows) == 3 for rows in download.read_pricing_views(store, symbol).values())
                 )
+
+    def test_empty_dependency_suffix_closes_history_and_is_not_selected_again(self):
+        with fixture() as case:
+            store = seed_group(case, inactive_second=True)
+            assets = {
+                "AAA": lineage_fixture.asset("AAA"),
+                "BBB": {**lineage_fixture.asset("BBB"), "status": "inactive"},
+            }
+            case.live = {"AAA": case.old + [bar("2026-10-19")], "BBB": list(case.old)}
+            root = store / "end_of_day/pricing/BBB"
+            before = pricing_storage.load_source(root, "BBB")
+            result = run_update(
+                store,
+                "2026-10-20",
+                pricing_client=case.pricing,
+                identity_client=ActionCatalogueClient(
+                    list(assets.values()), [rename()], exact={**assets, "111111111": assets["BBB"]}
+                ),
+                registry=case.registry,
+            )
+            self.assertTrue(result["complete"], result)
+            requests = [p for p in case.pages if "BBB" in p["symbols"].split(",")]
+            self.assertEqual(len(requests), 2, requests)
+            self.assertEqual({p["adjustment"] for p in requests}, {"raw", "all"})
+            self.assertTrue(all(p["start"][:10] >= "2026-10-17" for p in requests))
+            self.assertEqual(pricing_storage.load_source(root, "BBB"), before)
 
     def test_failed_suffix_keeps_completed_comparison_and_validator_in_operation(self):
         with fixture() as case:

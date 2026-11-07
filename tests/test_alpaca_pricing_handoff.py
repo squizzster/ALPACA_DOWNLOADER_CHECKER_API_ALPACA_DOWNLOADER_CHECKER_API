@@ -104,22 +104,26 @@ class PricingHandoffTests(unittest.TestCase):
         self.assertEqual(storage.read_document(self.notice), {"from": "2026-10-14", "to": "2026-11-02"})
 
     def test_accepted_history_is_not_rescanned_for_interior_changes(self):
-        rows = self.bars + [bar("2026-10-05"), bar("2026-10-13")]
-        self.download(bars=rows)
+        rows = [bar("2016-01-04"), bar("2026-09-01"), bar("2026-09-02")] + [
+            bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13, 14)
+        ]
+        self.download("2026-10-15", bars=rows)
         self.consume()
-        revised = rows[:2] + [bar("2026-10-05", "999")] + rows[3:]
-        result = self.download("2026-10-15", bars=revised)
+        revised = rows[:2] + [bar("2026-09-02", "999")] + rows[3:]
+        result = self.download("2026-10-16", bars=revised)
         self.assertEqual(result["mode"], "update")
         self.assertEqual(result["consistency_check"], "matched")
         self.assertFalse(self.notice.exists())
         self.assertEqual(read_pricing_views(self.store, "GOOG")["all"][2][4], str(rows[2]["c"]))
 
     def test_accepted_interior_changes_do_not_create_new_work(self):
-        rows = self.bars + [bar("2026-10-05"), bar("2026-10-07"), bar("2026-10-13")]
-        self.download(bars=rows)
+        rows = [bar("2016-01-04"), bar("2026-09-01"), bar("2026-09-02")] + [
+            bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13, 14)
+        ]
+        self.download("2026-10-15", bars=rows)
         self.consume()
-        revised = rows[:2] + [bar("2026-10-05", "999"), bar("2026-10-07", "888")] + rows[4:]
-        self.download("2026-10-15", bars=revised)
+        revised = rows[:1] + [bar("2026-09-01", "999"), bar("2026-09-02", "888")] + rows[3:]
+        self.download("2026-10-16", bars=revised)
         self.assertFalse(self.notice.exists())
 
     def test_full_refresh_replaces_pending_incremental_range_with_all_history(self):

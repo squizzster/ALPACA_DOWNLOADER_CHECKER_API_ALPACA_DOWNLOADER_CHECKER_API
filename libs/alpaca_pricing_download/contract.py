@@ -13,9 +13,9 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-RUNTIME_VERSION = 43
-VERSION = 31  # Persisted publication and completed-request contract, independent of runtime releases.
-# Version 31 retains the pricing representation. Sources may still select older
+RUNTIME_VERSION = 46
+VERSION = 32  # Persisted publication and completed-request contract, independent of runtime releases.
+# Version 32 adds the producer-owned all-view comparison tail. Sources may still select older
 # unchanged boundary receipts; accept those independently of the source version.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 VALIDATOR_FILE = "validator_first_last_sessions.json"

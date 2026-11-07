@@ -108,7 +108,7 @@ class UpdateEverythingTests(unittest.TestCase):
             repeated = self.run_update()
         self.assertTrue(repeated["complete"], repeated)
         self.assertEqual(len(self.calls), 2, "integrated update must always recheck live")
-        self.assertEqual({p["start"][:10] for p in self.calls}, {"2016-01-04", "2026-10-16"})
+        self.assertEqual({p["start"][:10] for p in self.calls}, {"2016-01-04", "2026-10-14"})
         self.assertEqual(self.identity.request_count, identity_calls)
         self.assertEqual(files_snapshot(self.store), before)
 
@@ -453,7 +453,7 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertEqual(files_snapshot(self.store / "end_of_day"), before)
 
     def test_failed_history_replacement_stops_before_append(self):
-        self.live["AAA"][1]["v"] = 42
+        self.live["AAA"][0]["v"] = 42
         before = files_snapshot(self.store)
 
         def fail_full_history(params):

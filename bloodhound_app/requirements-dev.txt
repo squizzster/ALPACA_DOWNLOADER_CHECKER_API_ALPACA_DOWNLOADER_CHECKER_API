@@ -1,0 +1,3 @@
+-r requirements.txt
+# Optional independent optimization oracle for solver regression tests.
+scipy==1.17.0

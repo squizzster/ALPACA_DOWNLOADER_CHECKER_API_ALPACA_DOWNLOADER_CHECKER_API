@@ -1,0 +1,4 @@
+*.parquet
+*.parquet.report.json
+*.parquet.failure.json
+.venv*/

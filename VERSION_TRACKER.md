@@ -9,6 +9,7 @@ Runtime validators check one-based changelog array position against the owning c
 | Owner and constant | Changelog |
 |---|---|
 | [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/__init__.py): `VERSION` | [Baseline history](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/change_log.json) |
+| [Standalone Bloodhound converter](bloodhound_app/alpaca_to_bloodhound.py): `RUNTIME_VERSION` | [Converter history](bloodhound_app/change_log.json) |
 | [Public API](alpaca_end_of_day/__init__.py): `API_VERSION` | [API history](resources/alpaca_end_of_day_api_change_log.json) |
 | [CLI](libs/alpaca_cli/__init__.py): `VERSION` | [CLI history](resources/alpaca_cli_change_log.json) |
 | [Heartbeat reporting](libs/alpaca_heartbeat/__init__.py): `VERSION` | [Heartbeat history](resources/alpaca_heartbeat_change_log.json) |
@@ -32,6 +33,7 @@ Readable schemas need not be reusable. Owner compatibility gates decide reuse; d
 to make numbers agree.
 
 - [Pricing representation](docs/technical-contracts.md#standalone-artifacts): source and selected boundary versions may differ.
+- [Pricing comparison handoff](docs/technical-contracts.md#pricing-acquisition-and-continuation): recognized legacy sources publish their missing tail without changing prices; the compact summary carries its actual pricing generation.
 - [Lineage reuse](docs/lineage.md#lineage-reuse): policy identity, complete-group inputs and exact supported promotion.
 - [Serving checkpoints](docs/technical-contracts.md#serving-catalogue): policy/calendar-bound positive and negative decisions.
 - [Policy provenance](libs/alpaca_lineage_build/correlation_policy_contract.py): serialized identity of the

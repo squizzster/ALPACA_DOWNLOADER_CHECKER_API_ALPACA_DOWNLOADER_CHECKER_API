@@ -1,15 +1,11 @@
-"""Production live check: trusted summary -> exact first/last adjusted comparisons.
-
-The versioned JSON result retains its established experiment boundary name.
-No ticker-file discovery, publication or saved report occurs here.
-"""
+"""Trusted first/tail summary -> exact, completed three-way pricing decisions."""
 
 import json
 import time
 import urllib.error
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
@@ -17,9 +13,10 @@ from libs.common.debug_trace import event
 from libs.common.provider_http import balanced_batches
 
 from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timestamp
+from .endpoints import Endpoints, compare_history, comparison_rows, different_fields, history_windows
 from .http import execute_bar_plan
 
-VERSION = 8
+VERSION = 9
 DEFAULT_BATCH_SIZE = 4000
 
 
@@ -30,17 +27,40 @@ def validate_version():
         raise DownloadError("live-check experiment changelog/version mismatch")
 
 
+def _points(entry):
+    if entry.get("tail_all") is None:
+        raise DownloadError("legacy pricing comparison tail requires its selected producer upgrade")
+    return Endpoints({"all": (entry["first_all"], entry["last_all"])}, tail_all=entry["tail_all"])
+
+
 def _endpoints(entry):
-    first, last = entry["first_all"], entry["last_all"]
-    return (("first_and_last", first),) if first == last else (("first", first), ("last", last))
+    points = _points(entry)
+    return tuple(
+        (
+            "first_and_last"
+            if entry["first_all"] == entry["last_all"]
+            else "first"
+            if tuple(row) == tuple(entry["first_all"])
+            else "last"
+            if tuple(row) == tuple(entry["last_all"])
+            else "tail",
+            row,
+        )
+        for row in comparison_rows(entry["first_all"], points.tail_all)
+    )
+
+
+def _day(row):
+    return timestamp(row[0]).astimezone(NEW_YORK).date()
 
 
 def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):
     groups = defaultdict(set)
     for entry in snapshot["entries"]:
-        for _, row in _endpoints(entry):
-            session = timestamp(row[0]).astimezone(NEW_YORK).date()
-            groups[session, entry["asof"]].add(entry["symbol"])
+        for start, end in history_windows(
+            _points(entry), cutoff=timestamp(entry["end_exclusive"]), utc_session_end=True
+        ):
+            groups[start, end, entry["asof"]].add(entry["symbol"])
     needs = [
         {
             "kind": "bars",
@@ -48,45 +68,25 @@ def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):
             "symbols": sorted(symbols),
             "adjustments": ["all"],
             "asof": asof,
-            "ranges": [
-                {
-                    "start": datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK).isoformat(),
-                    # The saved asof selects the entity. The exact retained row
-                    # selects the observation window independently. UTC midnight
-                    # preserves the established request bound without reaching
-                    # the next New York daily bar.
-                    "end_exclusive": datetime.combine(
-                        day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
-                    ).isoformat(),
-                }
-            ],
+            "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
         }
-        for (day, asof), symbols in sorted(groups.items())
+        for (start, end, asof), symbols in sorted(groups.items())
     ]
-    # A first/last pair must never become an intervening full-history request.
     return build_plan({"steps": [{"needs": needs}]}, max_symbols=batch_size, merge_ranges=False)
 
 
 def changed_fields(stored, live):
-    result = {}
-    for index, name in enumerate(COLUMNS):
-        equal = (
-            timestamp(stored[index]) == timestamp(live[index])
-            if index == 0
-            else Decimal(stored[index]) == Decimal(live[index])
-        )
-        if not equal:
-            result[name] = {"stored": stored[index], "live": live[index]}
-    return result
+    return {
+        name: {"stored": stored[COLUMNS.index(name)], "live": live[COLUMNS.index(name)]}
+        for name in different_fields(stored, live)
+    }
 
 
 def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
-    """Consume the trusted snapshot through the API solver and bar executor."""
-    # The summary producer owns membership and both stored all-view endpoints. This owner
-    # compares fresh provider observations only; it must not reopen local sources
-    # or imply that a matching endpoint validates every interior historical row.
+    """Compare the producer's baseline once and carry usable observations forward."""
     started = time.monotonic()
     action_plan = plan(snapshot, batch_size)
+    entries = {entry["symbol"]: entry for entry in snapshot["entries"]}
     metrics = {
         "planned_batches": sum(
             len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
@@ -108,25 +108,15 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
             "missing",
             "failed",
             "request_failures",
+            "latest_session",
+            "full_history",
         ),
         0,
     )
-    stats["tickers"] = len(snapshot["entries"])
-    stats["last_session_dates"] = len(
-        {timestamp(entry["last_all"][0]).astimezone(NEW_YORK).date() for entry in snapshot["entries"]}
-    )
+    stats["tickers"] = len(entries)
+    stats["last_session_dates"] = len({_day(entry["last_all"]) for entry in entries.values()})
     differences, missing, missing_endpoints, matched, failures, failed = [], [], [], [], [], set()
-    singleton_requests = set()
-
-    def request_key(params, symbol):
-        return symbol, params["start"], params["end"], params["asof"], params["adjustment"]
-
-    def request(params):
-        # Physical 414 subdivisions may already have checked a singleton. Keep
-        # that request fact in memory so an empty result is not checked twice.
-        if "," not in params["symbols"]:
-            singleton_requests.add(request_key(params, params["symbols"]))
-        return get_page(params)
+    decisions = {}
 
     def on_failure(step, action, error):
         symbols = sorted({symbol for target in action["deliver"] for symbol in target["symbols"]})
@@ -142,109 +132,116 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
         )
         stats["request_failures"] += 1
 
-    acquired = execute_bar_plan(action_plan, request, metrics=metrics, on_failure=on_failure)
-    probe_steps = []
-    for step_index, step in enumerate(action_plan["steps"]):
-        probes = []
-        for action in step["actions"]:
-            params = action["request"]["params"]
-            omitted = set()
-            for target in action["deliver"]:
-                for symbol in target["symbols"]:
-                    value = acquired.get((step_index, target["need"], target["range"], symbol, "all"))
-                    if (
-                        value is not None
-                        and not value.rows
-                        and symbol not in failed
-                        and request_key(params, symbol) not in singleton_requests
-                    ):
-                        omitted.add(symbol)
-            for symbol in sorted(omitted):
-                probes.append(
-                    {
-                        **action,
-                        "request": {**action["request"], "params": {**params, "symbols": symbol}},
-                        "deliver": [
-                            {**target, "symbols": [symbol]}
-                            for target in action["deliver"]
-                            if symbol in target["symbols"]
-                        ],
-                    }
-                )
-        probe_steps.append({**step, "actions": probes})
-    if any(step["actions"] for step in probe_steps):
-        # A completed multi-symbol response can suppress a known retained bar
-        # through its companions. Only this comparison owner knows a row is
-        # expected. Probe only omitted endpoints, singly, with identical scope;
-        # normal empty history acquisition remains the transport's authority.
-        metrics["omission_probes"] = sum(len(step["actions"]) for step in probe_steps)
-        confirmed = execute_bar_plan(
-            {**action_plan, "steps": probe_steps}, request, metrics=metrics, on_failure=on_failure
+    acquired = execute_bar_plan(action_plan, get_page, metrics=metrics, on_failure=on_failure)
+    # Multi-symbol responses can omit one date while returning other tail rows.
+    # Probe only missing dates singly; physical singletons already own absence.
+    for key, value in list(acquired.items()):
+        if value.symbol in failed or value.singleton:
+            continue
+        actual_days = {_day(row) for row in value.rows}
+        expected = [
+            row
+            for _, row in _endpoints(entries[value.symbol])
+            if value.start <= timestamp(row[0]) < value.end and _day(row) not in actual_days
+        ]
+        if not expected:
+            continue
+        needs = []
+        for row in expected:
+            points = Endpoints({"all": (row,)}, tail_all=(row,))
+            start, end = history_windows(points, cutoff=value.end, utc_session_end=True)[0]
+            needs.append(
+                {
+                    "kind": "bars",
+                    "why": "boundary_check",
+                    "symbols": [value.symbol],
+                    "adjustments": ["all"],
+                    "asof": value.asof,
+                    "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
+                }
+            )
+        probes = build_plan({"steps": [{"needs": needs}]}, merge_ranges=False)
+        metrics["omission_probes"] = metrics.get("omission_probes", 0) + len(needs)
+        confirmed = execute_bar_plan(probes, get_page, metrics=metrics, on_failure=on_failure)
+        recovered = tuple(row for result in confirmed.values() for row in result.rows)
+        metrics["omission_recovered"] = metrics.get("omission_recovered", 0) + len(recovered)
+        acquired[key] = replace(
+            value, rows=tuple(sorted((*value.rows, *recovered), key=lambda row: timestamp(row[0])))
         )
-        metrics["omission_recovered"] = sum(len(value.rows) == 1 for value in confirmed.values())
-        acquired.update(confirmed)
-    actual = {
-        (values.symbol, values.start.astimezone(NEW_YORK).date(), values.asof): values.rows
-        for values in acquired.values()
-    }
-    for entry in snapshot["entries"]:
-        symbol = entry["symbol"]
+    actual = defaultdict(list)
+    for value in acquired.values():
+        actual[value.symbol].extend(value.rows)
+    for symbol, entry in entries.items():
         if symbol in failed:
             continue
-        changes, absent = [], False
-        for endpoint, stored in _endpoints(entry):
-            day = timestamp(stored[0]).astimezone(NEW_YORK).date()
-            rows = actual.get((symbol, day, entry["asof"]))
-            if rows is None or len(rows) > 1:
-                failures.append(
-                    {
-                        "symbols": [symbol],
-                        "reason": "missing plan delivery"
-                        if rows is None
-                        else "multiple bars for one daily session",
-                    }
-                )
+        by_day = {}
+        for row in actual[symbol]:
+            if _day(row) in by_day:
                 failed.add(symbol)
+                failures.append({"symbols": [symbol], "reason": "multiple bars for one daily session"})
                 break
-            if not rows:
+            by_day[_day(row)] = row
+        if symbol in failed:
+            continue
+        stats["checked"] += 1
+        absent = False
+        for endpoint, stored in _endpoints(entry):
+            if _day(stored) not in by_day:
                 absent = True
                 detail = {
                     "symbol": symbol,
                     "endpoint": endpoint,
-                    "session": day.isoformat(),
+                    "session": _day(stored).isoformat(),
                     "asof": entry["asof"],
                 }
                 missing_endpoints.append(detail)
                 event("missing_history_endpoint", **detail)
-                continue
-            fields = changed_fields(stored, rows[0])
-            if fields:
-                category = "ohlc_changed" if set(fields).intersection(COLUMNS[1:5]) else "other_fields_only"
-                changes.append(
-                    {
-                        "symbol": symbol,
-                        "session": day.isoformat(),
-                        "endpoint": endpoint,
-                        "kind": category,
-                        "fields": fields,
-                    }
-                )
-        if symbol in failed:
-            continue
-        stats["checked"] += 1
         if absent:
             missing.append(symbol)
             stats["missing"] += 1
             continue
-        if not changes:
+        decision = compare_history(entry["first_all"], entry["tail_all"], actual[symbol])
+        decisions[symbol] = asdict(decision)
+        if decision.matched:
             stats["matched"] += 1
             matched.append(symbol)
             continue
-        category = (
+        changes = []
+        fields_by_session = dict(decision.field_changes)
+        for endpoint, stored in _endpoints(entry):
+            names = fields_by_session.get(stored[0], ())
+            if not names:
+                continue
+            live = by_day[_day(stored)]
+            fields = {
+                name: {"stored": stored[COLUMNS.index(name)], "live": live[COLUMNS.index(name)]}
+                for name in names
+            }
+            changes.append(
+                {
+                    "symbol": symbol,
+                    "session": _day(stored).isoformat(),
+                    "endpoint": endpoint,
+                    "kind": "ohlc_changed" if set(names).intersection(COLUMNS[1:5]) else "other_fields_only",
+                    "fields": fields,
+                }
+            )
+        if not changes:
+            changes.append(
+                {
+                    "symbol": symbol,
+                    "session": entry["last_all"][0][:10],
+                    "endpoint": "tail",
+                    "kind": "other_fields_only",
+                    "fields": {},
+                    "cause": "retained_session_membership",
+                }
+            )
+        stats[
             "ohlc_changed" if any(item["kind"] == "ohlc_changed" for item in changes) else "other_fields_only"
-        )
-        stats[category] += 1
+        ] += 1
         stats["differed"] += 1
+        stats[decision.decision] += 1
         differences.extend(changes)
     stats["failed"] = len(failed)
     if progress is not None:
@@ -262,6 +259,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
         "live_seconds": round(time.monotonic() - started, 6),
         "differences": sorted(differences, key=lambda item: item["symbol"]),
         "matched": sorted(matched),
+        "comparisons": decisions,
         "missing": sorted(missing),
         "missing_endpoints": sorted(missing_endpoints, key=lambda item: (item["symbol"], item["session"])),
         "failures": failures,

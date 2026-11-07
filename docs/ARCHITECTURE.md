@@ -12,12 +12,22 @@ downstream stages trust completed handoffs. [Operations](operations.md#daily-upd
 
 After selection, existing eligible summary members complete live check → correction → append before
 discovery acquisition can advance their dependencies. Changed identity or lost eligibility reconciles first.
-The live check compares the first and latest fully adjusted sessions from the compact summary. A difference
-uses the established full retained-span replacement; matching endpoints permit only new-session acquisition.
-Selected retained dependencies and ordinary downloads use the same first/latest `all` acceptance rule from
-their compact endpoint handoff. They do not check other historical views or confirm approved history again.
+The live check compares the first and latest up to ten stored fully adjusted sessions from the compact summary.
+Only a changed latest session selects localized correction; any earlier selected difference selects full
+retained-span replacement. Matching observations permit missing-session acquisition. The first request retains
+its existing scope; the second spans the selected tail. Overlapping first/tail dates are requested once.
+Selected retained dependencies and ordinary downloads use the same `all` acceptance rule from
+their producer-owned comparison handoff. Before that comparison, a lagging dependency's completed missing-suffix
+acquisition selects whether there is work: empty suffixes leave retained storage untouched, while nonempty suffixes
+cross into the approved acquisition without another request or calculation. They do not check other historical
+views or confirm approved history again.
 After discovery, maintenance checks newly eligible or invalidated members; unchanged completed checks carry
-their summary entry and pricing generation within the operation. Restart obtains fresh approvals.
+their summary entry and pricing generation within the operation. Durable corrections carry their selected scope,
+cause and observations across restart; an interrupted publication finishes through its existing journal.
+Pricing maintains the comparison tail on every publication. Recognized legacy sources publish it through a
+bounded metadata upgrade before provider work. Local correction and append share partition assembly; lineage
+and serving retain applicable completed work before the corrected session. The
+[pricing protocol](technical-contracts.md#pricing-acquisition-and-continuation) defines the exact decisions and recovery boundaries.
 
 | Responsibility | Authority |
 |---|---|
@@ -63,6 +73,7 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | Owner | Responsibility |
 |---|---|
 | [IS_ELIGIBLE_LISTED_BUSINESS_EQUITY](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/) | Independent consumer exporting public-reader identity metadata and group evidence without prices or eligibility assessments. |
+| [bloodhound_app](../bloodhound_app/README.md) | Standalone offline CSV-to-Parquet application with its own CLI, dependencies, tests and publication limitations. |
 | [alpaca_end_of_day](../alpaca_end_of_day/) | Public API, shared history assembly, CSV exports, reader adapters. |
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch, progress adapters and post-update recovery-registry Git commits/pushes. |
 | [alpaca_heartbeat](../libs/alpaca_heartbeat/) | Shared opt-in stderr lifecycle timer, protocol encoding and consumption. |

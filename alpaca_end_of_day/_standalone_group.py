@@ -223,6 +223,32 @@ class GroupSnapshot:
         )
         return views, coverage
 
+    def latest_pricing_revision(self, symbol, previous):
+        """Lend the selected producer's localized revision, without payload reads."""
+        from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
+
+        source = self._sources[symbol]
+        correction = source.get("latest_session_correction")
+        if not correction or not correction.get("previous_session"):
+            return None
+        generation = previous["pricing_generation"]
+        if generation not in {correction["source_sha256"], *correction.get("unchanged_ancestors", ())}:
+            return None
+        day = timestamp(correction["session"]).astimezone(NEW_YORK).date().isoformat()
+        if not any(
+            item["source_sha256"] == generation and item["changed_from"] == day
+            for item in source.get("history_changes", ())
+        ):
+            return None
+        return {
+            "session": day,
+            "preserves_timestamps": correction.get("preserves_timestamps", False),
+            "previous_session": timestamp(correction["previous_session"])
+            .astimezone(NEW_YORK)
+            .date()
+            .isoformat(),
+        }
+
     def source_sessions(self, *, start=None, end=None):
         """Selected gap evidence across every published view, including unresolved rows."""
         from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp

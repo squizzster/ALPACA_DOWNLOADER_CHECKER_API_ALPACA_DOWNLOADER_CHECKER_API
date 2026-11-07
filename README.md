@@ -18,6 +18,8 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Operations](docs/operations.md): setup, `./alpaca-cli-eod update`, cutoffs, recovery and focused commands.
 - [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
 - [Exports](docs/exports.md): CSV/Parquet selection, formats, memory, locks and publication guarantees.
+- [Standalone Bloodhound converter](bloodhound_app/README.md): convert completed CSV exports or legacy histories
+  with the imported app, its own dependencies, tests and documented limitations.
 - [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.
 - [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md): independent metadata and lineage export
   without pricing, with the definition retained for later assessments.

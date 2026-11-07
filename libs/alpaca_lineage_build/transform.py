@@ -188,7 +188,20 @@ def _continued_documents(view, report, indexes, previous, old):
         return {}
     documents = {}
     for kind in boundary_paths(anchor):
-        if (kind == "completed_years" and same_year) or (kind == "current_year" and same_month):
+        corrected_kind = (
+            (
+                "current_month"
+                if view.correction_from[:7] == anchor
+                else "current_year"
+                if view.correction_from[:4] == anchor[:4]
+                else "completed_years"
+            )
+            if view.correction_from
+            else None
+        )
+        if kind != corrected_kind and (
+            (kind == "completed_years" and same_year) or (kind == "current_year" and same_month)
+        ):
             continue
         document = boundary(view, report, kind, anchor, indexes)
         for entry in document["adjustments"]:
@@ -226,7 +239,7 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
     report = _split_months(report, indexes)
     old_boundaries = old_boundaries or {}
     documents = (
-        _continued_documents(view, report, indexes, previous, old_boundaries)
+        _continued_documents(view, report, indexes, previous, view.prefix_boundaries or old_boundaries)
         if resume_closed
         else {kind: boundary(view, report, kind, anchor, indexes) for kind in boundary_paths(anchor)}
     )
@@ -241,7 +254,8 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             k: v for k, v in new.items() if k != "anchor_month"
         }:
             documents[kind] = old
-    closed_rows = previous["source_rows"] if resume_closed else 0
+    closed_rows = sum(item["rows"] for item in view.previous_assignment_summary.values()) if resume_closed else 0
+    removed_rows = previous["source_rows"] - closed_rows if resume_closed else 0
     assets = {identity["id"] for identity in evidence["identities"] if identity.get("id")}
     receipt = {
         "schema_version": VERSION,
@@ -267,7 +281,7 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         "row_partition_complete": report["row_partition_complete"],
         "source_rows": report["source_row_count"] + closed_rows,
         "correlated_rows": report["correlated"]["row_count"]
-        + (previous["correlated_rows"] if resume_closed else 0),
+        + (previous["correlated_rows"] - removed_rows if resume_closed else 0),
         "unresolved_rows": report["uncorrelated"]["row_count"]
         + (previous["unresolved_rows"] if resume_closed else 0),
         "assignment_summary": {

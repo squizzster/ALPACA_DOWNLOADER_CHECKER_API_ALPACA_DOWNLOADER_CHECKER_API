@@ -580,7 +580,14 @@ def _finish_publication(
     # Live publication lends accepted in-memory outputs; recovery may reconstruct
     # them from its now-installed selector. Summary completion precedes removal
     # of the owning journal, so interrupted work cannot look fully published.
-    refresh_prices(root, source=source, endpoints=endpoints)
+    refresh_prices(
+        root,
+        source=source,
+        endpoints=endpoints,
+        source_sha256=next(
+            (entry["sha256"] for entry in writes if entry["path"] == "source.manifest.json"), None
+        ),
+    )
     _discard_staging(root)
     regular_path(root, ".pending.json").unlink()
     if read_checks(store, ())["epoch"] != event[0]:
@@ -640,6 +647,8 @@ def publish(
     endpoints=None,
     old_documents=None,
     handoff=None,
+    previous_source_sha256=None,
+    source_sha256=None,
 ) -> int:
     # Unchanged references already select their inventory. Only replaced boundaries
     # can retire files; they occupy disjoint directories (or the completed-years prefix).
@@ -658,9 +667,9 @@ def publish(
         else {}
     )
     if previous is not None:
-        old_files["source.manifest.json"] = digest(json_bytes(previous))
+        old_files["source.manifest.json"] = previous_source_sha256 or digest(json_bytes(previous))
     retained = {VALIDATOR_FILE: source["validator"]["sha256"]} if "validator" in source else {}
-    retained["source.manifest.json"] = digest(json_bytes(source))
+    retained["source.manifest.json"] = source_sha256 or digest(json_bytes(source))
     for kind, reference in source["boundaries"].items():
         relative = reference["manifest"]
         document = documents.get(relative)
@@ -680,7 +689,8 @@ def publish(
     for relative, content in outputs.items():
         # Compare the new output with the recorded digest, never with old bytes.
         # Explicit repair replaces every supplied payload, including equal hashes.
-        if old_files.get(relative) != digest(content) or (repair_payloads and relative in payloads):
+        content_sha256 = retained[relative] if relative == "source.manifest.json" else digest(content)
+        if old_files.get(relative) != content_sha256 or (repair_payloads and relative in payloads):
             changed.append((relative, content))
     notice = None
     existing = read_update(root)
@@ -691,6 +701,7 @@ def publish(
             notice = json_bytes(update)
     if handoff is not None:
         handoff["pending_update"] = update if update is not None else existing
+        handoff["source_sha256"] = retained["source.manifest.json"]
     # A completed equal output is already authoritative. DO NOT publish again
     # merely to acknowledge a retry or refresh a cache: that creates needless
     # downstream generations and work without changing data or its notice.
@@ -705,7 +716,13 @@ def publish(
     removals = {path: sha for path, sha in old_files.items() if path not in retained}
     journal = {
         "schema_version": VERSION,
-        "writes": [{"path": path, "sha256": digest(data)} for path, data in changed],
+        "writes": [
+            {
+                "path": path,
+                "sha256": retained[path] if path == "source.manifest.json" else digest(data),
+            }
+            for path, data in changed
+        ],
         "remove": removals,
         "update": {"sha256": digest(notice)} if notice is not None else None,
     }

@@ -26,6 +26,229 @@ from libs.alpaca_pricing_download.http import BarsClient
 
 
 class RetainedBatchTests(unittest.TestCase):
+    def test_each_suffix_stage_failure_preserves_every_successful_view(self):
+        for index, failed_view in enumerate(ADJUSTMENTS):
+            with self.subTest(failed_view=failed_view):
+                symbol = f"STAGE{index}"
+                download_pricing(self.store, symbol, "2026-10-15", client=FakeClient(self.old))
+                self.live[symbol] = {
+                    name: [*self.old, bar("2026-10-16", str(100 + offset))]
+                    for offset, name in enumerate(ADJUSTMENTS)
+                }
+                failed, successful = [], set()
+
+                def page(params):
+                    if params["start"][:10] == "2026-10-15":
+                        name = params["adjustment"]
+                        if name == failed_view and not failed:
+                            failed.append(True)
+                            raise DownloadError("injected suffix stage failure")
+                        self.assertNotIn(name, successful, "successful view repeated after peer failure")
+                        successful.add(name)
+                    return self.page(params)
+
+                with patch.object(self.client, "_get", side_effect=page):
+                    result = acquire.acquire_selected(
+                        self.store,
+                        [symbol],
+                        "2026-10-17",
+                        client=self.client,
+                        progress=self.observe,
+                        select_append_work=True,
+                    )
+                self.assertEqual(result["failed"], 0, result)
+                self.assertTrue(failed)
+                self.assertEqual(successful, set(ADJUSTMENTS))
+                published = read_pricing_views(self.store, symbol)
+                for offset, name in enumerate(ADJUSTMENTS):
+                    self.assertEqual(published[name][-1][4], str(100 + offset))
+
+    def test_repeated_boundary_failures_do_not_expire_the_completed_suffix(self):
+        from libs.alpaca_pricing_download.context import accept_context
+
+        context = accept_context(self.store)
+        successful = set()
+        for attempt in range(3):
+
+            def page(params):
+                if params["start"][:10] == "2026-10-15":
+                    self.assertNotIn(params["adjustment"], successful)
+                    successful.add(params["adjustment"])
+                elif attempt < 2:
+                    raise DownloadError("boundary remains unavailable")
+                return self.page(params)
+
+            with patch.object(self.client, "_get", side_effect=page):
+                result = acquire.acquire_selected(
+                    self.store,
+                    ["AAA"],
+                    "2026-10-17",
+                    client=self.client,
+                    context=context,
+                    progress=self.observe,
+                    select_append_work=True,
+                )
+            self.assertEqual(result["failed"], int(attempt < 2), result)
+        self.assertEqual(successful, {"raw", "all"})
+
+    def test_changed_suffix_cutoff_cannot_consume_a_shorter_completed_response(self):
+        from libs.alpaca_pricing_download.context import accept_context
+
+        context = accept_context(self.store)
+        suffixes = []
+        for attempt, cutoff in enumerate(("2026-10-17", "2026-10-20")):
+            if attempt:
+                for name in ADJUSTMENTS:
+                    self.live["AAA"][name].append(bar("2026-10-19"))
+
+            def page(params):
+                if params["start"][:10] == "2026-10-15":
+                    suffixes.append((params["adjustment"], params["end"][:10]))
+                elif not attempt:
+                    raise DownloadError("boundary unavailable for first cutoff")
+                return self.page(params)
+
+            with patch.object(self.client, "_get", side_effect=page):
+                result = acquire.acquire_selected(
+                    self.store,
+                    ["AAA"],
+                    cutoff,
+                    client=self.client,
+                    context=context,
+                    progress=self.observe,
+                    select_append_work=True,
+                )
+            self.assertEqual(result["failed"], int(not attempt), result)
+        self.assertEqual(
+            set(suffixes), {(name, day) for name in ("raw", "all") for day in ("2026-10-16", "2026-10-19")}
+        )
+        self.assertEqual(len(read_pricing_views(self.store, "AAA")["raw"]), 4)
+
+    def test_suffix_handoff_is_invalidated_by_a_changed_source_generation(self):
+        from libs.alpaca_pricing_download.context import accept_context
+
+        context = accept_context(self.store)
+        failed, suffix_raw = [], []
+
+        def page(params):
+            if params["start"][:10] == "2026-10-15" and params["adjustment"] == "raw":
+                suffix_raw.append(dict(params))
+            elif self.phase == "boundary_check" and not failed:
+                failed.append(True)
+                raise DownloadError("injected boundary failure")
+            return self.page(params)
+
+        with patch.object(self.client, "_get", side_effect=page):
+            first = acquire.acquire_selected(
+                self.store,
+                ["AAA"],
+                "2026-10-17",
+                client=self.client,
+                context=context,
+                progress=self.observe,
+                select_append_work=True,
+            )
+            self.assertEqual(first["failed"], 1)
+            changed = [self.old[0], {**self.old[1], "v": 12345}]
+            download_pricing(self.store, "AAA", "2026-10-15", client=FakeClient(changed), refresh_all=True)
+            self.live["AAA"] = {name: [*changed, {**bar("2026-10-16"), "v": 777}] for name in ADJUSTMENTS}
+            second = acquire.acquire_selected(
+                self.store,
+                ["AAA"],
+                "2026-10-17",
+                client=self.client,
+                context=context,
+                progress=self.observe,
+                select_append_work=True,
+            )
+        self.assertEqual(second["failed"], 0, second)
+        self.assertEqual(len(suffix_raw), 2)
+        self.assertEqual(read_pricing_views(self.store, "AAA")["raw"][-1][5], "777")
+
+    def test_full_acquisition_projects_endpoints_once_through_publication(self):
+        from libs.alpaca_pricing_download import adaptive
+
+        original = adaptive.endpoints_of
+        calls = []
+
+        def once(views):
+            self.assertFalse(calls, "completed acquisition endpoints projected again")
+            calls.append(views)
+            return original(views)
+
+        with patch.object(adaptive, "endpoints_of", side_effect=once):
+            result = acquire.acquire_selected(
+                self.store, ["AAA"], "2026-10-17", client=self.client, invalidate={"AAA"}, progress=self.observe
+            )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(len(calls), 1)
+
+    def test_suffix_partial_success_survives_selection_failure(self):
+        failed, raw = [], []
+
+        def page(params):
+            if params["start"][:10] == "2026-10-15":
+                if params["adjustment"] == "raw":
+                    self.assertFalse(raw, "successful raw suffix downloaded again")
+                    raw.append(dict(params))
+                elif self.phase == "append_work_selection" and not failed:
+                    failed.append(True)
+                    raise DownloadError("injected all suffix failure")
+            return self.page(params)
+
+        with patch.object(self.client, "_get", side_effect=page):
+            result = acquire.acquire_selected(
+                self.store,
+                ["AAA"],
+                "2026-10-17",
+                client=self.client,
+                progress=self.observe,
+                select_append_work=True,
+            )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(len(raw), 1)
+        self.assertTrue(failed)
+        self.assertEqual(len(read_pricing_views(self.store, "AAA")["all"]), 3)
+
+    def test_completed_suffix_survives_later_boundary_failure_in_same_context(self):
+        from libs.alpaca_pricing_download.context import accept_context
+
+        context = accept_context(self.store)
+        failed, successful = [], set()
+
+        def page(params):
+            if params["start"][:10] == "2026-10-15":
+                key = params["adjustment"]
+                self.assertNotIn(key, successful, "completed suffix downloaded again on retry")
+                successful.add(key)
+            elif self.phase == "boundary_check" and not failed:
+                failed.append(True)
+                raise DownloadError("injected boundary failure")
+            return self.page(params)
+
+        with patch.object(self.client, "_get", side_effect=page):
+            first = acquire.acquire_selected(
+                self.store,
+                ["AAA"],
+                "2026-10-17",
+                client=self.client,
+                context=context,
+                progress=self.observe,
+                select_append_work=True,
+            )
+            self.assertEqual(first["failed"], 1)
+            second = acquire.acquire_selected(
+                self.store,
+                ["AAA"],
+                "2026-10-17",
+                client=self.client,
+                context=context,
+                progress=self.observe,
+                select_append_work=True,
+            )
+        self.assertEqual(second["failed"], 0, second)
+        self.assertEqual(successful, {"raw", "all"})
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -72,6 +295,64 @@ class RetainedBatchTests(unittest.TestCase):
             client=self.client,
             progress=self.observe,
         )
+
+    def test_empty_suffix_selection_does_not_check_or_advance_retained_history(self):
+        before = snapshot(self.store)
+        for views in self.live.values():
+            for name in ADJUSTMENTS:
+                views[name] = copy.deepcopy(self.old)
+        with patch.object(acquire, "read_validator", side_effect=AssertionError("validator read")):
+            result = acquire.acquire_selected(
+                self.store,
+                self.symbols,
+                "2026-10-17",
+                client=self.client,
+                progress=self.observe,
+                select_append_work=True,
+            )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual({item["status"] for item in result["results"]}, {"not_selected"})
+        self.assertEqual(result["requests"]["append_work_candidates"], 4)
+        self.assertEqual(result["requests"]["append_work_selected"], 0)
+        self.assertEqual(result["requests"]["append_work_skipped"], 4)
+        self.assertEqual(len(self.pages), 2)
+        self.assertEqual({params["adjustment"] for _, params in self.pages}, {"raw", "all"})
+        self.assertTrue(all(stage == "append_work_selection" for stage, _ in self.pages))
+        self.assertEqual(snapshot(self.store), before)
+
+    def test_positive_suffix_is_consumed_once_after_retained_approval(self):
+        selected = []
+
+        def accepted(symbols):
+            selected.append(symbols)
+            self.assertEqual(len(self.pages), 2)
+            self.assertTrue(all(stage == "append_work_selection" for stage, _ in self.pages))
+
+        result = acquire.acquire_selected(
+            self.store,
+            self.symbols,
+            "2026-10-17",
+            client=self.client,
+            progress=self.observe,
+            select_append_work=True,
+            on_append_work_selected=accepted,
+        )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(result["requests"]["append_work_candidates"], 4)
+        self.assertEqual(result["requests"]["append_work_selected"], 4)
+        self.assertEqual(result["requests"]["append_work_skipped"], 0)
+        self.assertEqual(selected, [set(self.symbols)])
+        self.assertEqual(len(self.pages), 4)
+        suffix = [(stage, params) for stage, params in self.pages if stage == "append_work_selection"]
+        self.assertEqual(len(suffix), 2)
+        self.assertEqual({params["adjustment"] for _, params in suffix}, {"raw", "all"})
+        self.assertTrue(all(stage == "append_work_selection" for stage, _ in suffix))
+        boundary = [(stage, params) for stage, params in self.pages if stage == "boundary_check"]
+        self.assertEqual(len(boundary), 2)
+        self.assertTrue(all(stage == "boundary_check" for stage, _ in boundary))
+        for item in result["results"]:
+            self.assertEqual(item["status"], "published")
+            self.assertEqual(len(read_pricing_views(self.store, item["symbol"])["all"]), 3)
 
     def test_retained_failures_do_not_keep_completed_responses_across_cohorts(self):
         selected = {}

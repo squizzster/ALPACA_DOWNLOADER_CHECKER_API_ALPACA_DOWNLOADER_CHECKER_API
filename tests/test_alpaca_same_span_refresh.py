@@ -57,7 +57,12 @@ class SameSpanRefreshTests(unittest.TestCase):
         shutil.copytree(self.base, self.store)
         self.calls = []
         self.live = {
-            "AAA": [bar("2026-10-01", "456"), {**bar("2026-10-13"), "v": 42}, bar("2026-10-15")],
+            "AAA": [
+                bar("2026-10-01", "456"),
+                bar("2026-10-02"),
+                {**bar("2026-10-13"), "v": 42},
+                bar("2026-10-15"),
+            ],
             "BBB": [{**bar("2026-10-13"), "v": 42}, bar("2026-10-15")],
             "CCC": copy.deepcopy(self.rows),
         }
@@ -97,7 +102,8 @@ class SameSpanRefreshTests(unittest.TestCase):
             p for p in self.calls if (timestamp(p["end"]) - timestamp(p["start"])).total_seconds() >= 86400
         ]
         self.assertEqual(
-            {(p["symbols"], p["start"][:10]) for p in histories}, {("AAA", "2026-10-01"), ("BBB", "2026-10-03")}
+            {(p["symbols"], p["start"][:10]) for p in histories},
+            {("AAA", "2026-10-01"), ("AAA", "2026-10-02"), ("BBB", "2026-10-03"), ("CCC", "2026-10-02")},
         )
         self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
         for name in ("AAA", "BBB"):
@@ -107,7 +113,7 @@ class SameSpanRefreshTests(unittest.TestCase):
                 self.assertEqual(source["latest_request"][key], previous[name]["latest_request"][key])
             self.assertFalse((self.store / f"end_of_day/manifests/{name}/update.json").exists())
         rows = read_pricing_views(self.store, "AAA")["all"]
-        self.assertEqual([row[0][:10] for row in rows], ["2026-10-01", "2026-10-13"])
+        self.assertEqual([row[0][:10] for row in rows], ["2026-10-01", "2026-10-02", "2026-10-13"])
         self.assertEqual(rows[0][1], "456")
         self.assertEqual(
             {row["symbol"]: row["last_all"][5] for row in summary.read_snapshot(self.store)["entries"]},

@@ -1,0 +1,2 @@
+public_id,event_id,effective_date,old_shares,new_shares,event_type,source
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,synthetic-event-1,2024-01-04,1,3,forward_split,Synthetic example only

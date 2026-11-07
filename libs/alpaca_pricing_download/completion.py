@@ -4,15 +4,16 @@ import os
 import uuid
 from pathlib import Path
 
-from .contract import VERSION, json_bytes
+from .contract import json_bytes
 from .storage import read_document, regular_path, write_file
 from .update_checks import read_checks
 
 COMPLETION_FILE = "download_completion.json"
+REQUEST_VERSION = 31  # A completed acquisition does not owe a later comparison-tail migration.
 
 
 def request_key(symbols, end, start):
-    return {"version": VERSION, "symbols": symbols, "end_exclusive": end, "from": start}
+    return {"version": REQUEST_VERSION, "symbols": symbols, "end_exclusive": end, "from": start}
 
 
 def completed_batch(store, request):

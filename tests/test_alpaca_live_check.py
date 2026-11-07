@@ -36,11 +36,22 @@ def entry(symbol, day="2026-10-14", asof="2026-10-15"):
         "end_exclusive": "2026-10-15T00:00:00Z",
         "last_all": [str(values[key]) for key in FIELDS],
         "first_all": [str(values[key]) for key in FIELDS],
+        "tail_all": [[str(values[key]) for key in FIELDS]],
+        "tail_version": 32,
     }
 
 
 def snapshot(*entries):
-    return {"entries": list(entries), "sha256": "a" * 64, "token": ("epoch", 1)}
+    # These transport fixtures contain one or two stored rows. Publish their
+    # complete short tail, including tests that replace the first observation.
+    entries = copy.deepcopy(list(entries))
+    for value in entries:
+        value["tail_all"] = (
+            [value["first_all"]]
+            if value["first_all"] == value["last_all"]
+            else [value["first_all"], value["last_all"]]
+        )
+    return {"entries": entries, "sha256": "a" * 64, "token": ("epoch", 1)}
 
 
 class LiveCheckTests(unittest.TestCase):
@@ -269,6 +280,8 @@ class LiveCheckTests(unittest.TestCase):
                 "missing": 1,
                 "failed": 0,
                 "request_failures": 0,
+                "latest_session": 0,
+                "full_history": 2,
             },
         )
         self.assertFalse(result["complete"])

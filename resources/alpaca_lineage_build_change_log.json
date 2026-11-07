@@ -305,5 +305,22 @@
     "modifications": [
       "Estimate adaptive pricing acquisition minima from raw/all requests while retaining eight-view action and dense-history budgets until dependent observations select the remaining work. Preserve compact planning and all lineage ownership, continuation and publication rules."
     ]
+  },
+  {
+    "modifications": [
+      "Carry pricing's accepted unchanged prefix across resolved multi-member, structural and initially empty lineage histories. Evaluate only added rows while preserving completed assignments; select complete-group history only for changed mappings/actions/policy/prices, incompatible handoffs or new group rows that can reconsider accepted unresolved decisions.",
+      "Continue compatible per-member metadata from completed symbol/CUSIP observations and prefetch exact labels only for refresh or sources with possible new rows. Ask the pricing owner to select lagging dependency work from its missing suffix, persist acquisition only for provider-selected members while retaining complete group scope, and trace evidence and dependency selection reasons from completed handoffs."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry the pricing producer's first/tail comparison through daily maintenance and persist latest-session correction scope, cause, generation, mapping and completed observations in unfinished obligations. Recognized legacy tails upgrade through the pricing owner; old correction obligations without sufficient cause retain their replacement scope. Work estimates and debug evidence project applicable durable decisions, selected corrections and publications without reopening source metadata.",
+      "Reuse resolved assignments before a certified latest-session correction and correlate the corrected session and appended rows only. Assemble the affected assignment partition from its accepted prefix; retain broader reconciliation for changed evidence, unresolved ownership, incompatible ancestry or policy changes."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry the selected pricing source generation and completed correction-scope decision, including negative decisions, through locked prefix planning, payload loading and broader reconciliation without rehashing or recomputing them."
+    ]
   }
 ]

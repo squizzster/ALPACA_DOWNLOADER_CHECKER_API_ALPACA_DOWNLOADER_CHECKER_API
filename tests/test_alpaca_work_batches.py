@@ -78,7 +78,8 @@ class WorkBatchTests(unittest.TestCase):
             policy.require_dependencies({"AAA", "BBB"}, "2026-10-20", {"BBB"})
         connect.assert_called_once()
         saved = state.read_state(self.store)["work"]
-        self.assertEqual(saved["AAA"]["required_group"], ["AAA", "BBB"])
+        self.assertNotIn("AAA", saved)
+        self.assertEqual(saved["BBB"]["required_group"], ["AAA", "BBB"])
         self.assertTrue(saved["BBB"]["acquire"])
 
     def test_batch_rejects_another_store_thread_or_process(self):

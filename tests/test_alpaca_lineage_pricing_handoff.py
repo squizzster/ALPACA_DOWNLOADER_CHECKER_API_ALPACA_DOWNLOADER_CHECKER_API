@@ -81,6 +81,181 @@ class CompletedPricingHandoffTests(unittest.TestCase):
         self.assertEqual(actions, [("CURRENT", "2026-12-01", "2027-01-05")])
         self.assertEqual(symbols, ["CURRENT"])
 
+    def test_metadata_plan_does_not_exact_lookup_a_retained_label_without_new_rows(self):
+        previous = {
+            "anchor_month": "2026-12",
+            "versions": versions(),
+            "evidence": {
+                "queried_symbols": ["RETIRED"],
+                "asset_lookups": [
+                    {
+                        "lookup": "RETIRED",
+                        "lookup_kind": "symbol",
+                        "outcome": "not_found",
+                        "http_status": 404,
+                    }
+                ],
+            },
+        }
+        index = {
+            "symbols": {
+                "RETIRED": {
+                    "source_sha256": "a" * 64,
+                    "dependencies": [],
+                    "asset_ids": [],
+                    "group_members": ["RETIRED"],
+                    "projection": {
+                        "pricing_request": {
+                            "history_start": "2016-01-01T00:00:00Z",
+                            "end_exclusive": "2026-12-31T00:00:00Z",
+                            "asof": "2026-12-31",
+                        }
+                    },
+                }
+            }
+        }
+        handoff = {
+            "RETIRED": {
+                "source_sha256": "b" * 64,
+                "mode": "append",
+                "changed": True,
+                "added_rows": dict.fromkeys(
+                    (
+                        "raw",
+                        "split",
+                        "dividend",
+                        "split,dividend",
+                        "spin-off",
+                        "split,spin-off",
+                        "dividend,spin-off",
+                        "all",
+                    ),
+                    0,
+                ),
+                "request": {
+                    "start": "2026-12-31T00:00:00Z",
+                    "end_exclusive": "2027-01-05T00:00:00Z",
+                    "asof": "2027-01-05",
+                },
+            }
+        }
+        actions, symbols = [], []
+        client = SimpleNamespace(
+            supports_plans=True,
+            prefetch_corporate_actions=lambda requests: actions.extend(requests),
+            prefetch_symbols=lambda requests: symbols.extend(requests),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            _prefetch_metadata(
+                Path(directory),
+                ["RETIRED"],
+                index,
+                DependencyGraph(index["symbols"]),
+                client,
+                False,
+                SimpleNamespace(read=lambda symbol: previous),
+                end_date="2027-01-05",
+                pricing_handoff=handoff,
+            )
+        self.assertEqual(actions, [("RETIRED", "2026-12-01", "2027-01-05")])
+        self.assertEqual(symbols, [])
+
+    def test_empty_dependency_suffix_selects_no_persistent_work(self):
+        members = ("CURRENT", "RETIRED")
+        inactive = {
+            "id": "retired-id",
+            "symbol": "RETIRED",
+            "class": "us_equity",
+            "exchange": "NYSE",
+            "name": "Retired",
+            "status": "inactive",
+            "tradable": False,
+        }
+        index = {
+            "symbols": {
+                symbol: {
+                    "source_sha256": ("a" if symbol == "CURRENT" else "b") * 64,
+                    "dependencies": [other for other in members if other != symbol],
+                    "asset_ids": [symbol.lower() + "-id"],
+                    "group_members": list(members),
+                    "projection": {
+                        "pricing_request": {
+                            "history_start": "2016-01-01T00:00:00Z",
+                            "end_exclusive": "2026-10-20T00:00:00Z",
+                            "asof": "2026-10-20",
+                        },
+                        "processed_through": "2026-10-20T00:00:00Z",
+                        "source_rows": 0,
+                        "unresolved_rows": 0,
+                        "symbol_lookups": [
+                            {
+                                "lookup": symbol,
+                                "lookup_kind": "symbol",
+                                "outcome": "found",
+                                "http_status": 200,
+                                "asset": inactive
+                                if symbol == "RETIRED"
+                                else {
+                                    **inactive,
+                                    "id": "current-id",
+                                    "symbol": "CURRENT",
+                                    "name": "Current",
+                                    "status": "active",
+                                    "tradable": True,
+                                },
+                            }
+                        ],
+                    },
+                }
+                for symbol in members
+            }
+        }
+        handoff = {
+            "CURRENT": {
+                "symbol": "CURRENT",
+                "source_sha256": "c" * 64,
+                "mode": "append",
+                "status": "updated",
+                "changed": True,
+                "request": {
+                    "start": "2026-10-20T00:00:00Z",
+                    "end_exclusive": "2026-10-21T00:00:00Z",
+                    "asof": "2026-10-21",
+                },
+            }
+        }
+        acquired = {
+            "results": [
+                {
+                    "symbol": "RETIRED",
+                    "status": "not_selected",
+                    "source_sha256": "b" * 64,
+                    "append_work_selection": {"end_exclusive": "2026-10-21T00:00:00+00:00"},
+                }
+            ],
+            "requests": {"append_work_candidates": 1, "append_work_skipped": 1},
+            "failed": 0,
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("libs.alpaca_lineage_build.pipeline.acquire_selected", return_value=acquired) as acquire,
+        ):
+            empty_suffixes = set()
+            result = _catch_up_published_dependencies(
+                Path(directory),
+                ["CURRENT"],
+                index,
+                DependencyGraph(index["symbols"]),
+                type("PricingOwner", (), {"execute_plan": lambda self, plan: None})(),
+                end_date="2026-10-21",
+                pricing_handoff=handoff,
+                empty_suffixes=empty_suffixes,
+            )
+        self.assertEqual(result["requested"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertTrue(acquire.call_args.kwargs["select_append_work"])
+        self.assertEqual(empty_suffixes, {("RETIRED", "b" * 64, "2026-10-21")})
+
     def test_dependency_plan_consumes_published_ranges_without_opening_ticker_storage(self):
         for previous_end, published_end in (
             ("2026-10-20", "2026-10-21"),
@@ -149,3 +324,4 @@ class CompletedPricingHandoffTests(unittest.TestCase):
                 self.assertEqual(result["failed"], 0)
                 self.assertEqual(result["requested"], 1)
                 self.assertEqual(acquire.call_args.args[1:3], (["RELATED"], published_end))
+                self.assertTrue(acquire.call_args.kwargs["select_append_work"])

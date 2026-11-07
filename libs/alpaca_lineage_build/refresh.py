@@ -4,6 +4,8 @@ from libs.alpaca_pricing_download.acquire import MeasuredRequests
 from libs.alpaca_pricing_download.append import select_append_sources
 from libs.alpaca_pricing_download.check_summary import assert_current, describe
 from libs.alpaca_pricing_download.contract import DownloadError
+from libs.alpaca_pricing_download.endpoints import EndpointSelection, HistoryComparison
+from libs.alpaca_pricing_download.history_tail import upgrade_legacy_entries
 from libs.alpaca_pricing_download.live_check import verify
 from libs.alpaca_pricing_download.refresh import (
     check_retained_source,
@@ -40,7 +42,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
         try:
             if progress:
                 progress("required_history", {"symbol": symbol, "state": "checking"})
-            selected = check_retained_source(store, symbol, end_date, client=pricing_client)
+            selected = check_retained_source(store, symbol, end_date, client=pricing_client, pending=item)
         except (RuntimeError, OSError, ValueError) as error:
             work_policy.fail({symbol}, error, stage="history_check")
             continue
@@ -102,6 +104,9 @@ def refresh_existing(
     with storage.publication_lock(context.accept_store().root):
         selected_index = context.select_index(context.accept_store().root)
     accepted_generations = {s: entry["source_sha256"] for s, entry in selected_index["symbols"].items()}
+    accepted_generations.update(
+        (entry["symbol"], entry["source_sha256"]) for entry in snapshot["entries"] if entry.get("source_sha256")
+    )
 
     def in_scope(entry):
         return (
@@ -109,6 +114,16 @@ def refresh_existing(
             and (not end_date or entry["end_exclusive"][:10] <= end_date)
             and (work_policy is None or work_policy.allowed({entry["symbol"]}))
         )
+
+    legacy = [entry for entry in snapshot["entries"] if in_scope(entry) and entry.get("tail_all") is None]
+    if legacy:
+        assert_current(store, snapshot["token"])
+        upgraded = upgrade_legacy_entries(store, legacy, progress=progress)
+        snapshot = context.select_summary()
+        # Metadata-only generations preserve all pricing observations. Carry
+        # their newly published generation into selection; do not recalculate
+        # historical lineage merely to install a comparison tail.
+        accepted_generations.update((symbol, value["source_sha256"]) for symbol, value in upgraded.items())
 
     compared = {}
     if context.history_checks or context.history_comparisons:
@@ -192,6 +207,9 @@ def refresh_existing(
     def accept_publication_snapshot(ready, index):
         current = {entry["symbol"]: entry for entry in ready["entries"]}
         current_generations = {s: item["source_sha256"] for s, item in index["symbols"].items()}
+        current_generations.update(
+            (symbol, entry["source_sha256"]) for symbol, entry in current.items() if entry.get("source_sha256")
+        )
         # Reconciliation may advance dependencies without reporting them as
         # replacements. Invalidate against the refreshed compact selectors,
         # not just the producer's list of explicitly replaced members.
@@ -293,17 +311,63 @@ def refresh_existing(
             work_policy.require_maintenance(candidates, end_date)
         if register_discoveries is not None:
             register_discoveries(entry["symbol"] for entry in candidates)
-        selected_snapshot = {**snapshot, "entries": [e for e in candidates if e["symbol"] not in compared]}
         required = {
             e["symbol"]
             for e in candidates
             if work_policy is not None and work_policy.work.get(e["symbol"], {}).get("required_history_check")
         }
+        source_selections = {}
         selected_sources = (
-            select_append_sources(store, candidates, end_date, required_symbols=required)
+            select_append_sources(
+                store, candidates, end_date, required_symbols=required, selections=source_selections
+            )
             if on_ready or required
             else {}
         )
+        durable_selections = {}
+        full_obligations, completed_corrections = set(), set()
+        for entry in candidates:
+            symbol = entry["symbol"]
+            work = work_policy.work.get(symbol, {}) if work_policy else {}
+            contract = work.get("pricing_correction")
+            correction_id = work.get("correction_id")
+            if contract is not None and (
+                contract.get("schema_version") != 1
+                or contract.get("scope") not in ("latest_session", "full_history")
+            ):
+                raise DownloadError("unsupported durable correction; owning recovery required")
+            if correction_id and source_selections.get(symbol, {}).get("history_correction_id") == correction_id:
+                completed_corrections.add(symbol)
+                continue
+            if correction_id and (
+                contract is None or contract.get("scope") == "full_history" or work.get("invalidate_pricing")
+            ):
+                if contract is not None and contract.get("schema_version") != 1:
+                    raise DownloadError("unsupported durable correction; owning recovery required")
+                full_obligations.add(symbol)
+                continue
+            if not contract or contract.get("scope") != "latest_session" or work.get("invalidate_pricing"):
+                continue
+            if contract.get("schema_version") != 1 or not contract.get("selection"):
+                raise DownloadError("invalid durable latest-session correction; owning recovery required")
+            selection = EndpointSelection.from_document(contract["selection"])
+            generation = selected_sources.get(symbol, accepted_generations.get(symbol))
+            if (
+                entry["end_exclusive"] == contract.get("comparison_end_exclusive", contract["end_exclusive"])
+                and entry["asof"] == (selection.comparison_asof or selection.asof)
+                and selection.applies(store, symbol, generation, contract["end_exclusive"], contract["asof"])
+            ):
+                durable_selections[symbol] = selection
+                compared[symbol] = selection.comparison
+                context.history_comparisons[symbol] = (dict(entry), generation, selection.comparison)
+        selected_snapshot = {
+            **snapshot,
+            "entries": [
+                e
+                for e in candidates
+                if e["symbol"] not in compared and e["symbol"] not in full_obligations | completed_corrections
+            ],
+        }
         assert_current(store, snapshot["token"])
         if progress:
             progress("checking", {"tickers": len(candidates)})
@@ -346,8 +410,9 @@ def refresh_existing(
                     last_session=entry["last_all"][0],
                 )
             if symbol in completed and generation is not None:
-                context.history_comparisons[symbol] = (dict(entry), generation, symbol in differing)
-                compared[symbol] = symbol in differing
+                decision = HistoryComparison(**handoff["comparisons"][symbol])
+                context.history_comparisons[symbol] = (dict(entry), generation, decision)
+                compared[symbol] = decision
                 if symbol in matched:
                     generations[symbol] = generation
             if (
@@ -373,21 +438,41 @@ def refresh_existing(
                 f"live check incomplete: {handoff['stats']['missing']} missing, "
                 f"{handoff['stats']['failed']} failed; no replacements started"
             )
-        differing = {entry["symbol"] for entry in candidates if compared.get(entry["symbol"])}
+        differing = {
+            entry["symbol"]
+            for entry in candidates
+            if entry["symbol"] in compared and not compared[entry["symbol"]].matched
+        }
         required_corrections = {
             entry["symbol"]
             for entry in candidates
             if work_policy is not None and work_policy.work.get(entry["symbol"], {}).get("correction_id")
         }
-        prepared = prepare_refresh(store, differing | required_corrections)
+        prepared = prepare_refresh(
+            store,
+            differing | required_corrections,
+            comparisons={
+                symbol: decision
+                for symbol, decision in compared.items()
+                if symbol in differing | required_corrections
+                and symbol not in full_obligations | completed_corrections
+            },
+            approved_generations={symbol: context.history_comparisons[symbol][1] for symbol in compared},
+            selections=durable_selections,
+            end_date=end_date if on_ready is not None else None,
+            correction_ids={
+                symbol: work_policy.work[symbol]["correction_id"] for symbol in completed_corrections
+            },
+        )
         if work_policy is not None:
             prepared = [
                 item
                 for item in prepared
                 if item["symbol"] in differing
+                or item.get("completed_correction")
                 or item["history_correction_id"] != work_policy.work[item["symbol"]]["correction_id"]
             ]
-            work_policy.require_correction(prepared)
+            work_policy.require_correction([item for item in prepared if not item.get("completed_correction")])
         assert_current(store, snapshot["token"])
         selected = replace_and_reconcile(prepared, snapshot["token"])
         if pricing["failed"] or lineage["failed"]:

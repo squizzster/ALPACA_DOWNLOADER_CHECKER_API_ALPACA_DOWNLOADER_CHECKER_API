@@ -28,7 +28,7 @@ from . import (
 )
 from .standalone import _date
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 GIB = 1024**3
 FIELDS = ("open", "high", "low", "close", "volume", "trade_count", "vwap")
 PREFIXES = dict(
@@ -258,7 +258,14 @@ def _prepare_identity(data, security, views, start, end, memory_bytes):
             "requested_range": _range(start, end),
             "rows": len(raw),
             "csv": {"file": csv_name, "sha256": output.digest.hexdigest(), "bytes": output.bytes},
-            "security": security.to_dict(),
+            "security": {
+                **security.to_dict(),
+                # The opened catalogue already selected the dated labels from
+                # all approved views. Carry that handoff intact, including for
+                # date-filtered exports; do not reconstruct it from price rows
+                # or broader ownership evidence.
+                "ticker_ranges": data._records[public_id]["public"]["ticker_ranges"],
+            },
         }
         entry = {
             "csv": f"{public_id}/{csv_name}",

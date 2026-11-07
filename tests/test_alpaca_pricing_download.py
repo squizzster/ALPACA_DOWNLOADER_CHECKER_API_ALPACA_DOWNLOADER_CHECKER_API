@@ -142,7 +142,7 @@ class PricingDownloadTests(unittest.TestCase):
         self.assertEqual(result["updated_boundaries"], ["current_month"])
         self.assertEqual(len(client.calls), 4)
         self.assertEqual([call[1] for call in client.calls[:2]], ["all", "all"])
-        self.assertEqual({call[2].date().isoformat() for call in client.calls[:2]}, {"2016-01-04", "2026-10-01"})
+        self.assertEqual({call[2].date().isoformat() for call in client.calls[:2]}, {"2016-01-04", "2025-12-31"})
         self.assertTrue(all(call[2] == timestamp("2026-10-14T00:00:00Z") for call in client.calls[2:]))
         self.assertEqual(set(client.asofs), {"2026-10-15"})
         for relative in before:
@@ -290,13 +290,32 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertFalse(result["changed"])
                 self.assertEqual(len(client.calls), 4)
 
-    def test_only_endpoints_are_probed_not_the_last_five_sessions(self):
+    def test_short_history_uses_first_request_and_one_nonoverlapping_tail_request(self):
         rows = [bar(f"2026-10-{day:02d}") for day in (1, 2, 5, 6, 7, 8, 9, 12, 13)]
         self.run_download(bars=rows)
         client, result = self.run_download("2026-10-15", bars=rows)
         self.assertEqual(result["consistency_check"], "matched")
         starts = {call[2] for call in client.calls[:2]}
-        self.assertEqual(starts, {timestamp("2026-10-01T04:00:00Z"), timestamp("2026-10-13T04:00:00Z")})
+        self.assertEqual(starts, {timestamp("2026-10-01T04:00:00Z"), timestamp("2026-10-02T04:00:00Z")})
+        self.assertEqual(client.calls[0][3], timestamp("2026-10-02T04:00:00Z"))
+        self.assertEqual(client.calls[1][3], timestamp("2026-10-14T04:00:00Z"))
+        self.assertEqual(len(client.calls), 4)  # Two comparisons plus raw/all missing-session acquisition.
+
+    def test_long_history_second_request_selects_exactly_latest_ten_stored_sessions(self):
+        days = ("2026-09-28", "2026-09-29", "2026-09-30") + tuple(
+            f"2026-10-{day:02d}" for day in (1, 2, 5, 6, 7, 8, 9, 12, 13)
+        )
+        rows = [bar("2016-01-04")] + [bar(day) for day in days]
+        self.run_download(bars=rows)
+        client, result = self.run_download("2026-10-15", bars=rows)
+        self.assertEqual(result["consistency_check"], "matched")
+        self.assertEqual(
+            client.calls[0][2:4], (timestamp("2016-01-04T05:00:00Z"), timestamp("2016-01-05T05:00:00Z"))
+        )
+        self.assertEqual(
+            client.calls[1][2:4], (timestamp("2026-09-30T04:00:00Z"), timestamp("2026-10-14T04:00:00Z"))
+        )
+        self.assertEqual(len(client.calls), 4)
 
     def test_last_session_comes_from_authoritative_month_not_stale_year(self):
         self.run_download()
@@ -304,7 +323,8 @@ class PricingDownloadTests(unittest.TestCase):
         self.run_download("2026-10-15", bars=updated)
         client, result = self.run_download("2026-10-16", bars=updated)
         self.assertEqual(result["mode"], "update")
-        self.assertEqual({call[2] for call in client.calls[1:2]}, {timestamp("2026-10-14T04:00:00Z")})
+        self.assertEqual(client.calls[1][2], timestamp("2025-12-31T05:00:00Z"))
+        self.assertEqual(client.calls[1][3], timestamp("2026-10-15T04:00:00Z"))
 
     def test_empty_active_month_uses_year_or_completed_endpoints(self):
         for offset, rows in enumerate((self.bars[:-1], self.bars[:2])):
@@ -312,12 +332,13 @@ class PricingDownloadTests(unittest.TestCase):
                 self.run_download(f"2026-10-{14 + offset:02d}", bars=rows, refresh_all=True)
                 client, result = self.run_download(f"2026-10-{15 + offset:02d}", bars=rows)
                 self.assertEqual(result["consistency_check"], "matched")
-                self.assertEqual(client.calls[1][2].date(), timestamp(rows[-1]["t"]).date())
+                self.assertEqual(client.calls[1][2].date(), timestamp(rows[1]["t"]).date())
+                self.assertEqual(client.calls[1][3].date(), timestamp(rows[-1]["t"]).date() + timedelta(days=1))
 
     def test_missing_endpoint_fails_without_replacing_accepted_history(self):
         self.run_download()
         before = snapshot(self.store)
-        with self.assertRaisesRegex(DownloadError, "endpoint missing"):
+        with self.assertRaisesRegex(DownloadError, "missing live history comparison session"):
             self.run_download("2026-10-15", bars=self.bars[1:])
         self.assertEqual(snapshot(self.store), before)
 

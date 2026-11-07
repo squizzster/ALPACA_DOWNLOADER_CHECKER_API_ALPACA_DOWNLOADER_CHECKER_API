@@ -34,7 +34,7 @@ class PublishedPricingDispositionTests(unittest.TestCase):
                 self.run_download(bars=self.bars if populated else [])
                 before = fixtures.snapshot(self.root)
                 view = self.view()
-                self.assertEqual(view.source["schema_version"], 31)
+                self.assertEqual(view.source["schema_version"], 32)
                 expected = "historical_market_data_only" if populated else "unsupported_empty_symbol"
                 self.assertNotIn("pipeline_receipt_matches", view.local["downloads"][0])
                 with (

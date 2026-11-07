@@ -8,11 +8,12 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download import check_summary
 from libs.alpaca_pricing_download.append import MAX_SYMBOLS, _cohorts, append_needs
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, HISTORY_START, timestamp
+from libs.alpaca_pricing_download.download import _endpoint_window, acquisition_asof
 from libs.alpaca_pricing_download.live_check import plan as check_plan
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import load_labels
 from libs.alpaca_security_lineage.lineage import compact_asset
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import event, traced
 from libs.common.provider_http import balanced_batches
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 from libs.common.work_scope import compact_selection
@@ -65,6 +66,7 @@ def boundaries(store, registry, *, context=None):
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
     serving = serving_controls(store) if context is None else context.select_serving()
     return {
+        "store": str(store.absolute()),
         "index": index,
         "summary": summary,
         "checks": checks,
@@ -286,6 +288,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             "attempts": prior.get("attempts", 0),
             "required_history_check": unfinished and prior.get("required_history_check", False),
             "correction_id": prior.get("correction_id") if unfinished else None,
+            "pricing_correction": prior.get("pricing_correction") if unfinished else None,
             "required_group": sorted(required_group),
             "acquire": entry is None
             or invalidate
@@ -367,11 +370,110 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         for entry in summary["entries"]
         if entry["end_exclusive"][:10] <= end_date and entry["symbol"] not in deferred
     ]
-    history = check_plan({**summary, "entries": eligible})
-    append, _ = append_needs(eligible, timestamp(end_date + "T00:00:00Z"))
-    initial, empty = [], []
+    eligible_by_symbol = {entry["symbol"]: entry for entry in eligible}
+    corrections, reused_comparisons, completed_corrections = {}, set(), set()
     for symbol, item in selection["work"].items():
-        if not item["acquire"] or symbol in deferred:
+        if symbol in deferred or not item.get("correction_id"):
+            continue
+        indexed = accepted["index"]["symbols"].get(symbol, {})
+        entry = eligible_by_symbol.get(symbol, {})
+        projection = indexed.get("projection", {})
+        if (
+            projection.get("history_correction_id") == item["correction_id"]
+            and entry.get("source_sha256")
+            and entry["source_sha256"] == indexed.get("source_sha256")
+        ):
+            completed_corrections.add(symbol)
+            continue
+        contract = item.get("pricing_correction") or {}
+        if contract.get("scope") != "latest_session" or item.get("invalidate_pricing"):
+            corrections[symbol] = "full_history"
+            reused_comparisons.add(symbol)
+            continue
+        selected = contract.get("selection") or {}
+        if (
+            selected.get("store") == accepted.get("store")
+            and selected.get("symbol") == symbol
+            and selected.get("end") == contract.get("end_exclusive")
+            and selected.get("asof") == contract.get("asof")
+            and entry.get("source_sha256") == contract.get("source_sha256") == selected.get("generation")
+            and entry.get("source_sha256")
+            and entry.get("asof") == (selected.get("comparison_asof") or selected.get("asof"))
+            and entry.get("end_exclusive")
+            == contract.get("comparison_end_exclusive", contract.get("end_exclusive"))
+        ):
+            corrections[symbol] = selected["comparison"]["decision"]
+            reused_comparisons.add(symbol)
+    # These are projections of completed work, not new acceptance decisions.
+    # Source-only completion IDs remain conditional until selected execution;
+    # planning must not open manifests merely to sharpen this estimate.
+    check_entries = [
+        entry for entry in eligible if entry["symbol"] not in reused_comparisons | completed_corrections
+    ]
+    legacy_tails = [entry for entry in eligible if entry.get("tail_all") is None]
+    history = check_plan(
+        {**summary, "entries": [entry for entry in check_entries if entry.get("tail_all") is not None]}
+    )
+    target = timestamp(end_date + "T00:00:00Z")
+    frozen_targets = {
+        symbol: min(target, timestamp(selection["work"][symbol]["pricing_correction"]["end_exclusive"]))
+        for symbol, scope in corrections.items()
+        if scope == "latest_session"
+    }
+    append, _ = append_needs(
+        eligible,
+        target,
+        end_by_symbol={entry["symbol"]: frozen_targets.get(entry["symbol"], target) for entry in eligible},
+    )
+    combined_corrections = set(frozen_targets) & {need["symbols"][0] for need in append}
+    for symbol, frozen in frozen_targets.items():
+        if frozen < target:
+            contract = selection["work"][symbol]["pricing_correction"]
+            append.append(
+                {
+                    "kind": "bars",
+                    "why": "append_after_frozen_correction",
+                    "symbols": [symbol],
+                    "adjustments": list(ADJUSTMENTS),
+                    "asof": acquisition_asof(
+                        {
+                            "latest_request": {
+                                "asof": contract["asof"],
+                                "end_exclusive": contract["end_exclusive"],
+                            }
+                        },
+                        target,
+                    ),
+                    "ranges": [{"start": frozen.isoformat(), "end_exclusive": target.isoformat()}],
+                }
+            )
+    initial, empty, correction_needs = [], [], []
+    for symbol, scope in corrections.items():
+        if scope == "unchanged":
+            continue
+        item = selection["work"][symbol]
+        contract = item.get("pricing_correction") or {}
+        projection = accepted["index"]["symbols"].get(symbol, {}).get("projection", {})
+        request = projection.get("pricing_request") or {}
+        entry = eligible_by_symbol.get(symbol, {})
+        end = entry.get("end_exclusive") or contract.get("end_exclusive") or request["end_exclusive"]
+        asof = entry.get("asof") or contract.get("asof") or request["asof"]
+        start = request.get("history_start") or contract.get("start") or HISTORY_START
+        if scope == "latest_session":
+            start, finish = _endpoint_window(entry["last_all"], asof, cutoff=timestamp(end))
+            start, end = start.isoformat(), finish.isoformat()
+        correction_needs.append(
+            {
+                "kind": "bars",
+                "why": "latest_session_correction" if scope == "latest_session" else "retained_replacement",
+                "symbols": [symbol],
+                "adjustments": [name for name in ADJUSTMENTS if scope != "latest_session" or name != "all"],
+                "asof": asof,
+                "ranges": [{"start": start, "end_exclusive": end}],
+            }
+        )
+    for symbol, item in selection["work"].items():
+        if not item["acquire"] or symbol in deferred or symbol in corrections.keys() | completed_corrections:
             continue
         projection = accepted["index"]["symbols"].get(symbol, {}).get("projection", {})
         request = projection.get("pricing_request") or {}
@@ -397,6 +499,10 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             }
         )
     plans = [build_plan({"steps": [{"needs": cohort}]}) for cohort in _cohorts(initial)]
+    correction_plans = [
+        build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
+        for cohort in _cohorts(correction_needs)
+    ]
     empty_plans = [
         build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
         for cohort in _cohorts(empty)
@@ -445,7 +551,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
                     )
         return total
 
-    return {
+    report = {
         "mode": "plan",
         "end_exclusive": end_date,
         "feed": "sip",
@@ -482,29 +588,72 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "catalogue_actions": 1,
             "selection_metadata_http_requests_observed": metadata_requests,
             "history_check_actions": count([history]),
+            "legacy_tail_upgrades": len(legacy_tails),
+            "legacy_tail_payload_reads_upper_bound": 3 * len(legacy_tails),
+            "legacy_tail_metadata_reads_upper_bound": 5 * len(legacy_tails),
+            "legacy_tail_comparison_actions_upper_bound": 2 * len(legacy_tails),
+            "latest_session_corrections_selected": sum(
+                scope == "latest_session" for scope in corrections.values()
+            ),
+            "full_replacements_selected": sum(scope == "full_history" for scope in corrections.values()),
+            "correction_acknowledgements_selected": sum(scope == "unchanged" for scope in corrections.values()),
+            "completed_corrections_selected": len(completed_corrections),
+            "history_checks_superseded_by_obligations": len(reused_comparisons),
+            "correction_actions_estimate": count(correction_plans),
             "initial_or_invalidated_actions_estimate": count(plans),
             "empty_coverage_actions_estimate": count(empty_plans),
-            "acquisition_actions_estimate": count(plans) + count(empty_plans),
+            "acquisition_actions_estimate": count(plans) + count(empty_plans) + count(correction_plans),
             "append_actions_before_reconciliation": count(append_plans),
             "http_pages_minimum": metadata_requests
             + bool(late_bar_sessions)
             + batches([history])
+            + bool(legacy_tails)
             + batches(plans, adaptive=True)
             + batches(empty_plans, adaptive=True)
+            + batches(correction_plans, adaptive=True)
             + batches(append_plans, adaptive=True),
             "http_pages_dense_history_estimate": metadata_requests
             + late_bar_sessions
             + pages([history])
             + pages(plans)
             + pages(empty_plans)
+            + pages(correction_plans)
             + pages(append_plans),
-            "http_page_assumptions": "known work only, not an ETA: acquisition minimum assumes raw/all equivalence; action and dense-history estimates budget all eight views before adaptive decisions; one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
-            "conditional_work": "exact producer-selected late-bar probes trigger the ordinary full-span replacement only on a positive raw response; retained dependency endpoint checks and their selected incremental/replacement acquisitions, same-span corrections, first-session checks, additional exact/CUSIP lookups, corporate actions, dependency expansion and publications for every resulting complete group may dominate the known minimum",
-            "pricing_publications_estimate": len(initial) + len(empty) + len(append),
+            "http_page_assumptions": "known work only, not an ETA: acquisition minimum assumes raw/all equivalence; action and dense-history estimates budget all eight views before adaptive decisions, excluding the accepted all observation for local correction; one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
+            "conditional_work": "exact producer-selected late-bar probes trigger full-span replacement only on a positive raw response; fresh first/tail comparisons may select local correction or replacement; source-only completed correction IDs reduce pending estimates when execution selects their manifests; dependency checks/acquisition, new full-history first-session confirmations, additional exact/CUSIP lookups, corporate actions and complete-group expansion remain conditional",
+            "pricing_publications_estimate": len(initial)
+            + len(empty)
+            + len(append)
+            + len(legacy_tails)
+            + len(corrections)
+            - len(combined_corrections),
             "lineage_publications": "complete affected groups; dependency expansion may add work",
             "serving_pending_symbols": accepted["serving_catalogue"]["pending_symbols"],
-            "serving_history_reads": "published append scopes reuse completed history checks; suffix payloads supply all eight views; replacement or changed historical selection reevaluates affected histories",
+            "serving_history_reads": "published append and certified latest-session correction scopes retain applicable earlier checkpoints; affected payloads supply all eight views; changed ownership or broader replacement retains owning reconciliation; insufficient legacy checkpoint facts require explicit recovery",
             "serving_publications": "one transaction per affected complete component, including previous contributions; zero extra provider requests or pricing writes",
         },
         "blockers": [],
     }
+    event(
+        "update_work_estimate",
+        **{
+            key: report["expected_io"][key]
+            for key in (
+                "history_check_actions",
+                "history_checks_superseded_by_obligations",
+                "legacy_tail_upgrades",
+                "legacy_tail_payload_reads_upper_bound",
+                "latest_session_corrections_selected",
+                "full_replacements_selected",
+                "correction_acknowledgements_selected",
+                "completed_corrections_selected",
+                "correction_actions_estimate",
+                "acquisition_actions_estimate",
+                "append_actions_before_reconciliation",
+                "pricing_publications_estimate",
+                "http_pages_minimum",
+                "http_pages_dense_history_estimate",
+            )
+        },
+    )
+    return report

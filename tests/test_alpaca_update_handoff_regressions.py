@@ -66,7 +66,9 @@ class UpdateHandoffRegressions(unittest.TestCase):
                         end_date="2026-01-08",
                         context=context,
                     )
-                self.assertEqual(context.history_comparisons["BBB"][2], differed)
+                self.assertEqual(
+                    context.history_comparisons["BBB"][2].decision, "full_history" if differed else "unchanged"
+                )
                 case.live["AAA"] = [bar("2026-01-05"), bar("2026-01-06"), bar("2026-01-07")]
                 case.live["BBB"] = [first, bar("2026-01-06"), bar("2026-01-07")]
                 identity = IdentityClient(
@@ -254,7 +256,10 @@ class UpdateHandoffRegressions(unittest.TestCase):
                 )
             self.assertFalse(result["complete"], result)
             self.assertEqual(set(rounds[0][0]), {"AAA"})
-            self.assertEqual({s: item[2] for s, item in rounds[0][1].items()}, {"AAA": False, "BBB": True})
+            self.assertEqual(
+                {s: item[2].decision for s, item in rounds[0][1].items()},
+                {"AAA": "unchanged", "BBB": "full_history"},
+            )
             # Replacement and its independent output checks remain. The daily
             # summary comparisons themselves must not be repeated.
             self.assertEqual(
@@ -417,7 +422,10 @@ class UpdateHandoffRegressions(unittest.TestCase):
             self.assertEqual(
                 run_lineage(case.store, ["AAA"], identity_client=identity, context=context)["failed"], 0
             )
-            self.assertEqual(read_snapshot(case.store)["entries"], baseline)
+            refreshed = read_snapshot(case.store)["entries"]
+            self.assertEqual(refreshed[0]["first_all"], baseline[0]["first_all"])
+            self.assertEqual(refreshed[0]["last_all"], baseline[0]["last_all"])
+            self.assertNotEqual(refreshed[0]["tail_all"], baseline[0]["tail_all"])
             ready = []
             self.assertTrue(refresh_existing(case.store, on_ready=ready.append, **arguments)["complete"])
             self.assertEqual(len(case.pages), 2, "same endpoints cannot lend an older generation's approval")
@@ -508,7 +516,7 @@ class UpdateHandoffRegressions(unittest.TestCase):
                 self.assertTrue(repeated["complete"], repeated)
                 self.assertTrue(
                     all(
-                        p["adjustment"] == "all" and p["start"][:10] in {"2016-01-04", "2026-10-19"}
+                        p["adjustment"] == "all" and p["start"][:10] in {"2016-01-04", "2026-10-16"}
                         for p in case.pages
                     )
                 )
@@ -594,7 +602,7 @@ class UpdateHandoffRegressions(unittest.TestCase):
             self.assertEqual(compare.call_count, 0)
             self.assertEqual(result["results"][0]["consistency_check"], "matched")
 
-    def test_metadata_fallback_reuses_decoded_active_partition(self):
+    def test_descriptive_metadata_change_keeps_history_closed_and_reuses_active_partition(self):
         case = NativeCase()
         case.setUp()
         self.addCleanup(case.doCleanups)
@@ -616,10 +624,14 @@ class UpdateHandoffRegressions(unittest.TestCase):
                 identity_client=IdentityClient({"TEST": {**asset("TEST"), "name": "Changed name"}}),
             )
         self.assertEqual(result["failed"], 0, result)
-        self.assertFalse(result["results"][0]["reused_closed_boundaries"])
+        self.assertTrue(result["results"][0]["reused_closed_boundaries"])
         hot = {p: n for p, n in reads.items() if "/2026/Oct/" in p and p.endswith((".json", ".csv.gz"))}
         self.assertTrue(hot, reads)
         self.assertTrue(all(n == 1 for n in hot.values()), hot)
+        cold_payloads = {
+            path: count for path, count in reads.items() if path.endswith(".csv.gz") and "/2026/Oct/" not in path
+        }
+        self.assertEqual(cold_payloads, {})
 
     def test_single_source_never_builds_multi_source_rankings(self):
         case = NativeCase()

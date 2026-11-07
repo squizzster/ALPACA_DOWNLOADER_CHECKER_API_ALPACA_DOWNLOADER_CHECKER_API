@@ -24,6 +24,7 @@ def obligation(item, previous=None):
         "refresh_metadata",
         "required_history_check",
         "correction_id",
+        "pricing_correction",
         "required_group",
     )
     if previous.get("obligation_id") and all(item.get(k) == previous.get(k) for k in keys):
@@ -321,10 +322,12 @@ class WorkPolicy:
         self.graph.update(self._group_entries(changed))
 
     def require_dependencies(self, group, target, required=(), *, start=None):
-        """Keep acquisition and the complete group even if later evidence omits the link."""
+        """Persist only selected acquisition while retaining its complete group."""
         group = self.graph.closure(set(group))
+        required = set(required)
+        selected = required or group
         pending = {}
-        for symbol in sorted(group):
+        for symbol in sorted(selected):
             self.require(
                 symbol,
                 target,
@@ -622,7 +625,7 @@ class WorkPolicy:
         return accepted
 
     def require_correction(self, prepared, *, require_check=True):
-        """Persist a discovered retained-span correction before its acquisition."""
+        """Persist the completed correction scope and usable handoff before acquisition."""
         from . import universe_state
 
         for request in prepared:
@@ -632,6 +635,22 @@ class WorkPolicy:
             correction = prior.get("correction_id")
             if correction is None or request.get("history_correction_id") == correction:
                 correction = uuid4().hex
+            selection = request.get("endpoint_selection")
+            contract = {
+                "schema_version": 1,
+                "scope": (
+                    prior.get("pricing_correction", {}).get("scope", "full_history")
+                    if request.get("correction_scope") == "unchanged"
+                    else request.get("correction_scope", "full_history")
+                ),
+                "cause": request.get("correction_cause", "retained_replacement_required"),
+                "source_sha256": request["source_sha256"],
+                "asof": request["asof"],
+                "start": request["start"],
+                "end_exclusive": request["end_exclusive"],
+                "selection": selection.document() if selection is not None else None,
+                "comparison_end_exclusive": request.get("comparison_end_exclusive", request["end_exclusive"]),
+            }
             item = obligation(
                 {
                     **prior,
@@ -641,6 +660,7 @@ class WorkPolicy:
                     "status": prior.get("status", "pending"),
                     "required_history_check": require_check or prior.get("required_history_check", False),
                     "correction_id": correction,
+                    "pricing_correction": contract,
                     "acquire": prior.get("acquire", False),
                     "refresh_metadata": prior.get("refresh_metadata", False),
                     "invalidate_pricing": prior.get("invalidate_pricing", False),

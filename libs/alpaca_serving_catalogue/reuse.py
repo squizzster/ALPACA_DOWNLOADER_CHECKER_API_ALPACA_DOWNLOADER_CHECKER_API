@@ -1,5 +1,7 @@
 """Select completed serving prefixes using producer-owned change decisions."""
 
+from copy import deepcopy
+
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 
 from .contract import policy
@@ -8,6 +10,8 @@ from .contract import policy
 def validate_history_validation(group):
     """Validate the serving producer's new checkpoint before selecting it."""
     completed = group["history_validation"]
+    if completed.get("revision_prefix_version", 1) != 1:
+        raise ValueError("unsupported serving revision prefix")
     if completed["inputs"].keys() != group["references"]["pricing"].keys():
         raise ValueError("history checkpoint differs from selected inputs")
     for symbol, source in completed["inputs"].items():
@@ -23,6 +27,23 @@ def validate_history_validation(group):
     decisions = {record["public_id"] for record in group["decisions"]}
     seen = set()
     for record in completed["prefix_records"]:
+        preceding = record.get("before_last_raw_bar")
+        if (
+            completed.get("revision_prefix_version") == 1
+            and record["coverage"]["session_count"] >= 2
+            and preceding is None
+        ):
+            raise ValueError("completed serving revision checkpoint lacks its preceding raw boundary")
+        if preceding is not None and (
+            not record["first_session"] <= preceding["session"] < record["last_session"]
+            or not preceding["tickers"]
+        ):
+            raise ValueError("invalid preceding-session serving boundary")
+        earlier_reasons = record.get("before_last_price_reasons")
+        if earlier_reasons is not None and (
+            not isinstance(earlier_reasons, list) or earlier_reasons != sorted(set(earlier_reasons))
+        ):
+            raise ValueError("invalid preceding-session serving reasons")
         public_id = record["public_id"]
         if (
             public_id not in decisions
@@ -92,9 +113,133 @@ def select_prefixes(group, previous, inputs, offsets):
                 continue
         for record in completed["prefix_records"]:
             prefix = _select_identity_prefix(group, completed, record, inputs, offsets)
+            if prefix is None:
+                prefix = _select_revision_prefix(group, completed, record, inputs, offsets)
             if prefix is not None:
                 prefixes[record["public_id"]] = prefix
     return prefixes
+
+
+def _owner_at(runs, position):
+    for run in runs:
+        if position < run["rows"]:
+            return run["owner"]
+        position -= run["rows"]
+    return None
+
+
+def _legacy_previous_raw(completed, record, contributing, revisions):
+    """Project a legacy disjoint seam only when accepted facts identify it.
+
+    A lone final source supplies the preceding identity row when every other
+    contributing view ends before that date. Accepted cross-view session
+    compatibility and both penultimate owners connect its all predecessor to
+    raw. With competing raw sources the checkpoint lacks the exact provenance;
+    coverage subset relations alone cannot recover a previous winner's labels.
+    """
+    if len(revisions) != 1 or "incompatible_sessions" in record["price_reasons"]:
+        return None
+    symbol, revision = next(iter(revisions.items()))
+    prior = completed["inputs"][symbol]
+    owners = {}
+    for name in ("raw", "all"):
+        view = prior["views"][name]
+        if view["rows"] < 2 or view["last_session"] != record["last_session"]:
+            return None
+        for offset in (1, 2):
+            owner = _owner_at(view["ownership"], view["rows"] - offset)
+            if owner is None or owner[0] != record["public_id"]:
+                return None
+        owners[name] = _owner_at(view["ownership"], view["rows"] - 2)
+    day = revision["previous_session"]
+    if any(
+        view["last_session"] is not None and view["last_session"] >= day
+        for other in contributing - {symbol}
+        for view in completed["inputs"][other]["views"].values()
+    ):
+        return None
+    return {"session": day, "tickers": owners["raw"][1]}
+
+
+def _select_revision_prefix(group, completed, record, inputs, offsets):
+    """Recheck the final row while retaining completed earlier history facts.
+
+    Unchanged prior ownership and exact timestamp membership retain the accepted
+    source-coverage relationships. Read the corrected date from every source
+    which contributed it, including an unchanged overlapping source. Earlier
+    observations and their subset/overlap decisions remain completed facts.
+    """
+    public_id = record["public_id"]
+    contributing = {symbol for view in completed["identities"][public_id].values() for symbol in view["subsets"]}
+    if not contributing or record["coverage"]["session_count"] < 2:
+        return None
+    if not contributing <= inputs.keys() or not hasattr(group, "latest_pricing_revision"):
+        return None
+    day = record["last_session"]
+    if record["validated_through"] != day:
+        return None
+    selected_rows, revisions = {}, {}
+    for symbol in contributing:
+        prior = completed["inputs"][symbol]
+        if not group.preserves_pricing_prefix(symbol, prior, through=day):
+            revision = group.latest_pricing_revision(symbol, prior)
+            if (
+                not revision
+                or revision["session"] != day
+                or (len(contributing) > 1 and not revision.get("preserves_timestamps"))
+            ):
+                return None
+            revisions[symbol] = revision
+        selected_rows[symbol] = {}
+        for adjustment, old in prior["views"].items():
+            if old["last_session"] is not None and old["last_session"] > day:
+                return None
+            current = inputs[symbol]["views"][adjustment]
+            if _identity_prefix(current["ownership"], old["rows"], public_id) != _identity_prefix(
+                old["ownership"], old["rows"], public_id
+            ):
+                return None
+            selected_rows[symbol][adjustment] = old["rows"] - int(old["last_session"] == day)
+    if not revisions:
+        return None
+    reasons = record.get("before_last_price_reasons")
+    if reasons is None:
+        if record["price_reasons"]:
+            raise ValueError(
+                "legacy serving checkpoint lacks preceding numerical outcomes; explicit catalogue rebuild required"
+            )
+        reasons = []  # Every earlier row passed the completed numeric checks.
+    preceding = record.get("before_last_raw_bar")
+    if preceding is None:
+        preceding = _legacy_previous_raw(completed, record, contributing, revisions)
+        if preceding is None:
+            raise ValueError(
+                "legacy serving checkpoint lacks preceding raw provenance; explicit catalogue rebuild required"
+            )
+    through = preceding["session"]
+    shortened = deepcopy(record)
+    shortened.update(
+        last_session=through,
+        validated_through=through,
+        price_reasons=reasons,
+        last_raw_bar=preceding,
+    )
+    shortened["coverage"]["session_count"] -= 1
+    shortened["coverage"]["explained_missing_sessions"] = [
+        day for day in shortened["coverage"]["explained_missing_sessions"] if day < through
+    ]
+    for key in ("missing_sessions", "source_sessions_in_gaps"):
+        shortened[key] = [day for day in shortened[key] if day < through]
+    shortened["gap_bars"] = [bar for bar in shortened["gap_bars"] if bar["session"] <= through]
+    shortened["ticker_ranges"] = [
+        {**item, "last_session": min(item["last_session"], through)}
+        for item in shortened["ticker_ranges"]
+        if item["first_session"] <= through
+    ]
+    prefix = _select_identity_prefix(group, completed, shortened, inputs, offsets)
+    if prefix is not None:
+        prefix["rows"] = selected_rows
+    return prefix
 
 
 def _unchanged_history_checkpoint(prior_group, inputs):

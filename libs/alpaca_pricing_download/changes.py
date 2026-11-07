@@ -41,7 +41,7 @@ def equal_effective_replacement(previous, anchor, views, documents):
     return True
 
 
-def change_history(previous, update):
+def change_history(previous, update, *, previous_source_sha256=None):
     """Carry the existing publication's change decision, without another audit.
 
     Each entry bounds every change since its ancestor, including removed rows.
@@ -54,7 +54,8 @@ def change_history(previous, update):
     # these ancestor tokens to retain unaffected prefixes; DO NOT rescan bars
     # to reconstruct ancestry. A missing/expired ancestor grants no reuse proof.
     changed = update["from"] if update else None
-    result = [{"source_sha256": digest(json_bytes(previous)), "changed_from": changed}]
+    generation = previous_source_sha256 or digest(json_bytes(previous))
+    result = [{"source_sha256": generation, "changed_from": changed}]
     for prior in previous.get("history_changes", ())[: MAX_ANCESTORS - 1]:
         starts = [day for day in (changed, prior["changed_from"]) if day is not None]
         result.append({"source_sha256": prior["source_sha256"], "changed_from": min(starts) if starts else None})

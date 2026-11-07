@@ -89,5 +89,15 @@
     "modifications": [
       "Declare complete components selected by accepted serving obligations to the daily storage-scope guard before reading their receipt bodies or histories."
     ]
+  },
+  {
+    "modifications": [
+      "Publish versioned preceding-session numerical outcomes and raw provenance with completed history checkpoints. Revalidate a producer-certified latest-session correction and suffix while retaining earlier numerical and continuity facts when source membership and published ownership remain unchanged. Project supported legacy disjoint boundaries from accepted facts; missing legacy outcomes or ambiguous provenance require explicit owner recovery without a hidden history audit. Preserve broader evaluation for changed historical selection."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve legacy serving checkpoint capabilities during metadata-only publication without claiming a missing preceding raw boundary or reopening accepted prices; subsequent append can supply the new boundary."
+    ]
   }
 ]

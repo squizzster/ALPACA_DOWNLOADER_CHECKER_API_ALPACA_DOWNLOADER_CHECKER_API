@@ -40,7 +40,7 @@ def project(store, receipt, *, source=_UNSELECTED, baseline=None):
     source = load_source(root, symbol) if source is _UNSELECTED else source
     if source is None:
         raise LineageError(f"missing published pricing for summary: {symbol}")
-    return summary.price_entry(root, source)
+    return summary.price_entry(root, source, source_sha256=receipt["source_sha256"])
 
 
 def refresh(store, receipts, *, sources=None, unchanged=False):

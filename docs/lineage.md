@@ -352,14 +352,30 @@ Pinned mappings must stay identical. Changed actual metadata still selects recon
 and diagnostic row counts alone are acquisition bookkeeping within this accepted continuation scope.
 The latest HTTP window's `start` is transport bookkeeping; the source's `history_start` supplies the retained start.
 
-An isolated nonempty, fully resolved single-identity history with only cash distributions or forward/reverse
-splits may retain its completed prefix when pricing ancestry proves that prefix unchanged. Effective source
-context must match, allowing only advancing observation/mapping cutoffs. Fresh identity, action, disposition and
-coverage-quality facts must match; accepted continuation excludes action-query bounds and the diagnostic maximum
-row count from equality. Validate the new session grids and their accepted seam, then send only added rows through
-the same compiled policy evaluator. No new rows means no rule execution. Closed pricing/assignment payloads stay
-closed except for assignment bodies needed to regroup publication at month/year rollover or project an older
-receipt without a summary. The active pricing partition supplies the added rows.
+Any compatible completed group may retain its accepted prefix when pricing ancestry proves that prefix unchanged.
+Group size, cross-label membership, structural events and an initially empty history describe the completed
+decision; they are not evidence that retained prices or assignments changed. Effective source context must match,
+allowing only advancing observation/mapping cutoffs. Fresh mapping, action, disposition and coverage-quality facts
+still participate. A descriptive name/status/tradable change on the same provider UUID, symbol, class and exchange
+affects new-session projection but does not revoke accepted row owners; accepted continuation also excludes
+action-query bounds and the diagnostic maximum row count from historical equality.
+
+Validate each new session grid and its accepted seam, then send only added rows from every group member through
+the same compiled policy evaluator. An empty accepted prefix has no seam; the pricing producer validates its first
+rows. No new rows means no rule execution. Closed pricing/assignment payloads stay closed except for assignment
+bodies needed to regroup publication at month/year rollover or project an older receipt without a summary. The
+active pricing partition supplies the added rows. A completed unresolved or incomplete prior row partition is
+explicitly conditional on later group facts: new rows in that group select complete-group work until an owning
+producer can certify a narrower affected interval. Resolved completed assignments remain closed.
+
+A pricing producer's latest-session correction certificate permits retaining resolved assignments before that
+session when mapping and ownership evidence remain applicable. The same evaluator processes the corrected row
+and any appended rows in all eight views. Assignment summaries and affected boundary metadata supply the retained
+prefix; older pricing is not reopened to authenticate it. Correction scope and ancestry travel through metadata
+prefetch as well as execution, so a sparse correction before the current month does not reacquire historical
+actions merely because its notice begins earlier. [correction_prefix.py](../libs/alpaca_lineage_build/correction_prefix.py)
+owns this projection; the [pricing and serving contracts](technical-contracts.md#pricing-acquisition-and-continuation)
+own its publication and downstream guarantees.
 
 One accepted catalogue and evidence client serve recovery and discovery within an update. Recovery acquires
 the catalogue once when it has selected work; discovery consumes that completed observation, exact positive
@@ -374,11 +390,11 @@ retains the already decoded partitions under the same source generation and lock
 partitions. Single-source observation selection skips multi-source ownership/ranking preparation and retains
 the existing legacy activity validation.
 
-Cross-label groups, unresolved or empty prefixes, structural or unknown events, changed facts/context/policy,
-historical corrections and missing equality proof select complete-group work. This selection precedes evaluation;
-the boundary never tries one set of rules and checks its outcome to choose another. The existing evaluator retains
-its normal evidence reconciliation and ownership fallback. There is no separate continuation executor or mandatory
-context preparation.
+Changed mapping/action facts, incompatible context or policy, corrections beyond the certified latest session, missing equality proof, or
+new group rows that can reconsider accepted unresolved/incomplete decisions select complete-group work. This
+selection precedes evaluation; the boundary never tries one set of rules and checks its outcome to choose another.
+The existing evaluator retains its normal evidence reconciliation and ownership fallback. There is no separate
+continuation executor or mandatory context preparation.
 
 The normal selector-last publication, unchanged output-reference reuse, pricing handoff and journal recovery
 contracts apply to both paths. Opt-in `--debug` records whether lineage is required, whether retained history is

@@ -28,6 +28,87 @@ def legacy_group(group):
 
 
 class ServingMigrationTests(NativeCase):
+    def test_new_checkpoint_still_rejects_a_missing_required_preceding_boundary(self):
+        from libs.alpaca_serving_catalogue.contract import CatalogueError
+
+        self.bootstrap()
+        selected = self.catalogue_groups("TEST")
+        checkpoint = selected["TEST"]["history_validation"]
+        self.assertEqual(checkpoint["revision_prefix_version"], 1)
+        checkpoint["prefix_records"][0].pop("before_last_raw_bar")
+        with self.assertRaisesRegex(CatalogueError, "lacks its preceding raw boundary"):
+            storage.commit(self.store, selected, list(selected.values()))
+
+    def test_legacy_metadata_then_append_publishes_the_new_revision_boundary(self):
+        from test_alpaca_end_of_day_api import valid_bars
+        from test_alpaca_lineage_build import IdentityClient, asset
+        from test_alpaca_pricing_download import FakeClient
+
+        from libs.alpaca_lineage_build.pipeline import run_lineage
+        from libs.alpaca_pricing_download.download import download_pricing
+
+        self.test_legacy_checkpoint_metadata_publication_preserves_capability_without_price_reads()
+        download_pricing(self.store, "TEST", "2026-10-15", client=FakeClient(valid_bars(end="2026-10-15")))
+        identity = {**asset("TEST"), "name": "Second metadata update"}
+        self.assertEqual(
+            run_lineage(self.store, ["TEST"], identity_client=IdentityClient({"TEST": identity}))["failed"], 0
+        )
+        numeric_check = policy._bar_reasons
+
+        def only_new_bar(bar, adjustment):
+            self.assertEqual(bar["session"], "2026-10-14", "accepted historical bar rechecked")
+            return numeric_check(bar, adjustment)
+
+        with patch.object(policy, "_bar_reasons", side_effect=only_new_bar):
+            result = maintain(self.store)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["checked_bars"], 8)
+        checkpoint = self.catalogue_groups("TEST")["TEST"]["history_validation"]
+        self.assertEqual(checkpoint["revision_prefix_version"], 1)
+        self.assertEqual(checkpoint["prefix_records"][0]["before_last_raw_bar"]["session"], "2026-10-13")
+
+    def test_legacy_metadata_publication_recovers_acknowledgement_without_repeating_evaluation(self):
+        self.test_legacy_checkpoint_metadata_publication_preserves_capability_without_price_reads()
+        self.publish_change(lambda receipt, _: receipt["evidence"].update(warnings=["metadata change"]))
+
+        class Interrupted(BaseException):
+            pass
+
+        with patch.object(work, "acknowledge", side_effect=Interrupted()):
+            with self.assertRaises(Interrupted):
+                maintain(self.store)
+        with patch.object(
+            producer, "evaluate", side_effect=AssertionError("completed publication evaluated again")
+        ):
+            recovered = maintain(self.store)
+        self.assertTrue(recovered["complete"], recovered)
+        self.assertEqual(recovered["evaluated_groups"], 0)
+
+    def test_legacy_checkpoint_metadata_publication_preserves_capability_without_price_reads(self):
+        self.bootstrap()
+        selected = self.catalogue_groups("TEST")
+        checkpoint = selected["TEST"]["history_validation"]
+        checkpoint.pop("revision_prefix_version")
+        for record in checkpoint["prefix_records"]:
+            record.pop("before_last_raw_bar")
+            record.pop("before_last_price_reasons")
+        storage.commit(self.store, selected, list(selected.values()))
+        for name in ("First metadata update", "Second metadata update"):
+
+            def rename(receipt, boundaries):
+                for lookup in receipt["evidence"]["asset_lookups"]:
+                    if lookup.get("asset"):
+                        lookup["asset"]["name"] = name
+
+            self.publish_change(rename)
+            with patch.object(standalone, "_rows", side_effect=AssertionError("accepted prices reread")):
+                result = maintain(self.store)
+            self.assertTrue(result["complete"], result)
+            self.assertEqual(result["checked_bars"], 0)
+            completed = self.catalogue_groups("TEST")["TEST"]
+            self.assertEqual(completed["securities"][0]["names"], [name])
+            self.assertNotIn("revision_prefix_version", completed["history_validation"])
+
     def test_rebuild_adds_scheduling_projection_without_rechecking_completed_groups(self):
         self.add_symbol("OTHER")
         self.bootstrap()

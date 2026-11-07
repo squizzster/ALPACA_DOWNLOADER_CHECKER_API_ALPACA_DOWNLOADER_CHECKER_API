@@ -55,6 +55,10 @@ git diff --check
 Parquet tests skip without [PyArrow](../requirements-bloodhound.txt); report actual results and gaps.
 Tests do not establish retained-store correctness or live-universe throughput.
 
+The independent [Bloodhound app](../bloodhound_app/README.md#run-the-regression-suite) has a separate test
+suite and dependency pins. Run it from `bloodhound_app/` when changing that application; root `tests/`
+discovery does not include it.
+
 High-value contract tests:
 
 - [Completed handoffs](../tests/test_alpaca_completed_handoffs.py),

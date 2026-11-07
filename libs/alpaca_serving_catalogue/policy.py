@@ -298,7 +298,7 @@ def evaluate(group, previous=()):
     decisions, securities = [], []
     inputs, offsets = group.serving_inputs()
     prefixes = select_prefixes(group, previous, inputs, offsets)
-    validation = {"inputs": inputs, "identities": {}, "prefix_records": []}
+    validation = {"inputs": inputs, "identities": {}, "prefix_records": [], "revision_prefix_version": 1}
     work = {"reused_history_prefixes": 0, "full_history_evaluations": 0, "checked_bars": 0}
     for security in group.summary["securities"]:
         public_id = security["public_id"]
@@ -342,13 +342,32 @@ def evaluate(group, previous=()):
         validation["identities"][public_id] = coverage
         raw = views["raw"]["bars"]
         sessions = [b["session"] for b in raw]
+        if (
+            not sessions
+            and prior
+            and prior["coverage"]["session_count"] >= 2
+            and prior.get("before_last_raw_bar") is None
+        ):
+            # Metadata-only reuse preserves a legacy checkpoint's capabilities.
+            # It cannot claim a preceding-row boundary that was never published.
+            # A later append supplies that boundary from the accepted last row.
+            validation.pop("revision_prefix_version", None)
+        before_last_reasons = set(prior["price_reasons"] if prior else ())
         if not sessions and prior is None:
             reasons.add("empty_history")
         for adjustment, view in views.items():
             if [b["session"] for b in view["bars"]] != sessions:
                 price_reasons.add("incompatible_sessions")
+                if (
+                    sessions
+                    and [b["session"] for b in view["bars"] if b["session"] < sessions[-1]] != sessions[:-1]
+                ):
+                    before_last_reasons.add("incompatible_sessions")
             for bar in view["bars"]:
-                price_reasons.update(_bar_reasons(bar, adjustment))
+                bar_reasons = _bar_reasons(bar, adjustment)
+                price_reasons.update(bar_reasons)
+                if sessions and bar["session"] < sessions[-1]:
+                    before_last_reasons.update(bar_reasons)
                 work["checked_bars"] += 1
         reasons.update(price_reasons)
         missing = set(prior["missing_sessions"] if prior else ())
@@ -384,6 +403,8 @@ def evaluate(group, previous=()):
             if set(sessions) - expected:
                 reasons.add("nonmarket_sessions")
                 price_reasons.add("nonmarket_sessions")
+                if set(sessions[:-1]) - expected:
+                    before_last_reasons.add("nonmarket_sessions")
         gap_bars = sorted({bar["session"]: bar for bar in gap_bars}.values(), key=lambda bar: bar["session"])
         explained = _rename_exclusions(
             group, members, observations, gap_bars, missing, source_sessions=source_sessions
@@ -440,6 +461,18 @@ def evaluate(group, previous=()):
                     else prior["last_raw_bar"]
                 ),
                 "price_reasons": sorted(price_reasons),
+                "before_last_raw_bar": (
+                    {"session": raw[-2]["session"], "tickers": raw[-2]["tickers"]}
+                    if len(raw) >= 2
+                    else prior["last_raw_bar"]
+                    if raw and prior
+                    else prior.get("before_last_raw_bar")
+                    if prior
+                    else None
+                ),
+                "before_last_price_reasons": sorted(before_last_reasons)
+                if sessions
+                else prior.get("before_last_price_reasons"),
                 "missing_sessions": sorted(missing),
                 "gap_bars": gap_bars,
                 "source_sessions_in_gaps": sorted(source_sessions),

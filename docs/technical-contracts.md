@@ -38,8 +38,9 @@ out-of-range timestamps and incomplete pagination; they do not establish market 
 Authorities: [contract.py](../libs/alpaca_pricing_download/contract.py),
 [storage.py](../libs/alpaca_pricing_download/storage.py).
 
-Pricing format 31 remains readable in place. Supported sources may select older unchanged boundary receipts;
-versions need not match. Compatibility requires no migration, relabeling or price rewrite; unknown future formats
+Pricing format 32 publishes the comparison tail; format 31 remains readable in place and obtains the missing tail
+through the selected metadata upgrade below. Supported sources may select older unchanged boundary receipts;
+versions need not match. Compatibility requires no price rewrite or relabeling; unknown future formats
 fail closed. [Runtime versus publication versions](../VERSION_TRACKER.md#compatibility) also preserves lineage-34
 formats and accepted policy identity; runtime repairs alone do not invalidate completed decisions.
 
@@ -52,13 +53,45 @@ evidence remains authoritative; selected evidence refresh produces the corrected
 
 ## Pricing acquisition and continuation
 
-Retained pricing uses only the first/latest fully adjusted (`all`) comparison to select history reuse,
-including ordinary downloads, dependencies and daily-summary members. A single-session history needs one
-comparison. A match approves the selected generation and only missing sessions are acquired; other historical
-views, overlap and old first-session confirmations are forbidden. Any changed field selects full retained-span
-replacement. This boundary does not detect every interior correction. Replacement notices include removed
-sessions. Authorities: [download_pricing / publish_acquired](../libs/alpaca_pricing_download/download.py),
+Retained pricing compares the first stored fully adjusted (`all`) row and the latest up to ten stored `all` rows,
+including the latest session. Ordinary downloads, retained dependencies and daily-summary members share this
+boundary. The first-session request keeps its existing scope. The second requests the selected tail in one
+window; overlapping first/tail dates are requested and compared once. A one-session history needs one request.
+Comparison is exact across timestamp, OHLC, volume, trade count and VWAP, with the existing numerical equality.
+
+| Completed comparison | Selected work |
+|---|---|
+| All selected rows match | Retain history and acquire missing sessions. |
+| Only the latest stored session differs | Correct that session and acquire missing sessions. |
+| Any earlier tail row or the first row differs | Replace the full retained span. |
+| Required observations are missing or incomplete | Preserve completed peer decisions and resolve the incomplete comparison. |
+
+For a one-session history, latest correction and complete replacement cover the same row. Matching observations
+approve the selected source generation; other historical views, overlap and old first-session confirmations
+are forbidden. Revisions outside these selected dates can remain undetected; a historical audit is separate work.
+Replacement notices include removed sessions. Authorities: [comparison](../libs/alpaca_pricing_download/endpoints.py),
+[download_pricing / publish_acquired](../libs/alpaca_pricing_download/download.py),
 [HTTP execution](../libs/alpaca_pricing_download/http.py), [completed responses](../libs/alpaca_pricing_download/responses.py).
+
+The pricing validator owns the first row and ordered `tail_all`, containing ten rows or the complete shorter
+history. Initial acquisition, append, correction, replacement and rollover publish it with the selected prices;
+the existing journal also owns summary completion. Live observations never replace the stored baseline before
+their corresponding prices publish. A pending publication remains explicitly unreadable until its owner recovers.
+
+[Legacy transition](../libs/alpaca_pricing_download/history_tail.py) recognizes a supported old publication that
+lacks the tail. Its owner selects manifest-referenced `all` payloads newest first and uses `readall_rsplit`, excluding
+the CSV header and current-year rows superseded by the current month. It opens older year/completed-year payloads
+only as needed for ten effective rows. This assembles accepted data without authenticating it again. The owner
+journals a metadata-only publication before provider work; retry uses that completed tail. A missing/inconsistent
+tail in a completed new format selects owning recovery, never another gzip reconstruction. Planning exposes the
+selected upgrades and their bounded reads before execution. Their unchanged-price ancestry preserves earlier work.
+
+Localized correction has explicit replacement semantics for the affected session in all eight views. It carries
+the completed live `all` observation into adaptive acquisition and obtains only the remaining observations that
+policy requires. Correction and append share assembly/publication when they affect the same partition. Rewriting
+the containing gzip is selected output construction; it is not a full-history provider request. Unaffected payload
+references remain retained. The source records correction cause, prior generation, preceding session and whether
+exact timestamp membership was preserved, alongside truthful ancestry beginning at the corrected session.
 
 New-range acquisition uses the `alpaca_adjustment_equivalence_v2` empirical policy in
 [adjustment_policy.py](../libs/alpaca_pricing_download/adjustment_policy.py). It requests `raw`, then `all`.
@@ -75,7 +108,8 @@ and producer confirmations. The policy infers unrequested views from its empiric
 the absence of an anomaly confined to an unrequested view. Both `raw` and `all` are always direct observations.
 
 [Adaptive acquisition](../libs/alpaca_pricing_download/adaptive.py) applies to new tickers, selected replacements
-and missing-session appends. Each response-dependent stage batches only its selected symbols at their exact
+and missing-session appends, as well as localized corrections seeded with the accepted live `all` observation.
+Each response-dependent stage batches only its selected symbols at their exact
 requested ranges. Completed pagination precedes the next decision. Successful observations survive an exact
 transport fallback, and completed decisions cross into publication without rehashing, renormalizing or replaying
 the policy. A fresh scope makes its own decision; old payloads and endpoint approvals are not equivalence inputs.
@@ -86,7 +120,18 @@ Earlier acquisition policy provenance remains readable and does not invalidate c
 New full histories and selected replacements confirm only directly acquired views at their first session.
 Approved appends retain their existing no-historical-confirmation rule. Debug emits the completed selection;
 stage progress counts each HTTP page once. Planning minima assume two views while action/dense-history estimates
-budget eight; the actual dependent plans report their selected work as responses arrive.
+budget eight. A local correction already holds its accepted `all` observation, leaving one to seven direct views;
+the actual dependent plans report their selected work as responses arrive.
+
+A lagging retained dependency first runs that adaptive producer on only its missing suffix. A completed empty
+suffix selects no acquisition: retained endpoints, payloads and coverage stay untouched, and no historical
+comparison is performed. A completed nonempty suffix selects ordinary dependency acquisition and crosses that
+boundary in memory; after the mandatory generation-bound first/tail `all` comparison, acquisition consumes the
+same adjustment responses, hashes and decision without requesting or calculating them again. Selection failure
+proves no absence and therefore follows the ordinary fail-closed acquisition path. Successful partial responses
+and completed suffix acquisitions remain bound to source generation, mapping and exact request scope in the
+operation context across subsequent boundary failures; retries request only unfinished observations. Metadata activity or inactivity
+does not substitute for this pricing-owned selection.
 
 Each pricing HTTP attempt uses a 300-second socket timeout for blocking network operations, including
 endpoint checks, pagination and retries. This is not a total operation or retry deadline. An earlier provider
@@ -101,6 +146,11 @@ to store, symbol, source generation, cutoff and mapping. Execution rechecks the 
 it does not reread the validator or replay the comparison. Completed comparisons survive a peer or suffix
 acquisition failure within the same operation and binding. Missing endpoint validators fail closed without
 decoding retained prices to reconstruct them. Failed requests retain bounded failure handling.
+Accepted summary entries retain their row/tail acceptance and per-target append requests through planning,
+source selection and execution. A new summary entry or target selects a new request; consumers do not repeat
+validation or compilation for the unchanged entry and target. Completed adjustment acquisitions retain their
+endpoint and extent projections through publication. Lineage carries its locked source generation and completed
+correction-scope decision, including a negative decision, into payload loading and broader reconciliation.
 Only after successful full batch pagination do omitted symbols complete empty at the transport boundary.
 Ordinary acquisition consumes that completed response without individual rechecks. The history-comparison owner
 has additional evidence: its compact baseline names an already retained endpoint. Provider batch companions can suppress
@@ -168,12 +218,17 @@ context still reaches the ordinary lineage doorman.
 
 ## Check summary
 
-Format-3 entries contain only `symbol`, saved mapping `asof`, completed source `end_exclusive`, and exact
-eight-field `first_all` and `last_all` rows from the fully adjusted view.
+Format-4 entries contain `symbol`, saved mapping `asof`, completed source `end_exclusive`, `source_sha256`, exact
+eight-field `first_all`/`last_all`, and `tail_all`/`tail_version` from the pricing producer. The source generation
+belongs to pricing; a lineage index awaiting acknowledgement cannot substitute its older generation.
 Eligibility: unique stored same-symbol active US-equity lookup and nonempty `all` endpoint; stored activity is not
 online availability. Endpoint-session/asof pairs group checks, with identical windows requested once. Each row defines its session window; `asof` independently
 selects provider identity; completed exclusive end independently starts append. Epoch/revision/coverage and
-separate owner-pending markers control publication. No identities, other views or saved comparisons.
+separate owner-pending markers control publication. No identities, other views or saved live comparisons.
+
+Format 3 already owns membership and endpoints. It remains readable for selecting a controlled legacy-tail
+upgrade; the writer adds the new columns transactionally and projects each completed pricing upgrade. This does
+not discover ticker directories or rebuild eligibility. New-format missing tails/generations fail closed.
 
 Format 1/2 requires explicit offline `summary rebuild`; ordinary reads never fill missing first endpoints by
 opening every validator. Frozen publications can finish format-2 pending bookkeeping before rebuilding, but
@@ -241,17 +296,37 @@ outcomes survive. Complete dependency groups and maintenance requirements also p
 Recovery reselects acquisition from accepted requirements/completed summary; a saved `acquire` flag cannot divert
 a summarized maintained source from live check → approved append.
 
+Known dependency membership is registered before its missing-suffix selector request. That completed selector is
+the authority for whether acquisition work exists: empty results create no acquisition obligation; positive or
+unproved results persist the selected member with its complete group before any retained-history check or pricing
+publication. Thus durable state precedes owned work without turning a negative selector into false acquisition.
+
 Ordinary eligible summary members complete that sequence before discovery advances their dependencies.
 Selection's changed-identity and lost-eligibility facts reconcile before those members enter maintenance.
 Later phases retain each completed comparison even when an independent member fails. A comparison is bound to
 its summary entry and pricing generation; reuse requires the same accepted selectors and current allowed scope.
-Matching comparisons and differing comparisons are distinct from append approval: differences and outstanding
-corrections still use the ordinary replacement producer. Append approval additionally binds the current correction
+Matching comparisons and differing comparisons are distinct from append approval. The completed decision selects
+unchanged, latest-session correction or full replacement through the existing pricing producer.
+Append approval additionally binds the current correction
 obligation, so a renewed correction cannot inherit it. Successful corrections and appends retain their approvals
 once lineage accepts their exact generations, even if a peer fails; incomplete lineage cannot lend that approval.
 Late-bar replacement supplies its completed approval before daily comparison resumes. An interior replacement
-invalidates earlier comparisons even if endpoints are identical. These handoffs are not persisted across restarts,
-and retaining partial successes does not turn a failed overall update into success.
+invalidates earlier comparisons even if endpoints are identical. Operation-local peer approvals are not restart
+freshness caches. Pending corrections durably retain scope, cause, source generation, mapping, coverage and usable
+observations. An applicable pending decision is consumed without comparing again. A new generation invalidates
+that decision; its fresh completed result then owns the new scope, including metadata-only acknowledgement when
+the prices already match. A completed correction ID is acknowledged through lineage without reacquisition.
+An old correction ID without sufficient cause information retains full replacement; identity changes and confirmed
+missing historical rows also retain their broad owning scope. Started journals finish their selected publication,
+and already completed replacements remain completed. Partial successes do not make an overall failed update complete.
+
+Work estimates consume these durable scopes from the accepted compact selectors. Applicable pending comparisons
+are excluded from fresh check counts; local corrections, full replacements, metadata-only acknowledgements and
+combined correction/append publications are counted separately. Deferred work is excluded. A completion ID known
+only to a selected source manifest can reduce that estimate during execution; planning does not open manifests to
+resolve it. The debug `update_work_estimate` event records these selections alongside ordinary comparison,
+acquisition, publication and serving evidence. Response-dependent differences and group expansion remain conditional;
+these counts are neither a throughput prediction nor evidence that the 60/90-minute production target was met.
 
 Every lineage entrypoint reconciles used lookup facts before acquisition. Identity changes require complete-group
 replacement, including newly discovered dependency evidence. Pricing binds evidence fingerprint/source generation;
@@ -381,6 +456,22 @@ numeric outcomes, labels and gap evidence, never copied prices. Reuse is per ide
 independent identity changes do not invalidate it. Proven appends skip old rows/closed payloads; suffix containers
 may contain older rows. Changed adjusted-source selection, ownership, replacement or absent ancestry requires
 affected-history evaluation.
+
+A producer-certified latest-session correction can retain the checkpoint before that row. The serving producer
+publishes preceding-session raw labels and numerical outcomes during normal evaluation. Current ownership runs
+and pricing ancestry bind the shortened checkpoint; changed rows and new rows use the ordinary evaluator. For
+multiple contributing sources, preserved timestamp membership retains accepted source-coverage relationships;
+each source contributing the corrected date supplies that date again. Earlier numeric checks and payloads stay
+closed. Genuine changed ownership, mapping or source selection retains the appropriate reconciliation scope.
+
+A legacy checkpoint without preceding-row facts can reuse its completed all-passing numerical outcome. Its raw
+boundary can be projected from accepted ownership and session compatibility when one final source supplies the
+preceding row and every view of the other contributing sources ends earlier. Overlapping sources do not establish the previous
+winner's raw labels merely by having equal coverage. Missing numerical outcomes or ambiguous raw provenance
+require explicit catalogue rebuild; maintenance reports that requirement without silently auditing history.
+Metadata-only publication preserves a legacy checkpoint's capabilities without adding the revision-prefix
+marker when its preceding raw boundary is absent. It reuses accepted prices without reads. A subsequent append
+can establish the preceding boundary from the previously published last row and publish the marker normally.
 
 Partial publication retains its full-history numerical checkpoint. When relevant uncertainty still overlaps,
 evaluation reads the selected history to count and project the supported subrange; unchanged maintenance reuses

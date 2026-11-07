@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import cached_property
 from time import monotonic
 
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
@@ -11,6 +12,7 @@ from libs.common.provider_http import balanced_batches
 
 from .adjustment_policy import AdaptiveAdjustmentDecision, decide_adaptive_adjustment_downloads
 from .contract import ADJUSTMENTS, BarsSymbolUnavailable, DownloadError, csv_bytes, digest, timestamp
+from .endpoints import endpoints_of, session_extent
 from .failures import AcquisitionFailure
 from .responses import CompletedBars, completed_bars
 
@@ -29,11 +31,19 @@ class CompletedAdjustments:
     pattern: str
     fallback: bool
 
-    @property
+    @cached_property
     def views(self):
         return {value.adjustment: value.rows for value in self.bars}
 
-    @property
+    @cached_property
+    def endpoints(self):
+        return endpoints_of(self.views)
+
+    @cached_property
+    def extent(self):
+        return session_extent(self.endpoints)
+
+    @cached_property
     def proof(self):
         return {
             "policy": POLICY,
@@ -115,30 +125,69 @@ class AdjustmentAcquisition:
         return self.completed
 
 
-def acquire_adjustments(needs, client, *, metrics=None, progress=None, on_failure=None, merge_ranges=False):
+def acquire_adjustments(
+    needs,
+    client,
+    *,
+    metrics=None,
+    progress=None,
+    on_failure=None,
+    merge_ranges=False,
+    acquired=None,
+    observations=None,
+    retain_states=False,
+):
     """Batch each adaptive stage, then select the next from completed observations.
 
     No plan crosses a response-dependent decision. Failed actions establish no
     observations; exact transport fallback may consume successful earlier stages.
-    Returned states live only as long as their bounded acquisition cohort.
+    Ordinary states live with their bounded acquisition cohort. The missing-suffix
+    selector explicitly retains states in its generation-bound operation handoff
+    so a later comparison failure cannot erase completed observations.
     """
+    states_by_key = acquired if acquired is not None else {}
     states = []
     for need in needs:
         if len(need["symbols"]) != 1 or len(need["ranges"]) != 1 or set(need["adjustments"]) != set(ADJUSTMENTS):
             raise DownloadError("adaptive acquisition requires one complete ticker/range need")
         window = need["ranges"][0]
-        states.append(
-            AdjustmentAcquisition(
-                need["symbols"][0], timestamp(window["start"]), timestamp(window["end_exclusive"]), need["asof"]
-            )
+        key = (
+            need["symbols"][0],
+            timestamp(window["start"]),
+            timestamp(window["end_exclusive"]),
+            need["asof"],
         )
+        state = states_by_key.get(key)
+        if state is not None and state.key != key:
+            raise DownloadError("preacquired adjustment handoff has a different scope")
+        if state is not None and state.failure is not None:
+            # A retry resolves unfinished observations; successful responses and
+            # their completed adaptive stages remain authoritative.
+            state.failure, state.exact_fallback = None, False
+        if state is None:
+            state = AdjustmentAcquisition(*key)
+            for observation in (observations or {}).get(key, ()):
+                state.accept(observation.adjustment, observation)
+            # The initial stage remains raw when only the completed comparison
+            # all row was supplied. No historical observation is fetched again.
+            if retain_states:
+                states_by_key[key] = state
+        states.append(state)
     metrics = {} if metrics is None else metrics
     plans = []
     while True:
         pending = [i for i, state in enumerate(states) if state.completed is None and state.failure is None]
         if not pending:
             break
-        stage_needs = [{**needs[i], "adjustments": list(states[i].decision.next_adjustments)} for i in pending]
+        stage_needs = [
+            {
+                **needs[i],
+                "adjustments": [
+                    name for name in states[i].decision.next_adjustments if name not in states[i].observed
+                ],
+            }
+            for i in pending
+        ]
         plan = build_plan({"steps": [{"needs": stage_needs}]}, max_symbols=2000, merge_ranges=merge_ranges)
         plans.append(plan)
         stage = stage_needs[0]["why"]

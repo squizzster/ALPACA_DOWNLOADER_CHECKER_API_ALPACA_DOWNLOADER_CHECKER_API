@@ -3,6 +3,9 @@
 [Public API](public-api.md) owns identity, dates and reader semantics. Export formats have different selections
 and guarantees; destinations must be outside the source store.
 
+The separate [standalone Bloodhound converter](../bloodhound_app/README.md) consumes completed per-identity
+CSV exports or legacy histories. Its README owns its invocation, dependencies and known publication limits.
+
 | Command | Selection/output | Authority |
 |---|---|---|
 | `read --symbol TICKER --format csv` | One resolved source-group identity; multiple views add `adjustment`. | [standalone_cli.py](../alpaca_end_of_day/standalone_cli.py): `run_arguments` |
@@ -52,6 +55,15 @@ populated on every row; unchanged individual-session values are still written.
 Identities with no rows in the date window produce no files. Empty selection produces a complete empty manifest.
 Each digest records actual columns, all 56 logical mappings, row count, actual first/last sessions and checksum.
 `column_aliases` maps logical columns directly to CSV columns; `views[adjustment].columns` gives the same map by field.
+
+CSV schema 2 also carries `security.ticker_ranges`: the opened catalogue's completed observed-label ranges,
+each with `ticker`, `first_session` and `last_session` (both endpoints inclusive). These ranges preserve labels
+selected across all advertised views, including genuine overlapping labels. They are copied intact from the
+accepted catalogue without reconstructing row labels, revisiting ownership evidence or additional source reads.
+Date-filtered CSVs retain the complete identity's ranges; consumers project them only onto the supplied rows.
+`ticker_ownership_intervals` remains broader evidence with potentially unknown endpoints and is not a complete
+observed-label map. Schema-1 exports lack the dated-range handoff and remain unchanged; produce a new completed
+export when it is required rather than filling an old digest from a different catalogue generation.
 
 ### Publication and concurrency
 

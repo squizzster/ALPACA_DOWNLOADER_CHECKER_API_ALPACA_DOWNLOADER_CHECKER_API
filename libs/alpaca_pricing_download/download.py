@@ -33,15 +33,18 @@ from .contract import (
     timestamp,
 )
 from .endpoints import (
+    TAIL_SIZE,
+    Endpoints,
     EndpointSelection,
-    endpoints_of,
+    fetch_history,
     history_check_endpoints,
     merge_ranges,
     same_row,
     session_extent,
     validator_document,
 )
-from .responses import fetch_rows
+from .history_tail import publish_legacy_tail
+from .responses import CompletedBars, fetch_rows
 from .storage import (
     STORE_DOCUMENT,
     boundary_document,
@@ -221,7 +224,12 @@ def _incremental_endpoints(endpoints: dict, views: dict, start: datetime) -> dic
         else:
             first = old[0] if old and timestamp(old[0][0]) < start else new[0]
             result[name] = (first,) if first == new[-1] else (first, new[-1])
-    return result
+    tail = endpoints.tail_all
+    if tail is None:
+        raise DownloadError("incremental publication requires the producer comparison tail")
+    return Endpoints(
+        result, tail_all=(tuple(row for row in tail if timestamp(row[0]) < start) + views["all"])[-TAIL_SIZE:]
+    )
 
 
 def updated_boundaries(root, previous, anchor, views, *, full_history=False, read=None):
@@ -249,6 +257,61 @@ def updated_boundaries(root, previous, anchor, views, *, full_history=False, rea
     return changed_views
 
 
+def incremental_boundaries(root, previous, anchor, views, *, correction=None, session=None, read=None):
+    """Assemble correction and append together, opening each needed partition once."""
+    read = read_boundary if read is None else read
+    held = {}
+
+    def selected(_root, _source, kind):
+        if kind not in held:
+            held[kind] = read(_root, _source, kind)
+        return held[kind]
+
+    corrected_kind = None
+    if correction is not None:
+        instant = timestamp(session)
+        month = month_of((session,))
+        corrected_kind = (
+            "current_month"
+            if month == previous["anchor_month"]
+            else "current_year"
+            if month[:4] == previous["anchor_month"][:4]
+            else "completed_years"
+        )
+        old = selected(root, previous, corrected_kind)
+        replaced = {}
+        for name in ADJUSTMENTS:
+            replacement = correction[name]
+            if (
+                len(replacement) != 1
+                or timestamp(replacement[0][0]).astimezone(NEW_YORK).date()
+                != instant.astimezone(NEW_YORK).date()
+            ):
+                raise DownloadError("latest-session correction requires one observation per adjustment")
+            found = False
+            result = []
+            for row in old[name]:
+                if timestamp(row[0]) == instant:
+                    result.append(replacement[0])
+                    found = True
+                else:
+                    result.append(row)
+            if not found:
+                raise DownloadError("selected correction session is absent from its published partition")
+            replaced[name] = tuple(result)
+        held[corrected_kind] = replaced
+    nonempty = any(views.values())
+    rollover = anchor != previous["anchor_month"]
+    if nonempty or rollover or corrected_kind == "current_month":
+        combined = _join(selected(root, previous, "current_month"), views)
+        changed = updated_boundaries(root, previous, anchor, combined, read=selected)
+    else:
+        changed = {}
+    if corrected_kind is not None and corrected_kind not in changed:
+        changed[corrected_kind] = held[corrected_kind]
+    return changed
+
+
 @traced("pricing_prepare_publication")
 def publish_acquired(
     root,
@@ -267,11 +330,16 @@ def publish_acquired(
     history_correction_id=None,
     old_documents=None,
     adjustment_acquisition=None,
+    session_correction=None,
+    preserve_correction=True,
+    previous_source_sha256=None,
 ):
     """Publish through the original recovery, notice and summary transaction."""
     from .activity import validate_activity
     from .changes import change_history, equal_effective_replacement
 
+    if previous is not None and previous_source_sha256 is None:
+        previous_source_sha256 = digest(json_bytes(previous))
     paths = boundary_paths(anchor)
     old_documents = {} if old_documents is None else old_documents
     validated_all = set(changed_views) == set(paths)
@@ -311,7 +379,7 @@ def publish_acquired(
         "history_start": history_start.isoformat().replace("+00:00", "Z"),
         "validator": {"file": VALIDATOR_FILE, "sha256": digest(json_bytes(validator))},
         "boundaries": references,
-        "history_changes": change_history(previous, update),
+        "history_changes": change_history(previous, update, previous_source_sha256=previous_source_sha256),
         # DO NOT REMOVE WITHOUT USER AUTH!#
         # Changed partitions have just passed the producer's activity contract.
         # An append cannot certify untouched legacy partitions. Carry this
@@ -320,6 +388,12 @@ def publish_acquired(
     }
     if adjustment_acquisition is not None:
         source["latest_adjustment_acquisition"] = adjustment_acquisition.proof
+    elif previous is not None and "latest_adjustment_acquisition" in previous:
+        source["latest_adjustment_acquisition"] = previous["latest_adjustment_acquisition"]
+    if session_correction is not None:
+        source["latest_session_correction"] = session_correction
+    elif preserve_correction and previous is not None and previous.get("latest_session_correction"):
+        source["latest_session_correction"] = previous["latest_session_correction"]
     evidence = acquisition_evidence_sha256 or (previous or {}).get("acquisition_evidence_sha256")
     if evidence is not None:
         if len(evidence) != 64 or any(c not in "0123456789abcdef" for c in evidence):
@@ -328,12 +402,14 @@ def publish_acquired(
     correction = history_correction_id or (previous or {}).get("history_correction_id")
     if correction is not None:
         source["history_correction_id"] = correction
+    identical_generation = None
     if previous is not None and {key: value for key, value in source.items() if key != "history_changes"} == {
         key: value for key, value in previous.items() if key != "history_changes"
     }:
         # Identical selected output is already complete. A repeated acquisition
         # notice must not manufacture a new generation solely for its ancestry.
-        source["history_changes"] = previous["history_changes"]
+        source = previous
+        identical_generation = previous_source_sha256
     handoff = {}
     written = publish(
         root,
@@ -347,11 +423,13 @@ def publish_acquired(
         endpoints=selected_endpoints,
         old_documents=old_documents,
         handoff=handoff,
+        previous_source_sha256=previous_source_sha256,
+        source_sha256=identical_generation,
     )
     # Publication has completed before returning these accepted outputs.
     # Consumers must use the source/endpoints/notice handoff, not reload or
     # re-authenticate the files the publisher just selected.
-    source_generation = digest(json_bytes(source))
+    source_generation = handoff["source_sha256"]
     trace_source_selection(source, source_generation, symbol=symbol, reason="publication_completed")
     return {
         "changed": update is not None,
@@ -408,6 +486,35 @@ def download_pricing(
             locks.enter_context(ticker_lock(root, exclusive=True, create=True))
         recovered = recover(root, on_check=on_check)
         previous = load_source(root, symbol)
+        current_sha256 = digest(json_bytes(previous)) if previous is not None else None
+        if (
+            history_correction_id is not None
+            and previous is not None
+            and previous.get("history_correction_id") == history_correction_id
+        ):
+            # The publication journal already completed this exact durable
+            # obligation. Recovery cannot turn lost acknowledgement into new
+            # comparison/acquisition work against the superseded generation.
+            return {
+                "symbol": symbol,
+                "anchor_month": previous["anchor_month"],
+                "request": previous["latest_request"],
+                "mode": "unchanged",
+                "consistency_check": "completed_correction",
+                "updated_boundaries": [],
+                "files_written": 0,
+                "source_sha256": current_sha256,
+                "recovered": recovered,
+                "requests": 0,
+                "changed": False,
+                "history_start": previous.get("history_start", HISTORY_START),
+                "pending_update": read_update(root, published=True),
+                **{
+                    key: previous[key]
+                    for key in ("latest_session_correction", "history_changes")
+                    if key in previous
+                },
+            }
         # DO NOT REMOVE WITHOUT USER AUTH!#
         # Preserve an explicitly established entity mapping across retries and
         # cutoff extensions. Advancing time must not silently turn a retired
@@ -419,8 +526,6 @@ def download_pricing(
         # Acquisition may have run outside this lock. Its selected generation
         # (including explicit absence) must still be current before publication;
         # matching endpoints alone do not establish that concurrency guarantee.
-        if selected_source_sha256 is not _SOURCE_NOT_SELECTED or endpoint_selection is not None:
-            current_sha256 = digest(json_bytes(previous)) if previous is not None else None
         if selected_source_sha256 is not _SOURCE_NOT_SELECTED:
             trace_source_selection(previous, current_sha256, symbol=symbol, reason="acquisition_execution")
             event(
@@ -438,7 +543,6 @@ def download_pricing(
                 )
         if endpoint_selection is None and symbol in context.endpoint_selections:
             accepted = context.endpoint_selections[symbol]
-            current_sha256 = digest(json_bytes(previous)) if previous is not None else None
             if accepted.applies(store, symbol, current_sha256, end_text, asof):
                 endpoint_selection = accepted
         accepted_endpoints = None
@@ -453,7 +557,6 @@ def download_pricing(
         stored_start = timestamp(previous.get("history_start", HISTORY_START)) if previous is not None else None
         history_start = requested_start or stored_start or timestamp(HISTORY_START)
         if expected_source_sha256 is not None:
-            current_sha256 = digest(json_bytes(previous)) if previous is not None else None
             trace_source_selection(previous, current_sha256, symbol=symbol, reason="replacement_execution")
             event(
                 "pricing_generation_check",
@@ -474,7 +577,63 @@ def download_pricing(
                 or previous["latest_request"]["asof"] != asof
             ):
                 raise DownloadError("planned replacement must preserve the stored start, end and asof")
-        if previous is not None and end == previous_end and history_start == stored_start and not refresh_all:
+        selected_correction = (
+            endpoint_selection is not None
+            and endpoint_selection.comparison is not None
+            and endpoint_selection.comparison.decision == "latest_session"
+        )
+        if (
+            history_correction_id is not None
+            and previous is not None
+            and endpoint_selection is not None
+            and endpoint_selection.comparison is not None
+            and endpoint_selection.comparison.matched
+        ):
+            # A scoped obligation was superseded by another completed pricing
+            # generation. Its applicable fresh comparison accepts these prices;
+            # only the durable acknowledgement remains to publish.
+            if end != previous_end or history_start != stored_start:
+                raise DownloadError("unchanged correction acknowledgement must preserve selected coverage")
+            written = publish_acquired(
+                root,
+                previous,
+                symbol,
+                previous["anchor_month"],
+                previous["latest_request"],
+                stored_start,
+                accepted_endpoints,
+                {},
+                None,
+                history_correction_id=history_correction_id,
+                previous_source_sha256=current_sha256,
+            )
+            return {
+                "symbol": symbol,
+                "anchor_month": previous["anchor_month"],
+                "request": previous["latest_request"],
+                "mode": "unchanged",
+                "consistency_check": "matched",
+                "updated_boundaries": [],
+                "files_written": written["files_written"],
+                "source_sha256": written["source_sha256"],
+                "recovered": recovered,
+                "requests": 0,
+                "changed": False,
+                "history_start": previous["history_start"],
+                "pending_update": written["pending_update"],
+                **{
+                    key: written["source"][key]
+                    for key in ("latest_session_correction", "history_changes")
+                    if key in written["source"]
+                },
+            }
+        if (
+            previous is not None
+            and end == previous_end
+            and history_start == stored_start
+            and not refresh_all
+            and not selected_correction
+        ):
             # The completed request boundary is authoritative, even for an empty
             # response or a weekend. Advance the boundary (or force) to probe again.
             return {
@@ -485,7 +644,7 @@ def download_pricing(
                 "consistency_check": "not_required",
                 "updated_boundaries": [],
                 "files_written": 0,
-                "source_sha256": digest(json_bytes(previous)),
+                "source_sha256": current_sha256,
                 "recovered": recovered,
                 "requests": 0,
                 "changed": False,
@@ -502,7 +661,18 @@ def download_pricing(
         if endpoints is None:
             if previous is not None and not refresh_all:
                 history_check_endpoints(None)  # Missing handoff never authorizes a payload crawl.
-            endpoints = {name: () for name in ADJUSTMENTS}
+            endpoints = Endpoints({name: () for name in ADJUSTMENTS}, tail_all=())
+        old_documents = {}
+        if previous is not None and not refresh_all and endpoints.tail_all is None:
+            publication, endpoints = publish_legacy_tail(
+                root, previous, endpoints, documents=old_documents, source_sha256=current_sha256
+            )
+            previous = publication["source"]
+            current_sha256 = publication["source_sha256"]
+            if endpoint_selection is not None:
+                endpoint_selection = replace(
+                    endpoint_selection, generation=publication["source_sha256"], tail_all=endpoints.tail_all
+                )
         old_extent = (
             _manifest_extent(root, previous)
             if previous is not None and refresh_all and not previous.get("validator")
@@ -517,31 +687,89 @@ def download_pricing(
             )
         extending = stored_start is not None and history_start < stored_start
         check = "not_required"
+        comparison = endpoint_selection.comparison if endpoint_selection is not None else None
         if previous is not None and not refresh_all and not extending:
             if not any(endpoints.values()):
                 check = "no_stored_sessions"
             else:
-                matched = endpoint_selection.matched if endpoint_selection is not None else None
-                if matched is None:
-                    matched = _endpoints_match(
+                if comparison is None:
+                    comparison = fetch_history(
                         client,
                         symbol,
-                        history_check_endpoints(endpoints),
+                        endpoints,
                         asof,
                         cutoff=end,
-                        require_present=True,
                     )
                 selected_check = endpoint_selection or EndpointSelection(
                     str(store),
                     symbol,
-                    digest(json_bytes(previous)),
+                    current_sha256,
                     end_text,
                     asof,
                     tuple((name, tuple(rows)) for name, rows in endpoints.items()),
+                    tail_all=endpoints.tail_all,
                 )
-                context.endpoint_selections[symbol] = replace(selected_check, matched=matched)
-                check = "matched" if matched else "mismatch"
+                context.endpoint_selections[symbol] = replace(
+                    selected_check,
+                    matched=comparison.matched,
+                    comparison=comparison,
+                    tail_all=endpoints.tail_all,
+                )
+                check = (
+                    "matched"
+                    if comparison.matched
+                    else "latest_session"
+                    if comparison.decision == "latest_session"
+                    else "mismatch"
+                )
         full_history = previous is None or refresh_all or extending or check == "mismatch"
+        correction = None
+        preserves_correction_timestamps = False
+        previous_session = endpoints.tail_all[-2][0] if check == "latest_session" else None
+        if check == "latest_session":
+            row = next(
+                row
+                for row in comparison.live_all
+                if timestamp(row[0]).astimezone(NEW_YORK).date()
+                == timestamp(comparison.correction_session).astimezone(NEW_YORK).date()
+            )
+            correction_asof = (
+                endpoint_selection.comparison_asof if endpoint_selection is not None else None
+            ) or asof
+            correction_start, correction_end = _endpoint_window(row, correction_asof, cutoff=previous_end)
+            correction_key = (
+                symbol,
+                current_sha256,
+                correction_start,
+                correction_end,
+                correction_asof,
+            )
+            correction = context.correction_acquisitions.get(correction_key)
+            if correction is None:
+                take = getattr(client, "take_adjustments", None)
+                state = (
+                    take(symbol, correction_start, correction_end, correction_asof)
+                    if take
+                    else AdjustmentAcquisition(symbol, correction_start, correction_end, correction_asof)
+                )
+                if state.completed is None and "all" not in state.observed:
+                    state.accept(
+                        "all",
+                        CompletedBars(symbol, "all", correction_start, correction_end, correction_asof, (row,)),
+                    )
+                correction = state.finish(
+                    lambda name: client.fetch(
+                        symbol, name, correction_start, correction_end, asof=correction_asof
+                    )
+                )
+                context.correction_acquisitions[correction_key] = correction
+            preserves_correction_timestamps = all(
+                endpoints[name]
+                and correction.views[name]
+                and timestamp(endpoints[name][-1][0]) == timestamp(correction.views[name][-1][0])
+                for name in ADJUSTMENTS
+            )
+            endpoints = _incremental_endpoints(endpoints, correction.views, correction_start)
         restarted = False
         for attempt in range(2):
             start = history_start if full_history else previous_end
@@ -554,6 +782,12 @@ def download_pricing(
                 "currency": "USD",
                 "timeframe": "1Day",
             }
+            if correction is not None and start == end:
+                request["start"] = correction_start.isoformat().replace("+00:00", "Z")
+                acquired = correction
+                views = {name: () for name in ADJUSTMENTS}
+                selected_endpoints = endpoints
+                break
             take = getattr(client, "take_adjustments", None)
             acquisition = (
                 take(symbol, start, end, asof) if take else AdjustmentAcquisition(symbol, start, end, asof)
@@ -582,7 +816,7 @@ def download_pricing(
             ):
                 raise DownloadError("provider rows do not fit the requested session-month range")
             selected_endpoints = (
-                endpoints_of(views) if full_history else _incremental_endpoints(endpoints, views, start)
+                acquired.endpoints if full_history else _incremental_endpoints(endpoints, views, start)
             )
             # Matching first/latest all already approved the old generation.
             # Append never requests overlap or confirms its historical first rows again.
@@ -604,19 +838,25 @@ def download_pricing(
             if attempt:
                 raise DownloadError("provider pricing changed during acquisition twice; publication unchanged")
             full_history, restarted, check = True, True, "changed_during_acquisition"
-        old_documents = {}
         read_selected = partial(read_boundary, documents=old_documents)
-        acquired_extent = session_extent(endpoints_of(views))
-        if not full_history and (acquired_extent or anchor != previous["anchor_month"]):
-            # Decode only for output assembly, never to re-prove accepted history.
-            views = _join(read_selected(root, previous, "current_month"), views)
+        acquired_extent = acquired.extent if any(views.values()) else None
         changed_views = (
-            updated_boundaries(root, previous, anchor, views, full_history=full_history, read=read_selected)
-            if full_history or acquired_extent or anchor != previous["anchor_month"]
-            else {}
+            updated_boundaries(root, previous, anchor, views, full_history=True, read=read_selected)
+            if full_history
+            else incremental_boundaries(
+                root,
+                previous,
+                anchor,
+                views,
+                correction=correction.views if correction else None,
+                session=comparison.correction_session if correction else None,
+                read=read_selected,
+            )
         )
         update = (
-            merge_ranges(old_extent, session_extent(selected_endpoints)) if full_history else acquired_extent
+            merge_ranges(old_extent, acquired_extent)
+            if full_history
+            else merge_ranges(acquired_extent, correction.extent if correction else None)
         )
         written = publish_acquired(
             root,
@@ -634,16 +874,43 @@ def download_pricing(
             history_correction_id=history_correction_id,
             old_documents=old_documents,
             adjustment_acquisition=acquired,
+            session_correction={
+                "session": comparison.correction_session,
+                "previous_session": previous_session,
+                "preserves_timestamps": preserves_correction_timestamps,
+                "source_sha256": current_sha256,
+                "unchanged_ancestors": [
+                    change["source_sha256"]
+                    for change in previous.get("history_changes", ())
+                    if change["changed_from"] is None
+                ],
+                "acquisition": correction.proof,
+            }
+            if correction
+            else None,
+            preserve_correction=not full_history,
+            previous_source_sha256=current_sha256,
         )
         return {
             "symbol": symbol,
             "anchor_month": anchor,
             "request": request,
-            "mode": "initial" if previous is None else "full_refresh" if full_history else "update",
+            "mode": "initial"
+            if previous is None
+            else "full_refresh"
+            if full_history
+            else "latest_session"
+            if correction
+            else "update",
             "consistency_check": check,
             "updated_boundaries": list(changed_views),
             "files_written": written["files_written"],
             "source_sha256": written["source_sha256"],
+            **{
+                key: written["source"][key]
+                for key in ("latest_session_correction", "history_changes")
+                if key in written["source"]
+            },
             "recovered": recovered,
             "restarted": restarted,
             "has_data": any(selected_endpoints.values()),

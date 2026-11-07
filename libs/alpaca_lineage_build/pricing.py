@@ -25,6 +25,7 @@ from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from .contract import LineageError, document_digest
+from .correction_prefix import correction_from, prefix_assignments
 from .resume import assignment_summary, unchanged_rows
 
 
@@ -37,6 +38,9 @@ class PricingInput:
     downloads: dict
     local: dict
     previous_assignment_summary: dict | None = None
+    correction_from: str | None = None
+    prefix_boundaries: dict | None = None
+    previous_coverage_end: str | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
         # Ignored paths satisfy the injected interface; they must not trigger filesystem access.
@@ -54,6 +58,8 @@ def load_pricing(
     resume_from=None,
     previous=None,
     partitions=None,
+    source_sha256=None,
+    selected_correction=...,
 ) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
     # TRUST BOUNDARY: pricing already validated the selected source and payload
@@ -64,7 +70,7 @@ def load_pricing(
     source = load_source(root, symbol) if source is None else source
     if source is None:
         raise LineageError(f"no published pricing for {symbol}")
-    generation = document_digest(source)
+    generation = document_digest(source) if source_sha256 is None else source_sha256
     trace_source_selection(source, generation, symbol=symbol, reason="lineage_input")
     # The caller lends this cache only within one selected source and continuous
     # lock lifetime. Keep whole decoded partitions when selecting a suffix so a
@@ -77,10 +83,16 @@ def load_pricing(
             partitions[key] = load_published_boundary(root, source, kind, selected=selected)
         return dict(partitions[key])
 
+    corrected = (
+        (correction_from(source, previous) if selected_correction is ... else selected_correction)
+        if resume_from is not None
+        else None
+    )
+    prefix_ends = {}
     views = (
         {adjustment: () for adjustment in ADJUSTMENTS}
         if resume_from is not None and unchanged_rows(source, previous, selected=generation)
-        else _added_views(root, source, resume_from, read=read)
+        else _added_views(root, source, resume_from, read=read, prefix_ends=prefix_ends if corrected else None)
         if resume_from is not None
         else (
             read(root, source, "current_month", selected=selected)
@@ -101,6 +113,9 @@ def load_pricing(
     downloads, descriptors = {}, []
     converted_views = {}
     prior_summary = assignment_summary(previous, previous_boundaries) if resume_from is not None else None
+    clipped = None
+    if corrected:
+        prior_summary, clipped = prefix_assignments(previous, previous_boundaries, corrected, prefix_ends)
     for adjustment in ADJUSTMENTS:
         values = views[adjustment]
         rows = converted_views.get(id(values))
@@ -173,10 +188,21 @@ def load_pricing(
         "downloads": descriptors,
         "manifest_errors": [],
     }
-    return PricingInput(symbol, source, generation, views, downloads, local, prior_summary)
+    return PricingInput(
+        symbol,
+        source,
+        generation,
+        views,
+        downloads,
+        local,
+        prior_summary,
+        corrected,
+        clipped,
+        previous["processed_through"] if corrected else None,
+    )
 
 
-def _added_views(root, source, start, *, read=load_published_boundary):
+def _added_views(root, source, start, *, read=load_published_boundary, prefix_ends=None):
     """Read only pricing partitions intersecting the producer-approved added range."""
     anchor = source["anchor_month"]
     kinds = ["current_month"]
@@ -198,8 +224,16 @@ def _added_views(root, source, start, *, read=load_published_boundary):
                         dates[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
                     if dates[row[0]] >= start:
                         rows.append(row)
+                    elif prefix_ends is not None:
+                        prefix_ends[adjustment] = row[0]
             assembled[key] = tuple(rows)
         views[adjustment] = assembled[key]
+        if prefix_ends is not None and adjustment not in prefix_ends:
+            # Aliases shared the preceding assembly; lend its accepted seam.
+            for prior in views:
+                if views[prior] is views[adjustment] and prior in prefix_ends:
+                    prefix_ends[adjustment] = prefix_ends[prior]
+                    break
     return views
 
 

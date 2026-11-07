@@ -6,12 +6,17 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from decimal import Decimal
+from importlib.util import find_spec
 from pathlib import Path
 from threading import Barrier, Lock, get_ident
 from threading import enumerate as threads
+from unittest import skipUnless
 from unittest.mock import patch
 
 from test_alpaca_end_of_day_api import NativeCase, valid_bars
@@ -25,6 +30,7 @@ from alpaca_end_of_day import (
     PublicIdUnavailableError,
     ReaderBusyError,
     StandaloneReader,
+    TickerOwnershipInterval,
     _csv_export,
 )
 from libs.alpaca_cli import main
@@ -123,8 +129,8 @@ class CsvExportTests(NativeCase):
         public_id = data.list_securities()[0].public_id
         result, manifest, documents = self.exported(data)
         digest, rows = documents[public_id]
-        self.assertEqual(digest["schema_version"], 1)
-        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(digest["schema_version"], 2)
+        self.assertEqual(manifest["schema_version"], 2)
         self.assertEqual(digest["columns"], ["date", "raw_open", "raw_volume", "raw_trade_count"])
         self.assertEqual(rows[0]["raw_open"], str(self.bars[0]["o"]))
         self.assertEqual(rows[0]["raw_volume"], "9007199254740993.5")
@@ -132,6 +138,10 @@ class CsvExportTests(NativeCase):
         self.assertEqual([row["date"] for row in rows], [bar["t"][:10] for bar in self.bars])
         self.assertEqual(digest["range"], {"start": rows[0]["date"], "end": rows[-1]["date"], "inclusive": True})
         self.assertEqual(digest["security"]["public_id"], public_id)
+        self.assertEqual(
+            digest["security"]["ticker_ranges"],
+            [{"ticker": "TEST", "first_session": rows[0]["date"], "last_session": rows[-1]["date"]}],
+        )
         self.assertEqual(len(digest["column_aliases"]), 56)
         self.assertEqual(
             manifest["columns"], ["date", *(f"{prefix}_{field}" for prefix in PREFIXES for field in FIELDS)]
@@ -283,7 +293,7 @@ class CsvExportTests(NativeCase):
         with self.assertRaisesRegex(PublicIdUnavailableError, "^public ID is not available$"):
             data.write_csv_export(self.directory / "exports/csv", public_ids=[bad_id])
 
-    def test_renamed_lineage_exports_one_continuous_public_identity(self):
+    def renamed_library(self):
         bars = informative_bars("2026-09-25", "2026-10-14")
         for symbol, rows in (("OLD", informative_bars("2026-09-25", "2026-10-01")), ("NEW", bars)):
             download_pricing(self.store, symbol, "2026-10-14", client=FakeClient(rows))
@@ -307,16 +317,98 @@ class CsvExportTests(NativeCase):
             ),
         )
         self.assertEqual(result["failed"], 0, result)
-        data = self.bootstrap()
+        return self.bootstrap()
+
+    def test_renamed_lineage_exports_one_continuous_public_identity(self):
+        data = self.renamed_library()
         public_id = data.resolve_ticker("NEW")[0].public_id
         self.assertEqual(public_id, data.resolve_ticker("OLD")[0].public_id)
         _, manifest, documents = self.exported(data, public_ids=[public_id])
         self.assertEqual(set(manifest["identities"]), {public_id})
         digest, rows = documents[public_id]
         self.assertEqual(digest["security"]["tickers"], ["NEW", "OLD"])
-        self.assertEqual([row["date"] for row in rows], [bar["t"][:10] for bar in bars])
+        self.assertEqual(
+            digest["security"]["ticker_ranges"],
+            [
+                {
+                    "ticker": match.ticker,
+                    "first_session": match.first_session.isoformat(),
+                    "last_session": match.last_session.isoformat(),
+                }
+                for ticker in data.get_security(public_id).tickers
+                for match in data.resolve_ticker(ticker)
+                if match.public_id == public_id
+            ],
+        )
+        self.assertEqual(
+            [row["date"] for row in rows],
+            [bar["t"][:10] for bar in informative_bars("2026-09-25", "2026-10-14")],
+        )
         self.assertNotIn("ticker", digest["columns"])
         self.assertNotIn("name", digest["columns"])
+
+    def test_filtered_export_carries_the_complete_published_ticker_ranges(self):
+        data = self.renamed_library()
+        public_id = data.resolve_ticker("NEW")[0].public_id
+        accepted = data._records[public_id]["public"]["ticker_ranges"]
+        last = data.get_security(public_id).last_session.isoformat()
+        _, _, documents = self.exported(data, public_ids=[public_id], start=last)
+        digest, rows = documents[public_id]
+        self.assertEqual([row["date"] for row in rows], [last])
+        self.assertEqual(digest["security"]["ticker_ranges"], accepted)
+        self.assertTrue(any(item["first_session"] < last for item in accepted))
+
+    @skipUnless(
+        all(find_spec(module) is not None for module in ("numpy", "pandas", "pyarrow")),
+        "install the standalone Bloodhound app dependencies for cross-application conversion",
+    )
+    def test_bloodhound_consumes_the_completed_label_handoff_from_a_real_export(self):
+        import pyarrow.parquet as pq
+
+        data = self.renamed_library()
+        public_id = data.resolve_ticker("NEW")[0].public_id
+        # Broader ownership evidence can retain unknown endpoints. The producer's
+        # observed-label decision remains the authority for the exported rows.
+        data._securities[public_id] = replace(
+            data.get_security(public_id),
+            ticker_ownership_intervals=(
+                TickerOwnershipInterval("OLD", None, None, "111111111"),
+                TickerOwnershipInterval("NEW", None, None, "222222222"),
+            ),
+        )
+        exported = data.write_csv_export(self.directory / "csv", public_ids=[public_id])
+        output = self.directory / "bloodhound.parquet"
+        app = Path(__file__).resolve().parents[1] / "bloodhound_app" / "alpaca_to_bloodhound.py"
+        converted = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(app),
+                "--data-in",
+                exported["output"],
+                "--blood-out",
+                str(output),
+                "--quiet",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        self.assertEqual(converted.returncode, 0, converted.stderr)
+        rows = pq.read_table(output).to_pylist()
+        accepted = data._records[public_id]["public"]["ticker_ranges"]
+        for row in rows:
+            session = row["date"].date().isoformat()
+            labels = {
+                item["ticker"] for item in accepted if item["first_session"] <= session <= item["last_session"]
+            }
+            self.assertEqual({row["symbol"]}, labels)
+        report = json.loads(Path(str(output) + ".report.json").read_text())
+        self.assertEqual(report["histories_rejected"], 0)
+        self.assertEqual(report["output_rows"], len(rows))
+        self.assertEqual(
+            report["histories"][0]["payloads"][0]["ticker_label_authority"], "completed_export_ticker_ranges"
+        )
 
     def test_shared_group_reads_each_payload_once_and_never_discovers_or_reaudits(self):
         self.refresh(FakeClient(valid_bars(start="2026-09-25")))

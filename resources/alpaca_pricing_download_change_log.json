@@ -237,5 +237,22 @@
     "modifications": [
       "Extend adaptive acquisition to policy alpaca_adjustment_equivalence_v2: when dividend equals all, acquire split directly and finish after four views for ordinary equality, a separate split view or split equal to all. Preserve exact split values and infer split,spin-off from that observation while retaining the empirical raw/spin-off and dividend-combination aliases. Preserve completed responses, retained-history approvals, first-session confirmation scope, publication recovery and pricing-31 compatibility."
     ]
+  },
+  {
+    "modifications": [
+      "Allow dependency acquisition to select work from a completed adaptive missing-suffix acquisition before checking retained history. An empty suffix leaves the stored generation and coverage untouched without historical endpoint checks; a nonempty suffix carries its completed adjustment responses, hashes and decision into the ordinary generation-bound first/latest-approved acquisition without repeating them. Failed selection remains on the ordinary fail-closed path."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish the first and latest up to ten all-adjusted rows with every completed pricing generation. Assemble recognized legacy tails once from manifest-selected payloads using readall_rsplit and preserve the journal-owned publication boundary.",
+      "Carry generation-bound unchanged, latest-session correction and full-history decisions through retained acquisition. Correct only the latest session across all eight adjustment views using accepted live observations, combine affected partition assembly with append, and retain unaffected payload references. Reuse the generation calculated under the owning lock across selection checks, correction scope, ancestry and publication; consume the completed publication's generation handoff."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry immutable accepted summary rows and per-target append plans across planning, selection and execution without repeating row or tail validation or request compilation; changed entries and targets select new work.",
+      "Retain completed acquisition endpoints and extent through publication; preserve partial and completed missing-suffix responses across boundary failures and retries within their source-generation, mapping and request scope."
+    ]
   }
 ]

@@ -300,17 +300,20 @@ class LineageContinuationTests(unittest.TestCase):
                 end="2026-10-15",
                 bars=case.bars + [fixture.bar("2026-10-14")],
             )
-        with patch.object(pricing, "load_published_views", wraps=pricing.load_published_views):
+        with patch.object(
+            pricing, "load_published_views", side_effect=AssertionError("accepted group history reopened")
+        ):
             changed = case.run_build(symbols=["GOOG"], client=client)
-        self.assertFalse(changed["results"][0]["reused_closed_boundaries"])
-        self.assertEqual(changed["results"][0]["pricing_rows_processed"], (len(case.bars) + 1) * 16)
+        self.assertTrue(changed["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(changed["results"][0]["pricing_rows_processed"], 16)
         assignments = {name: assigned_rows(name) for name in names}
         counts = {name: case.receipt(name)["source_rows"] for name in names}
         case.run_build(symbols=["GOOG"], client=client, refresh=True)
         self.assertEqual(assignments, {name: assigned_rows(name) for name in names})
         self.assertEqual(counts, {name: case.receipt(name)["source_rows"] for name in names})
-        # An unequal advance changes the source priority even though every
-        # retained price and identity is unchanged. Reconcile the whole group.
+        # Unequal coverage is a suffix fact, not permission to replace an already
+        # accepted historical source decision. The new suffix still sees every
+        # member's current evidence and the full accepted group topology.
         for name in names:
             case.download(
                 symbol=name,
@@ -319,13 +322,58 @@ class LineageContinuationTests(unittest.TestCase):
                 + [fixture.bar("2026-10-14")]
                 + ([fixture.bar("2026-10-15")] if name == "OTHER" else []),
             )
-        with patch.object(pricing, "load_published_views", wraps=pricing.load_published_views) as reads:
+        with patch.object(
+            pricing, "load_published_views", side_effect=AssertionError("accepted group history reopened")
+        ) as reads:
             changed = case.run_build(symbols=["GOOG"], client=client)
-        self.assertFalse(changed["results"][0]["reused_closed_boundaries"])
-        self.assertEqual(reads.call_count, 2)
+        self.assertTrue(changed["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(changed["results"][0]["pricing_rows_processed"], 8)
+        self.assertEqual(reads.call_count, 0)
         assignments = {name: assigned_rows(name) for name in names}
         case.run_build(symbols=["GOOG"], client=client, refresh=True)
-        self.assertEqual(assignments, {name: assigned_rows(name) for name in names})
+        refreshed = {name: assigned_rows(name) for name in names}
+
+        # Explicit refresh may choose the now-longer peer as descriptive source.
+        # That is not authority for an ordinary append to replace the accepted
+        # historical source selection; row ownership must remain identical.
+        def without_selection(rows):
+            return [{key: value for key, value in row.items() if key != "observation_selection"} for row in rows]
+
+        for name in names:
+            self.assertEqual(without_selection(assignments[name]), without_selection(refreshed[name]))
+
+    def test_fresh_descriptive_asset_change_updates_suffix_without_reopening_history(self):
+        from libs.alpaca_lineage_build import pricing
+        from libs.alpaca_lineage_build.metadata import EvidenceClient
+
+        case = self.case
+        bars = fixture.calendar_bars("2025-12-01", "2026-10-14")
+        original = fixture.asset("GOOG")
+        case.download(bars=bars)
+        first = fixture.IdentityClient({"GOOG": original})
+        case.run_build(client=first)
+        before = case.receipt()
+
+        changed_asset = {**original, "name": "Renamed issuer", "status": "inactive", "tradable": False}
+        case.download(end="2026-10-15", bars=bars + [fixture.bar("2026-10-14")])
+        identity = fixture.IdentityClient({"GOOG": changed_asset})
+        evidence = EvidenceClient(
+            identity,
+            observation={
+                "records": [changed_asset],
+                "catalogue_observed_at_utc": "2026-10-15T23:00:00Z",
+            },
+        )
+        with patch.object(
+            pricing, "load_published_views", side_effect=AssertionError("descriptive change reopened history")
+        ):
+            result = case.run_build(client=identity, evidence_client=evidence)["results"][0]
+        self.assertTrue(result["reused_closed_boundaries"])
+        self.assertEqual(result["historical_rows_reused"], before["source_rows"])
+        self.assertEqual(result["pricing_rows_processed"], 8)
+        lookup = case.receipt()["evidence"]["asset_lookups"][0]
+        self.assertEqual(lookup["asset"]["name"], "Renamed issuer")
+        self.assertEqual(lookup["asset"]["status"], "inactive")
 
     def test_empty_histories_reuse_decisions_when_only_coverage_advances(self):
         case = self.case

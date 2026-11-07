@@ -13,7 +13,7 @@ from libs.common.debug_trace import event, in_context, traced
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from .adaptive import acquire_adjustments
-from .check_summary import assert_current, validate_entry
+from .check_summary import AcceptedEntry, assert_current, validate_entry
 from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
@@ -35,6 +35,7 @@ from .download import (
 )
 from .endpoints import endpoints_of, session_extent
 from .handoff import load_published_boundary
+from .history_tail import assemble_legacy_tail
 from .responses import completed_bars
 from .storage import load_source, read_validator, recover, regular_path, ticker_lock, trace_source_selection
 
@@ -49,7 +50,9 @@ MAX_ROWS = 200000  # Bound acquired rows across eight views per publication coho
 def _validate_append_entry(entry):
     """Accept the active-summary row or an internal empty-source baseline."""
     if entry.get("last_all") is not None:
-        symbol, asof, end, row, _ = validate_entry(entry)
+        symbol, asof, end, row, _ = (
+            entry.serialized if isinstance(entry, AcceptedEntry) else validate_entry(entry)
+        )
         return symbol, asof, timestamp(end), row
     if set(entry) != {"symbol", "asof", "end_exclusive", "last_all"}:
         raise DownloadError("invalid empty append entry")
@@ -66,16 +69,28 @@ def append_needs(entries, end, *, end_by_symbol=None):
     """Pure needs compiler: saved covered end/asof -> frozen missing interval."""
     needs, unchanged, seen = [], [], set()
     for entry in entries:
-        symbol, asof, covered, _ = _validate_append_entry(entry)
+        target = end if end_by_symbol is None else end_by_symbol[entry["symbol"]]
+        cache = entry.append_plans if isinstance(entry, AcceptedEntry) else {}
+        if target not in cache:
+            cache[target] = _append_need(entry, target)
+        symbol, need, completed = cache[target]
         if symbol in seen:
             raise DownloadError(f"duplicate append ticker: {symbol}")
         seen.add(symbol)
-        target = end if end_by_symbol is None else end_by_symbol[symbol]
-        start = covered
-        if start >= target:
-            unchanged.append({"symbol": symbol, "status": "unchanged", "mode": "unchanged", "changed": False})
-            continue
-        needs.append(
+        if need is None:
+            unchanged.append(completed)
+        else:
+            needs.append(need)
+    return needs, unchanged
+
+
+def _append_need(entry, target):
+    symbol, asof, start, _ = _validate_append_entry(entry)
+    if start >= target:
+        return symbol, None, {"symbol": symbol, "status": "unchanged", "mode": "unchanged", "changed": False}
+    return (
+        symbol,
+        (
             {
                 "kind": "bars",
                 "why": "append_completed_sessions",
@@ -86,8 +101,9 @@ def append_needs(entries, end, *, end_by_symbol=None):
                 ),
                 "ranges": [{"start": start.isoformat(), "end_exclusive": target.isoformat()}],
             }
-        )
-    return needs, unchanged
+        ),
+        None,
+    )
 
 
 def _cohorts(needs):
@@ -105,7 +121,7 @@ def _cohorts(needs):
         yield cohort
 
 
-def select_append_sources(store, entries, end_date, *, required_symbols=()):
+def select_append_sources(store, entries, end_date, *, required_symbols=(), selections=None):
     """Select generations for the append subset before its history check begins."""
     needs, _ = append_needs(entries, request_end(end_date))
     result = {}
@@ -119,6 +135,8 @@ def select_append_sources(store, entries, end_date, *, required_symbols=()):
             if source is None:
                 raise DownloadError(f"{symbol}: selected append source missing")
             result[symbol] = digest(json_bytes(source))
+            if selections is not None:
+                selections[symbol] = source
             trace_source_selection(source, result[symbol], symbol=symbol, reason="append_selection")
     return result
 
@@ -190,6 +208,7 @@ def _publish_append(
             raise DownloadError(
                 f"{symbol}: partial adjustment history without all requires explicit replacement"
             )
+        endpoints = assemble_legacy_tail(root, previous, endpoints)
         for name, rows in views.items():
             if rows and endpoints[name] and timestamp(rows[0][0]) <= timestamp(endpoints[name][-1][0]):
                 raise DownloadError(f"{symbol}: append would overlap approved {name} history")
@@ -198,7 +217,7 @@ def _publish_append(
         read_selected = partial(load_published_boundary, selected=True, documents=old_documents)
         anchor = (end - timedelta(days=1)).strftime("%Y-%m")
         selected = _incremental_endpoints(endpoints, views, start)
-        update = session_extent(endpoints_of(views))
+        update = adjustment_acquisition.extent if adjustment_acquisition else session_extent(endpoints_of(views))
         changed_views = {}
         if update or anchor != previous["anchor_month"]:
             month = read_selected(root, previous, "current_month")
@@ -225,6 +244,7 @@ def _publish_append(
             update,
             old_documents=old_documents,
             adjustment_acquisition=adjustment_acquisition,
+            previous_source_sha256=generation,
         )
         return {
             "symbol": symbol,
@@ -235,6 +255,11 @@ def _publish_append(
             "added_rows": {name: len(rows) for name, rows in views.items()},
             "files_written": written["files_written"],
             "source_sha256": written["source_sha256"],
+            **{
+                key: written["source"][key]
+                for key in ("latest_session_correction", "history_changes")
+                if key in written["source"]
+            },
             "history_start": written["source"]["history_start"],
             "pending_update": written["pending_update"],
             "adjustment_acquisition": adjustment_acquisition.proof if adjustment_acquisition else None,
@@ -255,6 +280,7 @@ def append_entries(
     approved_generations=None,
     endpoint_selections=None,
     context=None,
+    acquired=None,
 ):
     """Batch explicit trusted baselines through the ordinary append publisher."""
     if workers not in (1, 2, 3):
@@ -284,8 +310,13 @@ def append_entries(
         pages_before = metrics.get("page_requests", 0)
         # Different starts remain separate: never overfetch another ticker's approved dates.
         try:
-            acquired, _ = acquire_adjustments(
-                cohort, client, metrics=metrics, progress=progress, merge_ranges=False
+            states, _ = acquire_adjustments(
+                cohort,
+                client,
+                metrics=metrics,
+                progress=progress,
+                merge_ranges=False,
+                acquired=acquired,
             )
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
@@ -313,7 +344,7 @@ def append_entries(
                 before_publish()
             publishing = True
 
-        def publish_one(item, responses=acquired):
+        def publish_one(item, responses=states):
             index, need = item
             symbol = need["symbols"][0]
             try:
@@ -344,7 +375,7 @@ def append_entries(
                 results.append(result)
                 if progress:
                     progress("pricing", {"done": len(results), "total": len(entries), **result})
-        del publish_one, acquired
+        del publish_one, states
     order = {entry["symbol"]: index for index, entry in enumerate(entries)}
     results.sort(key=lambda result: order[result["symbol"]])
     failed = sum(result["status"] == "failed" for result in results)

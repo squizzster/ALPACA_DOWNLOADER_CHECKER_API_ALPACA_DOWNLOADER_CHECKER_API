@@ -297,9 +297,45 @@ class LineageRequiredTests(unittest.TestCase):
                 end="2026-10-16",
                 bars=bars[symbol] + fixture.calendar_bars("2026-10-14", "2026-10-16"),
             )
-        case.run_build(symbols=["GOOG"], client=client)
+        result = case.run_build(symbols=["GOOG"], client=client)["results"][0]
+        self.assertFalse(result["reused_closed_boundaries"])
+        self.assertGreater(result["pricing_rows_processed"], 16)
         self.assertEqual(case.receipt()["correlated_rows"], 80)
         self.assertEqual(case.receipt()["unresolved_rows"], 0)
+        self.assert_full_parity(client, ("GOOG", "OTHER"))
+
+    def test_resolved_structural_group_append_keeps_accepted_history_closed(self):
+        case = self.case
+        old, other = fixture.asset("GOOG", "old"), fixture.asset("OTHER", "other")
+        action = {
+            "action_type": "cash_merger",
+            "id": "terminal",
+            "process_date": "2026-10-10",
+            "effective_date": "2026-10-14",
+            "acquiree_symbol": "GOOG",
+            "acquiree_cusip": "111111111",
+            "acquirer_symbol": "OTHER",
+            "acquirer_cusip": "222222222",
+            "cash": "1",
+        }
+        client = fixture.IdentityClient(
+            {"GOOG": old, "111111111": old, "OTHER": other, "222222222": other}, [action]
+        )
+        bars = fixture.calendar_bars("2026-10-01", "2026-10-14")
+        for symbol in ("GOOG", "OTHER"):
+            case.download(symbol=symbol, bars=bars)
+        case.run_build(symbols=["GOOG"], client=client)
+        previous = {symbol: case.receipt(symbol) for symbol in ("GOOG", "OTHER")}
+        self.assertTrue(all(item["unresolved_rows"] == 0 for item in previous.values()))
+        for symbol in ("GOOG", "OTHER"):
+            case.download(symbol=symbol, end="2026-10-15", bars=bars + [fixture.bar("2026-10-14")])
+        with patch.object(
+            pricing, "load_published_views", side_effect=AssertionError("structural history reopened")
+        ):
+            result = case.run_build(symbols=["GOOG"], client=client)["results"][0]
+        self.assertTrue(result["reused_closed_boundaries"])
+        self.assertEqual(result["pricing_rows_processed"], 16)
+        self.assertEqual(result["historical_rows_reused"], sum(r["source_rows"] for r in previous.values()))
         self.assert_full_parity(client, ("GOOG", "OTHER"))
 
     def test_normal_cutoff_advance_preserves_accepted_structural_history(self):
@@ -359,7 +395,12 @@ class LineageRequiredTests(unittest.TestCase):
         case.download(bars=[])
         case.run_build(client=client)
         case.download(end="2026-10-15", bars=[fixture.bar("2026-10-14")])
-        case.run_build(client=client)
+        with patch.object(
+            pricing, "load_published_views", side_effect=AssertionError("empty accepted history reopened")
+        ):
+            result = case.run_build(client=client)["results"][0]
+        self.assertTrue(result["reused_closed_boundaries"])
+        self.assertEqual(result["pricing_rows_processed"], 8)
         segment = case.assignments()[0]
         self.assertEqual(segment["reason_codes"], ["historical_market_data_without_alpaca_asset"])
         self.assertIsNotNone(segment["market_data_series_identity"])

@@ -11,10 +11,11 @@ from pathlib import Path
 from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import COLUMNS, NEW_YORK, DownloadError, digest, json_bytes, symbol_label, timestamp
+from .endpoints import TAIL_VERSION, Endpoints, history_windows, validate_tail
 from .storage import regular_path
 
 SUMMARY_FILE = "pricing_check_summary.sqlite3"
-FORMAT = 3
+FORMAT = 4
 
 
 def summary_path(store):
@@ -38,7 +39,8 @@ def _connection(store, *, create=False, readonly=False, allow_legacy=False):
                         db.execute("INSERT INTO state VALUES (1, ?, 0, 0)", (uuid.uuid4().hex,))
                         db.execute(
                             "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, "
-                            "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL, first_all TEXT NOT NULL)"
+                            "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL, first_all TEXT NOT NULL, "
+                            "tail_all TEXT, tail_version INTEGER NOT NULL, source_sha256 TEXT)"
                         )
                         db.execute(
                             "CREATE TABLE pending (symbol TEXT NOT NULL, owner TEXT NOT NULL, "
@@ -58,12 +60,24 @@ def _connection(store, *, create=False, readonly=False, allow_legacy=False):
                         db.execute("DROP TABLE entries")
                         db.execute(
                             "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, "
-                            "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL, first_all TEXT NOT NULL)"
+                            "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL, first_all TEXT NOT NULL, "
+                            "tail_all TEXT, tail_version INTEGER NOT NULL, source_sha256 TEXT)"
                         )
                         db.execute("UPDATE state SET complete=0, revision=revision+1 WHERE singleton=1")
                         db.execute(f"PRAGMA user_version={FORMAT}")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version != FORMAT and not (allow_legacy and version == 2):
+            if version == 3 and not readonly:
+                # Version 3 already certifies membership and both endpoints.
+                # Preserve it while explicitly selecting missing legacy tails.
+                with db:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("ALTER TABLE entries ADD COLUMN tail_all TEXT")
+                    db.execute("ALTER TABLE entries ADD COLUMN tail_version INTEGER NOT NULL DEFAULT 31")
+                    db.execute("ALTER TABLE entries ADD COLUMN source_sha256 TEXT")
+                    db.execute(f"PRAGMA user_version={FORMAT}")
+                    db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
+                version = FORMAT
+            if version not in (3, FORMAT) and not (allow_legacy and version == 2):
                 raise DownloadError("unsupported pricing check summary; run alpaca-cli-eod summary rebuild")
             with db:
                 db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
@@ -78,7 +92,21 @@ def _token(db):
 
 def validate_entry(entry):
     if (
-        set(entry) != {"symbol", "asof", "end_exclusive", "last_all", "first_all"}
+        set(entry)
+        not in (
+            {"symbol", "asof", "end_exclusive", "last_all", "first_all"},
+            {"symbol", "asof", "end_exclusive", "last_all", "first_all", "tail_all", "tail_version"},
+            {
+                "symbol",
+                "asof",
+                "end_exclusive",
+                "last_all",
+                "first_all",
+                "tail_all",
+                "tail_version",
+                "source_sha256",
+            },
+        )
         or symbol_label(entry["symbol"]) != entry["symbol"]
     ):
         raise DownloadError("invalid pricing check summary entry")
@@ -102,6 +130,20 @@ def validate_entry(entry):
     first, last = entry["first_all"], entry["last_all"]
     if timestamp(first[0]) > timestamp(last[0]) or (timestamp(first[0]) == timestamp(last[0]) and first != last):
         raise DownloadError("invalid pricing check endpoint ordering")
+    if "tail_version" in entry:
+        if entry["tail_version"] not in (31, TAIL_VERSION):
+            raise DownloadError("unsupported pricing comparison tail version")
+        if entry["tail_version"] == TAIL_VERSION or entry["tail_all"] is not None:
+            validate_tail(entry["tail_all"], first, last)
+    if "source_sha256" in entry:
+        generation = entry["source_sha256"]
+        if generation is not None or entry.get("tail_version") == TAIL_VERSION:
+            if (
+                not isinstance(generation, str)
+                or len(generation) != 64
+                or any(c not in "0123456789abcdef" for c in generation)
+            ):
+                raise DownloadError("invalid pricing comparison generation")
     return (
         entry["symbol"],
         entry["asof"],
@@ -109,6 +151,90 @@ def validate_entry(entry):
         json_bytes(list(last)).decode(),
         json_bytes(list(first)).decode(),
     )
+
+
+class _AcceptedRows(list):
+    """Keep JSON/list equality while preventing mutation of accepted rows."""
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("accepted summary rows are immutable")
+
+    __setitem__ = __delitem__ = append = clear = extend = insert = pop = remove = reverse = sort = __iadd__ = (
+        __imul__
+    ) = _immutable
+
+    def __deepcopy__(self, memo):
+        from copy import deepcopy
+
+        return deepcopy(list(self), memo)
+
+
+class AcceptedEntry(dict):
+    """Immutable summary acceptance, including reusable per-target append plans.
+
+    A changed summary publication creates new entries. Never lend these facts to
+    a different entry or target; consumers need no second row/tail validation.
+    """
+
+    def __init__(self, entry, serialized):
+        super().__init__(
+            {
+                **entry,
+                "first_all": _AcceptedRows(entry["first_all"]),
+                "last_all": _AcceptedRows(entry["last_all"]),
+                **(
+                    {"tail_all": _AcceptedRows(_AcceptedRows(row) for row in entry["tail_all"])}
+                    if entry.get("tail_all") is not None
+                    else {}
+                ),
+            }
+        )
+        self.serialized = serialized
+        self.append_plans = {}
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("accepted summary entries are immutable")
+
+    __setitem__ = __delitem__ = update = clear = pop = popitem = setdefault = __ior__ = _immutable
+
+    def __deepcopy__(self, memo):
+        # Explicit copies are unaccepted inputs, with no inherited plan cache.
+        from copy import deepcopy
+
+        return deepcopy(dict(self), memo)
+
+
+def _serialized(entry):
+    return (
+        *(entry.serialized if isinstance(entry, AcceptedEntry) else validate_entry(entry)),
+        json_bytes(entry["tail_all"]).decode() if entry.get("tail_all") is not None else None,
+        entry.get("tail_version", 31),
+        entry.get("source_sha256"),
+    )
+
+
+def _entries(db, clause="ORDER BY symbol", params=()):
+    columns = (
+        "tail_all, tail_version, source_sha256"
+        if db.execute("PRAGMA user_version").fetchone()[0] == FORMAT
+        else "NULL, 31, NULL"
+    )
+    result = []
+    for symbol, asof, end, last, first, tail, version, generation in db.execute(
+        f"SELECT symbol, asof, end_exclusive, last_all, first_all, {columns} FROM entries {clause}", params
+    ):
+        entry = {
+            "symbol": symbol,
+            "asof": asof,
+            "end_exclusive": end,
+            "last_all": json.loads(last),
+            "first_all": json.loads(first),
+            "tail_all": json.loads(tail) if tail is not None else None,
+            "tail_version": version,
+            "source_sha256": generation,
+        }
+        result.append(AcceptedEntry(entry, validate_entry(entry)))
+    return result
 
 
 def invalidate(store, symbols, *, owner="pricing"):
@@ -127,7 +253,7 @@ def replace_entries(store, entries, *, pricing_only=False):
     # a newer pricing baseline cannot stand in for unfinished lineage work.
     if not summary_path(store).exists():
         return
-    values = {symbol: None if entry is None else validate_entry(entry) for symbol, entry in entries.items()}
+    values = {symbol: None if entry is None else _serialized(entry) for symbol, entry in entries.items()}
     if any(value is not None and value[0] != symbol for symbol, value in values.items()):
         raise DownloadError("pricing check entry owner differs")
     with _connection(store, allow_legacy=True) as db:
@@ -148,13 +274,21 @@ def replace_entries(store, entries, *, pricing_only=False):
                 db.execute(
                     (
                         "INSERT INTO entries VALUES (?, ?, ?, ?"
-                        + (")" if legacy else ", ?)")
+                        + (")" if legacy else ", ?, ?, ?, ?)")
                         + " ON CONFLICT(symbol) DO UPDATE SET "
                         "asof=excluded.asof, end_exclusive=excluded.end_exclusive, last_all=excluded.last_all"
-                        + ("" if legacy else ", first_all=excluded.first_all")
+                        + (
+                            ""
+                            if legacy
+                            else ", first_all=excluded.first_all, tail_all=excluded.tail_all, tail_version=excluded.tail_version, source_sha256=excluded.source_sha256"
+                        )
                         + " WHERE asof!=excluded.asof OR end_exclusive!=excluded.end_exclusive "
                         "OR last_all!=excluded.last_all"
-                        + ("" if legacy else " OR first_all!=excluded.first_all")
+                        + (
+                            ""
+                            if legacy
+                            else " OR first_all!=excluded.first_all OR tail_all IS NOT excluded.tail_all OR tail_version!=excluded.tail_version OR source_sha256 IS NOT excluded.source_sha256"
+                        )
                     ),
                     value[:4] if legacy else value,
                 )
@@ -179,24 +313,10 @@ def selected_inputs(store, symbols):
         complete = bool(db.execute("SELECT complete FROM state WHERE singleton=1").fetchone()[0])
         legacy = db.execute("PRAGMA user_version").fetchone()[0] == 2
         entries = (
-            {
-                symbol: {
-                    "symbol": symbol,
-                    "asof": asof,
-                    "end_exclusive": end,
-                    "last_all": json.loads(row),
-                    "first_all": json.loads(first),
-                }
-                for symbol, asof, end, row, first in db.execute(
-                    f"SELECT symbol, asof, end_exclusive, last_all, first_all FROM entries WHERE symbol IN ({placeholders})",
-                    symbols,
-                )
-            }
+            {entry["symbol"]: entry for entry in _entries(db, f"WHERE symbol IN ({placeholders})", symbols)}
             if not legacy
             else {}
         )
-        for entry in entries.values():
-            validate_entry(entry)
         pending = {symbol: set() for symbol in symbols}
         for symbol, owner in db.execute(
             f"SELECT symbol, owner FROM pending WHERE symbol IN ({placeholders})", symbols
@@ -205,7 +325,7 @@ def selected_inputs(store, symbols):
     return {"complete": complete and not legacy, "entries": entries, "pending": pending}
 
 
-def price_entry(root, source, *, published=True, endpoints=None):
+def price_entry(root, source, *, published=True, endpoints=None, source_sha256=None):
     from .storage import read_validator
 
     request = source["latest_request"]
@@ -217,6 +337,8 @@ def price_entry(root, source, *, published=True, endpoints=None):
         endpoints = read_validator(root, source, published=published)
     if endpoints is None:
         raise DownloadError("pricing check requires a published endpoint validator")
+    if source["schema_version"] >= TAIL_VERSION and getattr(endpoints, "tail_all", None) is None:
+        raise DownloadError("new pricing publication lacks its required comparison tail")
     rows = endpoints["all"]
     if not rows:
         return None
@@ -226,10 +348,15 @@ def price_entry(root, source, *, published=True, endpoints=None):
         "end_exclusive": request["end_exclusive"],
         "last_all": list(rows[-1]),
         "first_all": list(rows[0]),
+        "tail_all": [list(row) for row in endpoints.tail_all]
+        if getattr(endpoints, "tail_all", None) is not None
+        else None,
+        "tail_version": TAIL_VERSION if getattr(endpoints, "tail_all", None) is not None else 31,
+        "source_sha256": source_sha256 or digest(json_bytes(source)),
     }
 
 
-def refresh_prices(root, *, source=None, endpoints=None):
+def refresh_prices(root, *, source=None, endpoints=None, source_sha256=None):
     """Update an already eligible label without importing or recalculating lineage."""
     from .storage import load_source
 
@@ -241,7 +368,11 @@ def refresh_prices(root, *, source=None, endpoints=None):
     if present:
         if source is None:
             source = load_source(root, symbol)
-        replace_entries(store, {symbol: price_entry(root, source, endpoints=endpoints)}, pricing_only=True)
+        replace_entries(
+            store,
+            {symbol: price_entry(root, source, endpoints=endpoints, source_sha256=source_sha256)},
+            pricing_only=True,
+        )
     # New eligibility, including a formerly empty active source, belongs to lineage.
 
 
@@ -252,12 +383,12 @@ def begin_rebuild(store):
 
 
 def finish_rebuild(store, token, entries):
-    values = [validate_entry(entry) for entry in entries]
+    values = [_serialized(entry) for entry in entries]
     with _connection(store) as db:
         if _token(db) != token:
             raise DownloadError("pricing changed during summary rebuild; rerun the rebuild")
         db.execute("DELETE FROM entries")
-        db.executemany("INSERT INTO entries VALUES (?, ?, ?, ?, ?)", values)
+        db.executemany("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values)
         db.execute("DELETE FROM pending")
         db.execute("UPDATE state SET complete=1, revision=revision+1 WHERE singleton=1")
 
@@ -289,20 +420,7 @@ def read_snapshot(store):
     with _connection(store, readonly=True) as db:
         _require_ready(db)
         token = _token(db)
-        entries = [
-            {
-                "symbol": symbol,
-                "asof": asof,
-                "end_exclusive": end,
-                "last_all": json.loads(row),
-                "first_all": json.loads(first),
-            }
-            for symbol, asof, end, row, first in db.execute(
-                "SELECT symbol, asof, end_exclusive, last_all, first_all FROM entries ORDER BY symbol"
-            )
-        ]
-        for entry in entries:
-            validate_entry(entry)
+        entries = _entries(db)
     return {"entries": entries, "sha256": digest(json_bytes(entries)), "token": token}
 
 
@@ -323,20 +441,7 @@ def read_status(store):
     with _connection(store, readonly=True) as db:
         complete = bool(db.execute("SELECT complete FROM state WHERE singleton=1").fetchone()[0])
         token = _token(db)
-        entries = [
-            {
-                "symbol": symbol,
-                "asof": asof,
-                "end_exclusive": end,
-                "last_all": json.loads(row),
-                "first_all": json.loads(first),
-            }
-            for symbol, asof, end, row, first in db.execute(
-                "SELECT symbol, asof, end_exclusive, last_all, first_all FROM entries ORDER BY symbol"
-            )
-        ]
-        for entry in entries:
-            validate_entry(entry)
+        entries = _entries(db)
         pending = [
             {"symbol": symbol, "owner": owner}
             for symbol, owner in db.execute("SELECT symbol, owner FROM pending ORDER BY symbol, owner")
@@ -365,14 +470,21 @@ def pending_symbols(store):
 
 
 def describe(snapshot):
-    groups, last_sessions = set(), set()
+    groups, last_sessions, legacy = set(), set(), 0
     for entry in snapshot["entries"]:
         last_sessions.add(timestamp(entry["last_all"][0]).astimezone(NEW_YORK).date())
-        for row in (entry["first_all"], entry["last_all"]):
-            groups.add((timestamp(row[0]).astimezone(NEW_YORK).date(), entry["asof"]))
+        if entry.get("tail_all") is None:
+            legacy += 1
+            continue
+        endpoints = Endpoints({"all": (entry["first_all"], entry["last_all"])}, tail_all=entry["tail_all"])
+        for start, end in history_windows(
+            endpoints, cutoff=timestamp(entry["end_exclusive"]), utc_session_end=True
+        ):
+            groups.add((start, end, entry["asof"]))
     return {
         "tickers": len(snapshot["entries"]),
         "last_session_dates": len(last_sessions),
         "query_groups": len(groups),
+        "legacy_tail_upgrades": legacy,
         "sha256": snapshot["sha256"],
     }

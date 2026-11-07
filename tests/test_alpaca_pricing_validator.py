@@ -267,13 +267,16 @@ class PricingValidatorTests(unittest.TestCase):
         self.assertEqual(read_pricing_views(self.store, "GOOG")["raw"][0][4], str(self.rows[0]["c"]))
         self.assert_validator()
 
-    def test_changed_last_all_endpoint_selects_replacement(self):
+    def test_changed_last_all_endpoint_selects_local_correction(self):
         self.run_download()
         client = FakeClient(self.rows[:-1] + [bar("2026-10-01", "50")])
         result = download_pricing(self.store, "GOOG", "2026-10-15", client=client)
         self.assertFalse(result["restarted"])
-        self.assertEqual(result["mode"], "full_refresh")
-        self.assertEqual(result["consistency_check"], "mismatch")
+        self.assertEqual(result["mode"], "latest_session")
+        self.assertEqual(result["consistency_check"], "latest_session")
+        self.assertTrue(all(call[2] >= timestamp("2026-10-01T00:00:00Z") for call in client.calls[2:]))
+        self.assertEqual(read_pricing_views(self.store, "GOOG")["all"][-1][4], "50")
+        self.assert_validator()
 
     def test_repeated_instability_fails_without_publishing(self):
         self.run_download()

@@ -32,6 +32,7 @@ from .contract import (
     reusable_metadata_versions,
     versions,
 )
+from .correction_prefix import complete_prefix_boundaries, correction_from
 from .metadata import (
     EvidenceClient,
     RetainedReportClient,
@@ -44,7 +45,13 @@ from .metadata import (
 from .migration import can_promote_observation_decision
 from .observations import select_observations
 from .pricing import load_pricing
-from .resume import complete_append, requires_lineage, reusable_prefix, unchanged_source
+from .resume import (
+    append_history_invalidation,
+    complete_append,
+    requires_lineage,
+    reusable_prefix,
+    unchanged_source,
+)
 from .selection import DependencyGraph
 from .transform import correlate, make_publication, retained_decision_report
 from .work_contract import acquisition_fingerprint, auxiliary_work, pricing_target
@@ -114,8 +121,25 @@ def _published_pricing_ranges(index, group, pricing_handoff):
             history_start = request["start"]
         if history_start is None:
             return None
-        sources[symbol] = {"history_start": history_start, "latest_request": request}
+        sources[symbol] = {
+            "history_start": history_start,
+            "latest_request": request,
+            **{
+                key: published[key]
+                for key in ("latest_session_correction", "history_changes")
+                if published and key in published
+            },
+        }
     return sources
+
+
+def _handoff_added_rows(publication):
+    added = (publication or {}).get("added_rows")
+    if not isinstance(added, dict) or not added:
+        return None
+    if any(type(value) is not int or value < 0 for value in added.values()):
+        return None
+    return any(added.values())
 
 
 def _select_pending_pricing(store, members, index, pending, pricing_handoff):
@@ -131,6 +155,9 @@ def _select_pending_pricing(store, members, index, pending, pricing_handoff):
         for symbol, source in _current_sources(store, locked, known=index["symbols"]).items():
             notice = read_update(store / "end_of_day/pricing" / symbol, published=True)
             pricing_handoff[symbol] = {
+                **{
+                    key: source[key] for key in ("latest_session_correction", "history_changes") if key in source
+                },
                 "source_sha256": storage.document_digest(source),
                 "history_start": source.get("history_start", HISTORY_START),
                 "request": source["latest_request"],
@@ -160,7 +187,7 @@ def _prefetch_metadata(
     """
     if not client.supports_plans:
         return
-    visited, requests = set(), set()
+    visited, requests, lookup_symbols = set(), set(), set()
     for label in selected:
         try:
             seed = symbol_label(label)
@@ -204,19 +231,31 @@ def _prefetch_metadata(
             if _reuse_metadata(seed, group, generations, previous, notices, group_refresh):
                 continue
             for symbol, source in sources.items():
-                requests.update(
-                    action_requests(
-                        symbol,
-                        source.get("history_start", HISTORY_START)[:10],
-                        source["latest_request"]["end_exclusive"][:10],
-                        previous[symbol],
-                        refresh=full_metadata(previous[symbol], notices.get(symbol), group_refresh),
-                    )
+                full = full_metadata(
+                    previous[symbol],
+                    None if correction_from(source, previous[symbol]) else notices.get(symbol),
+                    group_refresh,
                 )
+                selected_requests = action_requests(
+                    symbol,
+                    source.get("history_start", HISTORY_START)[:10],
+                    source["latest_request"]["end_exclusive"][:10],
+                    previous[symbol],
+                    refresh=full,
+                )
+                requests.update(selected_requests)
+                added = _handoff_added_rows((pricing_handoff or {}).get(symbol))
+                if full or previous[symbol] is None:
+                    lookup_symbols.update(request[0] for request in selected_requests)
+                elif added is not False:
+                    # A source with new rows needs a current own-label observation.
+                    # Historical queried labels remain covered by their completed
+                    # report unless a newly returned action selects them on demand.
+                    lookup_symbols.add(symbol)
         except (RuntimeError, OSError, ValueError):
             continue  # The normal group path reports this failure without stopping unrelated work.
     client.prefetch_corporate_actions(requests)
-    client.prefetch_symbols({symbol for symbol, _, _ in requests})
+    client.prefetch_symbols(lookup_symbols)
 
 
 @traced("dependency_catchup")
@@ -232,6 +271,7 @@ def _catch_up_published_dependencies(
     register_discoveries=None,
     context=None,
     pricing_handoff=None,
+    empty_suffixes=None,
 ):
     """The pricing owner validates retained history before advancing dependencies."""
     result = {
@@ -241,6 +281,7 @@ def _catch_up_published_dependencies(
         "results": [],
         "requests": {},
         "deferred_full_range": 0,
+        "skipped": 0,
     }
     if client is None or not callable(getattr(client, "execute_plan", None)):
         return result
@@ -267,11 +308,19 @@ def _catch_up_published_dependencies(
                 targets.setdefault(end, []).append(symbol)
     for end, symbols in targets.items():
         allowed = [s for s in symbols if work_policy is None or work_policy.allowed({s})]
-        if work_policy is not None:
-            for symbol in allowed:
-                work_policy.require_dependencies(graph.closure({symbol}), end, {symbol})
+        if not allowed:
+            continue
         if register_discoveries is not None:
+            # Group membership is already selected by the accepted lineage index.
+            # Register it before any provider request; suffix absence can suppress
+            # acquisition work, but it cannot erase the known dependency label.
             register_discoveries({member for symbol in allowed for member in graph.closure({symbol})})
+
+        def persist_selected(selected_work):
+            if work_policy is not None:
+                for symbol in sorted(selected_work):
+                    work_policy.require_dependencies(graph.closure({symbol}), end, {symbol})
+
         value = acquire_selected(
             store,
             allowed,
@@ -279,13 +328,27 @@ def _catch_up_published_dependencies(
             client=client,
             progress=progress,
             context=context.pricing() if context is not None else None,
+            select_append_work=True,
+            on_append_work_selected=persist_selected,
         )
         result["results"].extend(value["results"])
+        not_selected = {item["symbol"] for item in value["results"] if item.get("status") == "not_selected"}
+        if empty_suffixes is not None:
+            empty_suffixes.update(
+                (
+                    item["symbol"],
+                    item["source_sha256"],
+                    item["append_work_selection"]["end_exclusive"][:10],
+                )
+                for item in value["results"]
+                if item.get("status") == "not_selected"
+            )
+        result["skipped"] += len(not_selected)
         if pricing_handoff is not None:
             pricing_handoff.update(
                 (item["symbol"], item)
                 for item in value["results"]
-                if "source_sha256" in item and "request" in item
+                if item.get("status") != "not_selected" and "source_sha256" in item and "request" in item
             )
         for key, count in value["requests"].items():
             if isinstance(count, dict):
@@ -320,6 +383,7 @@ def process_group(
     work_policy=None,
     context=None,
     progress=None,
+    empty_suffixes=(),
 ):
     context = accept_context(store, context, work_policy)
     correlation_policy = context.accept_correlation_policy()
@@ -512,6 +576,11 @@ def process_group(
                 if symbol not in sources and symbol not in unavailable
             }
             if not required:
+                # One decision for this selected source/receipt under these locks.
+                # None is a completed negative result too; consumers retain it.
+                corrections = {
+                    symbol: correction_from(source, previous[symbol]) for symbol, source in sources.items()
+                }
                 unchanged = (
                     not refresh
                     and not changed_event_supplements
@@ -523,10 +592,15 @@ def process_group(
                 )
                 resume = unchanged or (
                     not changed_event_supplements
-                    and len(group) == 1
                     and group == sources.keys()
                     and all(
-                        reusable_prefix(source, previous[symbol], selected=selected[symbol], refresh=refresh)
+                        reusable_prefix(
+                            source,
+                            previous[symbol],
+                            selected=selected[symbol],
+                            refresh=refresh,
+                            selected_correction=corrections[symbol],
+                        )
                         for symbol, source in sources.items()
                     )
                 )
@@ -542,14 +616,27 @@ def process_group(
                     else "changed_or_unproven_inputs",
                 )
                 retained_kinds = {}
+                if not resume:
+                    corrections = dict.fromkeys(sources)
                 for symbol, prior in previous.items():
                     retained_kinds[symbol] = None
                     if resume and "assignment_summary" in prior:
                         old_anchor, anchor = prior["anchor_month"], sources[symbol]["anchor_month"]
-                        if old_anchor == anchor:
+                        if sources[symbol]["latest_request"]["end_exclusive"] <= prior["processed_through"]:
+                            retained_kinds[symbol] = set()
+                        elif old_anchor == anchor:
                             retained_kinds[symbol] = set() if unchanged else {"current_month"}
                         elif old_anchor[:4] == anchor[:4]:
                             retained_kinds[symbol] = {"current_year", "current_month"}
+                        if corrections[symbol] and retained_kinds[symbol] is not None:
+                            day = corrections[symbol]
+                            retained_kinds[symbol].add(
+                                "current_month"
+                                if day[:7] == old_anchor
+                                else "current_year"
+                                if day[:4] == old_anchor[:4]
+                                else "completed_years"
+                            )
                 old_boundaries = {
                     symbol: (
                         storage.read_boundaries(root, prior, kinds=retained_kinds[symbol])
@@ -558,6 +645,9 @@ def process_group(
                     )
                     for symbol, prior in previous.items()
                 }
+                for symbol, day in corrections.items():
+                    if day:
+                        complete_prefix_boundaries(root, previous[symbol], old_boundaries[symbol], day)
                 inputs = {}
                 partitions = {symbol: {} for symbol in sources}
                 if progress:
@@ -580,8 +670,12 @@ def process_group(
                                 store,
                                 symbol,
                                 source=sources[symbol],
+                                source_sha256=selected[symbol],
+                                selected_correction=corrections[symbol],
                                 previous_boundaries=old_boundaries[symbol],
-                                resume_from=previous[symbol]["processed_through"][:10] if resume else None,
+                                resume_from=(corrections[symbol] or previous[symbol]["processed_through"][:10])
+                                if resume
+                                else None,
                                 previous=previous[symbol],
                                 partitions=partitions[symbol],
                             ),
@@ -599,15 +693,23 @@ def process_group(
                             # evidence directly, then recalculate the complete group.
                             evidence[symbol] = prior["evidence"]
                         else:
-                            full = full_metadata(prior, notices.get(symbol), refresh)
+                            full = full_metadata(
+                                prior, None if corrections[symbol] else notices.get(symbol), refresh
+                            )
                             key = (symbol, view.source_sha256, full)
                             if key not in metadata_cache or not evidence_client.evidence_current(
                                 metadata_cache[key]
                             ):
+                                can_continue = (
+                                    not full
+                                    and prior is not None
+                                    and evidence_client.catalogue_attempted
+                                    and evidence_client.catalogue is not None
+                                )
                                 metadata_cache[key] = acquire(
                                     view,
                                     RetainedReportClient(evidence_client, prior["evidence"])
-                                    if reuse_metadata
+                                    if reuse_metadata or can_continue
                                     else evidence_client,
                                     prior,
                                     refresh=full,
@@ -683,11 +785,19 @@ def process_group(
                 # A related input may exist but not cover the selected acquisition range.
                 # Empty published responses count as acquired, not as missing history.
                 for symbol, source in sources.items():
-                    if (
-                        source.get("history_start", HISTORY_START)[:10] > start
-                        or source["latest_request"]["end_exclusive"][:10] < end
-                    ):
+                    if source.get("history_start", HISTORY_START)[:10] > start:
                         required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                    elif source["latest_request"]["end_exclusive"][:10] < end:
+                        accepted_empty = (symbol, selected[symbol], end) in empty_suffixes
+                        event(
+                            "dependency_suffix_selection",
+                            symbol=symbol,
+                            required=not accepted_empty,
+                            reason="completed_empty_suffix" if accepted_empty else "selection_unavailable",
+                            end_exclusive=end,
+                        )
+                        if not accepted_empty:
+                            required.setdefault(symbol, {"from": start, "end_exclusive": end})
                 if not required:
                     check_unavailable_pricing(store, unavailable, locked, sources=sources)
                     historical_lineage = requires_lineage(
@@ -698,6 +808,19 @@ def process_group(
                         refresh=refresh,
                         append=resume,
                     )
+                    append_invalidation = (
+                        append_history_invalidation(previous, inputs)
+                        if resume and not historical_lineage
+                        else None
+                    )
+                    if append_invalidation is not None:
+                        event(
+                            "lineage_append_invalidation",
+                            symbol=seed,
+                            scope="complete_group",
+                            **append_invalidation,
+                        )
+                        historical_lineage = True
                     no_new_rows = not historical_lineage and not any(
                         rows for view in inputs.values() for rows in view.views.values()
                     )
@@ -728,7 +851,14 @@ def process_group(
                             missing = prior["boundaries"].keys() - old_boundaries[name].keys()
                             old_boundaries[name].update(storage.read_boundaries(root, prior, kinds=missing))
                         inputs = {
-                            name: load_pricing(store, name, source=source, partitions=partitions[name])
+                            name: load_pricing(
+                                store,
+                                name,
+                                source=source,
+                                partitions=partitions[name],
+                                source_sha256=selected[name],
+                                selected_correction=None,
+                            )
                             for name, source in sources.items()
                         }
                     resume = not historical_lineage
@@ -866,7 +996,11 @@ def process_group(
                             "pricing_acquisition_waves": acquisition_waves,
                             "reused_decision": no_new_rows,
                             "reused_closed_boundaries": resume,
-                            "historical_rows_reused": sum(item["source_rows"] for item in previous.values())
+                            "historical_rows_reused": sum(
+                                item["rows"]
+                                for view in inputs.values()
+                                for item in view.previous_assignment_summary.values()
+                            )
                             if resume
                             else 0,
                             "pricing_rows_processed": sum(
@@ -1116,6 +1250,7 @@ def run_lineage(
         stop = False
 
         catchups = []
+        empty_suffixes = set()
 
         def catch_up(labels, handoff):
             nonlocal stop
@@ -1131,6 +1266,7 @@ def run_lineage(
                 register_discoveries=register_discoveries,
                 context=context,
                 pricing_handoff=handoff,
+                empty_suffixes=empty_suffixes,
             )
             catchups.append(value)
             if value["failed"]:
@@ -1221,6 +1357,7 @@ def run_lineage(
                             work_policy=work_policy,
                             context=context,
                             progress=progress,
+                            empty_suffixes=empty_suffixes,
                         )
                         processed.update(result["processed"])
                         processed.update(result.get("unavailable_pricing", ()))
@@ -1276,7 +1413,7 @@ def run_lineage(
             request_metrics[name] = request_metrics.get(name, 0) + count
     dependency_pricing = {
         name: sum(value.get(name, 0) for value in catchups)
-        for name in ("requested", "succeeded", "failed", "deferred_full_range")
+        for name in ("requested", "succeeded", "failed", "skipped", "deferred_full_range")
     }
     dependency_pricing["requests"] = request_metrics
     if pricing_metrics:

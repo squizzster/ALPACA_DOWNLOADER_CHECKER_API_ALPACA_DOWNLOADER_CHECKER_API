@@ -151,5 +151,15 @@
     "modifications": [
       "Report actual selected gzip reads from the shared reader, including cache misses used by serving, in opt-in update debug traces. Retain existing cache behavior, public results and storage/provider work."
     ]
+  },
+  {
+    "modifications": [
+      "Publish per-identity CSV schema 2 with the accepted catalogue\u2019s dated ticker ranges in each security digest, retaining inclusive endpoints and genuine ambiguity without reconstructing labels from prices or ownership evidence. Preserve the complete range handoff for filtered exports and existing source I/O and publication guarantees."
+    ]
+  },
+  {
+    "modifications": [
+      "Lend the selected pricing producer's latest-session revision and predecessor session to serving while the group snapshot is held. Preserve generation and change-ancestry binding without reopening validators, prices or identity evidence."
+    ]
   }
 ]

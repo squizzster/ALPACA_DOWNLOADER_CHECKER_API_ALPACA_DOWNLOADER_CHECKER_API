@@ -7,6 +7,7 @@ from pathlib import Path
 from libs.common.debug_trace import event, traced
 
 from . import append
+from .adaptive import acquire_adjustments
 from .append import _cohorts, append_entries
 from .context import accept_context
 from .contract import (
@@ -22,6 +23,7 @@ from .contract import (
 )
 from .download import acquisition_asof, download_pricing, request_end, request_start
 from .endpoints import EndpointSelection
+from .history_tail import publish_legacy_tail
 from .http import BarsClient
 from .refresh import acquire_full, acquire_retained
 from .storage import (
@@ -83,6 +85,8 @@ def acquire_selected(
     evidence_fingerprints=None,
     from_dates=None,
     context=None,
+    select_append_work=False,
+    on_append_work_selected=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
     # First/latest all is the sole retained-history acceptance boundary, including
@@ -98,7 +102,52 @@ def acquire_selected(
     context = accept_context(store, context)
     end_text = end.isoformat().replace("+00:00", "Z")
     needs, selected_generations, results, retained, empty = [], {}, [], {}, []
+    append_sources = {}
     endpoint_selections = {}
+
+    def select_endpoints(root, symbol, source):
+        accepted = context.endpoint_selections.get(symbol)
+        mapping = acquisition_asof(source, end)
+        if accepted is not None and accepted.applies(
+            store, symbol, selected_generations[symbol], end_text, mapping
+        ):
+            endpoints = accepted.consume(store, symbol, selected_generations[symbol], end_text, mapping)
+            endpoint_selections[symbol] = accepted
+        else:
+            endpoints = read_validator(root, source, published=True) if source else None
+            if endpoints is not None and endpoints.tail_all is None:
+                publication, endpoints = publish_legacy_tail(
+                    root, source, endpoints, source_sha256=selected_generations[symbol]
+                )
+                source = publication["source"]
+                selected_generations[symbol] = publication["source_sha256"]
+            endpoint_selections[symbol] = EndpointSelection(
+                str(store),
+                symbol,
+                selected_generations[symbol],
+                end_text,
+                mapping,
+                None if endpoints is None else tuple((name, tuple(rows)) for name, rows in endpoints.items()),
+                tail_all=getattr(endpoints, "tail_all", None),
+            )
+        # Validator acceptance survives later provider failures, including
+        # empty baselines. This does not claim an unfinished comparison.
+        context.endpoint_selections[symbol] = endpoint_selections[symbol]
+        return source, endpoints
+
+    def retain_append_source(symbol, source, endpoints):
+        if endpoints is not None and not any(endpoints.values()):
+            empty.append(
+                {
+                    "symbol": symbol,
+                    "asof": source["latest_request"]["asof"],
+                    "end_exclusive": source["latest_request"]["end_exclusive"],
+                    "last_all": None,
+                }
+            )
+        else:
+            retained[symbol] = (source, endpoints)
+
     for symbol in symbols:
         root = regular_path(store, f"end_of_day/pricing/{symbol}")
         # A selected acquisition may create its own paths. No universe inventory.
@@ -138,63 +187,42 @@ def acquire_selected(
                     }
                 )
                 continue
-            accepted = context.endpoint_selections.get(symbol)
-            mapping = acquisition_asof(source, end)
-            if accepted is not None and accepted.applies(
-                store, symbol, selected_generations[symbol], end_text, mapping
-            ):
-                endpoints = accepted.consume(store, symbol, selected_generations[symbol], end_text, mapping)
-                endpoint_selections[symbol] = accepted
-            else:
-                endpoints = read_validator(root, source, published=True) if source else None
-                endpoint_selections[symbol] = EndpointSelection(
-                    str(store),
-                    symbol,
-                    selected_generations[symbol],
-                    end_text,
-                    mapping,
-                    None
-                    if endpoints is None
-                    else tuple((name, tuple(rows)) for name, rows in endpoints.items()),
-                )
-            # Validator acceptance survives later provider failures, including
-            # empty baselines. This does not claim an unfinished comparison.
-            context.endpoint_selections[symbol] = endpoint_selections[symbol]
-        start = (
-            min(stored_start, requested_start)
-            if stored_start and requested_start
-            else requested_start or stored_start or HISTORY_START[:10]
-        )
-        extending = source is not None and start < stored_start
-        if extending and covered > end:
-            results.append(
-                {
-                    "symbol": symbol,
-                    "status": "failed",
-                    "outcome": failure_outcome(
-                        DownloadError(
-                            "required history extension exceeds requested cutoff; retained data unchanged"
-                        )
-                    ),
-                }
+            start = (
+                min(stored_start, requested_start)
+                if stored_start and requested_start
+                else requested_start or stored_start or HISTORY_START[:10]
             )
-            continue
+            extending = source is not None and start < stored_start
+            if extending and covered > end:
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "status": "failed",
+                        "outcome": failure_outcome(
+                            DownloadError(
+                                "required history extension exceeds requested cutoff; retained data unchanged"
+                            )
+                        ),
+                    }
+                )
+                continue
+            if (
+                select_append_work
+                and source
+                and not extending
+                and (symbol not in invalidate or accepted_evidence)
+            ):
+                # The suffix producer selects whether retained history is needed.
+                # Keep validators closed until it returns nonempty or fails.
+                append_sources[symbol] = source
+                continue
+            source, endpoints = select_endpoints(root, symbol, source)
         if source and not extending and (symbol not in invalidate or accepted_evidence):
             # Retain this coherent selection for batched ordinary endpoint checks.
             # Empty ranges use the existing incremental covered-range path.
             # DO NOT REMOVE WITHOUT USER AUTH!#
             # Empty fast append carries coverage and entity mapping separately.
-            if endpoints is not None and not any(endpoints.values()):
-                empty.append(
-                    {
-                        "symbol": symbol,
-                        "asof": source["latest_request"]["asof"],
-                        "end_exclusive": source["latest_request"]["end_exclusive"],
-                        "last_all": None,
-                    }
-                )
-            else:
-                retained[symbol] = (source, endpoints)
+            retain_append_source(symbol, source, endpoints)
             continue
         needs.append(
             {
@@ -212,6 +240,113 @@ def acquire_selected(
             }
         )
     metrics = {}
+    # Scope includes the source generation as well as the exact provider request.
+    # A later boundary failure must not discard a completed or partial suffix.
+    acquired = {
+        (symbol, start, stop, asof): state
+        for (symbol, generation, start, stop, asof), state in context.suffix_acquisitions.items()
+        if selected_generations.get(symbol) == generation
+    }
+    if select_append_work and append_sources:
+        if not callable(getattr(client, "execute_plan", None)):
+            raise DownloadError("append work selection requires planned pricing execution")
+        selection_needs = [
+            {
+                "kind": "bars",
+                "why": "append_work_selection",
+                "symbols": [symbol],
+                "adjustments": list(ADJUSTMENTS),
+                "asof": acquisition_asof(source, end),
+                "ranges": [
+                    {
+                        "start": source["latest_request"]["end_exclusive"],
+                        "end_exclusive": end_text,
+                    }
+                ],
+            }
+            for symbol, source in append_sources.items()
+        ]
+        try:
+            states, _ = acquire_adjustments(
+                selection_needs,
+                client,
+                metrics=metrics,
+                progress=progress,
+                merge_ranges=False,
+                acquired=acquired,
+                retain_states=True,
+            )
+        finally:
+            for (symbol, start, stop, asof), state in acquired.items():
+                context.suffix_acquisitions[(symbol, selected_generations[symbol], start, stop, asof)] = state
+        not_selected = set()
+        selected_work = 0
+        for state in states:
+            if state.completed is None:
+                continue  # The owning path receives this partial acquisition too.
+            if any(value.rows for value in state.completed.bars):
+                selected_work += 1
+                event(
+                    "pricing_append_work_selection",
+                    symbol=state.symbol,
+                    selected=True,
+                    start=state.start.isoformat(),
+                    end_exclusive=state.end.isoformat(),
+                )
+                continue
+            not_selected.add(state.symbol)
+            source = append_sources[state.symbol]
+            results.append(
+                {
+                    "symbol": state.symbol,
+                    "status": "not_selected",
+                    "mode": "unchanged",
+                    "changed": False,
+                    "source_sha256": selected_generations[state.symbol],
+                    "history_start": source.get("history_start", HISTORY_START),
+                    "request": source["latest_request"],
+                    "append_work_selection": {
+                        "start": state.start.isoformat(),
+                        "end_exclusive": state.end.isoformat(),
+                        "asof": state.asof,
+                    },
+                }
+            )
+            event(
+                "pricing_append_work_selection",
+                symbol=state.symbol,
+                selected=False,
+                start=state.start.isoformat(),
+                end_exclusive=state.end.isoformat(),
+            )
+        if not_selected:
+            retained = {symbol: value for symbol, value in retained.items() if symbol not in not_selected}
+            empty = [item for item in empty if item["symbol"] not in not_selected]
+        metrics["append_work_candidates"] = len(append_sources)
+        metrics["append_work_selected"] = selected_work
+        metrics["append_work_skipped"] = len(not_selected)
+        if on_append_work_selected is not None:
+            on_append_work_selected(set(append_sources) - not_selected)
+        for symbol, source in append_sources.items():
+            if symbol in not_selected:
+                continue
+            root = regular_path(store, f"end_of_day/pricing/{symbol}")
+            with ticker_lock(root, exclusive=True):
+                current = load_source(root, symbol)
+                generation = digest(json_bytes(current)) if current is not None else None
+                if generation != selected_generations[symbol]:
+                    results.append(
+                        {
+                            "symbol": symbol,
+                            "status": "failed",
+                            "outcome": failure_outcome(
+                                DownloadError("source generation changed after append work selection")
+                            ),
+                        }
+                    )
+                    continue
+                source, endpoints = select_endpoints(root, symbol, source)
+            retain_append_source(symbol, source, endpoints)
     if progress:
         progress(
             "acquisition_selection",
@@ -293,6 +428,7 @@ def acquire_selected(
             approved_generations=selected_generations,
             endpoint_selections=endpoint_selections,
             context=context,
+            acquired=acquired,
         )
         for item in extended["results"]:
             if item.get("outcome", {}).get("outcome") == "access_denied":
@@ -303,14 +439,17 @@ def acquire_selected(
         buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
         completed = set()
 
-        def checked(symbol, matched):
-            endpoint_selections[symbol] = replace(endpoint_selections[symbol], matched=matched)
+        def checked(symbol, comparison):
+            endpoint_selections[symbol] = replace(
+                endpoint_selections[symbol], matched=comparison.matched, comparison=comparison
+            )
             context.endpoint_selections[symbol] = endpoint_selections[symbol]
             event(
                 "retained_history_comparison",
                 symbol=symbol,
                 source_generation=endpoint_selections[symbol].generation,
-                matched=matched,
+                matched=comparison.matched,
+                decision=comparison.decision,
                 asof=endpoint_selections[symbol].asof,
                 end_exclusive=endpoint_selections[symbol].end,
             )
@@ -325,10 +464,11 @@ def acquire_selected(
                     progress=progress,
                     on_checked=checked,
                     approved={
-                        symbol: endpoint_selections[symbol].matched
+                        symbol: endpoint_selections[symbol].comparison
                         for symbol in buffered
-                        if endpoint_selections[symbol].matched is not None
+                        if endpoint_selections[symbol].comparison is not None
                     },
+                    acquired=acquired,
                 )
                 if buffered and callable(getattr(client, "execute_plan", None))
                 else [(list(buffered), ordinary_client, {})]

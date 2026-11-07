@@ -19,7 +19,7 @@ _SCALARS = frozenset(
     "reused_decision reused_closed_boundaries historical_rows_reused pricing_rows_processed "
     "unresolved_rows processed evaluated_groups reused_groups reused_history_prefixes "
     "full_history_evaluations checked_bars published_components provider_requests "
-    "identity_rule_executions pricing_writes workers requested succeeded deferred_full_range".split()
+    "identity_rule_executions pricing_writes workers requested succeeded skipped deferred_full_range".split()
 )
 _ARGUMENTS = frozenset(
     "symbol seed symbols labels end_date start end refresh bootstrap rebuild resume_closed "

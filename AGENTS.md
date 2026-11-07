@@ -17,14 +17,20 @@ Existing code, documentation, passing tests, defensive programming, a new phase,
 acknowledgement or a desire for extra confidence cannot override this rule. Do not defend redundant checks
 because the implementation already performs them. Remove conflicting documentation and fix the implementation.
 
-For retained pricing, **the first and latest fully adjusted (`all`) session comparisons are the acceptance
-boundary**. A single-session history needs one comparison. Matching endpoints approve reuse of the selected
-stored generation and acquisition of missing sessions only. This applies to ordinary acquisition and retained
-dependencies as well as daily-summary members. It is forbidden to:
+For retained pricing, **the first fully adjusted (`all`) session plus the latest up to ten stored `all`
+sessions are the acceptance boundary**. Compare overlapping dates once. Matching rows approve reuse of the
+selected stored generation and acquisition of missing sessions only. A difference confined to the latest
+stored session selects correction of that session and acquisition of missing sessions. Any earlier selected
+row difference, including the first session, selects full retained-span replacement. An incomplete comparison
+does not establish a difference. This applies to ordinary acquisition and retained dependencies as well as
+daily-summary members. It is forbidden to:
 
 - Check the other seven historical adjustment views after that approval.
-- Request intervening history, overlap or old first-session confirmations to verify approved history again.
-- Open, decode, hash or scan retained gzip payloads to establish endpoints or authenticate approved prices.
+- Request unselected intervening history or repeat selected observations to verify approved history again.
+- Open, decode, hash or scan retained gzip payloads to authenticate approved prices. A recognized legacy
+  publication without a comparison tail selects one bounded `readall_rsplit` assembly from its manifest-selected
+  `all` payloads, followed by publication through the existing journal. A missing tail in the new format selects
+  owning recovery, never repeated reconstruction. This transition assembles accepted data, not a new audit.
 - Reread accepted validators, manifests or receipts, replay their calculations, or repeat a completed comparison
   merely because execution moved to another consumer, lock scope, cohort or phase.
 - Rename repeated historical verification as an acquisition check, producer check, safety check or fallback.
@@ -32,7 +38,8 @@ dependencies as well as daily-summary members. It is forbidden to:
 Keep the approval bound to its actual store, source generation, identity mapping and permitted request scope.
 After lock reacquisition, the required selector/generation check establishes whether that binding still applies;
 it must not expand into upstream verification. An actual changed generation or mapping invalidates the affected
-approval. A changed endpoint selects the owning replacement path. Missing required evidence fails closed into
+approval. A completed comparison selects the owning unchanged, latest-session correction or replacement path.
+Carry its scope and live observations into acquisition, durable recovery, lineage and serving. Missing required evidence fails closed into
 the explicit owning recovery/rebuild path; it never authorizes a hidden history audit or store crawl.
 
 New rows and newly constructed artifacts are validated at their producer boundary. Reading an existing hot
