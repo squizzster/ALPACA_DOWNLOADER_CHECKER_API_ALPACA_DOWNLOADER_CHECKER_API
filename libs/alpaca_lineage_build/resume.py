@@ -110,11 +110,17 @@ def complete_append(view):
             if view.correction_from
             else (date.fromisoformat(last) + timedelta(days=1)).isoformat()
         )
-        expected = expected_market_session_coverage(first, view.source["latest_request"]["end_exclusive"])
-        sessions = tuple(timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows)
-        accepted_sessions = (
-            (view.correction_from, *expected.session_dates) if view.correction_from else expected.session_dates
+        end = view.source["latest_request"]["end_exclusive"]
+        # A corrected last row is work even when coverage has not advanced.
+        # Its producer certificate supplies that session; only a nonempty
+        # appended interval needs a calendar grid. Retained history stays closed.
+        added_sessions = (
+            ()
+            if view.correction_from and first[:10] == end[:10]
+            else expected_market_session_coverage(first, end).session_dates
         )
+        sessions = tuple(timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows)
+        accepted_sessions = (view.correction_from, *added_sessions) if view.correction_from else added_sessions
         if sessions != accepted_sessions:
             return False
     return True

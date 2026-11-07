@@ -8,6 +8,7 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timesta
 from libs.alpaca_pricing_download.storage import boundary_paths
 from libs.common.debug_trace import traced
 
+from .assignment_handoff import comparison, produce, selected
 from .contract import VERSION, LineageError, document_digest, versions
 from .policy_engine import evaluate_policy
 
@@ -243,6 +244,15 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         if resume_closed
         else {kind: boundary(view, report, kind, anchor, indexes) for kind in boundary_paths(anchor)}
     )
+    comparisons = {}
+    for kind, new in list(documents.items()):
+        accepted = selected(previous, kind) if previous else None
+        if accepted is not None and (
+            kind == "completed_years" or kind == "current_year" and previous["anchor_month"] == anchor
+        ):
+            comparisons[kind] = comparison(new)
+            if comparisons[kind] == accepted["comparison"]:
+                del documents[kind]
     for kind, old in old_boundaries.items():
         if kind not in documents:
             continue
@@ -307,4 +317,12 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for kind, relative in boundary_paths(anchor).items()
         },
     }
+    handoffs = dict((previous or {}).get("assignment_handoffs", {}))
+    for kind, document in documents.items():
+        generation = receipt["boundaries"][kind]["sha256"]
+        if handoffs.get(kind, {}).get("generation") != generation:
+            handoffs[kind] = produce(document, generation, compared=comparisons.get(kind))
+    if handoffs:
+        receipt["assignment_handoffs"] = handoffs
+        receipt["assignment_handoff_kinds"] = sorted(handoffs)
     return receipt, documents

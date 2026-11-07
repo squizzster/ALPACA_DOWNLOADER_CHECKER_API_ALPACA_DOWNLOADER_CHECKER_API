@@ -45,7 +45,7 @@ class RetainedAcceptanceTests(unittest.TestCase):
             self.assertIn("recovery_lineage", result["stages"])
             self.assertEqual(case.identity.catalogue_calls, 1)
             self.assertEqual(len(requests), 1, requests)
-            self.assertEqual(requests[0]["start"], "2016-01-01")
+            self.assertEqual(requests[0]["start"], "2026-10-01")
             self.assertEqual(requests[0]["end"], "2026-10-20")
             root = case.store / "end_of_day/lineage"
             receipt = storage.read_receipt(root, "AAA", storage.read_index(root))

@@ -161,5 +161,15 @@
     "modifications": [
       "Lend the selected pricing producer's latest-session revision and predecessor session to serving while the group snapshot is held. Preserve generation and change-ancestry binding without reopening validators, prices or identity evidence."
     ]
+  },
+  {
+    "modifications": [
+      "Consume lineage-produced shared assignment and ownership projections in serving snapshots without reopening historical assignment bodies or reconstructing ownership runs. Cache the completed evidence projection for the lifetime of one group; retain legacy selected-body assembly and reject missing or mismatched new handoffs."
+    ]
+  },
+  {
+    "modifications": [
+      "Read selected lineage assignment projections through the owning lexical path and work-scope boundary, preserving debug attribution without authenticating completed artifacts."
+    ]
   }
 ]

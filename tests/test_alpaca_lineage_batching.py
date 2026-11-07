@@ -466,19 +466,52 @@ class LineageBatchingTests(unittest.TestCase):
         previous = {
             "anchor_month": "2026-10",
             "versions": legacy_versions,
-            "evidence": {"queried_symbols": ["A"], "corporate_actions": [old]},
+            "evidence": {
+                "queried_symbols": ["A"],
+                "corporate_actions": [old],
+                "query": {"corporate_actions_start": START},
+            },
         }
         self.assertFalse(reusable_versions(previous["versions"]))
         self.assertTrue(reusable_metadata_versions(previous["versions"]))
         self.assertEqual(action_requests("A", START, END, previous), [("A", "2026-10-01", END)])
         self.assertEqual(action_requests("A", START, END, previous, refresh=True), [("A", START, END)])
-        self.assertTrue(full_metadata(previous, {"from": "2016-01-01"}, False))
+        self.assertFalse(full_metadata(previous, {"from": "2016-01-01"}, False))
         provider = Provider(actions=[old, event("A", "new"), event("B", "b", process_date="2016-03-01")])
         window = WindowClient(EvidenceClient(provider.client), "A", previous, False)
         window.prefetch_corporate_actions(["A", "B"], START, END)
         self.assertEqual(window.get_corporate_actions("A", START, END), [old, event("A", "new")])
         self.assertEqual([a["id"] for a in window.get_corporate_actions("B", START, END)], ["b"])
         self.assertEqual({p["start"] for kind, p in provider.calls}, {START, "2026-10-01"})
+
+    def test_history_extension_acquires_only_uncovered_prefix_and_current_window(self):
+        old = event("A", "retained", process_date="2025-02-01")
+        prefix = event("A", "prefix", process_date="2016-02-01")
+        current = event("A", "current")
+        previous = {
+            "anchor_month": "2026-10",
+            "evidence": {
+                "queried_symbols": ["A"],
+                "query": {"corporate_actions_start": "2025-01-01"},
+                "corporate_actions": [old],
+            },
+        }
+        expected = [("A", START, "2024-12-31"), ("A", "2026-10-01", END)]
+        self.assertEqual(action_requests("A", START, END, previous), expected)
+        provider = Provider(["A"], [prefix, old, current])
+        client = EvidenceClient(provider.client)
+        client.prefetch_corporate_actions(action_requests("A", START, END, previous))
+        window = WindowClient(client, "A", previous, False)
+        window.prefetch_corporate_actions(["A"], START, END)
+        self.assertEqual(window.get_corporate_actions("A", START, END), [old, prefix, current])
+        self.assertEqual([(q["symbols"], q["start"], q["end"]) for kind, q in provider.calls], expected)
+        # Completed prefix acquisition survives assembly retry.
+        window.get_corporate_actions("A", START, END)
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(action_requests("A", START, "2024-01-01", previous), [("A", START, "2024-01-01")])
+        previous["evidence"].pop("query")
+        with self.assertRaisesRegex(LineageError, "explicit metadata refresh"):
+            action_requests("A", START, END, previous)
 
     def test_completed_mapping_is_reused_until_its_mapping_inputs_change(self):
         for scenario in (
@@ -499,6 +532,7 @@ class LineageBatchingTests(unittest.TestCase):
                     "anchor_month": "2026-10",
                     "evidence": {
                         "queried_symbols": ["A"],
+                        "query": {"corporate_actions_start": START},
                         "corporate_actions": [accepted],
                         "asset_lookups": [
                             {

@@ -61,7 +61,7 @@ class LineageContinuationTests(unittest.TestCase):
             result = case.run_build(client=client.client, pricing_handoff={"GOOG": publication})
         self.assertEqual(reads.call_count, 1)
         self.assertFalse(result["results"][0]["reused_closed_boundaries"])
-        self.assertEqual([params["start"] for kind, params in client.calls if kind == "actions"], ["2016-01-01"])
+        self.assertEqual([params["start"] for kind, params in client.calls if kind == "actions"], ["2026-10-01"])
 
     def test_only_added_rows_reach_the_owner_across_days_months_and_years(self):
         case = self.case

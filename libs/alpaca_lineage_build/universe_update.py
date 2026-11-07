@@ -362,12 +362,22 @@ def run_update(
         policy.record_results(pricing, stage="acquisition")
         failed_symbols = {s for s in work if not policy.allowed({s})}
         summarized = {entry["symbol"] for entry in accepted["summary"]["entries"]}
+        changed_sources = {
+            item["symbol"]: item["source_sha256"]
+            for item in pricing["results"]
+            if "source_sha256" in item
+            and item["source_sha256"] != policy.index["symbols"].get(item["symbol"], {}).get("source_sha256")
+        }
         # Ordinary summary advancement owns its check -> append -> lineage
         # handoff below. Do not republish its old span before appending it.
         selected = {
             symbol
             for symbol, item in work.items()
             if symbol not in failed_symbols
+            and not (
+                symbol in policy.completed_decisions
+                and policy.satisfying_entry(symbol, policy.index["symbols"], changed_sources) is not None
+            )
             and (
                 symbol not in summarized
                 or item["acquire"]

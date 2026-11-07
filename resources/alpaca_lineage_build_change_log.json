@@ -322,5 +322,24 @@
     "modifications": [
       "Carry the selected pricing source generation and completed correction-scope decision, including negative decisions, through locked prefix planning, payload loading and broader reconciliation without rehashing or recomputing them."
     ]
+  },
+  {
+    "modifications": [
+      "Handle latest-session corrections at unchanged coverage without asking the calendar for an empty append interval. Preserve accepted earlier assignments and process only the corrected session; earlier price changes and interrupted publications retain their owning reconciliation and recovery paths.",
+      "Carry successful correction approvals and matched independent members through a failed refresh, finish selected legacy-tail lineage handoffs from their completed publications, and acknowledge completed peers without reopening lineage merely to stamp workflow completion. Failed and restricted groups remain incomplete."
+    ]
+  },
+  {
+    "modifications": [
+      "Keep price corrections separate from metadata freshness, classify descriptive workflow refreshes before reopening accepted history, and retain unavailable auxiliary outcomes by their own request and mapping.",
+      "Retain immutable pricing partitions and assignment boundaries across group expansion; consume initial maintenance completion when selecting discovery work. Reevaluate fixed-point reports only when a consulted counterpart changes.",
+      "Publish generation-bound shared assignment projections, canonical comparison facts and serving ownership runs through the existing journal. Compare new output to completed facts without opening old assignment bodies; legacy selected bodies remain readable without an implicit store migration."
+    ]
+  },
+  {
+    "modifications": [
+      "Acquire only the uncovered corporate-action prefix when retained price history extends backward, preserving accepted historical metadata and the ordinary current window. Missing coverage requires explicit metadata refresh.",
+      "Route selected assignment projections through the lineage storage scope and debug boundary without upstream authentication; suppress empty append handoffs after an all-failed refresh."
+    ]
   }
 ]

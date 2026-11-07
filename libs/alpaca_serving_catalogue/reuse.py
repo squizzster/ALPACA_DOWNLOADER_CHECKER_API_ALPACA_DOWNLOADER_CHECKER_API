@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.common.debug_trace import event
 
 from .contract import policy
 
@@ -27,6 +28,21 @@ def validate_history_validation(group):
     decisions = {record["public_id"] for record in group["decisions"]}
     seen = set()
     for record in completed["prefix_records"]:
+        dates = record.get("session_dates")
+        if (
+            record.get("session_projection_version") not in (None, 1)
+            or record.get("session_projection_version") == 1
+            and dates is None
+        ):
+            raise ValueError("missing or unsupported serving date projection")
+        if dates is not None and (
+            dates != sorted(set(dates))
+            or len(dates) != record["coverage"]["session_count"]
+            or not dates
+            or dates[0] != record["first_session"]
+            or dates[-1] != record["last_session"]
+        ):
+            raise ValueError("invalid serving date projection")
         preceding = record.get("before_last_raw_bar")
         if (
             completed.get("revision_prefix_version") == 1
@@ -98,7 +114,7 @@ def _identity_prefix(runs, count, public_id):
     return selected
 
 
-def select_prefixes(group, previous, inputs, offsets):
+def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=False):
     # These bodies came from the accepted serving selector. Its producer already
     # validated the checkpoint. Compare current input guarantees in memory; DO
     # NOT revalidate old records or scan old prices to earn permission to reuse.
@@ -112,6 +128,15 @@ def select_prefixes(group, previous, inputs, offsets):
             if completed is None:
                 continue
         for record in completed["prefix_records"]:
+            if (
+                record.get("session_projection_version") not in (None, 1)
+                or record.get("session_projection_version") == 1
+                and "session_dates" not in record
+                and not rebuild_projection
+            ):
+                raise ValueError(
+                    "missing or unsupported serving date projection; explicit catalogue rebuild required"
+                )
             prefix = _select_identity_prefix(group, completed, record, inputs, offsets)
             if prefix is None:
                 prefix = _select_revision_prefix(group, completed, record, inputs, offsets)
@@ -225,6 +250,8 @@ def _select_revision_prefix(group, completed, record, inputs, offsets):
         last_raw_bar=preceding,
     )
     shortened["coverage"]["session_count"] -= 1
+    if "session_dates" in shortened:
+        shortened["session_dates"] = shortened["session_dates"][:-1]
     shortened["coverage"]["explained_missing_sessions"] = [
         day for day in shortened["coverage"]["explained_missing_sessions"] if day < through
     ]
@@ -304,6 +331,7 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
     prior_inputs = completed["inputs"]
     contributing = {symbol for view in coverage.values() for symbol in view["subsets"]}
     if not contributing <= inputs.keys():
+        event("serving_prefix", public_id=public_id, accepted=False, reason="contributing_source_removed")
         return None
     rows = {}
     for symbol in contributing:
@@ -312,12 +340,28 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
         # including adjusted observations beyond raw's last session. A change
         # within that span invalidates this identity's completed facts together.
         if not group.preserves_pricing_prefix(symbol, prior, through=record["validated_through"]):
+            event(
+                "serving_prefix",
+                public_id=public_id,
+                symbol=symbol,
+                accepted=False,
+                reason="pricing_ancestry_changed",
+                through=record["validated_through"],
+            )
             return None
         for adjustment, old in prior["views"].items():
             current = inputs[symbol]["views"][adjustment]
             if _identity_prefix(current["ownership"], old["rows"], public_id) != _identity_prefix(
                 old["ownership"], old["rows"], public_id
             ):
+                event(
+                    "serving_prefix",
+                    public_id=public_id,
+                    symbol=symbol,
+                    adjustment=adjustment,
+                    accepted=False,
+                    reason="ownership_or_labels_changed",
+                )
                 return None
         rows[symbol] = {adjustment: view["rows"] for adjustment, view in prior["views"].items()}
     # Gap source-presence facts concern the complete group, independently of the
@@ -329,6 +373,13 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
             not group.preserves_pricing_prefix(symbol, prior, through=max(missing))
             for symbol, prior in prior_inputs.items()
         )
+    )
+    event(
+        "serving_prefix",
+        public_id=public_id,
+        accepted=True,
+        reason="accepted_numeric_history",
+        through=record["validated_through"],
     )
     return {
         "rows": rows,

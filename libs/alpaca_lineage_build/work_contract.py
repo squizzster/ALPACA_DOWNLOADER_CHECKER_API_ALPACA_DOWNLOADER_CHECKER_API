@@ -431,6 +431,30 @@ class WorkPolicy:
             for symbol in group
         )
 
+    def needs_full_metadata(self, group, previous):
+        """Classify acquired endpoint changes before selecting the action window."""
+        prior_lookups = symbol_lookups(
+            {symbol: receipt["evidence"] for symbol, receipt in previous.items() if receipt}
+        )
+        for symbol in group:
+            if not self.needs_refresh({symbol}, previous):
+                continue
+            item = self.work.get(symbol, {})
+            if "explicit_lineage_refresh" in item.get("reasons", ()):
+                return True
+            for label, after in item.get("required_lookups", {}).items():
+                before = prior_lookups.get(label)
+                if (
+                    before is None
+                    or before.get("outcome") != after.get("outcome")
+                    or any(
+                        (before.get("asset") or {}).get(key) != (after.get("asset") or {}).get(key)
+                        for key in ("id", "symbol", "class", "exchange")
+                    )
+                ):
+                    return True
+        return False
+
     def decision_inputs_satisfied(self, sources):
         """Outstanding approval does not invalidate an otherwise completed decision."""
         for symbol, source in sources.items():

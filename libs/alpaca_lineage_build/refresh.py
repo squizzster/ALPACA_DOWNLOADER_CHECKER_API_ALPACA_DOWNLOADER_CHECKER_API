@@ -115,6 +115,7 @@ def refresh_existing(
             and (work_policy is None or work_policy.allowed({entry["symbol"]}))
         )
 
+    upgraded = {}
     legacy = [entry for entry in snapshot["entries"] if in_scope(entry) and entry.get("tail_all") is None]
     if legacy:
         assert_current(store, snapshot["token"])
@@ -140,6 +141,29 @@ def refresh_existing(
                 generations[symbol] = generation
             elif comparison is not None and comparison[:2] == (entry, generation):
                 compared[symbol] = comparison[2]
+
+    def reconcile_publications(publications):
+        value = run_lineage(
+            store,
+            sorted(publications),
+            identity_client=identity_client,
+            pricing_client=pricing_client,
+            end_date=end_date,
+            evidence_client=evidence_client,
+            register_discoveries=register_discoveries,
+            work_policy=work_policy,
+            context=context,
+            progress=progress,
+            on_pricing=progress,
+            pricing_handoff=publications,
+        )
+        lineage["results"].extend(value["results"])
+        lineage["failed"] += value["failed"]
+        return {
+            symbol: generation
+            for item in value["results"]
+            for symbol, generation in item.get("pricing_replacements", {}).items()
+        }
 
     def replace_and_reconcile(prepared, baseline_token, *, serving_generation=None):
         def before_publish():
@@ -168,26 +192,9 @@ def refresh_existing(
         selected = [item["symbol"] for item in replaced["results"] if item["status"] == "replaced"]
         lineage_replacements = {}
         if selected:
-            value = run_lineage(
-                store,
-                selected,
-                identity_client=identity_client,
-                pricing_client=pricing_client,
-                end_date=end_date,
-                evidence_client=evidence_client,
-                register_discoveries=register_discoveries,
-                work_policy=work_policy,
-                context=context,
-                progress=progress,
-                on_pricing=progress,
-                pricing_handoff={
-                    item["symbol"]: item for item in replaced["results"] if "source_sha256" in item
-                },
+            lineage_replacements = reconcile_publications(
+                {item["symbol"]: item for item in replaced["results"] if "source_sha256" in item}
             )
-            lineage["results"].extend(value["results"])
-            lineage["failed"] += value["failed"]
-            for item in value["results"]:
-                lineage_replacements.update(item.get("pricing_replacements", {}))
         else:
             assert_current(store, baseline_token)
         for item in replaced["results"]:
@@ -420,6 +427,7 @@ def refresh_existing(
                 and generation is not None
                 and not (work_policy is not None and work_policy.work.get(symbol, {}).get("correction_id"))
             ):
+                verified[symbol] = entry
                 context.history_checks[symbol] = (dict(entry), generation, None)
         checks.append(handoff)
         if progress:
@@ -504,10 +512,30 @@ def refresh_existing(
         summary = describe(ready)
     except DownloadError as error:
         summary = {"error": str(error)}
-    failed = pricing["failed"] + lineage["failed"] + int("error" in summary)
     if "error" not in summary:
         with storage.publication_lock(context.accept_store().root):
             index = context.select_index(context.accept_store().root)
+        # A legacy tail publication changes the pricing selector, not its rows.
+        # Finish that selected lineage handoff even if an independent correction
+        # failed. Carry the publication; never reacquire or reconstruct its tail.
+        pending_upgrades = {
+            entry["symbol"]: upgraded[entry["symbol"]]
+            for entry in ready["entries"]
+            if entry["symbol"] in upgraded
+            and verified.get(entry["symbol"]) == entry
+            and generations.get(entry["symbol"]) == upgraded[entry["symbol"]]["source_sha256"]
+            and index["symbols"].get(entry["symbol"], {}).get("source_sha256")
+            != upgraded[entry["symbol"]]["source_sha256"]
+            and in_scope(entry)
+        }
+        if pending_upgrades:
+            replacements = reconcile_publications(pending_upgrades)
+            generations.update(replacements)
+            completed_replacements.update(replacements)
+            ready = context.select_summary()
+            summary = describe(ready)
+            with storage.publication_lock(context.accept_store().root):
+                index = context.select_index(context.accept_store().root)
         accept_publication_snapshot(ready, index)
         for entry in ready["entries"]:
             symbol = entry["symbol"]
@@ -518,26 +546,39 @@ def refresh_existing(
                 if generations.get(symbol, accepted_generations.get(symbol)) == generation:
                     correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
                     context.history_checks[symbol] = (dict(entry), generation, correction)
-    if not failed and on_ready is not None:
+    failed = pricing["failed"] + lineage["failed"] + int("error" in summary)
+    approved_entries = (
+        [e for e in ready["entries"] if in_scope(e) and verified.get(e["symbol"]) == e]
+        if "error" not in summary
+        else []
+    )
+    if "error" not in summary and on_ready is not None and (not failed or approved_entries):
         on_ready(
             {
                 **ready,
-                "entries": [e for e in ready["entries"] if in_scope(e) and verified.get(e["symbol"]) == e],
+                "entries": approved_entries,
                 "approved_generations": generations,
             }
         )
-    if not failed and work_policy is not None:
+    if "error" not in summary and work_policy is not None:
         # A completed pricing replacement approves its generation even when
         # lineage removes the now-inactive symbol from the active summary.
-        work_policy.history_approved.update(generations)
+        approved = {
+            symbol: generation
+            for symbol, generation in generations.items()
+            if work_policy.allowed({symbol})
+            and index["symbols"].get(symbol, {}).get("source_sha256") == generation
+        }
+        work_policy.history_approved.update(approved)
         # Standalone refresh owns its final lineage handoff too. Daily maintenance
         # supplies on_ready and stamps the checked generation after its append.
         finish = [
             s
-            for s in generations
+            for s in approved
             if s in work_policy.work
             and work_policy.work[s].get("required_history_check")
             and work_policy.allowed({s})
+            and s not in work_policy.completed_decisions
         ]
         if on_ready is None and finish:
             value = run_lineage(

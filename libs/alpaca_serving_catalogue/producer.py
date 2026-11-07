@@ -314,7 +314,11 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                         )
                         if not set(group.references["lineage"]) <= component:
                             raise CatalogueError("published input group exceeds selected closure")
-                        evaluated = evaluate(group, tuple(prior_groups.values()))
+                        evaluated = evaluate(
+                            group,
+                            tuple(prior_groups.values()),
+                            **({"rebuild_projection": True} if rebuild else {}),
+                        )
                         for counter, count in evaluated["validation_work"].items():
                             result[counter] += count
                         groups.append(evaluated)

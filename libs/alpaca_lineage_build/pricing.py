@@ -21,7 +21,7 @@ from libs.alpaca_pricing_download.contract import (
 from libs.alpaca_pricing_download.evidence import PublishedPricingEvidence
 from libs.alpaca_pricing_download.handoff import load_published_boundary, load_published_views
 from libs.alpaca_pricing_download.storage import load_source, regular_path, trace_source_selection
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import event, traced
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
 from .contract import LineageError, document_digest
@@ -72,15 +72,23 @@ def load_pricing(
         raise LineageError(f"no published pricing for {symbol}")
     generation = document_digest(source) if source_sha256 is None else source_sha256
     trace_source_selection(source, generation, symbol=symbol, reason="lineage_input")
-    # The caller lends this cache only within one selected source and continuous
-    # lock lifetime. Keep whole decoded partitions when selecting a suffix so a
-    # metadata-driven fallback can read only the still-missing partitions.
+    # The operation retains immutable decoded partitions across lock reacquisition.
+    # The newly selected source supplies their exact generation. Envelope-only
+    # changes do not change a selected partition; changed partitions get new keys.
     partitions = {} if partitions is None else partitions
 
     def read(root, source, kind, *, selected=True):
-        key = (str(root), generation, kind)
+        key = (str(root), kind, source["boundaries"][kind]["sha256"])
         if key not in partitions:
             partitions[key] = load_published_boundary(root, source, kind, selected=selected)
+        else:
+            event(
+                "lineage_partition_reuse",
+                symbol=symbol,
+                boundary=kind,
+                boundary_sha256=key[-1],
+                source_sha256=generation,
+            )
         return dict(partitions[key])
 
     corrected = (

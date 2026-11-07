@@ -288,7 +288,7 @@ def _rename_exclusions(group, members, observations, bars, missing, *, source_se
 
 
 @traced("serving_evaluation")
-def evaluate(group, previous=()):
+def evaluate(group, previous=(), *, rebuild_projection=False):
     from alpaca_end_of_day.standalone import HistoryPrefixChanged, UnservableHistoryError
 
     # The locked group owns identity assignments and numerical source choices;
@@ -297,7 +297,9 @@ def evaluate(group, previous=()):
     # DO NOT acquire provider evidence or replay lineage rules to certify input.
     decisions, securities = [], []
     inputs, offsets = group.serving_inputs()
-    prefixes = select_prefixes(group, previous, inputs, offsets)
+    prefixes = select_prefixes(
+        group, previous, inputs, offsets, **({"rebuild_projection": True} if rebuild_projection else {})
+    )
     validation = {"inputs": inputs, "identities": {}, "prefix_records": [], "revision_prefix_version": 1}
     work = {"reused_history_prefixes": 0, "full_history_evaluations": 0, "checked_bars": 0}
     for security in group.summary["securities"]:
@@ -308,17 +310,6 @@ def evaluate(group, previous=()):
             continue
         prefix = prefixes.get(public_id)
         members, observations = _metadata(group, public_id)
-        # A partial public range needs its dated bars to count and project the
-        # supported suffix. Full-history checkpoints remain valid numerical
-        # facts, but cannot supply an arbitrary subrange's count without reads.
-        if prefix and _unresolved_ends(
-            group,
-            security,
-            members,
-            prefix["record"]["first_session"],
-            max(s["to"] for s in _segments(group, public_id)),
-        ):
-            prefix = None
         if prefix is None:
             work["full_history_evaluations"] += 1
         try:
@@ -448,9 +439,51 @@ def evaluate(group, previous=()):
                 "explained_missing_sessions": sorted(explained),
             },
         }
+        # Dates/labels are a separate projection of the accepted history. Range
+        # changes consume it without reopening or numerically checking old bars.
+        session_dates = (
+            [*prior["session_dates"], *sessions]
+            if prior and "session_dates" in prior
+            else sessions
+            if prior is None
+            else None
+        )
+        accepted_range = (
+            next(
+                (
+                    item
+                    for old in previous
+                    if any(
+                        d["public_id"] == public_id and d.get("publication_start_after_unresolved") == cutoff
+                        for d in old["decisions"]
+                    )
+                    for item in old["securities"]
+                    if item["public_id"] == public_id
+                ),
+                None,
+            )
+            if cutoff is not None and session_dates is None
+            else None
+        )
+        if (
+            session_dates is None
+            and rebuild_projection
+            and (
+                cutoff is not None
+                and accepted_range is None
+                or prior
+                and prior.get("session_projection_version") == 1
+            )
+        ):
+            session_dates = group.serving_session_dates(public_id)
         validation["prefix_records"].append(
             {
                 **history_summary,
+                **(
+                    {"session_dates": session_dates, "session_projection_version": 1}
+                    if session_dates is not None
+                    else {}
+                ),
                 "validated_through": max(
                     ([prior["validated_through"]] if prior else [])
                     + [view["bars"][-1]["session"] for view in views.values() if view["bars"]]
@@ -485,16 +518,56 @@ def evaluate(group, previous=()):
             # Every selected view passed its full numerical/session checks above.
             # Publish only assigned observations strictly after the last relevant
             # uncertainty. This never assigns a row or merges an identity.
-            supported = [bar for bar in dated_bars if bar["session"] > cutoff]
+            if session_dates is not None:
+                supported_dates = [day for day in session_dates if day > cutoff]
+                first_supported = supported_dates[0]
+                supported_count = len(supported_dates)
+                supported_ranges = [
+                    {**item, "first_session": max(item["first_session"], first_supported)}
+                    for item in ticker_ranges
+                    if item["last_session"] >= first_supported
+                ]
+            else:
+                # Legacy partial publications already selected this exact range.
+                # Carry it through metadata changes and suffix extensions. A new
+                # legacy range needs the explicit projection rebuild owner.
+                accepted = accepted_range
+                if accepted is None:
+                    raise ValueError(
+                        "legacy partial history lacks dated projection; explicit catalogue rebuild required"
+                    )
+                supported = [bar for bar in dated_bars if bar["session"] > cutoff]
+                through = prior["last_session"]
+                if accepted["first_session"] > through:
+                    first_supported = supported[0]["session"]
+                    supported_count = len(supported)
+                    supported_ranges = _ticker_ranges(supported)
+                else:
+                    first_supported = accepted["first_session"]
+                    supported_count = (
+                        accepted["coverage"]["session_count"]
+                        + len(supported)
+                        - int(accepted["last_session"] > through)
+                    )
+                    retained = {
+                        **accepted,
+                        "last_session": through,
+                        "ticker_ranges": [
+                            {**item, "last_session": min(item["last_session"], through)}
+                            for item in accepted["ticker_ranges"]
+                            if item["first_session"] <= through
+                        ],
+                    }
+                    supported_ranges = extend_ticker_ranges(retained, _ticker_ranges(supported))
             history_summary = {
                 **history_summary,
-                "first_session": supported[0]["session"],
-                "ticker_ranges": _ticker_ranges(supported),
+                "first_session": first_supported,
+                "ticker_ranges": supported_ranges,
                 "coverage": {
                     **history_summary["coverage"],
-                    "session_count": len(supported),
+                    "session_count": supported_count,
                     "explained_missing_sessions": sorted(
-                        day for day in explained if supported[0]["session"] < day < last_session
+                        day for day in explained if first_supported < day < last_session
                     ),
                 },
             }

@@ -2028,10 +2028,11 @@ class PolicyInjectionTests(TestCase):
 
         def loaders(_inputs, previous, _cache):
             seen.append(copy.deepcopy(previous))
-            return None, None, None
+            return None, lambda symbol: previous.get(symbol), None
 
-        def never_stable(*_args, **_kwargs):
+        def never_stable(*_args, **kwargs):
             nonlocal pass_number
+            kwargs["correlation_loader"]("AAA")
             pass_number += 1
             return {"pass": pass_number}
 

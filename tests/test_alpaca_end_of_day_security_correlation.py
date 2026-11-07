@@ -3553,7 +3553,9 @@ class RowCorrelationTests(unittest.TestCase):
 
 class CorrelationReportTests(unittest.TestCase):
     def test_version_changelog_matches_correlation_version(self) -> None:
-        self.assertEqual(CORRELATION_VERSION, len(validate_correlation_change_log()))
+        from libs.alpaca_end_of_day_security_correlation.correlation_version import RUNTIME_VERSION
+
+        self.assertEqual(RUNTIME_VERSION, len(validate_correlation_change_log()))
         self.assertEqual(frozenset(range(8, CORRELATION_VERSION + 1)), SUPPORTED_CORRELATION_VERSIONS)
 
     def test_report_preserves_partition_and_semantic_evidence_digest(self) -> None:

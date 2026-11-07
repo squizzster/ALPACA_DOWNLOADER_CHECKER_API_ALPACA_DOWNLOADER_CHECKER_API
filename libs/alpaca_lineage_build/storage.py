@@ -559,6 +559,23 @@ def read_boundaries(root: Path, receipt: dict, *, selected_loader=None, kinds=No
     }
 
 
+@traced("lineage_boundary_read")
+def read_assignment_projection(root, receipt, kind, handoff, *, selected_loader=None):
+    """Consume the selected projection through the owning path/scope boundary."""
+    from .assignment_handoff import assemble
+
+    return assemble(
+        (selected_loader or selected_document)(
+            path_at(
+                root,
+                f"{receipt['symbol']}/{receipt['boundaries'][kind]['manifest']}.projection.json",
+                published=True,
+            ),
+            handoff["projection_sha256"],
+        )
+    )
+
+
 def _install(root: Path, journal: dict, *, compare=True) -> dict:
     # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
@@ -752,10 +769,37 @@ def publish(
         old = read_receipt(root, symbol, index) if previous is None else previous[symbol]
         old_paths = {entry["manifest"] for entry in old["boundaries"].values()} if old else set()
         new_paths = {entry["manifest"] for entry in receipt["boundaries"].values()}
-        retire.extend(f"{symbol}/{path}" for path in sorted(old_paths - new_paths))
+        old_paths.update(
+            old["boundaries"][kind]["manifest"] + ".projection.json"
+            for kind in (old or {}).get("assignment_handoffs", {})
+        )
         for kind, value in boundaries[symbol].items():
+            from .assignment_handoff import produce
+
+            generation = receipt["boundaries"][kind]["sha256"]
+            if receipt.get("assignment_handoffs", {}).get(kind, {}).get("generation") != generation:
+                receipt.setdefault("assignment_handoffs", {})[kind] = produce(value, generation)
             if old is None or old["boundaries"][kind] != receipt["boundaries"][kind]:
                 documents[f"{symbol}/{receipt['boundaries'][kind]['manifest']}"] = value
+        for kind, handoff in receipt.get("assignment_handoffs", {}).items():
+            projection = handoff.pop("_projection", None)
+            if projection is not None:
+                documents[f"{symbol}/{receipt['boundaries'][kind]['manifest']}.projection.json"] = projection
+        new_paths.update(
+            receipt["boundaries"][kind]["manifest"] + ".projection.json"
+            for kind in receipt.get("assignment_handoffs", {})
+        )
+        retire.extend(f"{symbol}/{path}" for path in sorted(old_paths - new_paths))
+        if receipt.get("assignment_handoffs"):
+            from .assignment_handoff import serving_ownership
+
+            same = old and old["boundaries"] == receipt["boundaries"] and old.get("serving_ownership")
+            projection = old["serving_ownership"] if same else serving_ownership(receipt)
+            if projection is not None:
+                receipt["serving_ownership"] = projection
+            else:
+                receipt.pop("serving_ownership", None)
+            receipt["assignment_handoff_kinds"] = sorted(receipt["assignment_handoffs"])
         updated[symbol] = {
             "sha256": document_digest(receipt),
             "source_sha256": receipt["source_sha256"],

@@ -489,6 +489,8 @@ class StandaloneReaderTests(unittest.TestCase):
         def downgrade(receipt, boundaries):
             receipt["schema_version"] = 2
             receipt["versions"]["lineage"] = 2
+            for key in ("assignment_handoffs", "assignment_handoff_kinds", "serving_ownership"):
+                receipt.pop(key, None)
             for boundary in boundaries.values():
                 boundary["schema_version"] = 2
 

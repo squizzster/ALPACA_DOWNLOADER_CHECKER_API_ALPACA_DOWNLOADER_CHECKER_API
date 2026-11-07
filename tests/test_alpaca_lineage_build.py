@@ -201,6 +201,9 @@ class LineageBuildTests(unittest.TestCase):
                 "GOOG/completed_years.manifest.json",
                 "GOOG/2026/year.manifest.json",
                 "GOOG/2026/Oct/month.manifest.json",
+                "GOOG/completed_years.manifest.json.projection.json",
+                "GOOG/2026/year.manifest.json.projection.json",
+                "GOOG/2026/Oct/month.manifest.json.projection.json",
             },
         )
         receipt = self.receipt()
@@ -255,7 +258,7 @@ class LineageBuildTests(unittest.TestCase):
         ):
             self.run_build()
             self.assertEqual(len(self.bars), decide.call_count)
-            self.assertEqual(2, build.call_count)
+            self.assertEqual(1, build.call_count)
             self.assertEqual(1, intervals.call_count)
             self.assertEqual(1, edges.call_count)
             decide.reset_mock()
@@ -270,7 +273,7 @@ class LineageBuildTests(unittest.TestCase):
             self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
             self.run_build()
             self.assertEqual(len(self.bars) + 1, decide.call_count)
-            self.assertEqual(2, build.call_count)
+            self.assertEqual(1, build.call_count)
             self.assertEqual(1, intervals.call_count)
             self.assertEqual(1, edges.call_count)
 

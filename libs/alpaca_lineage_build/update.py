@@ -172,7 +172,9 @@ def update_everything(
                 late_bar_repairs=late_bar_repairs if round_number == 0 else None,
                 context=context,
             )
-            if not checked["complete"]:
+            # Refresh can fail overall while handing off completed independent
+            # members. Consume that exact subset; retain the aggregate failure.
+            if not checked["complete"] and not ready:
                 return result
             # Refresh has completed its own lineage/publication boundary. Consume it directly.
             current_stage = "append"

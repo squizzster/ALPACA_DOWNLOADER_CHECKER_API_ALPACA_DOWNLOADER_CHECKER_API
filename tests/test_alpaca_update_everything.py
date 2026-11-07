@@ -452,9 +452,9 @@ class UpdateEverythingTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(files_snapshot(self.store / "end_of_day"), before)
 
-    def test_failed_history_replacement_stops_before_append(self):
+    def test_failed_history_replacement_preserves_its_source_and_allows_approved_peer_append(self):
         self.live["AAA"][0]["v"] = 42
-        before = files_snapshot(self.store)
+        before = files_snapshot(self.store / "end_of_day/pricing/AAA")
 
         def fail_full_history(params):
             if params["start"][:4] == "2016" and params["start"][:10] != params["end"][:10]:
@@ -465,8 +465,13 @@ class UpdateEverythingTests(unittest.TestCase):
             result = self.run_update()
         self.assertFalse(result["complete"])
         self.assertEqual(result["stages"]["refresh"]["pricing"]["failed"], 1)
-        self.assertNotIn("append", result["stages"])
-        self.assertEqual(files_snapshot(self.store), before)
+        self.assertEqual([r["symbol"] for r in result["stages"]["append"]["results"]], ["BBB"])
+        self.assertEqual(result["stages"]["lineage"]["failed"], 0)
+        self.assertEqual(files_snapshot(self.store / "end_of_day/pricing/AAA"), before)
+        self.assertEqual(read_pricing_views(self.store, "BBB")["all"][-1][0][:10], "2026-10-16")
+        suffix = [p for p in self.calls if p["start"][:10] == "2026-10-15"]
+        self.assertEqual(len(suffix), 2)
+        self.assertTrue(all(p["symbols"] == "BBB" for p in suffix))
 
     def test_same_command_recovers_interrupted_pricing_then_rechecks_live(self):
         original = storage.os.replace

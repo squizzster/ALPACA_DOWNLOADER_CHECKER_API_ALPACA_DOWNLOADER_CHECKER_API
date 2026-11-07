@@ -1,6 +1,7 @@
 """Resume action acquisition at the previous active month; identity stays separate."""
 
 from collections import defaultdict
+from datetime import date, timedelta
 
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.alpaca_data_api_solver import build_plan, split_action
@@ -96,21 +97,16 @@ def action_symbols(value):
 def full_metadata(previous, notice, refresh):
     from .contract import reusable_metadata_versions
 
-    return (
-        refresh
-        or previous is not None
-        and (
-            not reusable_metadata_versions(previous.get("versions"))
-            or (notice or {}).get("from", previous["anchor_month"] + "-01") < previous["anchor_month"] + "-01"
-        )
-    )
+    # Pricing owns price changes. An old correction cannot invalidate completed
+    # action acquisition or identifier mappings; their own changed facts do that.
+    return refresh or previous is not None and not reusable_metadata_versions(previous.get("versions"))
 
 
 def action_requests(symbol, start, end, previous=None, *, refresh=False):
     """Known labels only; new labels get the original full range when discovered."""
     window = WindowClient(None, symbol, previous, refresh)
     known = previous["evidence"]["queried_symbols"] if previous else ()
-    return [(label, window.lower(label, start), end) for label in sorted({symbol, *known})]
+    return [request for label in sorted({symbol, *known}) for request in window.requests(label, start, end)]
 
 
 class EvidenceClient:
@@ -574,6 +570,10 @@ class RetainedReportClient:
         self.client.prefetch_corporate_actions([request for request in requests if not self.covered(*request)])
 
     def get_corporate_actions(self, symbol, start, end):
+        if self.client._covered((symbol, start, end)):
+            # Prefetch has completed this operation's fresh window. A retained
+            # report cannot mask newly acquired actions at an unchanged cutoff.
+            return self.client.get_corporate_actions(symbol, start, end)
         if self.covered(symbol, start, end):
             # The completed report owns this union across its queried labels.
             # Reassembly consumes that union; it is not a new provider response.
@@ -640,16 +640,36 @@ class WindowClient:
             for identifier in self.retained_lookups
         )
 
-    def lower(self, symbol, start):
+    def requests(self, symbol, start, end):
         known = self.previous["evidence"]["queried_symbols"] if self.previous else ()
-        return max(start, self.start) if self.start and symbol in known else start
+        if not self.start or symbol not in known:
+            return [(symbol, start, end)]
+        # The completed query owns historical coverage, independently of prices.
+        # Extend only its uncovered prefix; never reacquire the accepted middle.
+        accepted_start = self.previous["evidence"].get("query", {}).get("corporate_actions_start")
+        if not accepted_start:
+            raise LineageError("missing retained action coverage; run explicit metadata refresh")
+        requests = []
+        if start < accepted_start:
+            prefix_end = min(end, (date.fromisoformat(accepted_start) - timedelta(days=1)).isoformat())
+            requests.append((symbol, start, prefix_end))
+        lower = max(start, self.start, accepted_start)
+        if lower <= end:
+            requests.append((symbol, lower, end))
+        return requests
 
     def prefetch_corporate_actions(self, symbols, start, end):
-        self.client.prefetch_corporate_actions([(s, self.lower(s, start), end) for s in symbols])
+        self.client.prefetch_corporate_actions(
+            [request for symbol in symbols for request in self.requests(symbol, start, end)]
+        )
 
     def get_corporate_actions(self, symbol, start, end):
-        # Labels newly discovered in this run have no earlier acquisition checkpoint.
-        current = self.client.get_corporate_actions(symbol, self.lower(symbol, start), end)
+        # Planning and execution consume the same disjoint windows.
+        current = [
+            action
+            for request in self.requests(symbol, start, end)
+            for action in self.client.get_corporate_actions(*request)
+        ]
         for action in current:
             accepted = self.completed_actions.get(action_identity_key(action))
             if accepted != action:

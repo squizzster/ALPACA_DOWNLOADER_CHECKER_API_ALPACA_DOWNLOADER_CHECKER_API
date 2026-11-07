@@ -76,7 +76,7 @@ class LineageIOTests(unittest.TestCase):
         self.assertEqual(opened[pricing / "validator_first_last_sessions.json"], 0)
         self.assertEqual(opened[self.root / "GOOG/lineage.manifest.json"], 1)
         for reference in prior["boundaries"].values():
-            self.assertEqual(opened[self.root / "GOOG" / reference["manifest"]], 1)
+            self.assertEqual(opened[self.root / "GOOG" / reference["manifest"]], 0)
         lookup = self.receipt()["evidence"]["asset_lookups"][0]
         self.assertEqual(lookup["asset"]["name"], "Updated company")
         self.assertEqual(summary.read_snapshot(self.store)["entries"][0]["symbol"], "GOOG")

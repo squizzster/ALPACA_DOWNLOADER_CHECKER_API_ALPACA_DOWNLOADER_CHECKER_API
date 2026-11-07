@@ -36,6 +36,119 @@ from libs.common.debug_trace import DebugTrace
 
 
 class UpdateHandoffRegressions(unittest.TestCase):
+    def test_last_maintenance_completes_successful_peers_and_legacy_handoff(self):
+        self.check_last_maintenance_peers()
+
+    def test_changed_generation_does_not_inherit_a_peer_failure_legacy_handoff(self):
+        self.check_last_maintenance_peers(invalidate_legacy=True)
+
+    def check_last_maintenance_peers(self, *, invalidate_legacy=False):
+        from libs.alpaca_lineage_build import pipeline, universe_state
+        from libs.alpaca_pricing_download import history_tail
+        from libs.alpaca_pricing_download.contract import VALIDATOR_FILE, digest, json_bytes
+
+        with fixture() as case:
+            store, assets = self.seed_independent_pair(case, ("AAA", "BBB", "CCC"))
+            root = store / "end_of_day/pricing/CCC"
+            source = pricing_storage.load_source(root, "CCC")
+            validator = pricing_storage.read_document(root / VALIDATOR_FILE)
+            validator["schema_version"] = 31
+            validator.pop("tail_all")
+            (root / VALIDATOR_FILE).write_bytes(json_bytes(validator))
+            source["schema_version"] = 31
+            source["validator"]["sha256"] = digest(json_bytes(validator))
+            (root / "source.manifest.json").write_bytes(json_bytes(source))
+            self.assertEqual(run_lineage(store, ["CCC"], identity_client=IdentityClient(assets))["failed"], 0)
+            rebuild(store)
+            context = accept_context(store)
+            policy = WorkPolicy(
+                store, context.select_index(context.accept_store().root), {}, [], "2026-10-17", context=context
+            )
+            for symbol in assets:
+                policy.require(symbol, "2026-10-17", reason="test_maintenance", history_check=True)
+            case.live = {
+                "AAA": [bar("2016-01-04", "50"), case.old[-1]],
+                "BBB": [bar("2016-01-04", "60"), case.old[-1]],
+                "CCC": case.old,
+            }
+            process, correlate = pipeline.process_group, pipeline.correlate
+            publish_tail, read = history_tail.publish_legacy_tail, Path.read_bytes
+            reconciled, upgraded = [], []
+            changing_generation = False
+
+            def selected(store, root, seed, **kwargs):
+                reconciled.append(seed)
+                return process(store, root, seed, **kwargs)
+
+            def fail_peer(store, inputs, *args, **kwargs):
+                nonlocal changing_generation
+                if "BBB" in inputs:
+                    if invalidate_legacy:
+                        changing_generation = True
+                        try:
+                            download.download_pricing(
+                                store,
+                                "CCC",
+                                "2026-10-17",
+                                refresh_all=True,
+                                client=FakeClient([bar("2016-01-04", "75"), case.old[-1]]),
+                            )
+                        finally:
+                            changing_generation = False
+                    raise RuntimeError("synthetic independent lineage failure")
+                return correlate(store, inputs, *args, **kwargs)
+
+            def published(*args, **kwargs):
+                value = publish_tail(*args, **kwargs)
+                upgraded.append(value[0]["source_sha256"])
+                return value
+
+            def no_reauthentication(path):
+                if upgraded and not changing_generation and "CCC" in path.parts:
+                    self.assertNotEqual(path.suffix, ".gz", "accepted legacy payload reopened")
+                    self.assertNotEqual(path.name, VALIDATOR_FILE, "accepted legacy validator reopened")
+                return read(path)
+
+            with (
+                patch.object(pipeline, "process_group", side_effect=selected),
+                patch.object(pipeline, "correlate", side_effect=fail_peer),
+                patch.object(history_tail, "publish_legacy_tail", side_effect=published),
+                patch.object(Path, "read_bytes", no_reauthentication),
+            ):
+                result = update.update_everything(
+                    store,
+                    "2026-10-17",
+                    pricing_client=case.pricing,
+                    identity_client=IdentityClient(assets),
+                    work_policy=policy,
+                    context=context,
+                    recover_pending=False,
+                )
+                policy.acknowledge()
+            self.assertFalse(result["complete"], result)
+            self.assertEqual(result["failed"], 1, result)
+            expected = {"AAA": 1, "BBB": 1} if invalidate_legacy else {"AAA": 1, "BBB": 1, "CCC": 1}
+            self.assertEqual(Counter(reconciled), Counter(expected))
+            self.assertEqual(len(upgraded), 1)
+            self.assertEqual(set(policy.history_approved), {"AAA"} if invalidate_legacy else {"AAA", "CCC"})
+            if not invalidate_legacy:
+                self.assertEqual(policy.history_approved["CCC"], upgraded[0])
+            work = universe_state.read_state(store)["work"]
+            self.assertEqual(
+                {s: work[s]["status"] for s in assets},
+                {"AAA": "complete", "BBB": "retry", "CCC": "pending" if invalidate_legacy else "complete"},
+            )
+            serving = maintain(store)
+            self.assertEqual(serving["complete"], not invalidate_legacy, serving)
+            self.assertEqual(serving["pending_symbols"], ["CCC"] if invalidate_legacy else [])
+            self.assertEqual(serving["evaluated_groups"], 1 if invalidate_legacy else 2)
+            from libs.alpaca_pricing_download.update_checks import read_checks
+
+            self.assertEqual(set(read_checks(store)["checks"]), {"BBB", "CCC"} if invalidate_legacy else {"BBB"})
+            ccc_calls = [p for p in case.pages if "CCC" in p["symbols"].split(",")]
+            self.assertEqual(len(ccc_calls), 2, ccc_calls)
+            self.assertEqual({p["adjustment"] for p in ccc_calls}, {"all"})
+
     def test_late_repair_dependency_advance_invalidates_earlier_comparison(self):
         for differed in (False, True):
             with self.subTest(differed=differed), fixture() as case:
@@ -140,6 +253,24 @@ class UpdateHandoffRegressions(unittest.TestCase):
             self.assertFalse(result["complete"], result)
             for symbol in assets:
                 self.assertEqual(len(read_pricing_views(store, symbol)["all"]), 2)
+
+    def test_all_failed_refresh_does_not_enter_append(self):
+        with fixture() as case:
+            store, assets = self.seed_independent_pair(case)
+            for symbol in assets:
+                case.live[symbol] = [bar("2016-01-04", "50"), case.old[-1]]
+            with (
+                patch.object(pricing_refresh, "download_pricing", side_effect=OSError("correction failed")),
+                patch.object(update, "append_ready", side_effect=AssertionError("empty append selected")),
+            ):
+                result = update.update_everything(
+                    store,
+                    "2026-10-17",
+                    pricing_client=case.pricing,
+                    identity_client=IdentityClient(assets),
+                )
+            self.assertFalse(result["complete"], result)
+            self.assertNotIn("append", result["stages"])
 
     def test_successful_correction_is_retained_when_peer_correction_fails(self):
         with fixture() as case:

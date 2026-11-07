@@ -437,6 +437,146 @@ class HistoryTailPublicationTests(unittest.TestCase):
 
 
 class HistoryTailPipelineTests(unittest.TestCase):
+    def test_same_cutoff_correction_journal_recovers_without_replaying_producers(self):
+        from libs.alpaca_lineage_build import pipeline, pricing
+        from libs.alpaca_lineage_build import storage as lineage_storage
+        from libs.alpaca_pricing_download.refresh import check_retained_source
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        case = lineage_fixture.LineageBuildTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        old = lineage_fixture.informative_bars("2025-12-01", "2026-10-14")
+        case.download(bars=old)
+        case.run_build()
+        self.assertEqual(case.receipt()["unresolved_rows"], 0)
+        self.assertTrue(maintain(case.store, bootstrap=True)["complete"])
+        client = FakeClient([*old[:-1], {**old[-1], "v": 12345}])
+        selection = check_retained_source(case.store, "GOOG", "2026-10-14", client=client)
+        publication = download.download_pricing(
+            case.store, "GOOG", "2026-10-14", client=client, endpoint_selection=selection["endpoint_selection"]
+        )
+        with (
+            patch.object(lineage_storage, "_install", side_effect=ProcessInterrupted()),
+            self.assertRaises(ProcessInterrupted),
+        ):
+            case.run_build(pricing_handoff={"GOOG": publication})
+        self.assertTrue((case.root / ".pending.json").exists())
+        identity = lineage_fixture.IdentityClient()
+        with (
+            patch.object(pipeline, "correlate", side_effect=AssertionError("completed correction recalculated")),
+            patch.object(
+                pricing, "load_published_boundary", side_effect=AssertionError("accepted prices reread")
+            ),
+            patch.object(
+                download, "download_pricing", side_effect=AssertionError("completed pricing reacquired")
+            ),
+        ):
+            recovered = case.run_build(client=identity)
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(identity.request_count, 0)
+        self.assertFalse((case.root / ".pending.json").exists())
+        self.assertEqual(case.receipt()["source_sha256"], publication["source_sha256"])
+        self.assertTrue(maintain(case.store)["complete"])
+
+    def test_earlier_change_after_latest_correction_invalidates_the_prefix(self):
+        from libs.alpaca_pricing_download.refresh import check_retained_source
+
+        case = lineage_fixture.LineageBuildTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        old = lineage_fixture.informative_bars("2025-12-01", "2026-10-14")
+        case.download(bars=old)
+        case.run_build()
+        revised = [*old[:-1], {**old[-1], "v": 12345}]
+        client = FakeClient(revised)
+        selection = check_retained_source(case.store, "GOOG", "2026-10-14", client=client)
+        download.download_pricing(
+            case.store, "GOOG", "2026-10-14", client=client, endpoint_selection=selection["endpoint_selection"]
+        )
+        later = case.download(bars=[{**revised[0], "v": 23456}, *revised[1:]], refresh_all=True)
+        result = case.run_build(pricing_handoff={"GOOG": later})
+        self.assertFalse(result["results"][0]["reused_closed_boundaries"])
+        self.assertEqual(result["results"][0]["pricing_rows_processed"], 8 * len(old))
+        self.assertEqual(case.receipt()["source_sha256"], later["source_sha256"])
+
+    def test_same_cutoff_correction_processes_only_the_revised_session(self):
+        from libs.alpaca_lineage_build import pipeline, pricing, resume
+        from libs.alpaca_pricing_download.refresh import check_retained_source
+        from libs.alpaca_serving_catalogue.producer import maintain
+
+        for members in (("GOOG",), ("GOOG", "OTHER")):
+            with self.subTest(members=members):
+                case = lineage_fixture.LineageBuildTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                identity = lineage_fixture.IdentityClient(
+                    {name: lineage_fixture.asset(name, "shared-id") for name in members}
+                )
+                changed = members[-1]
+                old = {}
+                for name in members:
+                    old[name] = lineage_fixture.informative_bars(
+                        "2025-12-01" if name == "GOOG" else "2026-10-01",
+                        "2026-10-01" if len(members) > 1 and name == "GOOG" else "2026-10-14",
+                    )
+                    case.download(symbol=name, bars=old[name])
+                case.run_build(symbols=members, client=identity)
+                before = case.receipt(changed)
+                self.assertEqual(before["unresolved_rows"], 0)
+                self.assertTrue(maintain(case.store, bootstrap=True)["complete"])
+                client = FakeClient([*old[changed][:-1], {**old[changed][-1], "v": 12345}])
+                selection = check_retained_source(case.store, changed, "2026-10-14", client=client)
+                publication = download.download_pricing(
+                    case.store,
+                    changed,
+                    "2026-10-14",
+                    client=client,
+                    endpoint_selection=selection["endpoint_selection"],
+                )
+                self.assertEqual(publication["mode"], "latest_session")
+                correlate, read = pipeline.correlate, Path.read_bytes
+                processed, decoded = [], set()
+                load = pricing.load_published_boundary
+
+                def only_correction(store, inputs, *args, **kwargs):
+                    processed.extend(row[0][:10] for view in inputs.values() for row in view.views["all"])
+                    return correlate(store, inputs, *args, **kwargs)
+
+                def once(root, source, kind, **kwargs):
+                    key = source["symbol"], kind
+                    self.assertNotIn(key, decoded, "accepted pricing partition decoded again")
+                    decoded.add(key)
+                    return load(root, source, kind, **kwargs)
+
+                def no_cold_prices(path):
+                    if path.suffix == ".gz":
+                        self.assertEqual(path.parent.name, "Oct", path)
+                        self.assertIn(changed, path.parts, path)
+                    return read(path)
+
+                with (
+                    patch.object(
+                        resume,
+                        "expected_market_session_coverage",
+                        side_effect=AssertionError("empty append calendar calculation"),
+                    ),
+                    patch.object(pricing, "load_published_boundary", side_effect=once),
+                    patch.object(pipeline, "correlate", side_effect=only_correction),
+                    patch.object(Path, "read_bytes", no_cold_prices),
+                ):
+                    result = case.run_build(
+                        symbols=members, client=identity, pricing_handoff={changed: publication}
+                    )
+                    serving = maintain(case.store)
+                self.assertTrue(result["results"][0]["reused_closed_boundaries"])
+                self.assertEqual(processed, ["2026-10-13"])
+                self.assertEqual(decoded, {(changed, "current_month")})
+                self.assertEqual(case.receipt(changed)["source_rows"], before["source_rows"])
+                self.assertTrue(serving["complete"], serving)
+                self.assertEqual(serving["checked_bars"], 8)
+                self.assertEqual(serving["full_history_evaluations"], 0)
+
     def test_fresh_unchanged_decision_acknowledges_superseded_correction_across_restart(self):
         from libs.alpaca_lineage_build import universe_state
 

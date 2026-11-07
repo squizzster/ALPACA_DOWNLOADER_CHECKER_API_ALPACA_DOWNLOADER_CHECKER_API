@@ -285,11 +285,21 @@ class CorrelationCache:
         self._name_change_sources = {}
         self._name_changes = {}
         self._continuity = {}
+        self._source_work = {}
+
+    def prepared_source(self, items):
+        from .terminal_episode import PreparedSource
+
+        key = tuple(id(download) for download, _, _ in items)
+        if key not in self._source_work:
+            self._source_work[key] = PreparedSource(items)
+        return self._source_work[key]
 
     def inherit_continuity(self, established):
         # Same selected inputs and established rules; only the certified fourth
         # rule changes. Reuse the completed chronology and continuity authorities.
         self._continuity = dict(established._continuity)
+        self._source_work = dict(established._source_work)
 
     def register_name_change_source(self, symbol, downloads, *, complete):
         if not complete:

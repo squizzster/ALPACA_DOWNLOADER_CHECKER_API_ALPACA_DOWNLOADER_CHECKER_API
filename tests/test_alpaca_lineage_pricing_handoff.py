@@ -14,7 +14,7 @@ class CompletedPricingHandoffTests(unittest.TestCase):
         previous = {
             "anchor_month": "2026-12",
             "versions": versions(),
-            "evidence": {"queried_symbols": ["CURRENT"]},
+            "evidence": {"queried_symbols": ["CURRENT"], "query": {"corporate_actions_start": "2016-01-01"}},
         }
         index = {
             "symbols": {
@@ -87,6 +87,7 @@ class CompletedPricingHandoffTests(unittest.TestCase):
             "versions": versions(),
             "evidence": {
                 "queried_symbols": ["RETIRED"],
+                "query": {"corporate_actions_start": "2016-01-01"},
                 "asset_lookups": [
                     {
                         "lookup": "RETIRED",

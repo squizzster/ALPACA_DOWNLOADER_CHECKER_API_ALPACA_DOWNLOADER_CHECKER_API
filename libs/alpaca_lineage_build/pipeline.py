@@ -20,7 +20,8 @@ from libs.alpaca_pricing_download.update_checks import (
 from libs.common.debug_trace import event, traced
 
 from . import storage
-from .acquisition import check_unavailable_pricing, unavailable_pricing
+from .acquisition import check_unavailable_pricing, unavailable_mapping_current, unavailable_pricing
+from .assignment_handoff import selected as assignment_handoff
 from .certificate_migration import can_promote_group, group_evidence
 from .context import accept_context
 from .contract import (
@@ -227,14 +228,19 @@ def _prefetch_metadata(
             ):
                 continue
             previous = {s: receipt_cache.read(s) for s in sources}
-            group_refresh = refresh or (work_policy is not None and work_policy.needs_refresh(group, previous))
-            if _reuse_metadata(seed, group, generations, previous, notices, group_refresh):
+            metadata_refresh = refresh or (
+                work_policy is not None and work_policy.needs_refresh(group, previous)
+            )
+            history_refresh = refresh or (
+                work_policy is not None and work_policy.needs_full_metadata(group, previous)
+            )
+            if _reuse_metadata(seed, group, generations, previous, notices, metadata_refresh):
                 continue
             for symbol, source in sources.items():
                 full = full_metadata(
                     previous[symbol],
                     None if correction_from(source, previous[symbol]) else notices.get(symbol),
-                    group_refresh,
+                    history_refresh,
                 )
                 selected_requests = action_requests(
                     symbol,
@@ -401,6 +407,24 @@ def process_group(
     pricing_replacements = {}
     metadata_cache = {}
     pricing_inputs = {}
+    partitions = {}
+    assignment_boundaries = {}
+
+    def read_boundaries(prior, kinds=None):
+        selected_kinds = prior["boundaries"] if kinds is None else kinds
+        missing = {
+            kind
+            for kind in selected_kinds
+            if (prior["symbol"], kind, prior["boundaries"][kind]["sha256"]) not in assignment_boundaries
+        }
+        if missing:
+            for kind, document in storage.read_boundaries(root, prior, kinds=missing).items():
+                assignment_boundaries[prior["symbol"], kind, prior["boundaries"][kind]["sha256"]] = document
+        return {
+            kind: assignment_boundaries[prior["symbol"], kind, prior["boundaries"][kind]["sha256"]]
+            for kind in selected_kinds
+        }
+
     unavailable = {}
     evidence_client = evidence_client or EvidenceClient(identity_client)
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
@@ -435,10 +459,15 @@ def process_group(
                 if name not in sources
                 and value["request"]["start"][:10] == start
                 and value["request"]["end_exclusive"][:10] == end
+                and unavailable_mapping_current(value, evidence_client)
             }
             previous = {symbol: receipt_cache.read(symbol) for symbol in sorted(sources)}
-            if work_policy is not None:
-                refresh = refresh or work_policy.needs_refresh(group, previous)
+            metadata_refresh = refresh or (
+                work_policy is not None and work_policy.needs_refresh(group, previous)
+            )
+            history_refresh = refresh or (
+                work_policy is not None and work_policy.needs_full_metadata(group, previous)
+            )
             notices = {
                 symbol: notice
                 for symbol in sorted(sources)
@@ -464,10 +493,26 @@ def process_group(
                     [prior["evidence"] for prior in previous.values() if prior]
                     + [item["evidence"] for item in prior_unavailable.values() if "evidence" in item]
                 )
-            reuse_metadata = _reuse_metadata(seed, group, selected, previous, notices, refresh)
-            if reuse_metadata:
-                check_unavailable_pricing(store, prior_unavailable, locked, sources=sources)
-                unavailable = prior_unavailable
+            reuse_metadata = _reuse_metadata(seed, group, selected, previous, notices, metadata_refresh)
+            # Absence belongs to its own request/mapping, not its siblings' price
+            # envelopes. The locked source selection has already established that
+            # no source or pending publication supersedes it.
+            if not refresh:
+                unavailable.update(
+                    {
+                        name: value
+                        for name, value in prior_unavailable.items()
+                        if name in group
+                        and name not in sources
+                        and value["request"]["start"][:10] == start
+                        and value["request"]["end_exclusive"][:10] == end
+                        and value["request"]["asof"] == end
+                        and unavailable_mapping_current(value, evidence_client)
+                        and not (work_policy is not None and work_policy.needs_full_metadata({name}, previous))
+                    }
+                )
+            if prior_unavailable.keys() != unavailable.keys():
+                reuse_metadata = False
             missing = group - sources.keys() - unavailable.keys()
             if work_policy is not None and missing:
                 work_policy.require_dependencies(group, end, missing, start=start)
@@ -584,7 +629,7 @@ def process_group(
                 unchanged = (
                     not refresh
                     and not changed_event_supplements
-                    and group == sources.keys()
+                    and group == sources.keys() | unavailable.keys()
                     and all(
                         unchanged_source(source, previous[symbol], selected=selected[symbol])
                         for symbol, source in sources.items()
@@ -592,7 +637,7 @@ def process_group(
                 )
                 resume = unchanged or (
                     not changed_event_supplements
-                    and group == sources.keys()
+                    and group == sources.keys() | unavailable.keys()
                     and all(
                         reusable_prefix(
                             source,
@@ -620,6 +665,10 @@ def process_group(
                     corrections = dict.fromkeys(sources)
                 for symbol, prior in previous.items():
                     retained_kinds[symbol] = None
+                    if not resume and prior:
+                        retained_kinds[symbol] = {
+                            kind for kind in prior["boundaries"] if assignment_handoff(prior, kind) is None
+                        }
                     if resume and "assignment_summary" in prior:
                         old_anchor, anchor = prior["anchor_month"], sources[symbol]["anchor_month"]
                         if sources[symbol]["latest_request"]["end_exclusive"] <= prior["processed_through"]:
@@ -639,7 +688,7 @@ def process_group(
                             )
                 old_boundaries = {
                     symbol: (
-                        storage.read_boundaries(root, prior, kinds=retained_kinds[symbol])
+                        read_boundaries(prior, kinds=retained_kinds[symbol])
                         if prior and (resume or prior.get("schema_version") == VERSION)
                         else None
                     )
@@ -649,7 +698,8 @@ def process_group(
                     if day:
                         complete_prefix_boundaries(root, previous[symbol], old_boundaries[symbol], day)
                 inputs = {}
-                partitions = {symbol: {} for symbol in sources}
+                for symbol in sources:
+                    partitions.setdefault(symbol, {})
                 if progress:
                     progress(
                         "lineage_inputs",
@@ -694,7 +744,7 @@ def process_group(
                             evidence[symbol] = prior["evidence"]
                         else:
                             full = full_metadata(
-                                prior, None if corrections[symbol] else notices.get(symbol), refresh
+                                prior, None if corrections[symbol] else notices.get(symbol), history_refresh
                             )
                             key = (symbol, view.source_sha256, full)
                             if key not in metadata_cache or not evidence_client.evidence_current(
@@ -848,8 +898,12 @@ def process_group(
                             "lineage_work_selected", symbol=seed, symbols=sorted(inputs), scope="complete_group"
                         )
                         for name, prior in previous.items():
-                            missing = prior["boundaries"].keys() - old_boundaries[name].keys()
-                            old_boundaries[name].update(storage.read_boundaries(root, prior, kinds=missing))
+                            missing = {
+                                kind
+                                for kind in prior["boundaries"].keys() - old_boundaries[name].keys()
+                                if assignment_handoff(prior, kind) is None
+                            }
+                            old_boundaries[name].update(read_boundaries(prior, kinds=missing))
                         inputs = {
                             name: load_pricing(
                                 store,

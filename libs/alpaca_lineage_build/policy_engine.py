@@ -119,18 +119,36 @@ def _correlate_until_stable(
 ):
     """Run only the rule implementations selected by the compiled policy."""
     occupancy_reconciliations = occupancy_reconciliations or {}
+    completed, dependencies = {}, {}
     for pass_number in range(1, policy.max_passes + 1):
         sessions, correlation, rows = rule_loaders(inputs, previous, cache)
-        reports = {
-            symbol: established_reports[symbol]
-            if established_reports is not None and established_reports[symbol]["uncorrelated"]["row_count"] == 0
-            else build_security_correlation_report(
+        reports = {}
+        for symbol, view in sorted(inputs.items()):
+            if established_reports is not None and established_reports[symbol]["uncorrelated"]["row_count"] == 0:
+                reports[symbol] = established_reports[symbol]
+                dependencies[symbol] = {}
+                continue
+            if symbol in completed and all(
+                previous.get(name) is value for name, value in dependencies[symbol].items()
+            ):
+                reports[symbol] = completed[symbol]
+                continue
+            observed = {}
+
+            def selected_correlation(name):
+                # Missing counterpart evidence is a completed dependency too.
+                # Only a changed report actually consulted by this owner can
+                # invalidate its result in a later fixed-point pass.
+                observed[name] = previous.get(name)
+                return correlation(name)
+
+            report = build_security_correlation_report(
                 {"symbol": symbol, "local": view.local, "lineage": evidence[symbol]},
                 store,
                 authenticated_download_reader=view.reader,
                 verified_session_exclusions_reader=empty_exclusions,
                 authenticated_symbol_sessions=sessions,
-                correlation_loader=correlation,
+                correlation_loader=selected_correlation,
                 source_rows_loader=rows,
                 cache=cache,
                 ownership_interval_rules=policy.ownership_rules,
@@ -139,9 +157,13 @@ def _correlate_until_stable(
                 include_action_anchored_current_suffix=symbol in suffix_sources,
                 established_report=established_reports[symbol] if established_reports is not None else None,
             )
-            for symbol, view in sorted(inputs.items())
-        }
-        stable = reports == previous
+            prior = previous.get(symbol)
+            reports[symbol] = prior if report == prior else report
+            completed[symbol] = reports[symbol]
+            dependencies[symbol] = observed
+        stable = all(
+            reports.get(name) is value for observed in dependencies.values() for name, value in observed.items()
+        )
         if phase_trace is not None:
             phase_trace.append(
                 {

@@ -75,6 +75,7 @@ class GroupSnapshot:
         self._assignments, self._sources = assignments, sources
         self._all_assignments = all_assignments
         self._receipts, self._generations = receipts, generations
+        self._evidence = None
         # Keep the requested symbol: it selects the receipt's unavailable-input set.
         self._unavailable = tuple(sorted(unavailable_pricing(receipts[symbol])))
         self._cache = (
@@ -118,6 +119,7 @@ class GroupSnapshot:
     def close(self):
         self._assignments = self._sources = self._cache = None
         self._all_assignments = self._receipts = None
+        self._evidence = None
 
     @property
     def references(self):
@@ -133,9 +135,11 @@ class GroupSnapshot:
     def evidence(self):
         if self._assignments is None:
             raise StandaloneReaderError("group snapshot is closed")
-        return _group_evidence(
-            self._assignments, self._sources, self._receipts, self._generations, self._summary["generation"]
-        )
+        if self._evidence is None:
+            self._evidence = _group_evidence(
+                self._assignments, self._sources, self._receipts, self._generations, self._summary["generation"]
+            )
+        return deepcopy(self._evidence)
 
     @property
     def assignments(self):
@@ -151,6 +155,20 @@ class GroupSnapshot:
         """
         inputs, offsets = {}, {}
         for symbol, assignments in self.assignments.items():
+            completed = self._receipts[symbol].get("serving_ownership")
+            if completed is not None:
+                inputs[symbol] = {
+                    "pricing_generation": self._expected[symbol]["pricing"],
+                    "views": completed["views"],
+                }
+                offsets[symbol] = completed["offsets"]
+                continue
+            if set(self._receipts[symbol].get("assignment_handoff_kinds", ())) == set(
+                self._receipts[symbol]["boundaries"]
+            ):
+                raise StandaloneReaderError(
+                    "completed lineage lacks serving ownership; resume lineage publication"
+                )
             views, view_offsets = {}, {}
             for adjustment in ADJUSTMENTS:
                 runs, count, last, boundaries = [], 0, None, {}
@@ -222,6 +240,37 @@ class GroupSnapshot:
             coverage_out=coverage,
         )
         return views, coverage
+
+    def serving_session_dates(self, public_id):
+        """Explicit legacy projection rebuild: assemble dates from accepted raw positions.
+
+        Numerical outcomes, ownership and overlap compatibility remain accepted.
+        This does not compare prices, calculate coverage order or select owners.
+        """
+        from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
+
+        dates, cache = set(), {}
+        for symbol, assignments in self._assignments.items():
+            for adjustment, kind, segment in assignments:
+                if (
+                    adjustment != "raw"
+                    or segment["security_identity"]["security_id"] != public_id
+                    or segment.get("observation_selection") == "superseded"
+                ):
+                    continue
+                rows = _rows(
+                    self._reader.store / "end_of_day/pricing" / symbol,
+                    self._sources[symbol],
+                    kind,
+                    "raw",
+                    cache,
+                    self._cache,
+                )
+                dates.update(
+                    timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                    for row in rows[segment["row_start"] - 1 : segment["row_end"]]
+                )
+        return sorted(dates)
 
     def latest_pricing_revision(self, symbol, previous):
         """Lend the selected producer's localized revision, without payload reads."""

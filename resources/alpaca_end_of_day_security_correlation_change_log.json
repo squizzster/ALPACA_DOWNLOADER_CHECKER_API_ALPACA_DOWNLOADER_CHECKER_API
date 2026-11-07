@@ -484,5 +484,10 @@
     "modifications": [
       "Preserve same-symbol continuity across exact earlier continuing-acquirer stock mergers; honor completed related-label action queries; prevent terminal events from inventing ownership across established closed unrelated occupants while retaining separately positive-action-anchored later suffixes. Freeze prior policy behavior for replay."
     ]
+  },
+  {
+    "modifications": [
+      "Separate runtime release numbering from the unchanged correlation-78 rule contract. Reuse completed row allocations across exact alias views and avoid duplicate carry-forward scans, rebinding only view provenance while preserving every ownership rule and phase conflict check."
+    ]
   }
 ]

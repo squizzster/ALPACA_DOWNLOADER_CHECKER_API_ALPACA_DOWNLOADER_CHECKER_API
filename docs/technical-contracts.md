@@ -44,6 +44,19 @@ versions need not match. Compatibility requires no price rewrite or relabeling; 
 fail closed. [Runtime versus publication versions](../VERSION_TRACKER.md#compatibility) also preserves lineage-34
 formats and accepted policy identity; runtime repairs alone do not invalidate completed decisions.
 
+Newly produced lineage assignments carry version-1 `assignment_handoffs` in their selecting receipt. Each
+handoff binds one boundary generation, canonical comparison facts, a selected adjacent `.projection.json`
+artifact with shared segment lists for equal views, and compact completed ownership runs. Historical segment
+bodies stay outside the metadata receipt. `assignment_handoff_kinds` names required handoffs. Missing, incomplete or mismatched
+required handoffs select owning lineage recovery, never reconstruction from historical bodies. Legacy
+references without this marker remain readable through their selected assignment bodies; ordinary work does
+not migrate an unselected store. New publications carry prior handoffs unchanged and produce new ones only
+for newly constructed boundaries, through the existing journal. Full reconciliation compares newly calculated
+canonical output to the accepted comparison facts, preserving identical cold references without reopening
+old bodies. Current-year comparison excludes its active-month overlap; completed-years comparison ignores
+only the anchor label. Serving consumes the shared assignment projection and `serving_ownership` runs instead
+of reading and scanning the old boundary documents. These are representation changes, not new ownership rules.
+
 [load_pricing](../libs/alpaca_lineage_build/pricing.py) supplies disposition with
 [PublishedPricingEvidence](../libs/alpaca_pricing_download/evidence.py): generation, symbol, request scope and exact
 counts for eight views, including zero/retained rows when correlation reads only an added range.
@@ -310,6 +323,10 @@ unchanged, latest-session correction or full replacement through the existing pr
 Append approval additionally binds the current correction
 obligation, so a renewed correction cannot inherit it. Successful corrections and appends retain their approvals
 once lineage accepts their exact generations, even if a peer fails; incomplete lineage cannot lend that approval.
+Refresh passes its completed independent subset onward even when its aggregate result is incomplete. A selected
+legacy-tail metadata publication also finishes its lineage generation handoff without repeating tail assembly or
+price comparisons. Failed or restricted dependency groups remain excluded, and successful peers can complete
+workflow acknowledgement without reopening their completed lineage decisions.
 Late-bar replacement supplies its completed approval before daily comparison resumes. An interior replacement
 invalidates earlier comparisons even if endpoints are identical. Operation-local peer approvals are not restart
 freshness caches. Pending corrections durably retain scope, cause, source generation, mapping, coverage and usable
@@ -473,9 +490,13 @@ Metadata-only publication preserves a legacy checkpoint's capabilities without a
 marker when its preceding raw boundary is absent. It reuses accepted prices without reads. A subsequent append
 can establish the preceding boundary from the previously published last row and publish the marker normally.
 
-Partial publication retains its full-history numerical checkpoint. When relevant uncertainty still overlaps,
-evaluation reads the selected history to count and project the supported subrange; unchanged maintenance reuses
-the completed decision without reads. Earlier-policy checkpoints migrate only when the complete group's pricing
+Partial publication retains its full-history numerical checkpoint. New records also carry accepted session
+dates; range/count/label projection consumes those dates and completed ticker ranges without reopening prices
+or repeating numerical checks. Changed uncertainty can change the supported range independently of numerical
+acceptance. A legacy partial checkpoint can retain its already published range across metadata changes and
+suffix advancement. If a different legacy subrange lacks the necessary dated projection, maintenance requires
+explicit catalogue rebuild. That rebuild assembles raw session dates from accepted assignments without replaying
+numerical checks. Earlier-policy checkpoints migrate only when the complete group's pricing
 generations and row ownership selections are identical; current eligibility is evaluated again.
 
 Reuse covers the latest validated session in every view; changed coverage can clear negative cross-view decisions.

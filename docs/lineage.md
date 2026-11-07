@@ -20,6 +20,9 @@ does not need its group reopened merely to acknowledge that approval. Rule-only 
 [policy_engine.py](../libs/alpaca_lineage_build/policy_engine.py), `evaluate_policy`, constructs detailed row traces,
 pass digests and audit summaries only when requested. Mandatory phase/certificate checks still run; published
 and explicitly traced digest semantics remain unchanged.
+Each fixed-point result records the counterpart reports it actually consulted, including unavailable reports.
+Only a changed consulted counterpart selects another pass for that source. Exact alias views share completed
+row allocations and bind their own file/adjustment provenance without traversing the same rows again.
 
 The correlation owner prepares dated occupancy and name-change continuity once before freezing the first
 allocation. Chronology that places a later unrelated occupant may disambiguate an earlier rename, but its
@@ -314,14 +317,24 @@ A prefetch plan selects maximal requested intervals per symbol so nested needs s
 response. All pagination and routing must complete before that response establishes subset coverage;
 overlapping intervals and gaps do not acquire invented coverage.
 
-Ordinary action continuation starts at the prior active month; older corrections require explicit refresh.
+Ordinary action continuation starts at the prior active month; older action corrections require explicit refresh.
+A same-span price correction, even in older history, cannot select historical action or CUSIP acquisition.
+A backward history extension acquires the uncovered action prefix up to the day before the accepted query start,
+plus the ordinary current window; the accepted middle and unchanged mappings remain reusable. Missing retained
+query coverage requires explicit metadata refresh. Workflow
+refresh classifies accepted endpoint facts first: descriptive changes preserve the continuation window;
+changed identity/class/exchange facts or explicit historical refresh select their owning evidence scope.
+Fresh prefetched actions take precedence over a retained report covering the same dates, including at an
+unchanged cutoff. That completed current window can discover new dependencies without reopening older actions.
 An unchanged action's completed CUSIP→ID lookup, including a negative result, remains authoritative. Current
 catalogue facts may join an already accepted UUID; name/status changes or absence from the catalogue do not
 invalidate the historical mapping. This never infers CUSIP from ticker. New/changed actions, a changed current
 endpoint UUID or explicit refresh require exact acquisition. Replacing an already consumed lookup during traversal
 restarts metadata assembly from the authoritative exact cache. Known dependencies retain continuation/refresh
 obligations; new ones need full evidence.
-Expanded groups reselect under sorted enlarged locks; decoded reuse requires matching generation/scope.
+Expanded groups reselect under sorted enlarged locks. The operation retains decoded partitions by store,
+boundary kind and selected boundary generation; an envelope-only publication does not discard them. Changed
+partitions invalidate only their entries. Selected assignment bodies likewise survive unchanged generations.
 Exact and catalogue endpoint observations have the same invalidation authority, including canonical endpoints
 recorded by retained CUSIP lookups. A late observation refreshes
 affected reports already assembled in the selected group from the operation's in-memory acquisition cache before
@@ -359,6 +372,8 @@ allowing only advancing observation/mapping cutoffs. Fresh mapping, action, disp
 still participate. A descriptive name/status/tradable change on the same provider UUID, symbol, class and exchange
 affects new-session projection but does not revoke accepted row owners; accepted continuation also excludes
 action-query bounds and the diagnostic maximum row count from historical equality.
+The workflow's metadata-refresh obligation uses this same classification before choosing historical pricing
+work; requesting a fresh description is not itself a request to recalculate historical ownership.
 
 Validate each new session grid and its accepted seam, then send only added rows from every group member through
 the same compiled policy evaluator. An empty accepted prefix has no seam; the pricing producer validates its first
@@ -370,8 +385,9 @@ producer can certify a narrower affected interval. Resolved completed assignment
 
 A pricing producer's latest-session correction certificate permits retaining resolved assignments before that
 session when mapping and ownership evidence remain applicable. The same evaluator processes the corrected row
-and any appended rows in all eight views. Assignment summaries and affected boundary metadata supply the retained
-prefix; older pricing is not reopened to authenticate it. Correction scope and ancestry travel through metadata
+and any appended rows in all eight views. At an unchanged cutoff, the corrected session is the entire new input;
+the empty append interval requires no calendar calculation. Assignment summaries and affected boundary metadata
+supply the retained prefix; older pricing is not reopened to authenticate it. Correction scope and ancestry travel through metadata
 prefetch as well as execution, so a sparse correction before the current month does not reacquire historical
 actions merely because its notice begins earlier. [correction_prefix.py](../libs/alpaca_lineage_build/correction_prefix.py)
 owns this projection; the [pricing and serving contracts](technical-contracts.md#pricing-acquisition-and-continuation)

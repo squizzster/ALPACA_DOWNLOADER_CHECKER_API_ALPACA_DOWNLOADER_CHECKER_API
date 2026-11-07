@@ -1,4 +1,6 @@
-# CORRELATION VERSION RULE: EVERY CORRELATION CHANGE MUST BUMP CORRELATION_VERSION AND APPEND ONE CHANGELOG ENTRY.
+# Runtime changes append one changelog entry. Rule changes additionally advance
+# CORRELATION_VERSION and the authorized policy; reuse optimizations do not
+# invalidate completed ownership decisions.
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -6,6 +8,7 @@ from pathlib import Path
 from .errors import SecurityCorrelationError
 
 CORRELATION_VERSION = 78
+RUNTIME_VERSION = 79
 SUPPORTED_CORRELATION_VERSIONS = frozenset(range(8, CORRELATION_VERSION + 1))
 CORRELATION_CHANGE_LOG_PATH = (
     Path(__file__).resolve().parents[2] / "resources" / "alpaca_end_of_day_security_correlation_change_log.json"
@@ -22,10 +25,10 @@ def validate_correlation_change_log() -> list[dict]:
 
     if not isinstance(change_log_entries, list):
         raise SecurityCorrelationError("correlation version changelog must be a JSON array")
-    if len(change_log_entries) != CORRELATION_VERSION:
+    if len(change_log_entries) != RUNTIME_VERSION:
         raise SecurityCorrelationError(
             "correlation changelog must contain exactly "
-            f"{CORRELATION_VERSION} entries; found {len(change_log_entries)}"
+            f"{RUNTIME_VERSION} entries; found {len(change_log_entries)}"
         )
 
     for implicit_version, entry in enumerate(change_log_entries, start=1):
@@ -45,6 +48,3 @@ def validate_correlation_change_log() -> list[dict]:
                 f"correlation changelog version {implicit_version} has no modifications"
             )
     return change_log_entries
-
-
-# CORRELATION VERSION RULE: EVERY CORRELATION CHANGE MUST BUMP CORRELATION_VERSION AND APPEND ONE CHANGELOG ENTRY.

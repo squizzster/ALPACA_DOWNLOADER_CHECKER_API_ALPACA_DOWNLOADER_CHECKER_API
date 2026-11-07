@@ -24,6 +24,7 @@ from libs.alpaca_lineage_build.contract import (
 from libs.alpaca_lineage_build.storage import (
     check_store,
     publication_lock,
+    read_assignment_projection,
     read_boundaries,
     read_index,
     read_receipt,
@@ -599,7 +600,28 @@ class StandaloneReader:
                 if include_assignments:
                     root = self.store / "end_of_day/lineage"
                     for name, receipt in receipts.items():
-                        boundaries = read_boundaries(root, receipt, selected_loader=loader)
+                        from libs.alpaca_lineage_build.assignment_handoff import selected
+
+                        # Serving consumes the lineage producer's shared-view
+                        # projection. Legacy selected boundaries still require
+                        # assembly; a completed handoff never reopens its body.
+                        handoffs = (
+                            {kind: selected(receipt, kind) for kind in receipt["boundaries"]}
+                            if include_unresolved
+                            else {}
+                        )
+                        boundaries = {
+                            kind: read_assignment_projection(
+                                root, receipt, kind, handoff, selected_loader=loader
+                            )
+                            for kind, handoff in handoffs.items()
+                            if handoff is not None
+                        }
+                        missing = receipt["boundaries"].keys() - boundaries.keys()
+                        if missing:
+                            boundaries.update(
+                                read_boundaries(root, receipt, selected_loader=loader, kinds=missing)
+                            )
                         assignments[name] = tuple(_assignments(boundaries, receipt))
                         if include_unresolved:
                             all_assignments[name] = tuple(

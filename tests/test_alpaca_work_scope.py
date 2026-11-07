@@ -68,7 +68,9 @@ class WorkScopeTests(unittest.TestCase):
             aaa = {**asset("AAA"), "name": "Changed metadata"}
             bbb = asset("BBB")
             case.identity = ActionCatalogueClient(
-                [aaa], [rename()], exact={"AAA": aaa, "BBB": bbb, "111111111": bbb}
+                [aaa],
+                [{**rename(), "process_date": "2026-10-01"}],
+                exact={"AAA": aaa, "BBB": bbb, "111111111": bbb},
             )
             case.live["BBB"] = case.old
             result = case.update()

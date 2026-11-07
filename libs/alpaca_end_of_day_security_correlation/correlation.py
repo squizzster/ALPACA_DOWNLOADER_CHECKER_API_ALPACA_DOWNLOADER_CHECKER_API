@@ -240,6 +240,7 @@ def build_security_correlation_report(
             )
         )
 
+    authenticated_work_items = cache.prepared_source(authenticated_work_items)
     session_consensus = adjustment_session_consensus(
         (
             (
@@ -359,7 +360,12 @@ def build_security_correlation_report(
             source["adjustment"] == "raw" and has_informative_trading(download.rows)
             for download, source, _ in authenticated_work_items
         )
-        and all(not has_prolonged_carry_forward(download.rows) for download, _, _ in authenticated_work_items)
+        and all(
+            not has_prolonged_carry_forward(rows)
+            for rows in {
+                id(download.rows): download.rows for download, _, _ in authenticated_work_items
+            }.values()
+        )
     )
     retired_lower_bound = retired_history_lower_bound(symbol, intervals, authenticated_work_items)
     retired_continuation = (
@@ -396,36 +402,59 @@ def build_security_correlation_report(
                         raise SecurityCorrelationError(
                             "fallback ownership conflicts with established row authority"
                         )
+    allocations = {}
     for authenticated_download, source, _ in authenticated_work_items:
-        file_branches = correlate_download_rows(
-            authenticated_download.rows,
-            source,
-            lineage,
-            intervals,
-            adjustment_consensus=session_consensus,
-            evidence_issues=evidence_issues,
-            distinct_uuid_transition=distinct_uuid_transition,
-            predecessor_prefixes=predecessor_prefixes,
-            mapped_continuations=mapped_continuations,
-            terminal_episode=terminal_episode,
-            bridged_episodes=bridged_episodes,
-            vacant_ticker_bridges=vacant_ticker_bridges,
-            departure_prefix=departure_prefix,
-            historical_asof_gap=historical_asof_gap,
-            closed_history_evidence=closed_history_evidence,
-            independent_history=independent_history,
-            retired_lower_bound=retired_lower_bound,
-            retired_continuation=retired_continuation,
-            cache=cache,
-            uuid_lineage_edges=uuid_lineage_edges,
-            adopted_target_pairs=adopted_target_pairs,
-            name_change_assessment=cache.name_change_assessment(
+        # Alias views share immutable rows and every allocation input. Bind only
+        # view provenance in the completed segments; do not traverse rows again.
+        provenance = {"data_file", "download_manifest", "download_sha256", "adjustment"}
+        key = (id(authenticated_download.rows), tuple((k, v) for k, v in source.items() if k not in provenance))
+        established = tuple(established_by_adjustment.get(source["adjustment"], ()))
+        accepted = allocations.get(key) if not established else None
+        file_branches = (
+            {
+                branch: [
+                    {
+                        **segment,
+                        **{k: source[k] for k in provenance},
+                        "segment_id": f"{source['data_file']}:rows:{segment['row_start']}-{segment['row_end']}",
+                    }
+                    for segment in segments
+                ]
+                for branch, segments in accepted.items()
+            }
+            if accepted is not None
+            else correlate_download_rows(
+                authenticated_download.rows,
+                source,
                 lineage,
-                include_action_anchored_current_suffix=include_action_anchored_current_suffix,
-            ),
-            row_rules=row_correlation_rules,
-            established_segments=tuple(established_by_adjustment.get(source["adjustment"], ())),
+                intervals,
+                adjustment_consensus=session_consensus,
+                evidence_issues=evidence_issues,
+                distinct_uuid_transition=distinct_uuid_transition,
+                predecessor_prefixes=predecessor_prefixes,
+                mapped_continuations=mapped_continuations,
+                terminal_episode=terminal_episode,
+                bridged_episodes=bridged_episodes,
+                vacant_ticker_bridges=vacant_ticker_bridges,
+                departure_prefix=departure_prefix,
+                historical_asof_gap=historical_asof_gap,
+                closed_history_evidence=closed_history_evidence,
+                independent_history=independent_history,
+                retired_lower_bound=retired_lower_bound,
+                retired_continuation=retired_continuation,
+                cache=cache,
+                uuid_lineage_edges=uuid_lineage_edges,
+                adopted_target_pairs=adopted_target_pairs,
+                name_change_assessment=cache.name_change_assessment(
+                    lineage,
+                    include_action_anchored_current_suffix=include_action_anchored_current_suffix,
+                ),
+                row_rules=row_correlation_rules,
+                established_segments=established,
+            )
         )
+        if accepted is None and not established:
+            allocations[key] = file_branches
         correlated_file_segments = file_branches[CORRELATED_BRANCH]
         uncorrelated_file_segments = file_branches[UNCORRELATED_BRANCH]
         correlated_segments.extend(correlated_file_segments)

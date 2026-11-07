@@ -99,5 +99,10 @@
     "modifications": [
       "Preserve legacy serving checkpoint capabilities during metadata-only publication without claiming a missing preceding raw boundary or reopening accepted prices; subsequent append can supply the new boundary."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve numerical checkpoints for partial publication; carry dated session projections independently of uncertainty and public range selection. Metadata changes, changed uncertainty, appends and latest-session correction consume applicable completed numerical facts. Legacy partial checkpoints retain their accepted range; a different unsupported legacy range requires explicit catalogue rebuild."
+    ]
   }
 ]

@@ -10,6 +10,23 @@ def unavailable_pricing(receipt):
     return receipt.get("unavailable_pricing", {}) if receipt else {}
 
 
+def unavailable_mapping_current(value, client):
+    """An accepted rejection follows its label mapping, not sibling envelopes."""
+    for lookup in value.get("evidence", {}).get("asset_lookups", ()):
+        if lookup.get("lookup_kind") != "symbol":
+            continue
+        current = client.observed_symbol_lookup(lookup["lookup"])
+        if current is not None and (
+            current["outcome"] != lookup["outcome"]
+            or any(
+                (current.get("asset") or {}).get(k) != (lookup.get("asset") or {}).get(k)
+                for k in ("id", "symbol")
+            )
+        ):
+            return False
+    return True
+
+
 def check_unavailable_pricing(store, symbols, locked, *, sources=None):
     """An absent input remains part of the locked publication's freshness boundary.
 

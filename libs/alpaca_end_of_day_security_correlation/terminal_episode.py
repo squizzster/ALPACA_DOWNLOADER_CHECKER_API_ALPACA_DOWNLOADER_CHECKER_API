@@ -173,7 +173,37 @@ def has_informative_trading(rows):
     return len(_traded_prices(rows)) >= 2
 
 
+class PreparedSource(list):
+    """Immutable selected source items with completed, price-only assessments."""
+
+    def __init__(self, items):
+        super().__init__(items)
+        self.inert_bridges = {}
+
+
 def shared_inert_bridges(
+    work_items, *, include_edges=False, before=None, allowed_value_change_dates=frozenset()
+):
+    cache = getattr(work_items, "inert_bridges", None)
+    key = include_edges, before, allowed_value_change_dates
+    if cache is None:
+        return _shared_inert_bridges(
+            work_items,
+            include_edges=include_edges,
+            before=before,
+            allowed_value_change_dates=allowed_value_change_dates,
+        )
+    if key not in cache:
+        cache[key] = _shared_inert_bridges(
+            work_items,
+            include_edges=include_edges,
+            before=before,
+            allowed_value_change_dates=allowed_value_change_dates,
+        )
+    return cache[key]
+
+
+def _shared_inert_bridges(
     work_items,
     *,
     include_edges=False,
