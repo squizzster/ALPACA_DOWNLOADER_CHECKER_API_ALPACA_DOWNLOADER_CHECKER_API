@@ -1,4 +1,4 @@
 # Standalone application dependencies (Python 3.11 or later).
 numpy==2.3.5
 pandas==2.2.3
-pyarrow==21.0.0
+pyarrow==23.0.1
