@@ -124,6 +124,11 @@ def _correlate_until_stable(
         sessions, correlation, rows = rule_loaders(inputs, previous, cache)
         reports = {}
         for symbol, view in sorted(inputs.items()):
+            accepted = getattr(view, "accepted_report", None)
+            if accepted is not None and accepted["source_row_count"] == accepted["correlated"]["row_count"]:
+                reports[symbol] = accepted
+                dependencies[symbol] = {}
+                continue
             if established_reports is not None and established_reports[symbol]["uncorrelated"]["row_count"] == 0:
                 reports[symbol] = established_reports[symbol]
                 dependencies[symbol] = {}
@@ -155,7 +160,7 @@ def _correlate_until_stable(
                 row_correlation_rules=policy.row_rules,
                 occupancy_reconciliations=occupancy_reconciliations.get(symbol, ()),
                 include_action_anchored_current_suffix=symbol in suffix_sources,
-                established_report=established_reports[symbol] if established_reports is not None else None,
+                established_report=established_reports[symbol] if established_reports is not None else accepted,
             )
             prior = previous.get(symbol)
             reports[symbol] = prior if report == prior else report
@@ -179,7 +184,9 @@ def _correlate_until_stable(
 
 
 def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
+    accepted = {}
     for symbol, view in inputs.items():
+        accepted[symbol] = getattr(view, "accepted_identity_memberships", None) or {}
         cache.register_name_change_source(
             symbol,
             view.downloads.values(),
@@ -189,6 +196,7 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
                 for descriptor in view.local["downloads"]
             ),
         )
+    cache.accepted_identity_memberships = accepted
 
 
 def _correlation_cache(policy) -> CorrelationCache:

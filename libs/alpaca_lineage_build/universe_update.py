@@ -112,7 +112,7 @@ def run_update(
         # before recovering any owner publication when it is absent; recovery
         # must not silently initialize or otherwise mutate an uninitialized
         # store.
-        universe_state.read_state(store)
+        universe_state.require_initialized(store)
 
         from libs.alpaca_serving_catalogue import work as serving_work
 
@@ -526,8 +526,7 @@ def run_update(
         if unfinished:
             policy.fail(unfinished, {"reason": "required pricing or lineage not complete"}, stage="completion")
         result["failures"] = [*policy.failures, *policy.command_failures]
-        state = universe_state.read_state(store)
-        result["pending_work"] = universe_state.pending_count(state)
+        result["pending_work"] = universe_state.count_pending(store)
         # Workflow owns failed symbol obligations; command owners record failures
         # without a symbol separately. Stage totals describe these same outcomes.
         result["failed"] = len(result["failures"])

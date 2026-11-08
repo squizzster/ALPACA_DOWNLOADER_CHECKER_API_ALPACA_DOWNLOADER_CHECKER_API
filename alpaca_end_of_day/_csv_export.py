@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from time import monotonic
 
-from libs.alpaca_serving_catalogue import storage as catalogue_storage
+from libs.alpaca_serving_catalogue import export_inputs
 from libs.alpaca_serving_catalogue.contract import CatalogueError
 from libs.common.store_lock import StoreBusyError, operation_lock
 
@@ -432,18 +432,22 @@ def write_export(
         # maintenance. Selected groups consume this accepted view without any
         # further selector reads or upstream freshness/authentication checks.
         with operation_lock(data.store, exclusive=False):
+            selected, groups, start, end = _selection(data, public_ids, start, end)
             try:
-                current = catalogue_storage.selector_state(data.store)["generation"]
-            except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
-                raise CatalogChangedError("selected serving catalogue is no longer available") from error
-            if current != data.catalog_generation():
-                raise CatalogChangedError(
-                    "selected serving catalogue changed; open a new DataLibrary before exporting"
+                export_inputs.select(
+                    data.store,
+                    data.catalog_generation(),
+                    {symbol for key in groups for symbol in data._groups[key]["references"]["lineage"]},
                 )
+            except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
+                raise CatalogChangedError(
+                    "selected serving catalogue or export inputs changed; finish maintenance and open a new DataLibrary"
+                ) from error
             return _write_export(
                 data,
                 destination,
-                public_ids=public_ids,
+                selected=selected,
+                groups=groups,
                 start=start,
                 end=end,
                 progress=progress,
@@ -454,8 +458,7 @@ def write_export(
         raise ReaderBusyError("CSV export source store is busy; retry later") from error
 
 
-def _write_export(data, destination, *, public_ids, start, end, progress, workers, memory_bytes):
-    selected, groups, start, end = _selection(data, public_ids, start, end)
+def _write_export(data, destination, *, selected, groups, start, end, progress, workers, memory_bytes):
     plan = _plan(data, selected, groups, start, end, workers, memory_bytes)
     output = Path(destination).absolute()
     if output.resolve().is_relative_to(data.store.resolve()):

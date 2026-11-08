@@ -725,6 +725,13 @@ class WorkPolicy:
                 )
                 if previous_contract.get("scope") == "full_history":
                     contract["scope"] = "full_history"
+                    if (
+                        previous_contract.get("cause") != "provider_late_observations"
+                        and contract["cause"] == "provider_late_observations"
+                    ):
+                        # A missing-session witness adds evidence; it cannot
+                        # replace an already-selected historical correction.
+                        contract["cause"] = previous_contract["cause"]
             # A correction ID names one exact requirement. Renewing evidence or
             # binding must invalidate both source stamps and equal-price receipts.
             requirement = (*binding, "scope", "observations")
@@ -760,6 +767,7 @@ class WorkPolicy:
                 if prior.get("correction_completion"):
                     request["correction_completion"] = prior["correction_completion"]
             request["correction_observations"] = contract["observations"]
+            request["correction_cause"] = contract["cause"]
             if request.get("correction_scope") != "unchanged":
                 request["correction_scope"] = contract["scope"]
         if changed:

@@ -7,6 +7,13 @@ from .contract import LineageError
 PROJECTION_VERSION = 1
 
 
+def assignment_handoffs_complete(receipt):
+    """Consume the receipt's completed coverage without deriving its contents."""
+    return bool(receipt.get("serving_ownership")) and set(receipt.get("assignment_handoffs", ())) == set(
+        receipt["boundaries"]
+    )
+
+
 def last_observed_symbol_lookup(receipt):
     """Absence is not an inactive observation; keep the last positive own-label fact."""
     lookups = [
@@ -34,6 +41,7 @@ def project_receipt(receipt):
     )
     return {
         "schema_version": PROJECTION_VERSION,
+        "computation_revision": receipt.get("computation_revision", 0),
         "symbol_lookups": [
             dict(lookup)
             for item in evidence
@@ -49,8 +57,7 @@ def project_receipt(receipt):
         "unavailable_obligations": receipt.get("unavailable_obligations", {}),
         "acquisition_evidence_sha256": receipt.get("acquisition_evidence_sha256"),
         "history_correction_id": receipt.get("history_correction_id"),
-        "assignment_handoffs_complete": bool(receipt.get("serving_ownership"))
-        and set(receipt.get("assignment_handoffs", ())) == set(receipt["boundaries"]),
+        "assignment_handoffs_complete": assignment_handoffs_complete(receipt),
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),
     }
 

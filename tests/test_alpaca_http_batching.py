@@ -181,7 +181,7 @@ class HttpBatchingTests(unittest.TestCase):
             else:
                 self.assertEqual(result, [[[]]])
 
-    def test_later_batch_failures_never_return_partial_success(self):
+    def test_later_batch_failures_preserve_completed_independent_subsets(self):
         for owner in ("bars", "metadata"):
             for failure in ("http", "json", "shape", "token", "repeat"):
                 with self.subTest(owner=owner, failure=failure):
@@ -214,9 +214,10 @@ class HttpBatchingTests(unittest.TestCase):
                             on_failure=lambda step, action, error: errors.append((step, action)),
                             dependent=True,
                         )
-                        self.assertEqual(result, {})
+                        self.assertEqual(len(result), 500)
+                        self.assertTrue(all(not value.rows for value in result.values()))
                         self.assertEqual(len(errors), 1)
-                        self.assertEqual(len(errors[0][1]["request"]["params"]["symbols"].split(",")), 1001)
+                        self.assertEqual(len(errors[0][1]["request"]["params"]["symbols"].split(",")), 501)
 
     def test_414_after_a_page_restarts_only_that_batch_and_discards_its_partial_rows(self):
         for owner in ("bars", "metadata"):
@@ -269,14 +270,14 @@ class HttpBatchingTests(unittest.TestCase):
         result, calls = self.run_client(
             "bars", 2, handler, on_failure=lambda step, action, error: errors.append(failure_outcome(error))
         )
-        self.assertEqual(result, {})
+        self.assertEqual({key[3] for key in result}, {"S0000"})
         self.assertEqual(len(calls), 3)
         self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0]["outcome"], "request_failed")
+        self.assertEqual(errors[0]["outcome"], "invalid_symbol")
         self.assertEqual(errors[0]["http_status"], 400)
         with self.assertRaises(DownloadError) as caught:
             self.run_client("bars", 2, handler)
-        self.assertEqual(failure_outcome(caught.exception)["outcome"], "request_failed")
+        self.assertEqual(failure_outcome(caught.exception)["outcome"], "invalid_symbol")
 
     def test_universe_estimates_include_each_physical_boundary_batch(self):
         from libs.alpaca_lineage_build.universe_plan import preview

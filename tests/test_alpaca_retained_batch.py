@@ -618,7 +618,7 @@ class RetainedBatchTests(unittest.TestCase):
         for symbol in self.symbols[1:]:
             self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 3)
 
-    def test_split_failure_in_each_stage_fails_original_action_without_publication(self):
+    def test_split_failure_in_each_stage_preserves_completed_independent_symbols(self):
         original = self.page
         for phase in ("boundary_check", "retained_history_acquisition", "acquisition_check"):
             for status in (403, 500):
@@ -639,18 +639,20 @@ class RetainedBatchTests(unittest.TestCase):
                             raise HTTPError("https://example.invalid", status, "failed", {}, None)
                         return original(params)
 
-                    before = snapshot(self.store / "end_of_day/pricing")
+                    before = snapshot(self.store / "end_of_day/pricing/AAA")
                     with patch.object(self.client, "_get", side_effect=page):
                         result = self.run_acquire()
-                    self.assertEqual(result["failed"], len(self.symbols), result)
+                    self.assertEqual(result["failed"], 1, result)
                     failed = result["results"][0]
                     self.assertEqual(failed["outcome"]["http_status"], status)
                     self.assertEqual(failed["status"], "blocked" if status == 403 else "failed")
                     phases = ["boundary_check", "retained_history_acquisition", "acquisition_check"]
-                    self.assertFalse(any(p in phases[phases.index(phase) + 1 :] for p, s in calls))
-                    self.assertEqual(snapshot(self.store / "end_of_day/pricing"), before)
+                    self.assertFalse(
+                        any(s == "AAA" and p in phases[phases.index(phase) + 1 :] for p, s in calls)
+                    )
+                    self.assertEqual(snapshot(self.store / "end_of_day/pricing/AAA"), before)
                     for symbol in self.symbols[1:]:
-                        self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 2)
+                        self.assertEqual(len(read_pricing_views(self.store, symbol)["all"]), 3)
 
     def test_independent_action_failure_excludes_only_affected_ticker(self):
         original = self.page

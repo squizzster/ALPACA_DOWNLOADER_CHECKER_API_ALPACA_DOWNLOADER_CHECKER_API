@@ -8,7 +8,7 @@ from libs.alpaca_lineage_build import storage as lineage
 from libs.common.debug_trace import span, traced
 from libs.common.work_scope import accept_expansion
 
-from . import storage, work
+from . import export_inputs, storage, work
 from .contract import CatalogueError, policy, validate_version
 from .policy import evaluate
 
@@ -190,9 +190,19 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             )
         index = writer_view.index()
         entries = index["symbols"]
+        # A legacy catalogue predates producer invalidation. Only explicit
+        # bootstrap/rebuild may establish its applicability, by opening each
+        # selected group through the normal generation-bound reader. Numerical
+        # checkpoints remain accepted and are reused by evaluation.
+        rebind_exports = (bootstrap or rebuild) and (
+            not storage.path(store).exists() or not export_inputs.ready(store)
+        )
+        export_bindings = (
+            export_inputs.bound_groups(store) if rebind_exports and storage.path(store).exists() else {}
+        )
         if rebuild:
             work.upgrade(store)
-        if rebuild and storage.path(store).exists():
+        if rebuild and storage.path(store).exists() and not rebind_exports:
             from .gaps import PROJECTION_VERSION, migrate_projections
 
             prior_controls = storage.controls(store, incomplete=True, old_policy=True)
@@ -255,26 +265,31 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                         # DO NOT CHANGE BACK: a durable queue entry alone is not
                         # a data change. A completed matching decision needs only
                         # acknowledgement, not evaluation or republication.
-                        if _matches(prior, entries):
+                        bound = not rebind_exports or export_bindings.get(key) == prior["decision_generation"]
+                        if _matches(prior, entries) and bound:
                             retained.add(key)
                             covered.update(prior["references"]["lineage"])
                             result["reused_groups"] += 1
                             continue
-                        handoff = next(
-                            (
-                                proof
-                                for proof in handoffs
-                                if (
-                                    prior["policy"] == policy()
-                                    and prior["references"]["lineage"] == proof["lineage_before"]
-                                    and prior["references"]["pricing"] == proof["pricing"]
-                                    and all(
-                                        (entries[name]["sha256"] if name in entries else None) == token
-                                        for name, token in proof["lineage_after"].items()
+                        handoff = (
+                            next(
+                                (
+                                    proof
+                                    for proof in handoffs
+                                    if (
+                                        prior["policy"] == policy()
+                                        and prior["references"]["lineage"] == proof["lineage_before"]
+                                        and prior["references"]["pricing"] == proof["pricing"]
+                                        and all(
+                                            (entries[name]["sha256"] if name in entries else None) == token
+                                            for name, token in proof["lineage_after"].items()
+                                        )
                                     )
-                                )
-                            ),
-                            None,
+                                ),
+                                None,
+                            )
+                            if bound
+                            else None
                         )
                         if handoff is not None:
                             controls["state"] = storage.retarget_decision(store, key, handoff, controls["state"])

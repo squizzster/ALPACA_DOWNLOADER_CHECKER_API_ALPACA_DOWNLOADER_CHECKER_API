@@ -89,15 +89,23 @@ def merge_observations(*selected):
     }
 
 
-def accept_observations(symbol, views, selected):
+def accept_observations(symbol, views, selected, *, allow_all_context_conflicts=False):
     """Validate newly constructed output once, with no provider/storage reads."""
     confirmed = {}
+    context_conflicts = []
     for adjustment, expected in selected.items():
 
         def session(row):
             return timestamp(row[0]).astimezone(NEW_YORK).date()
 
         required = {session(row) for row in expected}
+        first_witness, conflicting_sessions = {}, set()
+        if allow_all_context_conflicts and adjustment == "all":
+            for row in expected:
+                day = session(row)
+                prior = first_witness.setdefault(day, row)
+                if not same_row(prior, row):
+                    conflicting_sessions.add(day)
         actual = {}
         for row in views[adjustment]:
             day = session(row)
@@ -110,8 +118,25 @@ def accept_observations(symbol, views, selected):
                 error = ProviderObservationConflict(symbol, adjustment, row, acquired)
                 error.evidence["session_rows"] = len(candidates)
                 event("correction_observation_conflict", **error.evidence)
+                if (
+                    allow_all_context_conflicts
+                    and adjustment == "all"
+                    and len(candidates) == 1
+                    and session(row) not in conflicting_sessions
+                ):
+                    context_conflicts.append(error)
+                    continue
                 raise error
         confirmed[adjustment] = frozenset(timestamp(row[0]) for row in expected)
+    if context_conflicts:
+        # A present all-view request-context difference is only a candidate for
+        # the publisher's exact-equal disposition. Establish EVERY witness first:
+        # an earlier such difference cannot hide a missing/ambiguous session or a
+        # contradictory observation in another adjustment view.
+        error = context_conflicts[0]
+        error.confirmed_observations = confirmed
+        error.context_conflicts = tuple(context_conflicts)
+        raise error
     event("correction_observations_accepted", symbol=symbol, rows=sum(map(len, selected.values())))
     return confirmed
 

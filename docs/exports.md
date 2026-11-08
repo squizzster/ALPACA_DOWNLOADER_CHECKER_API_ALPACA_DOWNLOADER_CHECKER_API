@@ -97,8 +97,7 @@ Small explicit budgets are useful for constrained runs; the default can retain t
 Groups are consumed under reader locks. A store-wide shared operation lock spans the current catalogue-token
 check through final publication; a previously opened `DataLibrary` must still match that token. Store-writing
 CLI commands take the exclusive side, excluding update/writer overlap. [Lock ownership](technical-contracts.md#publication-and-recovery).
-Internal producers invoked outside the CLI must also respect this gate when exports can run. The accepted
-catalogue is authority for the operation; export does not audit upstream changes behind that boundary.
+Internal producers invoked outside the CLI must also respect this gate when exports can run. The serving selector also owns version-1 export-input applicability. Pricing and lineage publishers record exact intended generation changes before replacing mutable selected files; serving accepts only matching generations. Export reads catalogue token and selected applicability together once, rejecting dirty selected inputs without opening them or authenticating upstream generations. Unselected changed groups do not block a selected export. Older catalogues lacking this guarantee require explicit `catalogue rebuild`, which reuses accepted numerical checkpoints and records completed group bindings for interrupted continuation. The accepted catalogue and applicability handoff remain authority for the operation.
 
 `workers`: integer 1–4, default 2; workers only encode in-memory identities. The coordinator opens one group
 at a time and bounds outstanding encoding jobs by worker count. Group identities share decoded payloads even

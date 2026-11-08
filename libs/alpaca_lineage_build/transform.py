@@ -9,7 +9,7 @@ from libs.alpaca_pricing_download.storage import boundary_paths
 from libs.common.debug_trace import traced
 
 from .assignment_handoff import comparison, produce, selected
-from .contract import VERSION, LineageError, document_digest, versions
+from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_digest, versions
 from .policy_engine import evaluate_policy
 
 
@@ -59,7 +59,7 @@ def retained_decision_report(previous, *, policy):
                 "row_partition_complete",
             )
         },
-        "correlation_policy": policy.provenance(),
+        "correlation_policy": policy.provenance() if policy is not None else previous["correlation_policy"],
         "source_row_count": 0,
         "correlated": {"row_count": 0, "segments": []},
         "uncorrelated": {"row_count": 0, "segments": []},
@@ -267,11 +267,43 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
     closed_rows = sum(item["rows"] for item in view.previous_assignment_summary.values()) if resume_closed else 0
     removed_rows = previous["source_rows"] - closed_rows if resume_closed else 0
     assets = {identity["id"] for identity in evidence["identities"] if identity.get("id")}
+    memberships = {
+        identity["security_id"]: identity
+        for identity in (previous or {}).get("identity_memberships", ())
+        if resume_closed
+    }
+    routes = deepcopy((previous or {}).get("observation_routes", {})) if resume_closed else {}
+    intervals = deepcopy((previous or {}).get("identity_intervals", [])) if resume_closed else []
+    if resume_closed and view.correction_from:
+        intervals = [
+            {**item, "to": min(item["to"], view.previous_assignment_summary["raw"]["last_session"])}
+            for item in intervals
+            if item["from"] < view.correction_from
+        ]
+    for segment in report["correlated"]["segments"]:
+        identity = segment["security_identity"]
+        memberships[identity["security_id"]] = identity
+        rows = view.views[segment["adjustment"]]
+        intervals.append(
+            {
+                "from": timestamp(rows[segment["row_start"] - 1][0]).astimezone(NEW_YORK).date().isoformat(),
+                "to": timestamp(rows[segment["row_end"] - 1][0]).astimezone(NEW_YORK).date().isoformat(),
+                "security_id": identity["security_id"],
+            }
+        )
+        if segment["adjustment"] == "raw" and segment["historical_symbol"] == view.symbol:
+            pid = identity["security_id"]
+            if pid not in routes or routes[pid][0] < segment["last_timestamp"]:
+                routes[pid] = [segment["last_timestamp"], segment.get("ticker_ownership_interval") or {}]
+    for pid, route in report.get("observation_routes", {}).items():
+        if pid not in routes or routes[pid][0] <= route[0]:
+            routes[pid] = route
     receipt = {
         "schema_version": VERSION,
         "boundary": "alpaca_standalone_lineage",
         "symbol": view.symbol,
         "versions": versions(),
+        "computation_revision": COMPUTATION_REVISION,
         "correlation_policy": report["correlation_policy"],
         "source_sha256": view.source_sha256,
         "pricing_boundaries": view.source["boundaries"],
@@ -284,6 +316,12 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         "last_observed_symbol_lookup": last_observed_symbol_lookup(previous) if previous else None,
         "dependencies": deps,
         "asset_ids": sorted(assets),
+        "identity_memberships": list(memberships.values()),
+        "observation_routes": routes,
+        "identity_intervals": [
+            dict(zip(("from", "to", "security_id"), key))
+            for key in sorted({(item["from"], item["to"], item["security_id"]) for item in intervals})
+        ],
         "evidence": evidence,
         "evidence_issues": report["evidence_issues"],
         "ownership_interval_rule_order": report["ownership_interval_rule_order"],
@@ -317,6 +355,16 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for kind, relative in boundary_paths(anchor).items()
         },
     }
+    if resume_closed and "identity_memberships" not in previous:
+        receipt.pop("identity_memberships")
+    if resume_closed and "identity_intervals" not in previous:
+        receipt.pop("identity_intervals")
+    if not resume_closed or "continuation_handoff_version" in previous:
+        from .continuation import HANDOFF_VERSION
+
+        receipt["continuation_handoff_version"] = HANDOFF_VERSION
+    if resume_closed and "observation_routes" not in previous and not report["correlated"]["segments"]:
+        receipt.pop("observation_routes")
     handoffs = dict((previous or {}).get("assignment_handoffs", {}))
     for kind, document in documents.items():
         generation = receipt["boundaries"][kind]["sha256"]

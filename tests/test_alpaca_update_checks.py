@@ -8,7 +8,7 @@ from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from alpaca_end_of_day import StandaloneReader
 from libs.alpaca_lineage_build import pipeline, storage
-from libs.alpaca_lineage_build.contract import versions
+from libs.alpaca_lineage_build.contract import COMPUTATION_REVISION, versions
 from libs.alpaca_lineage_build.selection import DependencyGraph
 from libs.alpaca_pricing_download import storage as pricing_storage
 from libs.alpaca_pricing_download.download import download_pricing
@@ -113,6 +113,7 @@ class UpdateCheckTests(unittest.TestCase):
                 "asset_ids": [],
                 "group_members": [symbol],
                 "versions": current,
+                "computation_revision": COMPUTATION_REVISION,
                 "correlation_policy": policy,
             }
         opened = []
@@ -350,6 +351,7 @@ class UpdateCheckTests(unittest.TestCase):
                     "dependencies": [],
                     "asset_ids": [],
                     "versions": current,
+                    "computation_revision": COMPUTATION_REVISION,
                     "correlation_policy": policy,
                 }
                 for number in range(6000)

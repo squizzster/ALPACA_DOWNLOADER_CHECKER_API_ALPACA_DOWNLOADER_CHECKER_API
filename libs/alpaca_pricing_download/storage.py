@@ -521,6 +521,11 @@ def _finish_publication(
     from .update_checks import queue_check, read_checks
 
     store = root.parents[2]
+    from libs.alpaca_serving_catalogue.export_inputs import invalidate as invalidate_exports
+
+    # The journal already carries the intended selector generation. Publish its
+    # invalidation before replacing mutable selected bytes, including recovery.
+    invalidate_exports(store, "pricing", {root.name: writes[-1]["sha256"]})
     event = check_event
     if event is None:
         from .check_summary import invalidate
@@ -589,6 +594,10 @@ def _finish_publication(
         ),
     )
     _discard_staging(root)
+    if journal.get("source_generation_unchanged") is True:
+        from libs.alpaca_serving_catalogue.export_inputs import complete_unchanged_pricing
+
+        complete_unchanged_pricing(store, root.name, writes[-1]["sha256"])
     regular_path(root, ".pending.json").unlink()
     if read_checks(store, ())["epoch"] != event[0]:
         # Deletion/recreation during publication cannot lose this change.
@@ -725,6 +734,7 @@ def publish(
         ],
         "remove": removals,
         "update": {"sha256": digest(notice)} if notice is not None else None,
+        "source_generation_unchanged": old_files.get("source.manifest.json") == retained["source.manifest.json"],
     }
     try:
         for index, (_relative, content) in enumerate(changed):

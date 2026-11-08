@@ -48,6 +48,26 @@ def _check(connection):
         raise LineageError("incomplete universe work state; explicit universe rebuild is required")
 
 
+def require_initialized(store):
+    """Check the operation gate without deserializing any accepted work bodies."""
+    try:
+        with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+            _check(connection)
+    except sqlite3.Error as error:
+        raise LineageError(
+            "universe work state unavailable; run alpaca-cli-eod universe rebuild explicitly"
+        ) from error
+
+
+def count_pending(store):
+    """Read current workflow status only, without revalidating correction evidence."""
+    with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+        _check(connection)
+        return connection.execute(
+            "SELECT count(*) FROM work WHERE json_extract(body, '$.status') IS NOT 'complete'"
+        ).fetchone()[0]
+
+
 @traced("universe_state_read")
 def read_state(store):
     # TRUST BOUNDARY: this database owns intentions/retry outcomes, not market

@@ -72,11 +72,13 @@ def paginated_pages(parameters, pagination, get_page, *, error_type, metrics=Non
         parameters[pagination["parameter"]] = token
 
 
-def fetch_symbol_batches(parameters, fetch_batch, *, status_code, metrics=None):
-    """Complete a logical request atomically, including any HTTP 414 fallback.
+def fetch_symbol_batches(
+    parameters, fetch_batch, *, status_code, metrics=None, on_completed=None, on_failure=None
+):
+    """Complete independent physical subsets, including HTTP 414 fallback.
 
-    Only explicit symbol rosters split. Results remain private until every batch
-    completes; a later error discards earlier success. Adapters validate records.
+    A subset crosses its owner's handoff only after all its pages normalize.
+    Callbacks run outside transport handling: a failed handoff stops execution.
     """
     metrics = metrics if metrics is not None else {}
     metrics.setdefault("batches", 0)
@@ -99,7 +101,10 @@ def fetch_symbol_batches(parameters, fetch_batch, *, status_code, metrics=None):
         except Exception as error:
             symbols = params.get("symbols", "").split(",")
             if status_code(error) != 414 or len(symbols) < 2:
-                raise
+                if on_failure is None:
+                    raise
+                on_failure(params, error)
+                continue
             metrics["oversize_splits"] += 1
             pending.extendleft(
                 reversed(
@@ -111,6 +116,8 @@ def fetch_symbol_batches(parameters, fetch_batch, *, status_code, metrics=None):
             )
         else:
             results.append(result)
+            if on_completed is not None:
+                on_completed(params, result)
     return results
 
 

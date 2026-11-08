@@ -2606,6 +2606,8 @@ class PolicyAuditTests(TestCase):
         self.assertFalse(__import__("json").loads(output.getvalue())["summary"]["parity"])
 
     def test_migration_preserved_rule_order_classification_is_exact_and_fails_closed(self):
+        from libs.alpaca_lineage_build.contract import COMPUTATION_REVISION
+
         policy = load_policy(CURRENT_POLICY)
         legacy_versions = {**versions(), "lineage": 33, "correlation": 59}
         legacy_versions.pop("correlation_policy_sha256")
@@ -2628,6 +2630,7 @@ class PolicyAuditTests(TestCase):
             "schema_version": 34,
             "versions": versions(),
             "correlation_policy": policy.provenance(),
+            "computation_revision": COMPUTATION_REVISION,
         }
         current_report = {
             **copy.deepcopy(current_receipt),

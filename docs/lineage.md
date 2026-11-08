@@ -32,6 +32,10 @@ their UUID membership, provenance and bounds; completed source reports remain cl
 intervals must not contradict those assignments. Only unresolved rows enter the existing cascade, and terminal
 fallback still receives the complete source partition. The original phase integrity guard remains mandatory.
 
+Incremental continuation carries accepted UUID membership separately from each dated provider UUID. Version-1 continuation handoffs publish compact membership, all-view identity/date contributions and own-label observation routes. Receipt ingress validates the declared handoff once; missing required new fields fail into owning recovery. Unmarked selected legacy assignments supply the bounded compatibility projection, including the named last-session boundary when the hot partition is empty. A corrected date includes unchanged competing contributors and their accepted dated labels, with their ownership decisions frozen. Earlier assignments remain closed. The effective request mapping is compared by the owning continuation gate; a changed pinned mapping cannot inherit old ownership. Fresh already-acquired metadata invalidates decision reuse independently of whether retained metadata can still supply acquisition inputs.
+
+A separate `computation_revision` identifies completed lineage calculation semantics. Revision 1 invalidates outputs produced before the continuation repair, including already-published artificial identity splits. It is carried by receipts and compact index entries; metadata compatibility, pricing generations and authorized rule policy remain independent. An obsolete computation must enter full owning evaluation and cannot acquire the new revision through header-only promotion. The explicit retained-input rebuild and its retry/publication scope are described in [Operations](operations.md#rebuild-published-lineage-after-a-computation-repair).
+
 ## Policy migration
 
 Correlation-78 scopes continuing-acquirer and terminal evidence and consumes completed related-symbol queries. Earlier

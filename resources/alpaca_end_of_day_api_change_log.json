@@ -171,5 +171,10 @@
     "modifications": [
       "Read selected lineage assignment projections through the owning lexical path and work-scope boundary, preserving debug attribution without authenticating completed artifacts."
     ]
+  },
+  {
+    "modifications": [
+      "Bind CSV export to one coherent catalogue generation and producer-maintained export-input applicability selection, rejecting changed selected inputs without upstream authentication or historical scans."
+    ]
   }
 ]

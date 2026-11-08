@@ -176,5 +176,10 @@
     "modifications": [
       "Accept explicit refresh completion before acknowledgement and resume completed pricing publications without renewing pending lineage work."
     ]
+  },
+  {
+    "modifications": [
+      "Add lineage rebuild --all-published with read-only plan and DEBUG tracing, using retained accepted inputs without provider credentials and preserving the canonical exclusive operation gate."
+    ]
   }
 ]

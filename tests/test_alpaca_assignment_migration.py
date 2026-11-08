@@ -11,6 +11,83 @@ from libs.alpaca_serving_catalogue import policy, producer
 
 
 class AssignmentMigrationTests(NativeCase):
+    def remove_compact_marker(self, symbol="TEST"):
+        index = storage.read_index(self.root)
+        entry = index["symbols"][symbol]
+        entry["projection"].pop("assignment_handoffs_complete")
+        with storage.publication_lock(self.root, exclusive=True):
+            storage._update_index(self.root, {symbol: entry})
+        return entry
+
+    def test_completed_receipt_publishes_only_missing_compact_marker_once(self):
+        from libs.alpaca_lineage_build import projection
+        from libs.alpaca_serving_catalogue import work
+
+        self.bootstrap()
+        before = self.remove_compact_marker()
+        with (
+            patch.object(storage, "read_boundaries", side_effect=AssertionError("completed bodies reread")),
+            patch.object(projection, "project_receipt", side_effect=AssertionError("projection recalculated")),
+            patch.object(storage, "document_digest", side_effect=AssertionError("receipt digest recalculated")),
+            patch.object(work, "upgrade", side_effect=AssertionError("marker-only transition upgraded queue")),
+        ):
+            result = migrate(self.store, ["TEST"])
+        self.assertEqual(result["migrated_groups"], 1)
+        self.assertEqual(result["assignment_body_reads"], 0)
+        after = storage.read_index(self.root)["symbols"]["TEST"]
+        self.assertEqual(
+            after, {**before, "projection": {**before["projection"], "assignment_handoffs_complete": True}}
+        )
+        with (
+            patch.object(storage, "read_receipt", side_effect=AssertionError("completed receipt reread")),
+            patch.object(storage, "pricing_locks", side_effect=AssertionError("completed sources relocked")),
+            patch.object(work, "upgrade", side_effect=AssertionError("completed queue upgraded")),
+            patch.object(storage, "publish", side_effect=AssertionError("completed marker republished")),
+        ):
+            retry = migrate(self.store, ["TEST"])
+        self.assertEqual(retry["already_current_groups"], 1)
+        self.assertEqual(retry["migrated_groups"], 0)
+
+    def test_marker_only_transition_preserves_version_one_queue_without_upgrade(self):
+        from contextlib import closing
+
+        from libs.alpaca_serving_catalogue import work
+        from libs.common.sqlite_connections import connect_sqlite
+
+        self.bootstrap()
+        self.remove_compact_marker()
+        with closing(connect_sqlite(self.root / "index.sqlite3")) as connection, connection:
+            connection.execute("UPDATE serving_work_state SET version=1")
+        with patch.object(
+            work, "upgrade", side_effect=AssertionError("unchanged receipt needs no queue upgrade")
+        ):
+            result = migrate(self.store, ["TEST"])
+        self.assertEqual(result["migrated_groups"], 1)
+        with closing(connect_sqlite(self.root / "index.sqlite3", readonly=True)) as connection:
+            self.assertEqual(connection.execute("SELECT version FROM serving_work_state").fetchone(), (1,))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM serving_handoffs").fetchone(), (0,))
+
+    def test_interrupted_marker_publication_recovers_without_receipt_or_projection_work(self):
+        self.bootstrap()
+        self.remove_compact_marker()
+
+        class Interrupted(BaseException):
+            pass
+
+        with (
+            patch.object(storage, "finish_publication", side_effect=Interrupted),
+            self.assertRaises(Interrupted),
+        ):
+            migrate(self.store, ["TEST"])
+        with (
+            patch.object(storage, "read_receipt", side_effect=AssertionError("accepted receipt reread")),
+            patch.object(storage, "read_boundaries", side_effect=AssertionError("completed body reread")),
+            patch.object(storage, "_recovery_inputs", side_effect=AssertionError("inputs reauthenticated")),
+        ):
+            result = migrate(self.store, ["TEST"])
+        self.assertTrue(result["recovered_publication"])
+        self.assertEqual(result["already_current_groups"], 1)
+
     def legacy(self):
         def strip(receipt, boundaries):
             receipt["assignment_handoffs"] = {"current_month": receipt["assignment_handoffs"]["current_month"]}

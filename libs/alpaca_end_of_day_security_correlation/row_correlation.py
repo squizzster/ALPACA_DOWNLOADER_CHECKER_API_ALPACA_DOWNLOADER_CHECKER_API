@@ -286,6 +286,7 @@ class CorrelationCache:
         self._name_changes = {}
         self._continuity = {}
         self._source_work = {}
+        self.accepted_identity_memberships = {}
 
     def prepared_source(self, items):
         from .terminal_episode import PreparedSource
@@ -1590,21 +1591,29 @@ def correlate_download_rows(
             historical_symbol = decision.historical_symbol or (
                 decision.interval.historical_symbol if decision.interval is not None else requested_symbol
             )
-            security_identity = security_identity_for_alpaca_assets(
-                (decision.asset_id,),
-                uuid_lineage_edges,
-                tickers=(historical_symbol,),
-                basis=identity_basis,
+            accepted_identity = (
+                cache.accepted_identity_memberships.get(requested_symbol, {}).get(decision.asset_id)
+                if cache is not None
+                else None
+            )
+            # A dated UUID selection does not revoke that UUID's completed public
+            # membership. The continuation owner supplied this applicable handoff;
+            # consume it without rebuilding or hashing the accepted identity.
+            identity = (
+                accepted_identity
+                or security_identity_for_alpaca_assets(
+                    (decision.asset_id,), uuid_lineage_edges, tickers=(historical_symbol,), basis=identity_basis
+                ).as_report_object()
             )
             segment.update(
                 {
                     "historical_symbol": historical_symbol,
                     "canonical_security": _canonical_security(
-                        security_identity.security_id,
+                        identity["security_id"],
                         None if decision.component_only else decision.asset_id,
                         decision.cusip,
                     ),
-                    "security_identity": security_identity.as_report_object(),
+                    "security_identity": identity,
                     "identity_confidence": decision.identity_confidence,
                     "correlation_method": decision.correlation_method or decision.rule_name,
                     "ticker_ownership_interval": (

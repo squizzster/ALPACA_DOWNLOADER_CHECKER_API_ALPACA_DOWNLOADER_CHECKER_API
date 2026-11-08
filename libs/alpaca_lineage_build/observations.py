@@ -112,6 +112,8 @@ def select_observations(inputs, reports):
     ownership, rows, own = {}, {}, defaultdict(dict)
     labels = defaultdict(set)
     for symbol, report in reports.items():
+        for pid, route in report.get("retained_observation_routes", {}).items():
+            own[pid][symbol] = route
         view = inputs[symbol]
         rows[symbol] = view.views
         ownership[symbol] = {}
@@ -206,6 +208,7 @@ def select_observations(inputs, reports):
                 else:
                     run["row_end"] = index + 1
         report["correlated"]["segments"] = segments
+        report["observation_routes"] = {pid: routes[symbol] for pid, routes in own.items() if symbol in routes}
     if not corrections and any(
         not inputs[symbol].source.get("activity_consistent") for _, symbol in selected_routes
     ):

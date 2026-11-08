@@ -22,13 +22,15 @@ from libs.common.debug_trace import event, traced
 from . import storage
 from .acquisition import check_unavailable_pricing, unavailable_mapping_current, unavailable_pricing
 from .assignment_handoff import selected as assignment_handoff
-from .certificate_migration import can_promote_group, group_evidence
+from .certificate_migration import can_promote_group
 from .context import accept_context
+from .continuation import identity_intervals, identity_memberships, retained_report
 from .contract import (
     MAX_ACQUISITION_WAVES,
     MAX_CLOSURE,
     VERSION,
     LineageError,
+    reusable_computation,
     reusable_decision,
     reusable_metadata_versions,
     versions,
@@ -399,6 +401,7 @@ def process_group(
     context=None,
     progress=None,
     empty_suffixes=(),
+    retained_rebuild=False,
 ):
     context = accept_context(store, context, work_policy)
     correlation_policy = context.accept_correlation_policy()
@@ -484,17 +487,38 @@ def process_group(
             }
             selected = {name: storage.document_digest(source) for name, source in sources.items()}
             prior_unavailable = unavailable_pricing(previous.get(seed))
+            if retained_rebuild:
+                if (
+                    notices
+                    or not previous
+                    or any(
+                        prior is None
+                        or not reusable_metadata_versions(prior["versions"])
+                        or prior["source_sha256"] != selected[name]
+                        or prior["input_sources"] != selected
+                        or unavailable_pricing(prior) != prior_unavailable
+                        for name, prior in previous.items()
+                    )
+                    or set(group) != set(sources) | set(prior_unavailable)
+                    or any(
+                        "evidence" not in item or "request" not in item for item in prior_unavailable.values()
+                    )
+                ):
+                    raise LineageError(
+                        "retained lineage rebuild requires coherent completed inputs; finish owning recovery first"
+                    )
+                unavailable = dict(prior_unavailable)
             retained_evidence = [prior["evidence"] for prior in previous.values() if prior] + [
                 item["evidence"] for item in prior_unavailable.values() if "evidence" in item
             ]
             evidence_client.retain_event_supplements(retained_evidence)
-            changed_event_supplements = any(
+            changed_event_supplements = not retained_rebuild and any(
                 evidence_client.supplements_for(facts) != facts.get("event_supplements", [])
                 for facts in retained_evidence
             )
             from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
 
-            if any(
+            if not retained_rebuild and any(
                 prior and prior["versions"]["correlation"] < DEPENDENCY_HANDOFF_CORRELATION_VERSION
                 for prior in previous.values()
             ):
@@ -503,10 +527,15 @@ def process_group(
                     + [item["evidence"] for item in prior_unavailable.values() if "evidence" in item]
                 )
             reuse_metadata = _reuse_metadata(seed, group, selected, previous, notices, metadata_refresh)
+            metadata_current = reuse_metadata and (
+                retained_rebuild
+                or all(evidence_client.evidence_current(prior["evidence"]) for prior in previous.values())
+            )
+            computation_current = all(reusable_computation(prior) for prior in previous.values())
             # Absence belongs to its own request/mapping, not its siblings' price
             # envelopes. The locked source selection has already established that
             # no source or pending publication supersedes it.
-            if not refresh:
+            if not refresh and not retained_rebuild:
                 unavailable.update(
                     {
                         name: value
@@ -530,12 +559,20 @@ def process_group(
                 register_discoveries(group)
             promoted_decision = (
                 reuse_metadata
+                and metadata_current
+                and computation_current
                 and not changed_event_supplements
                 and can_promote_group(previous, group)
-                and all(evidence_client.evidence_current(facts) for facts in group_evidence(previous))
+                and all(
+                    evidence_client.evidence_current(item["evidence"])
+                    for item in prior_unavailable.values()
+                    if "evidence" in item
+                )
             )
             if (
                 reuse_metadata
+                and metadata_current
+                and computation_current
                 and not changed_event_supplements
                 and (
                     promoted_decision
@@ -672,6 +709,41 @@ def process_group(
                 retained_kinds = {}
                 if not resume:
                     corrections = dict.fromkeys(sources)
+                projections = {}
+                if resume and any(corrections.values()):
+
+                    def identities_at(symbol, day):
+                        prior = previous[symbol]
+                        summary = prior.get("assignment_summary", {}).get("raw", {})
+                        if not summary.get("last_session") or summary["last_session"] < day:
+                            return set()
+                        documents = {}
+                        if "identity_intervals" not in prior:
+                            anchor = prior["anchor_month"]
+                            kind = (
+                                "current_month"
+                                if day[:7] == anchor
+                                else "current_year"
+                                if day[:4] == anchor[:4]
+                                else "completed_years"
+                            )
+                            documents = read_boundaries(prior, kinds={kind})
+                        return {
+                            item["security_id"]
+                            for item in identity_intervals(prior, documents)
+                            if item["from"] <= day <= item["to"]
+                        }
+
+                    affected = {}
+                    for name, day in corrections.items():
+                        if day:
+                            affected.setdefault(day, set()).update(identities_at(name, day))
+                    for name in sources:
+                        days = [
+                            day for day, identities in affected.items() if identities_at(name, day) & identities
+                        ]
+                        if days:
+                            projections[name] = min(days)
                 for symbol, prior in previous.items():
                     retained_kinds[symbol] = None
                     if not resume and prior:
@@ -695,6 +767,13 @@ def process_group(
                                 if day[:4] == old_anchor[:4]
                                 else "completed_years"
                             )
+                        if symbol in projections and retained_kinds[symbol] is not None:
+                            day = projections[symbol]
+                            retained_kinds[symbol].add("current_month")
+                            if day[:7] < old_anchor:
+                                retained_kinds[symbol].add("current_year")
+                            if day[:4] < old_anchor[:4]:
+                                retained_kinds[symbol].add("completed_years")
                 old_boundaries = {
                     symbol: (
                         read_boundaries(prior, kinds=retained_kinds[symbol])
@@ -704,8 +783,10 @@ def process_group(
                     for symbol, prior in previous.items()
                 }
                 for symbol, day in corrections.items():
-                    if day:
-                        complete_prefix_boundaries(root, previous[symbol], old_boundaries[symbol], day)
+                    if day or symbol in projections:
+                        complete_prefix_boundaries(
+                            root, previous[symbol], old_boundaries[symbol], projections.get(symbol) or day
+                        )
                 inputs = {}
                 for symbol in sources:
                     partitions.setdefault(symbol, {})
@@ -720,7 +801,12 @@ def process_group(
                         },
                     )
                 for symbol in sorted(sources):
-                    scope = (selected[symbol], resume, previous[symbol]["boundaries"] if resume else None)
+                    scope = (
+                        selected[symbol],
+                        resume,
+                        previous[symbol]["boundaries"] if resume else None,
+                        projections.get(symbol),
+                    )
                     cached = pricing_inputs.get(symbol)
                     if cached is None or cached[0] != scope:
                         cached = (
@@ -732,11 +818,16 @@ def process_group(
                                 source_sha256=selected[symbol],
                                 selected_correction=corrections[symbol],
                                 previous_boundaries=old_boundaries[symbol],
-                                resume_from=(corrections[symbol] or previous[symbol]["processed_through"][:10])
+                                resume_from=(
+                                    projections.get(symbol)
+                                    or corrections[symbol]
+                                    or previous[symbol]["processed_through"][:10]
+                                )
                                 if resume
                                 else None,
                                 previous=previous[symbol],
                                 partitions=partitions[symbol],
+                                projection_from=projections.get(symbol),
                             ),
                         )
                         pricing_inputs[symbol] = cached
@@ -747,7 +838,9 @@ def process_group(
                     evidence, deps, assets = {}, {}, set()
                     for symbol, view in inputs.items():
                         prior = previous[symbol]
-                        if reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
+                        if retained_rebuild:
+                            evidence[symbol] = prior["evidence"]
+                        elif reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
                             # Only the downstream rules changed. Consume the approved
                             # evidence directly, then recalculate the complete group.
                             evidence[symbol] = prior["evidence"]
@@ -774,13 +867,16 @@ def process_group(
                                     refresh=full,
                                 )
                             evidence[symbol] = metadata_cache[key]
-                        deps[symbol] = dependencies(evidence[symbol], symbol)
+                        deps[symbol] = (
+                            prior["dependencies"] if retained_rebuild else dependencies(evidence[symbol], symbol)
+                        )
                         assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
                     for symbol, missing in sorted(unavailable.items()):
                         # Prices and metadata have different provider endpoints. Keep
                         # discovering real relationships even when bars reject a label.
-                        if "evidence" not in missing or not evidence_client.evidence_current(
-                            missing["evidence"]
+                        if not retained_rebuild and (
+                            "evidence" not in missing
+                            or not evidence_client.evidence_current(missing["evidence"])
                         ):
                             missing["evidence"] = acquire_unpriced(
                                 symbol,
@@ -794,7 +890,7 @@ def process_group(
                     # A later member may acquire an exact mapping that supersedes
                     # an earlier retained observation. Reassemble only stale new
                     # reports from the in-memory producer cache, under these locks.
-                    if all(
+                    if retained_rebuild or all(
                         evidence_client.evidence_current(facts)
                         for facts in [*evidence.values(), *(item["evidence"] for item in unavailable.values())]
                     ):
@@ -805,6 +901,10 @@ def process_group(
                     index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
                 )
                 if expanded != group:
+                    if retained_rebuild:
+                        raise LineageError(
+                            "retained lineage rebuild evidence exceeds its accepted complete group"
+                        )
                     from libs.common.work_scope import accept_expansion
 
                     accept_expansion(store, expanded, anchors=group, authority="metadata_dependencies")
@@ -843,7 +943,7 @@ def process_group(
                     }
                 # A related input may exist but not cover the selected acquisition range.
                 # Empty published responses count as acquired, not as missing history.
-                for symbol, source in sources.items():
+                for symbol, source in () if retained_rebuild else sources.items():
                     if source.get("history_start", HISTORY_START)[:10] > start:
                         required.setdefault(symbol, {"from": start, "end_exclusive": end})
                     elif source["latest_request"]["end_exclusive"][:10] < end:
@@ -925,6 +1025,33 @@ def process_group(
                             for name, source in sources.items()
                         }
                     resume = not historical_lineage
+                    if resume and not no_new_rows:
+                        for name, prior in previous.items():
+                            last = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
+                            if "identity_memberships" not in prior and last:
+                                anchor = prior["anchor_month"]
+                                kind = (
+                                    "current_month"
+                                    if last[:7] == anchor
+                                    else "current_year"
+                                    if last[:4] == anchor[:4]
+                                    else "completed_years"
+                                )
+                                if kind not in old_boundaries[name]:
+                                    old_boundaries[name].update(read_boundaries(prior, kinds={kind}))
+                        membership = identity_memberships(previous, old_boundaries)
+                        for name, view in inputs.items():
+                            view.accepted_identity_memberships = {
+                                **membership,
+                                **identity_memberships({name: previous[name]}, {name: old_boundaries[name]}),
+                            }
+                            if name in projections:
+                                view.accepted_report = retained_report(
+                                    previous[name],
+                                    old_boundaries[name],
+                                    view,
+                                    unchanged_before=corrections[name] or previous[name]["processed_through"],
+                                )
                     if progress:
                         progress(
                             "lineage_decision_reuse" if no_new_rows else "lineage_correlation",
@@ -1209,7 +1336,12 @@ def run_lineage(
     progress=None,
     pricing_handoff=None,
     event_supplements=(),
+    retained_rebuild=False,
 ):
+    if retained_rebuild and (symbols is None or refresh or pricing_client is not None or event_supplements):
+        raise LineageError(
+            "retained lineage rebuild requires explicit symbols and no provider acquisition or refresh"
+        )
     if event_supplements and symbols is None:
         raise LineageError("event supplements require explicit selected symbols")
     if event_supplements:
@@ -1317,6 +1449,8 @@ def run_lineage(
 
         def catch_up(labels, handoff):
             nonlocal stop
+            if retained_rebuild:
+                return
             value = _catch_up_published_dependencies(
                 store,
                 labels,
@@ -1362,7 +1496,9 @@ def run_lineage(
                 handoff = {
                     symbol: pricing_handoff[symbol] for symbol in members if symbol in (pricing_handoff or {})
                 }
-                if evidence_client.supports_plans or callable(getattr(pricing_client, "execute_plan", None)):
+                if not retained_rebuild and (
+                    evidence_client.supports_plans or callable(getattr(pricing_client, "execute_plan", None))
+                ):
                     _select_pending_pricing(
                         store, members, index, members if full_scan else checks["checks"], handoff
                     )
@@ -1377,7 +1513,7 @@ def run_lineage(
                     and label not in processed
                     and (work_policy is None or work_policy.allowed(graph.closure({label})))
                 ]
-                if requests:
+                if requests and not retained_rebuild:
                     prefetch_before = identity_client.request_count
                     if progress:
                         progress("metadata_prefetch", {"state": "started", "selected": len(requests)})
@@ -1421,6 +1557,7 @@ def run_lineage(
                             context=context,
                             progress=progress,
                             empty_suffixes=empty_suffixes,
+                            retained_rebuild=retained_rebuild,
                         )
                         processed.update(result["processed"])
                         processed.update(result.get("unavailable_pricing", ()))

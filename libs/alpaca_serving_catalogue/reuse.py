@@ -349,11 +349,18 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
                 through=record["validated_through"],
             )
             return None
+        rows[symbol] = {}
         for adjustment, old in prior["views"].items():
             current = inputs[symbol]["views"][adjustment]
-            if _identity_prefix(current["ownership"], old["rows"], public_id) != _identity_prefix(
-                old["ownership"], old["rows"], public_id
-            ):
+            accepted = _identity_prefix(old["ownership"], old["rows"], public_id)
+            through = accepted[-1][1] if accepted else 0
+            # A source can already contain later rows belonging to a different
+            # identity. Reassigning those rows extends this identity's accepted
+            # history; it does not revoke its earlier numerical approval. The
+            # completed ownership runs give the exact last selected position.
+            # Any earlier owner/label change still defeats this prefix, and the
+            # reader rejects newly assigned rows overlapping its accepted dates.
+            if _identity_prefix(current["ownership"], through, public_id) != accepted:
                 event(
                     "serving_prefix",
                     public_id=public_id,
@@ -363,7 +370,7 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
                     reason="ownership_or_labels_changed",
                 )
                 return None
-        rows[symbol] = {adjustment: view["rows"] for adjustment, view in prior["views"].items()}
+            rows[symbol][adjustment] = through
     # Gap source-presence facts concern the complete group, independently of the
     # identity's numeric history. Refresh those facts only if their inputs changed.
     missing = record["missing_sessions"]

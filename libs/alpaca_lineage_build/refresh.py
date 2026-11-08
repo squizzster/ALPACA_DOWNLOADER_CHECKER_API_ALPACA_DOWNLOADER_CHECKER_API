@@ -101,6 +101,7 @@ def refresh_existing(
     recover_and_accept_correlation_policy(store, context)
     pricing_context = context.pricing()
     verified, generations, checks, completed_replacements = {}, {}, [], {}
+    accepted_insertions = {}
     pricing = {"results": [], "failed": 0, "requests": {}}
     lineage = {"results": [], "failed": 0}
     beyond, restricted = set(), set()
@@ -201,7 +202,10 @@ def refresh_existing(
             for item in replaced["results"]
             if "source_sha256" in item
             and (
-                not item.get("correction_completion")
+                (
+                    not item.get("correction_completion")
+                    and item.get("consistency_check") != "completed_correction"
+                )
                 or selected_index["symbols"].get(item["symbol"], {}).get("source_sha256")
                 != item["source_sha256"]
             )
@@ -213,7 +217,18 @@ def refresh_existing(
         for item in replaced["results"]:
             if item["status"] == "replaced":
                 generations[item["symbol"]] = item["source_sha256"]
-                completed_replacements[item["symbol"]] = item["source_sha256"]
+                if item.get("completed_scope") == "selected_sessions":
+                    prior = context.history_checks.get(item["symbol"])
+                    if (
+                        item.get("retained_history_unchanged")
+                        and prior is not None
+                        and prior[1] == item.get("previous_source_sha256")
+                        and prior[0]["asof"]
+                        == next(request["asof"] for request in prepared if request["symbol"] == item["symbol"])
+                    ):
+                        accepted_insertions[item["symbol"]] = item["source_sha256"]
+                else:
+                    completed_replacements[item["symbol"]] = item["source_sha256"]
         # Reconciliation may replace pricing again after observing a changed
         # identity. Only its completed producer handoff approves that generation.
         generations.update(lineage_replacements)
@@ -258,7 +273,7 @@ def refresh_existing(
         # older comparison before late-bar repair rejoins the daily sequence.
         for entry in ready["entries"]:
             symbol = entry["symbol"]
-            generation = completed_replacements.get(symbol)
+            generation = completed_replacements.get(symbol) or accepted_insertions.get(symbol)
             if (
                 in_scope(entry)
                 and generation is not None
@@ -300,6 +315,7 @@ def refresh_existing(
             progress=progress,
             context=pricing_context,
             on_positive=work_policy.require_correction if work_policy is not None else None,
+            correction_requirements=work_policy.work if work_policy is not None else None,
         )
         if prepared:
             replace_and_reconcile(
@@ -352,7 +368,7 @@ def refresh_existing(
             else {}
         )
         durable_selections, durable_full, completion_handoffs = {}, {}, {}
-        full_obligations, completed_corrections = set(), set()
+        full_obligations, completed_corrections, session_completed = set(), set(), set()
         for entry in candidates:
             symbol = entry["symbol"]
             work = work_policy.work.get(symbol, {}) if work_policy else {}
@@ -365,6 +381,8 @@ def refresh_existing(
                 raise DownloadError("unsupported durable correction; owning recovery required")
             if correction_id and source_selections.get(symbol, {}).get("history_correction_id") == correction_id:
                 completed_corrections.add(symbol)
+                if source_selections[symbol].get("history_correction_scope") == "selected_sessions":
+                    session_completed.add(symbol)
                 continue
             generation = selected_sources.get(symbol, accepted_generations.get(symbol))
             if correction_id:
@@ -381,6 +399,8 @@ def refresh_existing(
                 if completion:
                     completion_handoffs[symbol] = completion
                     completed_corrections.add(symbol)
+                    if completion.get("completed_scope") == "selected_sessions":
+                        session_completed.add(symbol)
                     continue
             source = source_selections.get(symbol, {})
             applicable = (
@@ -419,7 +439,8 @@ def refresh_existing(
             "entries": [
                 e
                 for e in candidates
-                if e["symbol"] not in compared and e["symbol"] not in full_obligations | completed_corrections
+                if e["symbol"] not in compared
+                and e["symbol"] not in full_obligations | (completed_corrections - session_completed)
             ],
         }
         assert_current(store, snapshot["token"])
@@ -473,10 +494,14 @@ def refresh_existing(
             if (
                 symbol in matched
                 and generation is not None
-                and not (work_policy is not None and work_policy.work.get(symbol, {}).get("correction_id"))
+                and (
+                    symbol in session_completed
+                    or not (work_policy is not None and work_policy.work.get(symbol, {}).get("correction_id"))
+                )
             ):
                 verified[symbol] = entry
-                context.history_checks[symbol] = (dict(entry), generation, None)
+                correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
+                context.history_checks[symbol] = (dict(entry), generation, correction)
         checks.append(handoff)
         if progress:
             progress(
@@ -504,7 +529,9 @@ def refresh_existing(
         required_corrections = {
             entry["symbol"]
             for entry in candidates
-            if work_policy is not None and work_policy.work.get(entry["symbol"], {}).get("correction_id")
+            if work_policy is not None
+            and work_policy.work.get(entry["symbol"], {}).get("correction_id")
+            and entry["symbol"] not in session_completed - differing
         }
         prepared = prepare_refresh(
             store,
@@ -519,7 +546,7 @@ def refresh_existing(
             selections=durable_selections,
             end_date=end_date if on_ready is not None else None,
             correction_ids={
-                symbol: work_policy.work[symbol]["correction_id"] for symbol in completed_corrections
+                symbol: work_policy.work[symbol]["correction_id"] for symbol in completed_corrections - differing
             },
         )
         for item in prepared:
@@ -626,11 +653,17 @@ def refresh_existing(
     if "error" not in summary and work_policy is not None:
         # A completed pricing replacement approves its generation even when
         # lineage removes the now-inactive symbol from the active summary.
+        approved_symbols = {entry["symbol"] for entry in approved_entries}
         approved = {
             symbol: generation
             for symbol, generation in generations.items()
             if work_policy.allowed({symbol})
             and index["symbols"].get(symbol, {}).get("source_sha256") == generation
+            and (
+                symbol in approved_symbols
+                or completed_replacements.get(symbol) == generation
+                or accepted_insertions.get(symbol) == generation
+            )
         }
         work_policy.history_approved.update(approved)
         # Standalone refresh owns its final lineage handoff too. Daily maintenance
@@ -643,6 +676,15 @@ def refresh_existing(
             and work_policy.allowed({s})
             and s not in work_policy.completed_decisions
         ]
+        if on_ready is None and finish:
+            from libs.alpaca_pricing_download.update_checks import read_checks
+
+            pending = read_checks(store)["checks"]
+            finish = [
+                symbol
+                for symbol in finish
+                if work_policy.satisfying_entry(symbol, index["symbols"], pending) is None
+            ]
         if on_ready is None and finish:
             value = run_lineage(
                 store,

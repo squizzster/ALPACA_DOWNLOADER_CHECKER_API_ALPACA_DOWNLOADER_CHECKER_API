@@ -507,6 +507,9 @@ def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) 
     )
     if value.get("symbol") != symbol or value.get("schema_version") not in SUPPORTED_VERSIONS:
         raise LineageError("invalid lineage receipt")
+    from .continuation import validate_handoff
+
+    validate_handoff(value)
     return value
 
 
@@ -580,6 +583,12 @@ def _install(root: Path, journal: dict, *, compare=True) -> dict:
     # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
     _validate_journal_policy(journal)
+    from libs.alpaca_serving_catalogue.export_inputs import invalidate as invalidate_exports
+
+    changes = journal.get("export_input_changes")
+    if changes is None:
+        changes = {s: entry["sha256"] for s, entry in journal["index_updates"].items()}
+    invalidate_exports(root.parents[1], "lineage", changes)
     for relative, value in sorted(journal["documents"].items()):
         atomic_json(path_at(root, relative), value, compare=compare)
     for relative in journal["retire"]:
@@ -776,13 +785,28 @@ def publish(
     ):
         raise LineageError("lineage publication receipts have inconsistent policy provenance")
     documents, retire = {}, []
+    export_input_changes = {}
     updated = {}
-    from .projection import project_receipt
+    from .projection import assignment_handoffs_complete, project_receipt
 
     for symbol, receipt in receipts.items():
         old = read_receipt(root, symbol, index) if previous is None else previous[symbol]
         if projection_only and not boundaries[symbol]:
-            updated[symbol] = index["symbols"][symbol]
+            entry = index["symbols"][symbol]
+            # Older compact indexes predate this marker even when the selected
+            # receipt already carries every completed handoff. Publish that
+            # selecting fact once; do not rebuild the peer's projection/digest.
+            updated[symbol] = (
+                entry
+                if entry["projection"].get("assignment_handoffs_complete")
+                else {
+                    **entry,
+                    "projection": {
+                        **entry["projection"],
+                        "assignment_handoffs_complete": assignment_handoffs_complete(receipt),
+                    },
+                }
+            )
             continue
         old_paths = {entry["manifest"] for entry in old["boundaries"].values()} if old else set()
         new_paths = {entry["manifest"] for entry in receipt["boundaries"].values()}
@@ -824,9 +848,12 @@ def publish(
             "asset_ids": receipt["asset_ids"],
             "group_members": sorted(set(receipt["input_sources"]) | set(unavailable_pricing(receipt))),
             "versions": receipt["versions"],
+            "computation_revision": receipt.get("computation_revision", 0),
             "correlation_policy": receipt["correlation_policy"],
             "projection": project_receipt(receipt),
         }
+        if old is None or old["boundaries"] != receipt["boundaries"]:
+            export_input_changes[symbol] = updated[symbol]["sha256"]
         if index["symbols"].get(symbol, {}).get("sha256") != updated[symbol]["sha256"]:
             documents[f"{symbol}/lineage.manifest.json"] = receipt
     # Published generation references already identify changed JSON; do not reopen
@@ -843,6 +870,7 @@ def publish(
             {name for receipt in receipts.values() for name in unavailable_pricing(receipt)}
         ),
         "notices": notices,
+        "export_input_changes": export_input_changes,
     }
     if projection_only:
         journal["projection_only"] = True
@@ -868,14 +896,17 @@ def publish(
         ):
             raise LineageError("unchanged decision handoff changed serving inputs")
         members = sorted(set(receipts) | set(journal["unavailable_pricing"]))
-        journal["serving_handoff"] = {
-            "version": 1,
-            "lineage_before": {
-                name: index["symbols"][name]["sha256"] if name in receipts else None for name in members
-            },
-            "lineage_after": {name: updated[name]["sha256"] if name in receipts else None for name in members},
-            "pricing": journal["sources"],
-        }
+        if any(updated[name]["sha256"] != index["symbols"][name]["sha256"] for name in receipts):
+            journal["serving_handoff"] = {
+                "version": 1,
+                "lineage_before": {
+                    name: index["symbols"][name]["sha256"] if name in receipts else None for name in members
+                },
+                "lineage_after": {
+                    name: updated[name]["sha256"] if name in receipts else None for name in members
+                },
+                "pricing": journal["sources"],
+            }
     if checks is not None:
         journal["checks"] = {
             "epoch": checks["epoch"],

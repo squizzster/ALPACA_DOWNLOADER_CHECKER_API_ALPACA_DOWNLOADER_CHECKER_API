@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 35
+VERSION = 36
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -179,10 +179,22 @@ def build_parser():
         if name == "check":
             p.add_argument("--batch-size", type=int, default=4000)
     lineage = commands.add_parser("lineage").add_subparsers(dest="operation", required=True, parser_class=Parser)
-    for name in ("update", "refresh", "inspect", "migrate-index", "migrate-policy", "migrate-assignments"):
+    for name in (
+        "update",
+        "refresh",
+        "rebuild",
+        "inspect",
+        "migrate-index",
+        "migrate-policy",
+        "migrate-assignments",
+    ):
         p = lineage.add_parser(name)
         _store(p)
-        if name in {"update", "refresh"}:
+        if name == "rebuild":
+            p.add_argument("--all-published", action="store_true", required=True)
+            p.add_argument("--plan", action="store_true")
+            p.add_argument("--debug", type=Path, metavar="FILE.jsonl")
+        elif name in {"update", "refresh"}:
             p.add_argument(
                 "--debug", type=Path, metavar="FILE.jsonl", help="write compact execution trace to a new file"
             )
@@ -307,7 +319,9 @@ def _store_operation_mode(args):
         or (command == "pricing" and operation in {"acquire", "refresh"})
         or (
             command == "lineage"
-            and operation in {"update", "refresh", "migrate-index", "migrate-policy", "migrate-assignments"}
+            and operation
+            in {"update", "refresh", "rebuild", "migrate-index", "migrate-policy", "migrate-assignments"}
+            and not getattr(args, "plan", False)
         )
         or (command == "universe" and operation in {"reconcile", "rebuild"})
         or (command == "summary" and operation == "rebuild")
@@ -389,6 +403,10 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "rebuild":
+            from libs.alpaca_lineage_build.rebuild import rebuild
+
+            return rebuild(args.store, all_published=args.all_published, plan=args.plan, progress=progress)
         if operation == "migrate-assignments":
             from libs.alpaca_lineage_build.assignment_migration import migrate
 

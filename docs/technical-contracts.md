@@ -12,6 +12,8 @@ closed without repair.
 summary views per invocation. Revisions/publisher-returned changes refresh them; no persistent context cache or
 alternative authority. Changed inputs invalidate dependent work only.
 
+Lineage computation revision 1 selects full retained-input reconstruction of earlier derived decisions. Receipt and compact-index revision fields become authoritative only after the new calculation publishes; metadata and pricing acceptance stay independent. Explicit rebuild selects one seed per complete group, keeps individual retained request bounds and auxiliary mappings, and skips completed revision-current groups before body reads on retry. Missing retained evidence or a newly required pricing correction remains a blocker. Serving preserves an identity's numerical prefix only through its accepted last owned source position, so receiving later rows from a repaired spurious identity checks that new suffix without replaying earlier history.
+
 ## Standalone artifacts
 
 Paths are relative to the standalone store:
@@ -66,7 +68,7 @@ reject changed inputs; recovery consumes staged projections. Its serving handoff
 representation change. Projection-only journals leave pricing summaries, notices and pending checks untouched,
 including recovery. The group limit applies before receipt/body reads. Selected compact policy is checked before
 receipt assembly; the owning serving queue upgrade runs once when publication is needed. Completed peers retain
-their compact index entries without projection or digest recalculation. Ordinary updates do not invoke this migration.
+their compact index entries without projection or digest recalculation. An already-projected legacy receipt missing only the compact completion marker publishes that marker once without rebuilding projections. Ordinary updates do not invoke this migration.
 
 [load_pricing](../libs/alpaca_lineage_build/pricing.py) supplies disposition with
 [PublishedPricingEvidence](../libs/alpaca_pricing_download/evidence.py): generation, symbol, request scope and exact
@@ -151,14 +153,14 @@ produces all three replacement boundaries logically identical to the accepted ge
 accepted boundary digests already needed by the publisher; it performs no additional provider or payload
 verification. If the exact replacement differs, the witness is missing or ambiguous, the cause is not the selected
 `all` comparison, or any binding changed, `provider_observation_conflict` remains pending and publication stays
-unchanged.
+unchanged. Reconciliation accounts for every accumulated witness before that narrow disposition: missing or ambiguous sessions, incompatible witnesses for one session and other-view conflicts cannot be hidden by an earlier present `all` conflict. Consumers retain that completed disposition instead of repeating reconciliation.
 
 Positive raw late-bar observations take a separate correction path. Consecutive selected sessions are acquired at
 their exact ranges and mapping with the accepted raw response as the adaptive first stage, so raw is not requested
 again. Publication requires a unique row for every selected session in every adjustment view, rejects extra or
 missing sessions and conflicts with retained rows, and merges only absent selected sessions under the selected-
 generation lock. It never requests an enclosing unselected gap, performs a broad replacement or splices raw rows
-without their complete adjustment bundle.
+without their complete adjustment bundle. Only affected partitions are assembled, with decoded data shared within the operation; unaffected boundary references stay closed. Accepted endpoint and comparison-tail facts plus inserted rows produce the new compact boundary. New rows are validated once; assembling a partition does not authorize revalidating its retained rows.
 The existing one bounded exact acquisition retry for a view omitted from a nonempty replacement remains available.
 It does not repeat the original comparison. A still-conflicting result leaves publication unchanged.
 Approved appends retain their existing no-historical-confirmation rule. Debug emits the completed selection;
@@ -245,8 +247,7 @@ positive actions are persisted before the next action starts. Independent comple
 failures within the operation and source/mapping/range binding; unfinished pagination yields no observation.
 Each source run is capped at 10,000 sessions. Planning and execution share mapped ranges; the exact-session
 override preserves the selection and freshness policy.
-A confirmed late provider row enters the ordinary eight-view retained-span replacement and complete-group
-lineage path. Orchestration does not predict eligibility. Stale pricing or serving generations require
+A confirmed late provider row enters selected-session adaptive acquisition and complete-group lineage. A previously required full correction retains its historical cause, scope and accumulated observations. Orchestration does not predict eligibility. Stale pricing or serving generations require
 reselection rather than widening the probe. This projection does not introduce a negative-probe freshness cache.
 
 [validate_activity](../libs/alpaca_pricing_download/activity.py) checks new partitions: trade counts agree across
@@ -364,8 +365,7 @@ Refresh passes its completed independent subset onward even when its aggregate r
 legacy-tail metadata publication also finishes its lineage generation handoff without repeating tail assembly or
 price comparisons. Failed or restricted dependency groups remain excluded, and successful peers can complete
 workflow acknowledgement without reopening their completed lineage decisions.
-Late-bar replacement supplies its completed approval before daily comparison resumes. An interior replacement
-invalidates earlier comparisons even if endpoints are identical. Operation-local peer approvals are not restart
+Missing-session completion approves only its selected sessions. Without an applicable completed retained-history comparison, daily first/tail checking remains required. When insertion preserves every retained observation and the effective mapping, its producer handoff carries an existing source-bound approval into the new generation without repeating the comparison. A genuinely changed interior observation invalidates earlier comparisons even if endpoints are identical. Operation-local peer approvals are not restart
 freshness caches. Pending corrections durably retain scope, cause, source generation, mapping, coverage and usable
 observations. An applicable pending decision is consumed without comparing again. A new generation invalidates
 that decision for full-history as well as latest-session scope; its fresh completed result owns the new scope.
@@ -384,9 +384,9 @@ matching requirement consumes its atomic receipt before acquisition planning; a 
 acknowledgement creates a new correction requirement. A completed changed-price publication retains its ID
 while lineage is pending. Durable observation rows are structurally validated at work-state ingress (supported
 views, eight string fields, timezone-aware timestamps, finite numbers and nondecreasing order); conflicting
-witnesses remain evidence, not malformed duplicates. Consumers do not repeat that validation.
+witnesses remain evidence, not malformed duplicates. Consumers do not repeat that validation. Initialization checks only the compact work-state gate; final pending counts consume status without deserializing or revalidating accepted correction rows.
 An old correction ID without sufficient cause information retains full replacement; identity changes and confirmed
-missing historical rows also retain their broad owning scope. Started journals finish their selected publication,
+missing historical rows retain their explicitly selected owning scope. Started journals finish their selected publication,
 and already completed replacements remain completed. Partial successes do not make an overall failed update complete.
 
 Work estimates consume these durable scopes from the accepted compact selectors. Applicable pending comparisons
@@ -428,9 +428,7 @@ Each logical bars or corporate-action roster is divided into `ceil(symbols / 100
 batches, differing by at most one symbol, with smaller batches first. A 3,386-symbol action therefore uses
 846, 846, 847 and 847 symbols. Dates, adjustment, mapping date and other parameters stay unchanged.
 Each batch exhausts its own pagination before the next starts. HTTP 414 further bisects only the rejected
-batch, restarting that batch's pagination and discarding its partial pages. Results cross the logical-action
-boundary only after all batches validate; a later failure discards all results for that action and blocks
-dependent steps. Independent actions retain existing continuation-on-failure behavior. Completed omissions
+batch, restarting that batch's pagination and discarding its partial pages. Completely normalized physical subsets cross their owning handoff before the next subset starts. Bars and metadata owners preserve positive and negative completed subsets when an independent subset fails; failure attribution names only unfinished deliveries. Dependent steps remain blocked. A routing contradiction in newly assembled corporate-action evidence remains an explicit invalidation, rather than an independent transport failure. Completed omissions
 remain valid empty results and never trigger individual-symbol fanout. A rejected exact child after a split
 cannot establish unavailability of its siblings.
 
@@ -570,6 +568,11 @@ dated matches and ID/group/input references. Incompatible duplicate IDs abort. S
 policy, time, completeness, transaction token; readers never hash the database. Compact selection serves status,
 preview, public snapshots and unchanged work; only changed selected groups open checkpoints. Matching contributions
 are neither revalidated nor rewritten.
+
+Serving SQLite writers use a 120-second busy timeout for contention with public snapshots. If that wait
+expires or publication is interrupted, the transaction rolls back. Pricing and lineage publication journals
+preserve their already-built artifacts for recovery. Existing rollback journals and synchronization settings
+remain in force.
 
 [maintain](../libs/alpaca_serving_catalogue/producer.py) follows published membership and previous contributions,
 including absent dependencies, without rediscovering evidence closure. Lineage transactions record exact-generation

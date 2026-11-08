@@ -35,7 +35,13 @@ class HeartbeatCommandTests(unittest.TestCase):
             arguments = list(path)
             for action in parser._actions:
                 if action.required:
-                    arguments.extend([action.option_strings[0], "AAA"] if action.option_strings else ["AAA"])
+                    arguments.extend(
+                        [action.option_strings[0]]
+                        if action.option_strings and action.nargs == 0
+                        else [action.option_strings[0], "AAA"]
+                        if action.option_strings
+                        else ["AAA"]
+                    )
             for group in parser._mutually_exclusive_groups:
                 if group.required:
                     arguments.extend([group._group_actions[0].option_strings[0], "AAA"])

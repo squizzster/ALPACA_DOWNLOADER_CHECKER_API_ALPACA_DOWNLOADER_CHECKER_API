@@ -29,7 +29,7 @@ def correction_from(source, previous):
     return day
 
 
-def prefix_assignments(previous, boundaries, day, prefix_ends):
+def prefix_assignments(previous, boundaries, day, prefix_ends, *, removed_sessions=None):
     """Clip the single corrected row from accepted metadata for output assembly.
 
     The source producer certifies one replaced session per view. Earlier
@@ -40,7 +40,8 @@ def prefix_assignments(previous, boundaries, day, prefix_ends):
     clipped = deepcopy(boundaries)
     for name in ADJUSTMENTS:
         old = summaries[name]
-        count = old["rows"] - 1
+        removed = removed_sessions[name] if removed_sessions is not None else (day,)
+        count = old["rows"] - len(removed)
         candidates = [prefix_ends[name]] if prefix_ends.get(name) else []
         candidates.extend(
             segment["last_timestamp"]
@@ -66,9 +67,10 @@ def prefix_assignments(previous, boundaries, day, prefix_ends):
                 if segment["from"] >= day:
                     continue
                 if segment["to"] >= day:
+                    keep = segment["row_count"] - sum(day <= session <= segment["to"] for session in removed)
                     segment.update(
-                        row_count=segment["row_count"] - 1,
-                        row_end=segment["row_end"] - 1,
+                        row_count=keep,
+                        row_end=segment["row_start"] + keep - 1,
                         last_timestamp=last,
                         to=old["last_session"],
                     )

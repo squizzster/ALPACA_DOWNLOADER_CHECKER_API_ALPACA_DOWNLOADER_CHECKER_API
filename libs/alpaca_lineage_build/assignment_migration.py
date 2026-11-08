@@ -45,12 +45,18 @@ def migrate(store, symbols=None, *, all_published=False, limit=128, progress=Non
             else:
                 if any(not reusable_decision(entries[s]) for s in members):
                     raise LineageError("assignment migration requires the authorized current policy")
-                if not queue_ready:
+                receipts = {s: storage.read_receipt(view.root, s, index) for s in sorted(members)}
+                needed = {
+                    symbol: {kind for kind in receipt["boundaries"] if selected(receipt, kind) is None}
+                    for symbol, receipt in receipts.items()
+                }
+                # A marker-only index transition changes no receipt generation
+                # and produces no serving handoff, so it needs no queue upgrade.
+                if any(needed.values()) and not queue_ready:
                     from libs.alpaca_serving_catalogue.work import upgrade
 
                     upgrade(store)
                     queue_ready = True
-                receipts = {s: storage.read_receipt(view.root, s, index) for s in sorted(members)}
                 first = next(iter(receipts.values()))
                 with storage.pricing_locks(store, group, known=members) as locked:
                     sources = _locked_sources_for_migration(
@@ -58,7 +64,7 @@ def migrate(store, symbols=None, *, all_published=False, limit=128, progress=Non
                     )
                     boundaries = {}
                     for symbol, receipt in receipts.items():
-                        kinds = {kind for kind in receipt["boundaries"] if selected(receipt, kind) is None}
+                        kinds = needed[symbol]
                         boundaries[symbol] = (
                             storage.read_boundaries(view.root, receipt, kinds=kinds) if kinds else {}
                         )

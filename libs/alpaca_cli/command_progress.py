@@ -40,6 +40,12 @@ FIELDS = {
         "reused_decisions",
         "rows",
         "identities",
+        "computation_revision",
+        "published_symbols",
+        "selected_symbols",
+        "selected_groups",
+        "already_current_symbols",
+        "assignment_projection_complete_symbols",
     )
 }
 FIELDS.update(

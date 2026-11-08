@@ -245,6 +245,8 @@ def _publish_append(
             old_documents=old_documents,
             adjustment_acquisition=adjustment_acquisition,
             previous_source_sha256=generation,
+            activity_views=(views,),
+            replacement=False,
         )
         return {
             "symbol": symbol,

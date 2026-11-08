@@ -362,5 +362,18 @@
       "Reject stale assignment migration policy before receipt reads, upgrade selected legacy serving queues, and preserve completed peer projections.",
       "Give workflow and command failures distinct aggregate ownership and trace actual exact metadata lookup reasons without additional reads."
     ]
+  },
+  {
+    "modifications": [
+      "Carry accepted UUID membership, dated observations and competing-source suffix decisions into incremental processing; invalidate genuinely changed effective mappings and fresh metadata dependencies without replaying accepted history.",
+      "Keep missing-session completion distinct from retained-history approval, preserve full-correction scope and observations, and retain applicable completed comparisons across insertion and recovery.",
+      "Complete marker-only assignment migration once, publish export applicability before changed assignments, and accept workflow evidence once instead of rescanning completed contracts for initialization and final counts."
+    ]
+  },
+  {
+    "modifications": [
+      "Introduce independent lineage computation revision 1 so pre-repair assignments select complete owning reconstruction while accepted pricing and metadata remain authoritative.",
+      "Provide explicit all-published retained-input rebuild without provider requests, common-range extension or pricing writes; stamp the new revision only after full evaluation and journaled publication, skip completed groups on retry and complete offline serving."
+    ]
   }
 ]

@@ -441,25 +441,52 @@ class EvidenceClient:
         for action in plan["steps"][0]["actions"]:
             params = action["request"]["params"]
             keys = [(s, params["start"], params["end"]) for s in params["symbols"].split(",")]
-            try:
-                completed = {}
-                self._acquire_action(action, completed)
-            except (RuntimeError, OSError, ValueError) as error:
-                # Other independent date/symbol batches still get their own result.
-                error.request_identifiers = [key[0] for key in keys]
-                self.actions.update((key, error) for key in keys)
-                continue
-            for key, rows in completed.items():
-                try:
-                    self._remember(key, rows)
-                except (RuntimeError, OSError, ValueError) as error:
-                    error.request_identifiers = [key[0]]
-                    self.actions[key] = error
+            physical = getattr(self.client, "execute_corporate_action_parts", None)
+            if physical is not None:
 
-    def _acquire_action(self, action, completed):
+                def completed_part(parameters, rows):
+                    part = {
+                        **action,
+                        "request": {**action["request"], "params": parameters},
+                    }
+                    self._remember_action(part, rows=rows)
+
+                def failed_part(parameters, error):
+                    if not isinstance(error, (RuntimeError, OSError, ValueError)):
+                        raise error
+                    symbols = parameters["symbols"].split(",")
+                    error.request_identifiers = symbols
+                    self.actions.update(
+                        ((symbol, parameters["start"], parameters["end"]), error) for symbol in symbols
+                    )
+
+                physical(action, on_completed=completed_part, on_failure=failed_part)
+                continue
+            self._remember_action(action, keys=keys)
+
+    def _remember_action(self, action, *, keys=None, rows=None):
+        params = action["request"]["params"]
+        keys = keys or [(s, params["start"], params["end"]) for s in params["symbols"].split(",")]
+        completed = {}
+        try:
+            self._acquire_action(action, completed, rows=rows)
+        except (RuntimeError, OSError, ValueError) as error:
+            # Recursive routing may finish an independent child before another
+            # fails. Keep that completed evidence, and fail only unfinished keys.
+            remaining = set(keys) - completed.keys()
+            error.request_identifiers = sorted({key[0] for key in remaining})
+            self.actions.update((key, error) for key in remaining)
+        for key, values in completed.items():
+            try:
+                self._remember(key, values)
+            except (RuntimeError, OSError, ValueError) as error:
+                error.request_identifiers = [key[0]]
+                self.actions[key] = error
+
+    def _acquire_action(self, action, completed, *, rows=None):
         params = action["request"]["params"]
         symbols = params["symbols"].split(",")
-        rows = self._execute(action)
+        rows = self._execute(action) if rows is None else rows
         # Route every version before rejecting a conflict: unrelated symbols in
         # the same complete response still have usable evidence.
         self._record_actions(rows)
@@ -480,6 +507,10 @@ class EvidenceClient:
             if {action_identity_key(row): row for row in rows} != {
                 action_identity_key(row): row for row in children
             }:
+                # This is an observed contradiction in the newly assembled
+                # routing proof, not an independent transport peer failure.
+                for symbol in symbols:
+                    completed.pop((symbol, params["start"], params["end"]), None)
                 raise LineageError("corporate actions changed during batch routing")
             return children
         for symbol in symbols:

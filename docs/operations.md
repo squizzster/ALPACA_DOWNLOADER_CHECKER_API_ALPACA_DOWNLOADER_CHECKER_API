@@ -107,6 +107,15 @@ named by status; these commands have distinct scopes:
 Append `--store PATH` to select a store. New stores first need [pricing and lineage](#focused-standalone-work).
 Recheck `status` after owner maintenance; success at one boundary does not establish the others.
 
+## Rebuild published lineage after a computation repair
+
+```bash
+./alpaca-cli-eod lineage rebuild --all-published --plan
+./alpaca-cli-eod lineage rebuild --all-published --debug /tmp/alpaca-lineage-rebuild.jsonl
+```
+
+This explicitly selected universe operation recomputes obsolete lineage computation revisions from each complete group's retained prices and accepted metadata, at their actual individual ranges and mappings. It requires no credentials and makes no provider requests or pricing writes. Missing, pending or incompatible retained inputs remain explicit blockers; the rebuild does not widen acquisition or silently refresh evidence. The computation revision publishes through the owning journal after full evaluation. Retry skips completed current-revision groups before receipt or payload reads. The command then performs an explicit serving rebuild, retaining applicable numerical checkpoints and establishing legacy export applicability. This repair run is separate from daily live-price freshness and normal-update performance acceptance.
+
 ## Serving catalogue maintenance
 
 ```bash

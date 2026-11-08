@@ -393,7 +393,7 @@ class ProductionPolicyOperationTests(TestCase):
                 return_value=nullcontext(),
             ),
             patch(
-                "libs.alpaca_lineage_build.universe_update.universe_state.read_state",
+                "libs.alpaca_lineage_build.universe_update.universe_state.require_initialized",
                 side_effect=read_state,
             ),
             patch.object(context, "select_serving", side_effect=recover_serving),

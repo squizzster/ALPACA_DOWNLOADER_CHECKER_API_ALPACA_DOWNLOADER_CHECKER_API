@@ -256,10 +256,10 @@ class UpdateEverythingTests(unittest.TestCase):
         ]
         self.assertEqual(len(exact), 1)
         self.assertEqual(exact[0]["symbols"], "AAA")
-        # The replacement producer already confirmed AAA's new generation.
-        # Only BBB still needs the daily first/latest comparison.
-        self.assertEqual(repaired["check"]["stats"]["tickers"], 1)
-        self.assertEqual(repaired["check"]["stats"]["matched"], 1)
+        # Session insertion approved only the selected missing session. Both
+        # retained histories still need their daily first/tail comparison.
+        self.assertEqual(repaired["check"]["stats"]["tickers"], 2)
+        self.assertEqual(repaired["check"]["stats"]["matched"], 2)
 
         serving = maintain(store)
         self.assertTrue(serving["complete"], serving)

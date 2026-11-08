@@ -41,6 +41,9 @@ class PricingInput:
     correction_from: str | None = None
     prefix_boundaries: dict | None = None
     previous_coverage_end: str | None = None
+    accepted_identity_memberships: dict | None = None
+    accepted_report: dict | None = None
+    reprojected_sessions: dict | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
         # Ignored paths satisfy the injected interface; they must not trigger filesystem access.
@@ -60,6 +63,7 @@ def load_pricing(
     partitions=None,
     source_sha256=None,
     selected_correction=...,
+    projection_from=None,
 ) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
     # TRUST BOUNDARY: pricing already validated the selected source and payload
@@ -91,7 +95,7 @@ def load_pricing(
             )
         return dict(partitions[key])
 
-    corrected = (
+    corrected = projection_from or (
         (correction_from(source, previous) if selected_correction is ... else selected_correction)
         if resume_from is not None
         else None
@@ -99,7 +103,9 @@ def load_pricing(
     prefix_ends = {}
     views = (
         {adjustment: () for adjustment in ADJUSTMENTS}
-        if resume_from is not None and unchanged_rows(source, previous, selected=generation)
+        if resume_from is not None
+        and projection_from is None
+        and unchanged_rows(source, previous, selected=generation)
         else _added_views(root, source, resume_from, read=read, prefix_ends=prefix_ends if corrected else None)
         if resume_from is not None
         else (
@@ -122,8 +128,20 @@ def load_pricing(
     converted_views = {}
     prior_summary = assignment_summary(previous, previous_boundaries) if resume_from is not None else None
     clipped = None
+    removed = None
     if corrected:
-        prior_summary, clipped = prefix_assignments(previous, previous_boundaries, corrected, prefix_ends)
+        removed = {
+            name: tuple(
+                day
+                for row in values
+                if (day := timestamp(row[0]).astimezone(NEW_YORK).date().isoformat())
+                <= previous["assignment_summary"][name]["last_session"]
+            )
+            for name, values in views.items()
+        }
+        prior_summary, clipped = prefix_assignments(
+            previous, previous_boundaries, corrected, prefix_ends, removed_sessions=removed
+        )
     for adjustment in ADJUSTMENTS:
         values = views[adjustment]
         rows = converted_views.get(id(values))
@@ -207,6 +225,7 @@ def load_pricing(
         corrected,
         clipped,
         previous["processed_through"] if corrected else None,
+        reprojected_sessions=removed if projection_from else None,
     )
 
 

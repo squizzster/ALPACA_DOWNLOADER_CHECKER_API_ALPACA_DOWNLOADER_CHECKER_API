@@ -244,8 +244,8 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None, on_comple
                     bars[symbol].extend(rows)
             start = timestamp(params["start"])
             end = timestamp(params["end"]) + timedelta(microseconds=1)
-            # Normalize only completed batches, retaining them privately until the
-            # whole original action succeeds. Consumers never see partial success.
+            # Normalize only completely paginated subsets. Independent completed
+            # subsets cross the owner's handoff before another subset starts.
             return {
                 symbol: CompletedBars(
                     symbol,
@@ -263,46 +263,46 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None, on_comple
             cause = error.__cause__ or error
             return cause.code if isinstance(cause, urllib.error.HTTPError) else None
 
-        try:
-            normalized = {
-                symbol: rows
-                for batch in fetch_symbol_batches(
-                    parameters,
-                    fetch_batch,
-                    status_code=status_code,
-                    metrics=metrics,
-                )
-                for symbol, rows in batch.items()
+        def subset_action(params):
+            symbols = set(params["symbols"].split(","))
+            return {
+                **action,
+                "request": {**action["request"], "params": params},
+                "deliver": [
+                    {**target, "symbols": [s for s in target["symbols"] if s in symbols]}
+                    for target in action["deliver"]
+                    if symbols.intersection(target["symbols"])
+                ],
             }
-        except (DownloadError, OSError) as error:
-            if isinstance(error, BarsSymbolUnavailable) and "," in parameters["symbols"]:
-                incomplete = DownloadError(f"Alpaca bars action incomplete: member {error.symbol} was rejected")
-                incomplete.http_status = error.http_status
-                if on_failure is None:
-                    raise incomplete from error.__cause__
-                error = incomplete
-            if on_failure is None:
-                raise
+
+        def failed(params, error):
+            if not isinstance(error, (DownloadError, OSError)):
+                raise error
             failed_steps.add(step_index)
-            on_failure(step_index, action, error)
-            return
-        adjustment = parameters["adjustment"]
-        # After every page completes, omitted symbols have no bars in this range.
-        # Never fan normal omissions out into exact requests: empty/inactive labels
-        # would multiply one batch into symbols x adjustment views requests.
-        # Transport, schema and pagination failures above still fail the action.
-        delivered = {}
-        for target in action["deliver"]:
-            lower, upper = timestamp(target["start"]), timestamp(target["end_exclusive"])
-            for symbol in target["symbols"]:
-                delivered[(step_index, target["need"], target["range"], symbol, adjustment)] = normalized[
-                    symbol
-                ].select(symbol, adjustment, lower, upper, parameters["asof"])
-        output.update(delivered)
-        if on_completed is not None:
-            # Outside the transport handler: a failed durable handoff must stop
-            # execution, never masquerade as a failed provider action.
-            on_completed(step_index, action, delivered)
+            on_failure(step_index, subset_action(params), error)
+
+        def completed(params, normalized):
+            selected = subset_action(params)
+            delivered = {}
+            adjustment = params["adjustment"]
+            for target in selected["deliver"]:
+                lower, upper = timestamp(target["start"]), timestamp(target["end_exclusive"])
+                for symbol in target["symbols"]:
+                    delivered[(step_index, target["need"], target["range"], symbol, adjustment)] = normalized[
+                        symbol
+                    ].select(symbol, adjustment, lower, upper, params["asof"])
+            if on_completed is not None:
+                on_completed(step_index, selected, delivered)
+            output.update(delivered)
+
+        fetch_symbol_batches(
+            parameters,
+            fetch_batch,
+            status_code=status_code,
+            metrics=metrics,
+            on_completed=completed,
+            on_failure=failed if on_failure is not None else None,
+        )
 
     for step_index, step in enumerate(plan["steps"]):
         for action in step["actions"]:

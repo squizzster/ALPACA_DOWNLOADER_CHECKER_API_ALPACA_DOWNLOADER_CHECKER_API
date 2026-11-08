@@ -61,7 +61,12 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None):
         correction_id = pending.get("correction_id")
         contract = pending.get("pricing_correction")
         if correction_id is not None and source.get("history_correction_id") == correction_id:
-            return {**request, "matched": True}
+            if source.get("history_correction_scope") != "selected_sessions":
+                return {**request, "matched": True, "completed_scope": "full_history"}
+            # Only the missing-session insertion is complete. It established no
+            # retained-history comparison and cannot lend that broader approval.
+            # The completed insertion itself must not be acquired or recovered again.
+            correction_id = None
         completion = pending.get("correction_completion")
         if completion is not None and (completion.get("correction_id"), completion.get("source_sha256")) != (
             correction_id,
@@ -202,6 +207,7 @@ def _refresh_request(symbol, source, *, source_sha256=None):
         "symbol": symbol,
         "source_sha256": source_sha256 or digest(json_bytes(source)),
         "history_correction_id": source.get("history_correction_id"),
+        "history_correction_scope": source.get("history_correction_scope"),
         "start": start.isoformat().replace("+00:00", "Z"),
         "end_exclusive": end.isoformat().replace("+00:00", "Z"),
         "asof": asof,
@@ -292,7 +298,15 @@ def prepare_refresh(
 
 @traced("provider_late_bar_check")
 def probe_late_bar_repairs(
-    store, selection, *, client, end_date=None, progress=None, context=None, on_positive=None
+    store,
+    selection,
+    *,
+    client,
+    end_date=None,
+    progress=None,
+    context=None,
+    on_positive=None,
+    correction_requirements=None,
 ):
     """Probe only exact sessions named by a completed serving handoff.
 
@@ -406,6 +420,17 @@ def probe_late_bar_repairs(
 
     returned, positive_dates = {}, {}
 
+    def requirement_binding(symbol):
+        request = prepared[symbol]
+        return (
+            symbol,
+            request["source_sha256"],
+            request["start"],
+            request["end_exclusive"],
+            request["asof"],
+            tuple(sorted(selected_sessions[symbol])),
+        )
+
     def completed(delta):
         new = {}
         for cache_key, value in delta.items():
@@ -447,6 +472,10 @@ def probe_late_bar_repairs(
             positive_dates.setdefault(symbol, set()).update(
                 timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows
             )
+            context.late_bar_requirements[requirement_binding(symbol)] = (
+                returned[symbol],
+                frozenset(positive_dates[symbol]),
+            )
         # Commit the positive obligation before exposing completed action reuse.
         for cache_key, value in delta.items():
             context.late_bar_observations[(prepared[cache_key[1]]["source_sha256"], *cache_key)] = value
@@ -458,7 +487,25 @@ def probe_late_bar_repairs(
             value = context.late_bar_observations.get(binding(symbol, window, need["asof"]))
             if value is not None:
                 reused[key(symbol, window, need["asof"])] = value
-    completed(reused)
+    # The response and the successful durable handoff are separate completed
+    # facts. Retrying a failed peer consumes both without invoking the owner or
+    # merging its already accepted evidence again. A renewed requirement needs
+    # one owning merge, using those same accepted responses rather than HTTP.
+    reuse_pending = {}
+    for need in needs:
+        symbol = need["symbols"][0]
+        accepted = context.late_bar_requirements.get(requirement_binding(symbol))
+        if accepted is not None and (
+            correction_requirements is None
+            or accepted[0].get("required_correction_id")
+            == correction_requirements.get(symbol, {}).get("correction_id")
+        ):
+            returned[symbol], dates = accepted
+            positive_dates[symbol] = set(dates)
+        else:
+            reuse_pending.update((key, value) for key, value in reused.items() if key[1] == symbol)
+    if reuse_pending:
+        completed(reuse_pending)
     if pending:
         _prefetch(
             pending,
@@ -705,16 +752,21 @@ def acquire_full(
             if any(not rows for rows in state.completed.views.values()):
                 continue  # The locked downloader owns the bounded empty-view fallback.
             try:
-                confirmed = accept_observations(symbol, state.completed.views, required)
+                confirmed = accept_observations(
+                    symbol, state.completed.views, required, allow_all_context_conflicts=True
+                )
             except ProviderObservationConflict as error:
                 # Carry the completed contradiction to the locked publisher.
                 # Only that owner can determine, from accepted logical digests,
                 # whether this exact full-range output reproduced the retained
                 # generation. Do not repeat either provider observation.
-                confirmed = {
-                    name: frozenset(timestamp(row[0]) for row in rows) for name, rows in required.items()
-                }
+                confirmed = getattr(error, "confirmed_observations", None)
                 correction_approvals[state.key] = (state.completed, required, error)
+                if confirmed is None:
+                    # This completed failure cannot be resolved by retained
+                    # equality. Carry it to the selected publisher without
+                    # spending requests on irrelevant first-row confirmations.
+                    continue
             else:
                 correction_approvals[state.key] = (state.completed, required, confirmed)
         endpoints = state.completed.endpoints
@@ -955,6 +1007,12 @@ def replace_prepared(
         failures = {}
 
         def failed(_step, action, error):
+            outcome = failure_outcome(error)
+            if outcome.get("http_status") == 400 and len(action["request"]["params"]["symbols"].split(",")) > 1:
+                # The adaptive state retains successful stages and owns exact
+                # singleton fallback. A rejected batch is not a terminal result
+                # for its individually valid symbols.
+                return
             for target in action["deliver"]:
                 for symbol in target["symbols"]:
                     failures[symbol] = {
@@ -1079,7 +1137,19 @@ def replace_prepared(
             continue
         selected_by_symbol = {}
         for state in selected_states:
-            if state.failure is None and state.completed is not None:
+            if state.failure is not None and state.exact_fallback:
+                try:
+                    state.finish(
+                        lambda name: client.fetch(state.symbol, name, state.start, state.end, asof=state.asof)
+                    )
+                except (RuntimeError, OSError, ValueError) as error:
+                    failures[state.symbol] = {
+                        "symbol": state.symbol,
+                        "status": "failed",
+                        "error": str(error),
+                        "outcome": failure_outcome(error),
+                    }
+            if (state.failure is None or state.exact_fallback) and state.completed is not None:
                 selected_by_symbol.setdefault(state.symbol, []).append(state.completed)
         if not checked_baseline:
             if before_publish:
@@ -1117,6 +1187,7 @@ def replace_prepared(
                         endpoint_selection=item.get("endpoint_selection"),
                         history_correction_id=item.get("required_correction_id"),
                         correction_observations=required[item["symbol"]],
+                        correction_evidence_complete=True,
                         correction_cause=item.get("correction_cause"),
                         correction_completion=item.get("correction_completion", False),
                         context=context,

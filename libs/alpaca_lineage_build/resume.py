@@ -25,6 +25,11 @@ def unchanged_source(source, previous, *, selected=None):
         or not unchanged_rows(source, previous, selected=selected)
     ):
         return False
+    return continuing_request(source, previous)
+
+
+def continuing_request(source, previous):
+    """Preserve the effective mapping, except its normal coverage-bound advance."""
     before = request_context(previous.get("pricing_request", {}))
     after = request_context({**source["latest_request"], "history_start": source.get("history_start")})
     old_end, new_end = before.pop("end_exclusive", None), after.pop("end_exclusive", None)
@@ -66,15 +71,7 @@ def reusable_prefix(source, previous, *, selected=None, refresh=False, selected_
 
     if refresh or not previous or not reusable_decision(previous):
         return selected_prefix(False, "refresh_or_missing_compatible_receipt")
-    before = request_context(previous.get("pricing_request", {}))
-    after = request_context({**source["latest_request"], "history_start": source.get("history_start")})
-    # Advancing the normal observation/mapping cutoff adds work. Changing any
-    # other effective pricing input invalidates the retained-history handoff.
-    for field in ("end_exclusive", "asof"):
-        old, new = before.pop(field, None), after.pop(field, None)
-        if old is None or new is None or new < old:
-            return selected_prefix(False, "mapping_or_coverage_regressed")
-    if before != after:
+    if not continuing_request(source, previous):
         return selected_prefix(False, "effective_pricing_context_changed")
     accepted = (
         (correction_from(source, previous) if selected_correction is ... else selected_correction) is not None
@@ -105,6 +102,17 @@ def complete_append(view):
         if key in checked:
             continue
         checked.add(key)
+        if getattr(view, "reprojected_sessions", None) is not None:
+            # These accepted rows were selected for numerical projection only.
+            # Their completed pricing grid is not another seam to authenticate.
+            added = rows[len(view.reprojected_sessions[adjustment]) :]
+            first, end = view.previous_coverage_end, view.source["latest_request"]["end_exclusive"]
+            expected = (
+                () if first[:10] == end[:10] else expected_market_session_coverage(first, end).session_dates
+            )
+            if tuple(timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in added) != expected:
+                return False
+            continue
         first = (
             view.previous_coverage_end
             if view.correction_from

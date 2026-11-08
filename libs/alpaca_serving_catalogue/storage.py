@@ -12,6 +12,8 @@ from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import SCHEMA_VERSION, CatalogueError, policy, validate_version
 
+WRITE_TIMEOUT_SECONDS = 120
+
 
 def path(store):
     return store / "end_of_day/catalogue/serving_catalogue.sqlite3"
@@ -67,7 +69,13 @@ def initialize(store, *, rebuild=False):
     validate_version()
     destination = path(store)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect_sqlite(destination, create=True)) as connection, connection:
+    with (
+        closing(connect_sqlite(destination, create=True, timeout=WRITE_TIMEOUT_SECONDS)) as connection,
+        connection,
+    ):
+        from . import export_inputs
+
+        export_inputs.initialize(connection)
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, SCHEMA_VERSION):
             raise CatalogueError("unsupported catalogue schema; an explicit schema migration is required")
@@ -193,7 +201,7 @@ def publish_projection(store, key, selection, group, accepted_state):
             "sources": {},
         }
     )
-    with closing(connect_sqlite(path(store))) as connection, connection:
+    with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
         state = _state(connection, incomplete=True)
         if state["generation"] != accepted_state["generation"]:
             raise CatalogueError("catalogue changed during projection migration")
@@ -210,7 +218,7 @@ def publish_projection(store, key, selection, group, accepted_state):
 
 def retarget_decision(store, key, handoff, accepted_state):
     """Trust one producer handoff; preserve every completed serving outcome."""
-    with closing(connect_sqlite(path(store))) as connection, connection:
+    with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
         state = _state(connection, incomplete=True)
         if state["generation"] != accepted_state["generation"]:
             raise CatalogueError("catalogue changed before unchanged-decision publication")
@@ -220,6 +228,9 @@ def retarget_decision(store, key, handoff, accepted_state):
             "body=json_set(body, '$.references.lineage', json(?)) WHERE group_key=?",
             (new, new, key),
         )
+        from . import export_inputs
+
+        export_inputs.accept(connection, {"lineage": handoff["lineage_after"], "pricing": handoff["pricing"]})
         return _write_state(connection, complete=state["complete"])
 
 
@@ -331,13 +342,19 @@ def commit(store, previous, groups):
     # or authenticate the already accepted lineage/pricing inputs again here.
     for group in groups:
         validate_group(group)
-    with closing(connect_sqlite(path(store))) as connection, connection:
+    with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
         state = _state(connection, incomplete=True)
         for key in sorted(previous):
             connection.execute("DELETE FROM securities WHERE group_key=?", (key,))
             connection.execute("DELETE FROM members WHERE group_key=?", (key,))
             connection.execute("DELETE FROM groups WHERE group_key=?", (key,))
             connection.execute("DELETE FROM identities WHERE group_key=?", (key,))
+            # A legacy explicit rebuild may be interrupted after a component.
+            # Keep completed binding tokens with its committed decisions, while
+            # replacing only the components selected by this publication.
+            from . import export_inputs
+
+            export_inputs.retire(connection, key)
         try:
             for group in groups:
                 key = group["locator"]
@@ -362,6 +379,10 @@ def commit(store, previous, groups):
                     "INSERT INTO identities VALUES(?, ?)",
                     [(record["public_id"], key) for record in group["decisions"]],
                 )
+                from . import export_inputs
+
+                export_inputs.accept(connection, group["references"])
+                export_inputs.bind(connection, key, group["decision_generation"])
         except sqlite3.IntegrityError as error:
             raise CatalogueError(
                 "conflicting public identity or group membership; no catalogue published"
@@ -463,6 +484,9 @@ def validate_group(group):
 
 
 def finish_bootstrap(store):
-    with closing(connect_sqlite(path(store))) as connection, connection:
+    with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
         state = _state(connection, incomplete=True)
+        from . import export_inputs
+
+        export_inputs.finish(connection)
         return state if state["complete"] else _write_state(connection, complete=True)

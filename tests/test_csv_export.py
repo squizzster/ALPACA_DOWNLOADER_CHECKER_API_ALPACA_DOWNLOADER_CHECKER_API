@@ -36,6 +36,8 @@ from alpaca_end_of_day import (
 from libs.alpaca_cli import main
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download.download import download_pricing
+from libs.alpaca_serving_catalogue import storage as catalogue_storage
+from libs.alpaca_serving_catalogue.contract import CatalogueError
 from libs.common.store_lock import StoreBusyError, operation_lock
 
 FIELDS = ("open", "high", "low", "close", "volume", "trade_count", "vwap")
@@ -860,13 +862,11 @@ class CsvExportTests(NativeCase):
                 "alpaca_end_of_day.standalone.check_unavailable_pricing",
                 side_effect=AssertionError("absence recheck"),
             ),
+            patch.object(catalogue_storage, "assert_group", side_effect=AssertionError("catalogue recheck")),
             patch.object(
-                _csv_export.catalogue_storage, "assert_group", side_effect=AssertionError("catalogue recheck")
-            ),
-            patch.object(
-                _csv_export.catalogue_storage,
-                "selector_state",
-                wraps=_csv_export.catalogue_storage.selector_state,
+                _csv_export.export_inputs,
+                "select",
+                wraps=_csv_export.export_inputs.select,
             ) as token,
         ):
             result = data.write_csv_export(self.directory / "trusted-export", workers=2)
@@ -1127,11 +1127,11 @@ class CsvExportTests(NativeCase):
         stale_destination = self.directory / "stale-csv"
         with (
             patch.object(
-                _csv_export.catalogue_storage,
-                "selector_state",
-                return_value={"generation": "changed"},
+                _csv_export.export_inputs,
+                "select",
+                side_effect=CatalogueError("selected serving catalogue changed"),
             ),
-            patch.object(_csv_export, "_selection", side_effect=AssertionError("stale export selected work")),
+            patch.object(_csv_export, "_export_group", side_effect=AssertionError("stale export read bodies")),
             self.assertRaisesRegex(CatalogChangedError, "open a new DataLibrary"),
         ):
             data.write_csv_export(stale_destination)

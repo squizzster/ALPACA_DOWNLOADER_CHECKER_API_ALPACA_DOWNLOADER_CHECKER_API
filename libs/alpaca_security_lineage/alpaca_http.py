@@ -268,7 +268,13 @@ class AlpacaIdentityClient:
             results.append(values)
         return results
 
-    def _corporate_action_with_splitting(self, action, *, metrics=None):
+    def execute_corporate_action_parts(self, action, *, on_completed, on_failure):
+        """Lend completed physical responses before independent subsets run."""
+        if action["strategy"] != "corporate_actions_batch" or action["request"]["url"] != ACTION_URL:
+            raise RuntimeError("metadata executor received a different API strategy")
+        return self._corporate_action_with_splitting(action, on_completed=on_completed, on_failure=on_failure)
+
+    def _corporate_action_with_splitting(self, action, *, metrics=None, on_completed=None, on_failure=None):
         return [
             row
             for batch in fetch_symbol_batches(
@@ -276,6 +282,8 @@ class AlpacaIdentityClient:
                 lambda params: self._execute_corporate_action(action, params, metrics=metrics),
                 status_code=lambda error: error.status if isinstance(error, IdentityHttpError) else None,
                 metrics=metrics,
+                on_completed=on_completed,
+                on_failure=on_failure,
             )
             for row in batch
         ]

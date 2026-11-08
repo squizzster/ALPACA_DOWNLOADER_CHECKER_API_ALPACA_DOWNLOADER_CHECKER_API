@@ -104,5 +104,21 @@
     "modifications": [
       "Preserve numerical checkpoints for partial publication; carry dated session projections independently of uncertainty and public range selection. Metadata changes, changed uncertainty, appends and latest-session correction consume applicable completed numerical facts. Legacy partial checkpoints retain their accepted range; a different unsupported legacy range requires explicit catalogue rebuild."
     ]
+  },
+  {
+    "modifications": [
+      "Maintain a durable versioned export-input applicability boundary for mutable pricing and assignment publications; accept only selected matching generations and preserve later invalidations through recovery.",
+      "Convert legacy applicability through explicit catalogue rebuild using completed numerical checkpoints and bounded group bindings; export fails closed until that owning transition completes."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain an identity's accepted numerical prefix when corrected membership extends it into source rows previously owned by another identity; compare only its accepted owned positions while preserving actual earlier-ownership invalidation."
+    ]
+  },
+  {
+    "modifications": [
+      "Allow serving SQLite writers to wait up to 120 seconds for contending public snapshots; preserve atomic rollback and owning journal recovery when the wait expires or publication is interrupted."
+    ]
   }
 ]

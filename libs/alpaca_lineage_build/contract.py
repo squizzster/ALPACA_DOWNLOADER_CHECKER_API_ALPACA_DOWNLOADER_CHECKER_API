@@ -20,7 +20,8 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 61
+RUNTIME_VERSION = 63
+COMPUTATION_REVISION = 1
 # A runtime repair is not a new data policy. DO NOT force completed stores through
 # reconstruction merely to align runtime and persisted publication version numbers.
 VERSION = 34  # Persisted publication and policy contract, independent of runtime releases.
@@ -65,10 +66,24 @@ def reusable_versions(published: dict) -> bool:
     return published == current
 
 
+def reusable_computation(document: dict) -> bool:
+    """An older computation cannot preserve a known defective assignment result.
+
+    This revision selects owning lineage reconstruction from accepted prices and
+    metadata. It neither revokes those upstream handoffs nor changes rule policy.
+    """
+    return (
+        isinstance(document, dict)
+        and type(document.get("computation_revision")) is int
+        and document["computation_revision"] == COMPUTATION_REVISION
+    )
+
+
 def reusable_decision(document: dict) -> bool:
     """Require both the runtime tuple and the authorized policy meaning."""
     return (
         isinstance(document, dict)
+        and reusable_computation(document)
         and reusable_versions(document.get("versions"))
         and reusable_policy(document.get("correlation_policy"))
     )
