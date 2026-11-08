@@ -55,6 +55,55 @@ class LineageWorkScopeTests(unittest.TestCase):
         self.assertNotIn("111111111", repr(provider.calls))
         self.assertEqual(before, {name: case.assignments(adjustment=name) for name in ADJUSTMENTS})
 
+    def test_changed_member_does_not_prefetch_unchanged_sibling_missing_from_catalogue(self):
+        from test_alpaca_durable_maintenance import fixture as universe_fixture
+        from test_alpaca_durable_maintenance import rename, seed_group
+        from test_alpaca_pricing_download import FakeClient, bar
+
+        from libs.alpaca_pricing_download.download import download_pricing
+
+        with universe_fixture() as case:
+            store = seed_group(case)
+            provider = Provider(["AAA", "BBB"], [rename()], catalogue=[fixture.asset("OTHER")])
+            provider.assets["111111111"] = provider.assets["BBB"]
+            evidence = EvidenceClient(provider.client)
+            evidence.observe_catalogue()
+            publication = download_pricing(
+                store,
+                "AAA",
+                "2026-10-17",
+                client=FakeClient([bar("2016-01-04", "500"), *case.old[1:]]),
+                refresh_all=True,
+            )
+            original = provider.request
+
+            def reject_sibling(url, **kwargs):
+                if url.endswith("/BBB"):
+                    self.fail("unchanged sibling requested because its publication handoff was absent")
+                return original(url, **kwargs)
+
+            provider.client.request_json = reject_sibling
+            result = pipeline.run_lineage(
+                store,
+                ["AAA"],
+                identity_client=provider.client,
+                evidence_client=evidence,
+                pricing_handoff={
+                    "AAA": publication,
+                    # A carried handoff can already have been consumed by this
+                    # sibling's receipt. Its positive added-row count is stale.
+                    "BBB": {
+                        "added_rows": {"all": 1},
+                        "source_sha256": storage.read_index(store / "end_of_day/lineage")["symbols"]["BBB"][
+                            "source_sha256"
+                        ],
+                    },
+                },
+            )
+            self.assertEqual(result["failed"], 0, result)
+            self.assertIn(("asset", "AAA"), provider.calls)
+            self.assertNotIn(("asset", "BBB"), provider.calls)
+
     def test_backward_price_extension_retains_middle_metadata_and_acquires_prefix(self):
         case = self.case
         recent = fixture.calendar_bars("2025-12-01", "2026-10-14")

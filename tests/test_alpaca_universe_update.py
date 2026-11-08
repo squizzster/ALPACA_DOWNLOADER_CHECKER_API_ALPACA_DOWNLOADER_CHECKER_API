@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from sqlite_crash_fixture import leave_hot_journal
 from test_alpaca_lineage_build import IdentityClient, asset
-from test_alpaca_pricing_download import FakeClient, bar, snapshot
+from test_alpaca_pricing_download import FakeClient, bar, single_session_request, snapshot
 
 from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_lineage_build import pipeline, storage, universe_plan, universe_state
@@ -147,7 +147,7 @@ class UniverseUpdateTests(unittest.TestCase):
             repeated = self.update()
         self.assertTrue(repeated["complete"], repeated)
         self.assertEqual(self.identity.catalogue_calls, 2)
-        self.assertTrue(all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in self.pages))
+        self.assertTrue(all(p["adjustment"] == "all" and single_session_request(p) for p in self.pages))
 
     def test_summary_advancement_publishes_lineage_after_checked_append(self):
         self.records[:] = [asset("AAA")]
@@ -259,9 +259,7 @@ class UniverseUpdateTests(unittest.TestCase):
         self.assertFalse(any(item["acquire"] for item in result["plan"]["work"].values()))
         self.assertEqual(len(self.pages), 4)  # Two endpoint batches, then raw/all append views.
         self.assertTrue(
-            all(
-                page["adjustment"] == "all" and page["start"][:10] == page["end"][:10] for page in self.pages[:2]
-            )
+            all(page["adjustment"] == "all" and single_session_request(page) for page in self.pages[:2])
         )
         self.assertTrue(all(page["start"][:10] == "2026-10-17" for page in self.pages[2:]))
 
@@ -644,9 +642,7 @@ class UniverseUpdateTests(unittest.TestCase):
         self.pages.clear()
         result = self.update()
         self.assertTrue(result["complete"], result)
-        self.assertTrue(
-            all(page["adjustment"] == "all" and page["start"][:10] == page["end"][:10] for page in self.pages)
-        )
+        self.assertTrue(all(page["adjustment"] == "all" and single_session_request(page) for page in self.pages))
         self.assertEqual(result["stages"]["acquisition"]["results"][0]["status"], "covered")
 
     def test_changed_metadata_on_newer_group_is_incomplete_without_rewind(self):

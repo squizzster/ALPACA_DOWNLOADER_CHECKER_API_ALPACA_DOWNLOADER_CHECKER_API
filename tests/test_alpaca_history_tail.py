@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import test_alpaca_lineage_build as lineage_fixture
 from test_alpaca_durable_maintenance import ProcessInterrupted, fixture
-from test_alpaca_pricing_download import FakeClient, bar
+from test_alpaca_pricing_download import FakeClient, bar, single_session_request
 
 from libs.alpaca_pricing_download import check_summary, download, storage
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, COLUMNS, DownloadError, timestamp, transform
@@ -734,7 +734,7 @@ class HistoryTailPipelineTests(unittest.TestCase):
             self.assertEqual(estimate["correction_actions_estimate"], 8)
             self.assertEqual(estimate["pricing_publications_estimate"], 3)  # correction and two new sources
             calls = [p for p in case.pages if "AAA" in p["symbols"].split(",")]
-            self.assertEqual(len(calls), 4, calls)  # raw/all replacement and its new-output confirmations.
+            self.assertEqual(len(calls), 3, calls)  # raw/all replacement; accepted all observation is retained.
             self.assertFalse(any(p["start"][:10] == "2026-10-16" for p in calls), calls)
 
     def test_invalidated_latest_obligation_carries_the_fresh_local_decision(self):
@@ -772,7 +772,7 @@ class HistoryTailPipelineTests(unittest.TestCase):
             self.assertTrue(result["complete"], result)
             calls = [p for p in case.pages if "AAA" in p["symbols"].split(",")]
             self.assertEqual(len(calls), 3, calls)  # Fresh first/tail, then raw correction using accepted all.
-            self.assertTrue(all(p["start"][:10] == p["end"][:10] for p in calls), calls)
+            self.assertTrue(all(single_session_request(p) for p in calls), calls)
             self.assertEqual(download.read_pricing_views(case.store, "AAA")["all"][-1][5], "12345")
 
     def test_correction_journal_recovers_payload_tail_source_and_summary_without_provider_replay(self):
@@ -983,6 +983,9 @@ class WorkEstimateTests(unittest.TestCase):
                     "source_sha256": "a" * 64,
                 }
                 contract = {
+                    "schema_version": 1,
+                    "start": "2016-01-01T00:00:00Z",
+                    "comparison_asof": entry["asof"],
                     "scope": "latest_session",
                     "source_sha256": entry["source_sha256"],
                     "asof": "2026-10-20" if mode == "frozen" else entry["asof"],
@@ -1014,7 +1017,8 @@ class WorkEstimateTests(unittest.TestCase):
                             "AAA": {
                                 "source_sha256": entry["source_sha256"],
                                 "projection": {
-                                    "history_correction_id": "correction" if mode == "completed" else None
+                                    "history_correction_id": "correction" if mode == "completed" else None,
+                                    "pricing_request": {"history_start": "2016-01-01T00:00:00Z"},
                                 },
                             }
                         }

@@ -45,8 +45,10 @@ class MeasuredRequests:
     def __init__(self, client, metrics):
         self.client, self.metrics = client, metrics
 
-    def execute_plan(self, plan, *, metrics=None, on_failure=None):
+    def execute_plan(self, plan, *, metrics=None, on_failure=None, on_completed=None):
         options = {"on_failure": on_failure} if on_failure is not None else {}
+        if on_completed is not None:
+            options["on_completed"] = on_completed
         measured = self.metrics if metrics is None else metrics
         before = dict(measured)
         try:

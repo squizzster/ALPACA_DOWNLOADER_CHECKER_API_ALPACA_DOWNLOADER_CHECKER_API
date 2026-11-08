@@ -196,11 +196,13 @@ class BarsClient:
         }
         return self.execute_plan(build_plan({"steps": [{"needs": [need]}]}))[(0, 0, 0, symbol, adjustment)]
 
-    def execute_plan(self, plan, *, metrics=None, on_failure=None):
-        return execute_bar_plan(plan, self._get, metrics=metrics, on_failure=on_failure)
+    def execute_plan(self, plan, *, metrics=None, on_failure=None, on_completed=None):
+        return execute_bar_plan(
+            plan, self._get, metrics=metrics, on_failure=on_failure, on_completed=on_completed
+        )
 
 
-def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
+def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None, on_completed=None):
     """Execute the solver's ordered bar actions and route only requested slices."""
     if plan.get("schema_version") != PLAN_VERSION:
         raise DownloadError("unsupported API action-plan version")
@@ -289,12 +291,18 @@ def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None):
         # Never fan normal omissions out into exact requests: empty/inactive labels
         # would multiply one batch into symbols x adjustment views requests.
         # Transport, schema and pagination failures above still fail the action.
+        delivered = {}
         for target in action["deliver"]:
             lower, upper = timestamp(target["start"]), timestamp(target["end_exclusive"])
             for symbol in target["symbols"]:
-                output[(step_index, target["need"], target["range"], symbol, adjustment)] = normalized[
+                delivered[(step_index, target["need"], target["range"], symbol, adjustment)] = normalized[
                     symbol
                 ].select(symbol, adjustment, lower, upper, parameters["asof"])
+        output.update(delivered)
+        if on_completed is not None:
+            # Outside the transport handler: a failed durable handoff must stop
+            # execution, never masquerade as a failed provider action.
+            on_completed(step_index, action, delivered)
 
     for step_index, step in enumerate(plan["steps"]):
         for action in step["actions"]:

@@ -173,6 +173,16 @@ class UpdateObligationRecoveryTests(unittest.TestCase):
                     case.live["AAA"][-1] = case.old[-1]
                 case.pages.clear()
                 result = case.update()
+                if boundary == "replace_prepared":
+                    self.assertFalse(result["complete"], result)
+                    self.assertTrue(
+                        any(
+                            f.get("outcome", {}).get("outcome") == "provider_observation_conflict"
+                            for f in result["failures"]
+                        )
+                    )
+                    case.live["AAA"][-1] = bar("2026-10-16", "50")
+                    result = case.update(retry_blocked=True)
                 self.assertTrue(result["complete"], result)
                 self.assertEqual(source(case)["history_correction_id"], correction)
                 self.assertEqual(read_pricing_views(case.store, "AAA")["all"][0][4], "50")

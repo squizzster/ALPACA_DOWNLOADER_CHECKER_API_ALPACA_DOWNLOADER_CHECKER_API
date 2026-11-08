@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from test_alpaca_durable_maintenance import ProcessInterrupted, fixture, seed_group
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_phase4_finalization import dependency_identity, invoke
-from test_alpaca_pricing_download import FakeClient, bar
+from test_alpaca_pricing_download import FakeClient, bar, single_session_request
 from test_alpaca_universe_update import CatalogueClient
 
 from libs.alpaca_lineage_build import storage, universe_state
@@ -70,9 +70,7 @@ class EvidenceWorkPolicyTests(unittest.TestCase):
                 result = case.update()
                 self.assertTrue(result["complete"], result)
                 self.assertFalse(result["plan"]["work"])
-                self.assertTrue(
-                    all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in case.pages)
-                )
+                self.assertTrue(all(p["adjustment"] == "all" and single_session_request(p) for p in case.pages))
 
     def test_unchanged_identity_and_metadata_only_change_reuse_completed_prices(self):
         for metadata_change in (False, True):

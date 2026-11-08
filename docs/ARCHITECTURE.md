@@ -14,8 +14,8 @@ After selection, existing eligible summary members complete live check → corre
 discovery acquisition can advance their dependencies. Changed identity or lost eligibility reconciles first.
 The live check compares the first and latest up to ten stored fully adjusted sessions from the compact summary.
 Only a changed latest session selects localized correction; any earlier selected difference selects full
-retained-span replacement. Matching observations permit missing-session acquisition. The first request retains
-its existing scope; the second spans the selected tail. Overlapping first/tail dates are requested once.
+retained-span replacement. Matching observations permit missing-session acquisition. The first request covers its full New York session; the second spans the selected tail.
+Both are capped at completed coverage. Overlapping first/tail dates are requested once.
 Selected retained dependencies and ordinary downloads use the same `all` acceptance rule from
 their producer-owned comparison handoff. Before that comparison, a lagging dependency's completed missing-suffix
 acquisition selects whether there is work: empty suffixes leave retained storage untouched, while nonempty suffixes

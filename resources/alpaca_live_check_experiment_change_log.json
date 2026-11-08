@@ -46,5 +46,10 @@
     "modifications": [
       "Compare the first and latest up to ten stored all-adjusted sessions using disjoint first/tail requests, deduplicating overlapping dates. Return completed unchanged, latest-session and full-history decisions with their live observations; detect extra retained-window sessions and confirm only omitted dates without replaying returned comparisons."
     ]
+  },
+  {
+    "modifications": [
+      "Align first/tail comparisons, omission probes and preview counts with acquisition's full New York session bounds capped at accepted coverage."
+    ]
   }
 ]

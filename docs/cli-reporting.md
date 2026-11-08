@@ -55,10 +55,16 @@ accepted selectors, catalogue observation, selection and estimates, serving cont
 registration/work acceptance, initial pricing, live history checks, corrections, appends and
 worker publication, dependency catch-up/prefetch, complete lineage groups, receipt/boundary/payload reads,
 correlation/publication/acknowledgement, serving components/evaluation/publication, result output and automatic
-registry commit/push. CLI provider spans include pricing rate-limit waits and pricing/metadata HTTP calls;
+registry commit/push. CLI HTTP spans include limiter waits, request time and response handling, not exclusively network latency.
 Full GET targets and parameters are recorded in ordered `http_target` chunks (join `url_part` by request ID and
 part number), including long symbol rosters and pagination tokens. Request headers, credentials and response
 bodies are not serialized. HTTP exits retain observed request-count changes and available failure status.
+Correction conflict events retain selected/acquired row values and the acquired session row count.
+`late_bar_action_positive` identifies each completed positive action and whether it was persisted;
+`late_bar_action_failed` includes the selected symbols, mapping, bounds and classified cause.
+`updated_boundaries` reports changed partition references or explicit repairs, not candidates.
+Effective price changes, generation changes and files written are distinct; an equal correction can
+write a completion receipt while preserving every pricing file.
 Prefix decisions explain incompatible or
 unresolved histories, changed ancestry/evidence, incomplete session seams and changed suffix identity/source priority. Group
 exits report rows processed versus reused; serving exits report reused prefixes and full-history evaluations.
@@ -208,3 +214,11 @@ Treat diagnostic `level` as severity, not the process exit status. Optional cont
 External monitors can consume the JSONL using their own JSON parser; `libs/` remains internal to this repository.
 For monitoring, use each progress record's remaining `next_heart_beat_in_seconds` from its receipt time; allow
 10 seconds of delivery slack before investigating a late heartbeat. Terminal records carry no next deadline.
+
+Failure aggregation counts failed workflow symbol obligations once, regardless of how many maintenance or
+lineage reports describe them. Unscoped command failures and independent serving failures have separate owners.
+Stage-specific counts remain diagnostic and are not added again to the aggregate. DEBUG `metadata_exact_lookup`
+events identify actual uncached lookup attempts, lookup kind and selection reason; cache hits emit no lookup
+event. `pricing_publication` distinguishes effective price change from previous/new source generation and writes.
+Correction completion consumption and transactional acceptance have separate events. These events use existing
+producer values and perform no additional storage checks.

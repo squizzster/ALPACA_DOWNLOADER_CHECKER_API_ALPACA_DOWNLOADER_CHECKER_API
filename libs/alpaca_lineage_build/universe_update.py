@@ -44,7 +44,9 @@ def recover_publications(store, *, context=None):
 
 
 @traced("plan")
-def plan_update(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY, retry_blocked=False):
+def plan_update(
+    store, end_date, *, identity_client, registry=DEFAULT_REGISTRY, retry_blocked=False, coalesce_late_bars=True
+):
     end = request_end(end_date).date().isoformat()
     # Planning is read-only and does not recover journals, but it still uses
     # policy-bearing lineage projections. Reject an invalid live policy before
@@ -56,7 +58,9 @@ def plan_update(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY, 
     # otherwise unbounded catalogue request and then discover that no plan can
     # be built from it.
     try:
-        accepted = universe_plan.boundaries(store, registry, context=context)
+        accepted = universe_plan.boundaries(
+            store, registry, context=context, coalesce_late_bars=coalesce_late_bars
+        )
     except (RuntimeError, OSError, ValueError) as error:
         return {
             "mode": "plan",
@@ -95,6 +99,7 @@ def run_update(
     workers=3,
     progress=None,
     retry_blocked=False,
+    coalesce_late_bars=True,
 ):
     context = accept_context(store)
     store = Path(store).absolute()
@@ -197,7 +202,9 @@ def run_update(
                         if not recovery_policy.allowed({symbol})
                     ],
                 }
-        accepted = universe_plan.boundaries(store, registry, context=context)
+        accepted = universe_plan.boundaries(
+            store, registry, context=context, coalesce_late_bars=coalesce_late_bars
+        )
         metadata_before = identity_client.request_count
         if progress:
             progress("catalogue", {"state": "started"})
@@ -518,15 +525,12 @@ def run_update(
                     unfinished.append(symbol)
         if unfinished:
             policy.fail(unfinished, {"reason": "required pricing or lineage not complete"}, stage="completion")
-        result["failures"] = policy.failures
+        result["failures"] = [*policy.failures, *policy.command_failures]
         state = universe_state.read_state(store)
         result["pending_work"] = universe_state.pending_count(state)
-        result["failed"] = (
-            len(policy.failures)
-            + sum(group["failed"] for group in lineage_results)
-            + initial_maintenance["failed"]
-            + maintained["failed"]
-        )
+        # Workflow owns failed symbol obligations; command owners record failures
+        # without a symbol separately. Stage totals describe these same outcomes.
+        result["failed"] = len(result["failures"])
         from libs.alpaca_serving_catalogue.producer import maintain
 
         try:
@@ -535,6 +539,10 @@ def run_update(
             serving = {"complete": False, "failed": 1, "error": str(error)}
         result["stages"]["serving_catalogue"] = serving
         result["failed"] += serving["failed"]
+        result["failures"].extend(
+            {"stage": "serving_catalogue", **failure}
+            for failure in serving.get("failures", [{"error": serving["error"]}] if "error" in serving else [])
+        )
         result["complete"] = (
             initial_maintenance["complete"]
             and maintained["complete"]

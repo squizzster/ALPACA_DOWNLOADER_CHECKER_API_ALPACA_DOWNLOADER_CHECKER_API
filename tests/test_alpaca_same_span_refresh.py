@@ -96,8 +96,8 @@ class SameSpanRefreshTests(unittest.TestCase):
         self.assertEqual(result["check"]["stats"]["other_fields_only"], 1)
         self.assertEqual(result["check"]["stats"]["ohlc_changed"], 1)
         self.assertEqual({item["symbol"] for item in result["pricing"]["results"]}, {"AAA", "BBB"})
-        # Raw/all at each exact retained range, then their first-session probes.
-        self.assertEqual(result["pricing"]["requests"]["page_requests"], 8)
+        # Raw/all at each exact retained range; accepted all observations supply its confirmation.
+        self.assertEqual(result["pricing"]["requests"]["page_requests"], 6)
         histories = [
             p for p in self.calls if (timestamp(p["end"]) - timestamp(p["start"])).total_seconds() >= 86400
         ]

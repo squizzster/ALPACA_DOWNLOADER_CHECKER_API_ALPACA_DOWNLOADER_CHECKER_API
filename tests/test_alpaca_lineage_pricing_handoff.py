@@ -12,6 +12,7 @@ from libs.alpaca_lineage_build.selection import DependencyGraph
 class CompletedPricingHandoffTests(unittest.TestCase):
     def test_metadata_plan_consumes_the_handoff_without_reopening_sources_notices_or_locks(self):
         previous = {
+            "source_sha256": "a" * 64,
             "anchor_month": "2026-12",
             "versions": versions(),
             "evidence": {"queried_symbols": ["CURRENT"], "query": {"corporate_actions_start": "2016-01-01"}},
@@ -83,6 +84,7 @@ class CompletedPricingHandoffTests(unittest.TestCase):
 
     def test_metadata_plan_does_not_exact_lookup_a_retained_label_without_new_rows(self):
         previous = {
+            "source_sha256": "a" * 64,
             "anchor_month": "2026-12",
             "versions": versions(),
             "evidence": {

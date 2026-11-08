@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 32
+VERSION = 35
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -92,6 +92,20 @@ def build_parser():
         "--debug", type=Path, metavar="FILE.jsonl", help="write compact execution trace to a new file"
     )
     update.add_argument("--plan", action="store_true", help="read-only preview; may fetch current metadata")
+    windows = update.add_mutually_exclusive_group()
+    windows.add_argument(
+        "--exact-late-bars",
+        dest="coalesce_late_bars",
+        action="store_false",
+        help="probe selected sessions individually for provider-window diagnostics",
+    )
+    windows.add_argument(
+        "--coalesce-late-bars",
+        dest="coalesce_late_bars",
+        action="store_true",
+        help="group consecutive selected sessions with the same mapping (default)",
+    )
+    update.set_defaults(coalesce_late_bars=True)
     update.add_argument(
         "--retry-blocked", action="store_true", help="retry explicit rejections and access denials"
     )
@@ -165,7 +179,7 @@ def build_parser():
         if name == "check":
             p.add_argument("--batch-size", type=int, default=4000)
     lineage = commands.add_parser("lineage").add_subparsers(dest="operation", required=True, parser_class=Parser)
-    for name in ("update", "refresh", "inspect", "migrate-index", "migrate-policy"):
+    for name in ("update", "refresh", "inspect", "migrate-index", "migrate-policy", "migrate-assignments"):
         p = lineage.add_parser(name)
         _store(p)
         if name in {"update", "refresh"}:
@@ -185,6 +199,12 @@ def build_parser():
             p.add_argument("--symbol", required=True)
         elif name == "migrate-index":
             p.add_argument("--batch-size", type=int, default=128)
+        elif name == "migrate-assignments":
+            p.add_argument("--limit", type=bounded_integer(1, 10000), default=128)
+            group = p.add_mutually_exclusive_group(required=True)
+            group.add_argument("--symbol", action="append")
+            group.add_argument("--symbols-file", type=Path)
+            group.add_argument("--all-published", action="store_true")
     universe = commands.add_parser("universe").add_subparsers(
         dest="operation", required=True, parser_class=Parser
     )
@@ -285,7 +305,10 @@ def _store_operation_mode(args):
     writes = (
         (command == "update" and not args.plan)
         or (command == "pricing" and operation in {"acquire", "refresh"})
-        or (command == "lineage" and operation in {"update", "refresh", "migrate-index", "migrate-policy"})
+        or (
+            command == "lineage"
+            and operation in {"update", "refresh", "migrate-index", "migrate-policy", "migrate-assignments"}
+        )
         or (command == "universe" and operation in {"reconcile", "rebuild"})
         or (command == "summary" and operation == "rebuild")
         or (command == "catalogue" and operation in {"bootstrap", "rebuild", "update"} and not args.plan)
@@ -366,6 +389,16 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "migrate-assignments":
+            from libs.alpaca_lineage_build.assignment_migration import migrate
+
+            return migrate(
+                args.store,
+                symbols(args),
+                all_published=args.all_published,
+                limit=args.limit,
+                progress=count_callback(reporter, "assignment_migration", "groups"),
+            )
         if operation == "migrate-policy":
             from libs.alpaca_lineage_build.migration import migrate_correlation_policy
 
@@ -439,7 +472,13 @@ def dispatch(args):
         from libs.alpaca_lineage_build.universe_update import plan_update, run_update
 
         if args.plan:
-            return plan_update(args.store, end, identity_client=identity, retry_blocked=args.retry_blocked)
+            return plan_update(
+                args.store,
+                end,
+                identity_client=identity,
+                retry_blocked=args.retry_blocked,
+                coalesce_late_bars=args.coalesce_late_bars,
+            )
         return run_update(
             args.store,
             end,
@@ -447,6 +486,7 @@ def dispatch(args):
             identity_client=identity,
             workers=args.workers,
             retry_blocked=args.retry_blocked,
+            coalesce_late_bars=args.coalesce_late_bars,
             progress=progress,
         )
     if command == "pricing":
@@ -511,10 +551,15 @@ def dispatch(args):
             from libs.alpaca_pricing_download.refresh import prepare_refresh, replace_prepared
 
             policy.check(selected)
-            prepared = prepare_refresh(args.store, selected)
+            prepared = prepare_refresh(
+                args.store,
+                selected,
+                correction_ids={s: policy.work.get(s, {}).get("correction_id") for s in selected},
+            )
             policy.require_correction(prepared, require_check=False)
             register(selected)
             result = replace_prepared(args.store, prepared, client=pricing, progress=progress)
+            policy.accept_correction_completions(result["results"])
             policy.record_results(result, stage="history_correction")
             return result
     if command == "catalogue":

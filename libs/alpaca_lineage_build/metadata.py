@@ -16,6 +16,7 @@ from libs.alpaca_security_lineage.lineage import (
     extract_cusips,
 )
 from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, MAX_NAME_CHANGE_SYMBOLS
+from libs.common.debug_trace import event
 
 from .contract import LineageError
 
@@ -124,6 +125,7 @@ class EvidenceClient:
         self.by_id = {}
         self.catalogue = None
         self.catalogue_assets = {}
+        self.exact_lookup_reasons = {}
         self.catalogue_attempted = False
         self.catalogue_error = None
         self.catalogue_records = None
@@ -176,7 +178,9 @@ class EvidenceClient:
     def request_count(self):
         return self.client.request_count
 
-    def get_asset_lookup(self, identifier, *, completed_lookup=None):
+    def get_asset_lookup(
+        self, identifier, *, completed_lookup=None, lookup_kind="cusip", reason="exact_mapping_required"
+    ):
         if self.work_policy is not None:
             self.restricted_identifiers.update(self.work_policy.restricted_identifiers)
         if identifier in self.restricted_identifiers:
@@ -199,6 +203,7 @@ class EvidenceClient:
                     "asset": current if current is not None else asset,
                 }
             try:
+                event("metadata_exact_lookup", identifier=identifier, lookup_kind=lookup_kind, reason=reason)
                 self.assets[identifier] = self.client.get_asset_lookup(identifier)
             except (RuntimeError, OSError, ValueError) as error:
                 error.request_identifiers = [identifier]
@@ -213,7 +218,13 @@ class EvidenceClient:
         if symbol in self.assets:
             return self.get_asset_lookup(symbol)
         observed = self.observed_symbol_lookup(symbol)
-        return observed if observed is not None else self.get_asset_lookup(symbol)
+        return (
+            observed
+            if observed is not None
+            else self.get_asset_lookup(
+                symbol, lookup_kind="symbol", reason=self.exact_lookup_reasons.get(symbol, "catalogue_absent")
+            )
+        )
 
     def observed_symbol_lookup(self, symbol):
         """Return only an already acquired observation, regardless of its route."""
@@ -298,7 +309,7 @@ class EvidenceClient:
             elif self.observed_symbol_lookup(symbol) is None:
                 # Conflicting completed observations select this exact endpoint;
                 # never choose a historical observation by iteration order.
-                self.get_asset_lookup(symbol)
+                self.get_asset_lookup(symbol, lookup_kind="symbol", reason="conflicting_retained_observations")
         mappings = defaultdict(set)
         for evidence in evidences:
             for lookup in evidence.get("asset_lookups", ()):
@@ -306,7 +317,7 @@ class EvidenceClient:
                     mappings[lookup["lookup"]].add((lookup.get("asset") or {}).get("id"))
         for identifier, identities in mappings.items():
             if len(identities) > 1:
-                self.get_asset_lookup(identifier)
+                self.get_asset_lookup(identifier, reason="conflicting_retained_mappings")
 
     @staticmethod
     def _value(value):
@@ -344,6 +355,12 @@ class EvidenceClient:
             else:
                 identifier = action["deliver"][0]["identifier"]
                 try:
+                    event(
+                        "metadata_exact_lookup",
+                        identifier=identifier,
+                        lookup_kind="symbol",
+                        reason=self.exact_lookup_reasons.get(identifier, "catalogue_absent"),
+                    )
                     self.assets[identifier] = self._execute(action)
                 except (RuntimeError, OSError, ValueError) as error:
                     error.request_identifiers = [identifier]
@@ -368,8 +385,11 @@ class EvidenceClient:
                 or not isinstance(asset.get("tradable"), bool)
             ):
                 catalogue[symbol] = None  # This label needs exact evidence; other valid entries remain useful.
+                self.exact_lookup_reasons[symbol] = "catalogue_incomplete"
                 continue
             compact = compact_asset(asset)
+            if symbol in catalogue:
+                self.exact_lookup_reasons[symbol] = "catalogue_ambiguous"
             catalogue[symbol] = None if symbol in catalogue else compact
             identity = asset["id"]
             assets_by_id[identity] = (
@@ -554,6 +574,10 @@ class RetainedReportClient:
         self.symbols = {
             lookup["lookup"]: lookup for lookup in evidence["asset_lookups"] if lookup["lookup_kind"] == "symbol"
         }
+        self.invalidated_symbols = set()
+
+    def invalidate_symbols(self, symbols):
+        self.invalidated_symbols.update(symbols)
 
     def __getattr__(self, name):
         return getattr(self.client, name)
@@ -584,7 +608,7 @@ class RetainedReportClient:
         observed = self.client.observed_symbol_lookup(symbol)
         if observed is not None:
             return observed
-        if symbol in self.symbols:
+        if symbol in self.symbols and symbol not in self.invalidated_symbols:
             return self.symbols[symbol]
         return self.client.get_symbol_lookup(symbol)
 
@@ -606,6 +630,7 @@ class WindowClient:
         }
         self.changed_cusips = set()
         self.retained_lookups = {}
+        self.consumed_symbols = {}
 
     @property
     def request_count(self):
@@ -630,6 +655,7 @@ class WindowClient:
 
     def get_symbol_lookup(self, symbol):
         lookup = self.client.get_symbol_lookup(symbol)
+        self.consumed_symbols[symbol] = lookup
         if "source" in lookup:
             self.lookup_sources[symbol] = lookup["source"]
         return lookup
@@ -674,6 +700,14 @@ class WindowClient:
             accepted = self.completed_actions.get(action_identity_key(action))
             if accepted != action:
                 self.changed_cusips.update(extract_cusips([action, *([accepted] if accepted else [])]))
+                if isinstance(self.client, RetainedReportClient):
+                    labels = action_symbols([action, *([accepted] if accepted else [])])
+                    self.client.invalidate_symbols(labels)
+                    for label in sorted(labels & self.consumed_symbols.keys()):
+                        old = self.consumed_symbols[label]
+                        fresh = self.client.get_symbol_lookup(label)
+                        if any(fresh.get(key) != old.get(key) for key in ("outcome", "http_status", "asset")):
+                            raise _CompletedLookupChanged("new action changed a retained symbol lookup")
         replaced = False
         for identifier in sorted(self.changed_cusips & self.retained_lookups.keys()):
             accepted = self.retained_lookups.pop(identifier)
@@ -777,15 +811,22 @@ def acquire_unpriced(symbol, request, client, *, previous=None):
     if previous:
         client.retain_event_supplements([previous])
         client = RetainedReportClient(client, previous)
-    window = WindowClient(client, symbol, retained, previous is None)
-    evidence = build_identity_report(
-        symbol,
-        local,
-        window,
-        query_dates=(request["start"][:10], request["asof"]),
-        event_supplements=client.all_event_supplements(),
-    )
-    return _finish_evidence(evidence, window)
+    for _ in range(MAX_NAME_CHANGE_SYMBOLS + 1):
+        window = WindowClient(client, symbol, retained, previous is None)
+        try:
+            evidence = build_identity_report(
+                symbol,
+                local,
+                window,
+                query_dates=(request["start"][:10], request["asof"]),
+                event_supplements=client.all_event_supplements(),
+            )
+        except _CompletedLookupChanged:
+            continue
+        evidence = _finish_evidence(evidence, window)
+        if window.evidence_current(evidence):
+            return evidence
+    raise LineageError("metadata lookup changes exceeded the name-change traversal limit")
 
 
 def dependencies(evidence: dict, symbol: str) -> list[str]:

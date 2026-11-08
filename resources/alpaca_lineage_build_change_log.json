@@ -341,5 +341,26 @@
       "Acquire only the uncovered corporate-action prefix when retained price history extends backward, preserving accepted historical metadata and the ordinary current window. Missing coverage requires explicit metadata refresh.",
       "Route selected assignment projections through the lineage storage scope and debug boundary without upstream authentication; suppress empty append handoffs after an all-failed refresh."
     ]
+  },
+  {
+    "modifications": [
+      "Persist version-2 correction contracts with trigger observations and complete store/source/mapping/range bindings. Apply generation checks to full-history recovery and carry generation-bound equal-price completion into workflow acknowledgement without data republication.",
+      "Select own-label metadata prefetch from actual per-source changes rather than a missing sibling publication handoff, retaining genuine identity and action invalidation.",
+      "Add explicit selected-group legacy assignment projection migration through the existing publication journal. Preserve numerical serving decisions and use compact completion markers to skip migrated groups on restart."
+    ]
+  },
+  {
+    "modifications": [
+      "Merge same-binding correction witnesses in version-3 work, renew completion authority when requirements change, and transactionally reject completion of renewed obligations. Checkpoint completed positive probe actions before subsequent transport work.",
+      "Preserve accepted sibling observations after their pricing handoff is consumed; retry unavailable-member metadata assembly using completed lookups.",
+      "Share mapped consecutive-session plans with execution and journal bounded representation-only assignment migrations without summary invalidation or upstream acknowledgement."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume equal-price completion in standalone acknowledgement; batch correction requirements and validate durable observation rows at ingress.",
+      "Reject stale assignment migration policy before receipt reads, upgrade selected legacy serving queues, and preserve completed peer projections.",
+      "Give workflow and command failures distinct aggregate ownership and trace actual exact metadata lookup reasons without additional reads."
+    ]
   }
 ]

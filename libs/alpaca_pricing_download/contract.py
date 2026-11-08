@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-RUNTIME_VERSION = 46
+RUNTIME_VERSION = 50
 VERSION = 32  # Persisted publication and completed-request contract, independent of runtime releases.
 # Version 32 adds the producer-owned all-view comparison tail. Sources may still select older
 # unchanged boundary receipts; accept those independently of the source version.
@@ -77,6 +77,10 @@ def failure_outcome(error):
             return {**cause.failure.to_outcome(), "error": str(error)}
         if isinstance(cause, InitialPricingUnavailable):
             return {**cause.evidence, **({"error": str(error)} if cause is not error else {})}
+        from .correction import ProviderObservationConflict
+
+        if isinstance(cause, ProviderObservationConflict):
+            return {**cause.evidence, "error": str(error)}
         if isinstance(cause, BarsSymbolUnavailable):
             return {
                 "outcome": "invalid_symbol",

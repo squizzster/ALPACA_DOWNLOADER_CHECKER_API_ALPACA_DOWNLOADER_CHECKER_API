@@ -21,6 +21,7 @@ Paths are relative to the standalone store:
 | `store.manifest.json` | Store format. |
 | `end_of_day/pricing/<TICKER>/source.manifest.json` | Pricing generation, boundaries, payload map. |
 | Adjacent `validator_first_last_sessions.json` | Source-bound exact first/last rows for every view. |
+| Adjacent `correction.complete.json` | Atomic equal-price correction completion, bound to the exact correction requirement ID and unchanged source generation; read only for selected correction recovery. |
 | Pricing `completed_years`, `current_year`, `current_month` | Selected CSV/gzip boundaries. |
 | `end_of_day/manifests/<TICKER>/update.json` | Unconsumed inclusive changed range: `from`, `to`. |
 | `end_of_day/lineage/<TICKER>/lineage.manifest.json` | Evidence, input generations, chronological assignments. |
@@ -57,6 +58,16 @@ old bodies. Current-year comparison excludes its active-month overlap; completed
 only the anchor label. Serving consumes the shared assignment projection and `serving_ownership` runs instead
 of reading and scanning the old boundary documents. These are representation changes, not new ownership rules.
 
+Explicit `lineage migrate-assignments` assembles missing projections for selected complete groups from their
+accepted assignment bodies, through the existing journal. It opens each missing selected body once, without
+pricing payloads, provider requests, rule replay or numerical reevaluation. The compact index records completed
+projection coverage so retries skip migrated groups before receipt reads. Generation checks under selected locks
+reject changed inputs; recovery consumes staged projections. Its serving handoff preserves decisions across the
+representation change. Projection-only journals leave pricing summaries, notices and pending checks untouched,
+including recovery. The group limit applies before receipt/body reads. Selected compact policy is checked before
+receipt assembly; the owning serving queue upgrade runs once when publication is needed. Completed peers retain
+their compact index entries without projection or digest recalculation. Ordinary updates do not invoke this migration.
+
 [load_pricing](../libs/alpaca_lineage_build/pricing.py) supplies disposition with
 [PublishedPricingEvidence](../libs/alpaca_pricing_download/evidence.py): generation, symbol, request scope and exact
 counts for eight views, including zero/retained rows when correlation reads only an added range.
@@ -68,7 +79,7 @@ evidence remains authoritative; selected evidence refresh produces the corrected
 
 Retained pricing compares the first stored fully adjusted (`all`) row and the latest up to ten stored `all` rows,
 including the latest session. Ordinary downloads, retained dependencies and daily-summary members share this
-boundary. The first-session request keeps its existing scope. The second requests the selected tail in one
+boundary. The first-session request covers the full New York session, capped at accepted coverage. The second requests the selected tail in one
 window; overlapping first/tail dates are requested and compared once. A one-session history needs one request.
 Comparison is exact across timestamp, OHLC, volume, trade count and VWAP, with the existing numerical equality.
 
@@ -128,9 +139,28 @@ transport fallback, and completed decisions cross into publication without rehas
 the policy. A fresh scope makes its own decision; old payloads and endpoint approvals are not equivalence inputs.
 All eight logical views remain available through the existing publication representation. The source's optional
 `latest_adjustment_acquisition` records the latest range/mapping, policy, observed hashes and inferred aliases;
-it is provenance for that acquisition, not authorization to infer later ranges or reinterpret retained partitions.
+an exact selected-session correction records its bounded range proofs together. This is provenance for that
+acquisition, not authorization to infer later ranges or reinterpret retained partitions.
 Earlier acquisition policy provenance remains readable and does not invalidate completed retained pricing.
 New full histories and selected replacements confirm only directly acquired views at their first session.
+Completed trigger observations supply confirmation for the same adjustment/session; those observations are not
+requested again. Full replacement compares its new output against carried live `all` rows before accepting
+publication. A present differing `all` witness selected by the retained-boundary comparison is a request-context
+contradiction. It completes without a new pricing generation only when the exact full-range adaptive acquisition
+produces all three replacement boundaries logically identical to the accepted generation. That decision uses the
+accepted boundary digests already needed by the publisher; it performs no additional provider or payload
+verification. If the exact replacement differs, the witness is missing or ambiguous, the cause is not the selected
+`all` comparison, or any binding changed, `provider_observation_conflict` remains pending and publication stays
+unchanged.
+
+Positive raw late-bar observations take a separate correction path. Consecutive selected sessions are acquired at
+their exact ranges and mapping with the accepted raw response as the adaptive first stage, so raw is not requested
+again. Publication requires a unique row for every selected session in every adjustment view, rejects extra or
+missing sessions and conflicts with retained rows, and merges only absent selected sessions under the selected-
+generation lock. It never requests an enclosing unselected gap, performs a broad replacement or splices raw rows
+without their complete adjustment bundle.
+The existing one bounded exact acquisition retry for a view omitted from a nonempty replacement remains available.
+It does not repeat the original comparison. A still-conflicting result leaves publication unchanged.
 Approved appends retain their existing no-historical-confirmation rule. Debug emits the completed selection;
 stage progress counts each HTTP page once. Planning minima assume two views while action/dense-history estimates
 budget eight. A local correction already holds its accepted `all` observation, leaving one to seven direct views;
@@ -208,6 +238,13 @@ for each unchanged source; group-wide presence cannot be attributed to a particu
 these facts under producer ancestry and reads only changed or new gap scope.
 
 Exact raw probes remain generation-bound; compact selections include completed online and offline decisions.
+A source's consecutive selected exchange sessions share a range, including weekend/holiday seams. Unselected
+market sessions break the range; symbol batching requires identical ranges and mapping dates. The generic
+enclosing-range merger is disabled; returned rows are routed only to the exact selected sessions. Completed
+positive actions are persisted before the next action starts. Independent completed negatives survive peer
+failures within the operation and source/mapping/range binding; unfinished pagination yields no observation.
+Each source run is capped at 10,000 sessions. Planning and execution share mapped ranges; the exact-session
+override preserves the selection and freshness policy.
 A confirmed late provider row enters the ordinary eight-view retained-span replacement and complete-group
 lineage path. Orchestration does not predict eligibility. Stale pricing or serving generations require
 reselection rather than widening the probe. This projection does not introduce a negative-probe freshness cache.
@@ -331,8 +368,23 @@ Late-bar replacement supplies its completed approval before daily comparison res
 invalidates earlier comparisons even if endpoints are identical. Operation-local peer approvals are not restart
 freshness caches. Pending corrections durably retain scope, cause, source generation, mapping, coverage and usable
 observations. An applicable pending decision is consumed without comparing again. A new generation invalidates
-that decision; its fresh completed result then owns the new scope, including metadata-only acknowledgement when
-the prices already match. A completed correction ID is acknowledged through lineage without reacquisition.
+that decision for full-history as well as latest-session scope; its fresh completed result owns the new scope.
+Version-3 contracts accumulate raw and adjusted trigger rows under the same store, symbol, generation, mapping
+and retained bounds. A changed binding discards the old scope; changed requirements renew the correction ID.
+Numerically equivalent witnesses merge; conflicting duplicates remain constraints. Each witnessed New York
+session must have exactly one matching acquired row, including timestamp and values. Version-2 row-bearing
+contracts remain readable; this repository does not interpret that version as an external date-only format. Missing
+required trigger evidence fails into owning recovery. Equal effective prices with unchanged request/mapping and
+identity evidence publish only an atomic correction-completion receipt under the ticker lock. The data generation
+and its acquisition provenance stay unchanged. Workflow accepts that source-bound outcome transactionally against the current obligation and correction IDs; interruption
+after the atomic replacement cannot repeat acquisition or create lineage/serving generations. A changed generation or correction requirement
+invalidates the completion. An actual changed pricing publication retains its journal and embedded completion ID.
+Explicit symbol refresh accepts an equal-price completion before workflow acknowledgement. An unfinished
+matching requirement consumes its atomic receipt before acquisition planning; a new invocation after complete
+acknowledgement creates a new correction requirement. A completed changed-price publication retains its ID
+while lineage is pending. Durable observation rows are structurally validated at work-state ingress (supported
+views, eight string fields, timezone-aware timestamps, finite numbers and nondecreasing order); conflicting
+witnesses remain evidence, not malformed duplicates. Consumers do not repeat that validation.
 An old correction ID without sufficient cause information retains full replacement; identity changes and confirmed
 missing historical rows also retain their broad owning scope. Started journals finish their selected publication,
 and already completed replacements remain completed. Partial successes do not make an overall failed update complete.

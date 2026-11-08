@@ -45,6 +45,15 @@ def bar(day, value="123.123456789012345678901234567890"):
     }
 
 
+def single_session_request(params):
+    from libs.alpaca_pricing_download.contract import NEW_YORK
+
+    return (
+        timestamp(params["start"]).astimezone(NEW_YORK).date()
+        == timestamp(params["end"]).astimezone(NEW_YORK).date()
+    )
+
+
 class FakeClient:
     def __init__(self, bars):
         self.bars = bars
@@ -210,7 +219,7 @@ class PricingDownloadTests(unittest.TestCase):
                 self.assertEqual(
                     result["updated_boundaries"], ["completed_years", "current_year", "current_month"]
                 )
-                self.assertEqual(len(client.calls), 6)
+                self.assertEqual(len(client.calls), 5)  # Completed all evidence is not confirmed again.
                 self.assertTrue(all(call[2] == timestamp("2016-01-01T00:00:00Z") for call in client.calls[2:4]))
                 expected = transform(revised, timestamp("2016-01-01T00:00:00Z"), timestamp(end + "T00:00:00Z"))
                 self.assertTrue(

@@ -16,7 +16,7 @@ from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timesta
 from .endpoints import Endpoints, compare_history, comparison_rows, different_fields, history_windows
 from .http import execute_bar_plan
 
-VERSION = 9
+VERSION = 10
 DEFAULT_BATCH_SIZE = 4000
 
 
@@ -57,9 +57,7 @@ def _day(row):
 def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):
     groups = defaultdict(set)
     for entry in snapshot["entries"]:
-        for start, end in history_windows(
-            _points(entry), cutoff=timestamp(entry["end_exclusive"]), utc_session_end=True
-        ):
+        for start, end in history_windows(_points(entry), cutoff=timestamp(entry["end_exclusive"])):
             groups[start, end, entry["asof"]].add(entry["symbol"])
     needs = [
         {
@@ -149,7 +147,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
         needs = []
         for row in expected:
             points = Endpoints({"all": (row,)}, tail_all=(row,))
-            start, end = history_windows(points, cutoff=value.end, utc_session_end=True)[0]
+            start, end = history_windows(points, cutoff=value.end)[0]
             needs.append(
                 {
                     "kind": "bars",

@@ -20,6 +20,14 @@ STATE_VERSION = 1
 STATE_FILE = "universe_updates.sqlite3"
 
 
+def _read_work(value):
+    from libs.alpaca_pricing_download.correction import validate_durable_observations
+
+    item = json.loads(value)
+    validate_durable_observations(item.get("pricing_correction"))
+    return item
+
+
 def now_utc():
     return datetime.now(timezone.utc).isoformat()
 
@@ -49,7 +57,7 @@ def read_state(store):
             connection.execute("BEGIN")
             _check(connection)
             work = {
-                symbol: json.loads(value)
+                symbol: _read_work(value)
                 for symbol, value in connection.execute("SELECT symbol, body FROM work")
             }
             registration = [
@@ -142,6 +150,25 @@ def put_work_group(store, work):
             )
         connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
     return accepted
+
+
+@traced("correction_completion_accept")
+def accept_correction_completion(store, symbol, expected, completed):
+    """A producer outcome cannot acknowledge a concurrently renewed requirement."""
+    with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _check(connection)
+        row = connection.execute("SELECT body FROM work WHERE symbol=?", (symbol,)).fetchone()
+        current = json.loads(row[0]) if row else {}
+        if (current.get("obligation_id"), current.get("correction_id")) != (
+            expected.get("obligation_id"),
+            completed["correction_id"],
+        ):
+            raise LineageError("correction completion does not match its current obligation")
+        current["correction_completion"] = completed
+        connection.execute("UPDATE work SET body=? WHERE symbol=?", (json.dumps(current), symbol))
+        connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+    return current
 
 
 @traced("registry_register")

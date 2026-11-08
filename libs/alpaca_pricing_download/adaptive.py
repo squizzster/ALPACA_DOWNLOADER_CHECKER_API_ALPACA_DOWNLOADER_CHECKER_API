@@ -168,6 +168,12 @@ def acquire_adjustments(
             state = AdjustmentAcquisition(*key)
             for observation in (observations or {}).get(key, ()):
                 state.accept(observation.adjustment, observation)
+            # A completed raw observation is the adaptive policy's first stage.
+            # Advance from it instead of requesting that accepted response again.
+            # A supplied all-only comparison is not the raw stage and therefore
+            # leaves the ordinary first stage selected.
+            if "raw" in state.observed:
+                state.advance()
             # The initial stage remains raw when only the completed comparison
             # all row was supplied. No historical observation is fetched again.
             if retain_states:

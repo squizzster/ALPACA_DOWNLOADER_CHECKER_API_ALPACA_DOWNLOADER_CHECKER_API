@@ -4,6 +4,8 @@ from libs.alpaca_pricing_download.acquire import MeasuredRequests
 from libs.alpaca_pricing_download.append import select_append_sources
 from libs.alpaca_pricing_download.check_summary import assert_current, describe
 from libs.alpaca_pricing_download.contract import DownloadError
+from libs.alpaca_pricing_download.correction import applicable_contract
+from libs.alpaca_pricing_download.correction import completed as completed_correction
 from libs.alpaca_pricing_download.endpoints import EndpointSelection, HistoryComparison
 from libs.alpaca_pricing_download.history_tail import upgrade_legacy_entries
 from libs.alpaca_pricing_download.live_check import verify
@@ -13,6 +15,7 @@ from libs.alpaca_pricing_download.refresh import (
     probe_late_bar_repairs,
     replace_prepared,
 )
+from libs.alpaca_pricing_download.storage import regular_path
 from libs.common.debug_trace import event, span, traced
 
 from . import storage
@@ -53,7 +56,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
         else:
             checked[symbol] = selected["source_sha256"]
     prepared = [item for item in prepared if work_policy.allowed({item["symbol"]})]
-    work_policy.require_correction(prepared)
+    work_policy.require_correction([item for item in prepared if not item.get("completed_correction")])
     replaced = (
         replace_prepared(
             store,
@@ -66,6 +69,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
         else empty
     )
     work_policy.record_results(replaced, stage="history_correction")
+    work_policy.accept_correction_completions(replaced["results"])
     checked.update(
         (item["symbol"], item["source_sha256"]) for item in replaced["results"] if item["status"] == "replaced"
     )
@@ -189,12 +193,21 @@ def refresh_existing(
             pricing["requests"][key] = pricing["requests"].get(key, 0) + value
         if work_policy is not None:
             work_policy.record_results(replaced, stage="history_correction")
+            work_policy.accept_correction_completions(replaced["results"])
         selected = [item["symbol"] for item in replaced["results"] if item["status"] == "replaced"]
         lineage_replacements = {}
-        if selected:
-            lineage_replacements = reconcile_publications(
-                {item["symbol"]: item for item in replaced["results"] if "source_sha256" in item}
+        publications = {
+            item["symbol"]: item
+            for item in replaced["results"]
+            if "source_sha256" in item
+            and (
+                not item.get("correction_completion")
+                or selected_index["symbols"].get(item["symbol"], {}).get("source_sha256")
+                != item["source_sha256"]
             )
+        }
+        if publications:
+            lineage_replacements = reconcile_publications(publications)
         else:
             assert_current(store, baseline_token)
         for item in replaced["results"]:
@@ -285,9 +298,9 @@ def refresh_existing(
             client=pricing_client,
             end_date=end_date,
             progress=progress,
+            context=pricing_context,
+            on_positive=work_policy.require_correction if work_policy is not None else None,
         )
-        if work_policy is not None:
-            work_policy.require_correction(prepared)
         if prepared:
             replace_and_reconcile(
                 prepared,
@@ -298,6 +311,13 @@ def refresh_existing(
                 snapshot = context.select_summary()
                 with storage.publication_lock(context.accept_store().root):
                     accept_publication_snapshot(snapshot, context.select_index(context.accept_store().root))
+        for failure in late_bar_check["failures"]:
+            pricing["failed"] += len(failure["symbols"])
+            pricing["results"].extend(
+                {**failure, "symbol": symbol, "status": "failed"} for symbol in failure["symbols"]
+            )
+            if work_policy is not None:
+                work_policy.fail(failure["symbols"], failure, stage="late_bar_check")
     for _ in range(100):
         if pricing["failed"] or lineage["failed"]:
             break
@@ -331,7 +351,7 @@ def refresh_existing(
             if on_ready or required
             else {}
         )
-        durable_selections = {}
+        durable_selections, durable_full, completion_handoffs = {}, {}, {}
         full_obligations, completed_corrections = set(), set()
         for entry in candidates:
             symbol = entry["symbol"]
@@ -339,26 +359,53 @@ def refresh_existing(
             contract = work.get("pricing_correction")
             correction_id = work.get("correction_id")
             if contract is not None and (
-                contract.get("schema_version") != 1
+                contract.get("schema_version") not in (1, 2, 3)
                 or contract.get("scope") not in ("latest_session", "full_history")
             ):
                 raise DownloadError("unsupported durable correction; owning recovery required")
             if correction_id and source_selections.get(symbol, {}).get("history_correction_id") == correction_id:
                 completed_corrections.add(symbol)
                 continue
-            if correction_id and (
-                contract is None or contract.get("scope") == "full_history" or work.get("invalidate_pricing")
-            ):
-                if contract is not None and contract.get("schema_version") != 1:
-                    raise DownloadError("unsupported durable correction; owning recovery required")
+            generation = selected_sources.get(symbol, accepted_generations.get(symbol))
+            if correction_id:
+                completion = work.get("correction_completion")
+                if not completion or (completion.get("correction_id"), completion.get("source_sha256")) != (
+                    correction_id,
+                    generation,
+                ):
+                    completion = completed_correction(
+                        regular_path(context.store, f"end_of_day/pricing/{symbol}", published=True),
+                        correction_id,
+                        generation,
+                    )
+                if completion:
+                    completion_handoffs[symbol] = completion
+                    completed_corrections.add(symbol)
+                    continue
+            source = source_selections.get(symbol, {})
+            applicable = (
+                applicable_contract(
+                    contract,
+                    store=store,
+                    symbol=symbol,
+                    generation=generation,
+                    start=source.get("history_start"),
+                    end=entry["end_exclusive"],
+                    asof=entry["asof"],
+                )
+                if contract is not None
+                else False
+            )
+            if correction_id and (contract is None or (applicable and contract["scope"] == "full_history")):
                 full_obligations.add(symbol)
+                if contract is not None:
+                    durable_full[symbol] = contract
                 continue
-            if not contract or contract.get("scope") != "latest_session" or work.get("invalidate_pricing"):
+            if not applicable or contract.get("scope") != "latest_session" or work.get("invalidate_pricing"):
                 continue
-            if contract.get("schema_version") != 1 or not contract.get("selection"):
+            if not contract.get("selection"):
                 raise DownloadError("invalid durable latest-session correction; owning recovery required")
             selection = EndpointSelection.from_document(contract["selection"])
-            generation = selected_sources.get(symbol, accepted_generations.get(symbol))
             if (
                 entry["end_exclusive"] == contract.get("comparison_end_exclusive", contract["end_exclusive"])
                 and entry["asof"] == (selection.comparison_asof or selection.asof)
@@ -399,6 +446,7 @@ def refresh_existing(
                 session=difference["session"],
                 kind=difference["kind"],
                 fields=tuple(difference["fields"]),
+                field_values=difference["fields"],
             )
         for entry in candidates:
             symbol = entry["symbol"]
@@ -442,10 +490,12 @@ def refresh_existing(
                 work_policy.fail(
                     handoff["missing"], {"reason": "missing live comparison bar"}, stage="history_check"
                 )
-            raise DownloadError(
+            error = DownloadError(
                 f"live check incomplete: {handoff['stats']['missing']} missing, "
                 f"{handoff['stats']['failed']} failed; no replacements started"
             )
+            error.work_failure_recorded = work_policy is not None
+            raise error
         differing = {
             entry["symbol"]
             for entry in candidates
@@ -472,6 +522,17 @@ def refresh_existing(
                 symbol: work_policy.work[symbol]["correction_id"] for symbol in completed_corrections
             },
         )
+        for item in prepared:
+            if item["symbol"] in completion_handoffs:
+                item["correction_completion"] = completion_handoffs[item["symbol"]]
+                item["completed_correction"] = True
+                item["required_correction_id"] = completion_handoffs[item["symbol"]]["correction_id"]
+            contract = durable_full.get(item["symbol"])
+            if contract is not None:
+                if item["source_sha256"] != contract["source_sha256"]:
+                    raise DownloadError("pricing changed after durable correction selection")
+                item["correction_observations"] = contract.get("observations", {})
+                item["correction_cause"] = contract["cause"]
         if work_policy is not None:
             prepared = [
                 item
@@ -512,6 +573,8 @@ def refresh_existing(
         summary = describe(ready)
     except DownloadError as error:
         summary = {"error": str(error)}
+        if work_policy is not None:
+            work_policy.command_failures.append({"stage": "summary", "error": str(error)})
     if "error" not in summary:
         with storage.publication_lock(context.accept_store().root):
             index = context.select_index(context.accept_store().root)

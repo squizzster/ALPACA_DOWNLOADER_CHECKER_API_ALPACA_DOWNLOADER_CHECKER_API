@@ -649,6 +649,18 @@ class LineageBatchingTests(unittest.TestCase):
         self.assertTrue(stable_evidence(continued, rebuilt))
         self.assertEqual([value for kind, value in current_provider.calls if kind == "asset"], ["OLD-CUSIP"])
 
+        # An unavailable member traverses exactly the same dependency changes.
+        unpriced_provider, unpriced_client = provider(True)
+        unpriced_client.prefetch_corporate_actions([("C", "2026-10-01", END)])
+        unpriced = acquire_unpriced(
+            "A",
+            {"start": START, "asof": END, "end_exclusive": END},
+            unpriced_client,
+            previous=previous["evidence"],
+        )
+        self.assertEqual(unpriced["asset_lookups"], continued["asset_lookups"])
+        self.assertEqual([value for kind, value in unpriced_provider.calls if kind == "asset"], ["OLD-CUSIP"])
+
     def test_newly_discovered_labels_share_next_wave(self):
         actions = [
             event("A", "ab", action_type="name_change", old_symbol="A", new_symbol="B"),

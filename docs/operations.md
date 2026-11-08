@@ -67,6 +67,10 @@ execution token.
 ### Session cutoff
 
 Producer `--through YYYY-MM-DD` is inclusive, rounded back to the last exchange session on/before it.
+Late-bar probes group consecutive selected exchange sessions with the same mapping. Update and `--plan`
+share these ranges. `--exact-late-bars` selects individual New York sessions for provider-window diagnostics;
+`--coalesce-late-bars` explicitly selects the default. Neither mode changes selected sessions or freshness.
+
 Default: last session strictly before today's New York date, frozen per invocation. Friday becomes eligible
 after Saturday midnight New York, not UTC. Explicit cutoffs must also precede today's New York date;
 unsupported calendar ranges fail before selection/registration/requests.
@@ -95,6 +99,7 @@ named by status; these commands have distinct scopes:
 | `universe rebuild` | Initialize/preserve compatible registration/work state, including an empty store; does not finish work or establish lineage/summary. Examine incompatible state; do not erase it. |
 | `lineage migrate-index` | Project used lookup evidence and complete membership from indexed receipts in resumable batches; no price reads/recalculation. Schema upgrade alone does not establish coverage. |
 | `lineage migrate-policy` | Exact offline policy promotion; [conditions and serving follow-up](lineage.md#policy-migration). |
+| `lineage migrate-assignments --symbol TICKER` | Assemble missing compact assignment projections for the selected complete group; no price reads or rule replay. Use `--symbols-file FILE` or explicitly `--all-published` for a larger scope. `--limit` bounds each invocation to 1–10,000 groups (default 128); repeat until `remaining_groups` is zero. Journal recovery skips completed groups. Follow with `catalogue update` to consume the preserved-decision handoff. |
 | `lineage update` | Restore missing scheduling coverage explicitly; may census source generations once. Daily update never reconstructs it implicitly. |
 | `summary rebuild` | Rebuild from indexed status/validators offline; no history/provider reads. |
 | `catalogue bootstrap --plan`, then `catalogue bootstrap` | Establish serving coverage after lineage publication. |

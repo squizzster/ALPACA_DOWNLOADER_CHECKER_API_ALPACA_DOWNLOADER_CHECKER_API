@@ -279,6 +279,8 @@ def update_everything(
                     context.history_checks[symbol] = (dict(entry), generation, correction)
         return result
     except (RuntimeError, OSError, ValueError) as error:
+        if work_policy is not None and not getattr(error, "work_failure_recorded", False):
+            work_policy.command_failures.append({"stage": current_stage, "error": str(error)})
         result["failed"] += 1
         result["error"] = str(error)
         result["failed_stage"] = current_stage

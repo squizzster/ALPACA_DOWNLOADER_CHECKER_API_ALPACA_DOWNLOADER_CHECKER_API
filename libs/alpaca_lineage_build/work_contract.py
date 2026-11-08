@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from libs.alpaca_pricing_download.contract import HISTORY_START, failure_outcome
 from libs.alpaca_security_lineage.lineage import compact_asset
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import event, traced
 
 from .contract import LineageError, document_digest, reusable_decision
 from .selection import DependencyGraph
@@ -35,6 +35,16 @@ def obligation(item, previous=None):
 def acquisition_fingerprint(item):
     """Older accepted obligations used one fingerprint for both requirements."""
     return item.get("acquisition_evidence_fingerprint", item.get("evidence_fingerprint"))
+
+
+def correction_satisfied(item, generation, recorded_id=None):
+    if not item.get("correction_id") or recorded_id == item["correction_id"]:
+        return True
+    completed = item.get("correction_completion") or {}
+    return bool(generation) and (completed.get("correction_id"), completed.get("source_sha256")) == (
+        item["correction_id"],
+        generation,
+    )
 
 
 def replacement_fingerprint(lookups):
@@ -117,7 +127,7 @@ def satisfied(item, entry, pending, *, approved=False):
             not item.get("invalidate_pricing")
             or projection.get("acquisition_evidence_sha256") == acquisition_fingerprint(item)
         )
-        and (not item.get("correction_id") or projection.get("history_correction_id") == item["correction_id"])
+        and correction_satisfied(item, entry.get("source_sha256"), projection.get("history_correction_id"))
     )
 
 
@@ -186,6 +196,7 @@ class WorkPolicy:
                 self.required_groups.setdefault(member, set()).update(group)
         self.blocked = {item["symbol"] for item in deferred}
         self.failures = []
+        self.command_failures = []
         self.history_approved = {}
         self.completed_decisions = {}
         self.restricted_identifiers = {
@@ -227,9 +238,16 @@ class WorkPolicy:
         # workflow acknowledgement leaves the obligation pending for a fresh check.
         approved = bool(
             entry
-            and item.get("required_history_check")
+            and (
+                item.get("required_history_check")
+                or correction_satisfied(item, entry["source_sha256"])
+                and item.get("correction_completion")
+            )
             and not item.get("refresh_metadata")
-            and self.history_approved.get(symbol) == entry["source_sha256"]
+            and (
+                not item.get("required_history_check")
+                or self.history_approved.get(symbol) == entry["source_sha256"]
+            )
             and reusable_decision(entry)
             and set(item.get("required_group", ())) <= set(entry["group_members"])
             and not pending.keys() & set(entry["group_members"])
@@ -455,7 +473,7 @@ class WorkPolicy:
                     return True
         return False
 
-    def decision_inputs_satisfied(self, sources):
+    def decision_inputs_satisfied(self, sources, selected=None):
         """Outstanding approval does not invalidate an otherwise completed decision."""
         for symbol, source in sources.items():
             item = self.work.get(symbol)
@@ -467,7 +485,7 @@ class WorkPolicy:
                     or source.get("acquisition_evidence_sha256") == acquisition_fingerprint(item)
                 )
                 and (
-                    not item.get("correction_id") or source.get("history_correction_id") == item["correction_id"]
+                    correction_satisfied(item, (selected or {}).get(symbol), source.get("history_correction_id"))
                 )
             ):
                 return False
@@ -597,7 +615,7 @@ class WorkPolicy:
                 :10
             ] < pricing_target(item):
                 continue  # Maintenance still owes the remaining interval.
-            if item.get("correction_id") and source.get("history_correction_id") != item["correction_id"]:
+            if not correction_satisfied(item, receipt["source_sha256"], source.get("history_correction_id")):
                 continue
             accepted[symbol] = symbol
             # Input acceptance is not history approval. The latter is a separate
@@ -650,18 +668,29 @@ class WorkPolicy:
 
     def require_correction(self, prepared, *, require_check=True):
         """Persist the completed correction scope and usable handoff before acquisition."""
+        from libs.alpaca_pricing_download.correction import merge_observations, observations
+
         from . import universe_state
 
+        changed = {}
         for request in prepared:
             symbol = request["symbol"]
             prior = self.work.get(symbol, {})
+            if request.get("completed_correction") and request.get("required_correction_id") == prior.get(
+                "correction_id"
+            ):
+                # The selected pricing publication completed this requirement.
+                # Pending lineage/acknowledgement does not renew acquisition.
+                continue
             target = request["end_exclusive"][:10]
             correction = prior.get("correction_id")
             if correction is None or request.get("history_correction_id") == correction:
                 correction = uuid4().hex
             selection = request.get("endpoint_selection")
             contract = {
-                "schema_version": 1,
+                "schema_version": 3,
+                "store": str(self.store),
+                "symbol": symbol,
                 "scope": (
                     prior.get("pricing_correction", {}).get("scope", "full_history")
                     if request.get("correction_scope") == "unchanged"
@@ -674,7 +703,35 @@ class WorkPolicy:
                 "end_exclusive": request["end_exclusive"],
                 "selection": selection.document() if selection is not None else None,
                 "comparison_end_exclusive": request.get("comparison_end_exclusive", request["end_exclusive"]),
+                "comparison_asof": request.get("comparison_asof", request["asof"]),
+                "observations": merge_observations(observations(request)),
             }
+            previous_contract = prior.get("pricing_correction") or {}
+            binding = (
+                "store",
+                "symbol",
+                "source_sha256",
+                "asof",
+                "start",
+                "end_exclusive",
+                "comparison_end_exclusive",
+                "comparison_asof",
+            )
+            if correction == prior.get("correction_id") and all(
+                previous_contract.get(key) == contract.get(key) for key in binding
+            ):
+                contract["observations"] = merge_observations(
+                    previous_contract.get("observations", {}), contract["observations"]
+                )
+                if previous_contract.get("scope") == "full_history":
+                    contract["scope"] = "full_history"
+            # A correction ID names one exact requirement. Renewing evidence or
+            # binding must invalidate both source stamps and equal-price receipts.
+            requirement = (*binding, "scope", "observations")
+            if correction == prior.get("correction_id") and any(
+                contract.get(key) != previous_contract.get(key) for key in requirement
+            ):
+                correction = uuid4().hex
             item = obligation(
                 {
                     **prior,
@@ -684,6 +741,9 @@ class WorkPolicy:
                     "status": prior.get("status", "pending"),
                     "required_history_check": require_check or prior.get("required_history_check", False),
                     "correction_id": correction,
+                    "correction_completion": prior.get("correction_completion")
+                    if correction == prior.get("correction_id")
+                    else None,
                     "pricing_correction": contract,
                     "acquire": prior.get("acquire", False),
                     "refresh_metadata": prior.get("refresh_metadata", False),
@@ -692,8 +752,43 @@ class WorkPolicy:
                 },
                 prior,
             )
-            self.work[symbol] = universe_state.put_work(self.store, symbol, item)
+            if item != prior:
+                changed[symbol] = item
             request["required_correction_id"] = correction
+            if correction == prior.get("correction_id"):
+                request["recover_correction"] = True
+                if prior.get("correction_completion"):
+                    request["correction_completion"] = prior["correction_completion"]
+            request["correction_observations"] = contract["observations"]
+            if request.get("correction_scope") != "unchanged":
+                request["correction_scope"] = contract["scope"]
+        if changed:
+            self.work.update(universe_state.put_work_group(self.store, changed))
+        return prepared
+
+    def accept_correction_completions(self, results):
+        from . import universe_state
+
+        for result in results:
+            completed = result.get("correction_completion")
+            item = self.work.get(result["symbol"])
+            if not completed or item is None:
+                continue
+            if (completed["correction_id"], completed["source_sha256"]) != (
+                item.get("correction_id"),
+                result["source_sha256"],
+            ):
+                raise LineageError("correction completion does not match its obligation")
+            # Completion is workflow bookkeeping, not a new obligation or a data generation.
+            self.work[result["symbol"]] = universe_state.accept_correction_completion(
+                self.store, result["symbol"], item, completed
+            )
+            event(
+                "correction_completion_accepted",
+                symbol=result["symbol"],
+                correction_id=completed["correction_id"],
+                source_generation=completed["source_sha256"],
+            )
 
     def fail(self, symbols, outcome, *, stage):
         """Include maintenance and newly discovered dependencies in durable retries."""
@@ -731,7 +826,7 @@ class WorkPolicy:
                         "end_exclusive": self.end,
                         "status": "pending",
                         "attempts": 0,
-                        "acquire": stage not in {"lineage", "selection"},
+                        "acquire": stage not in {"lineage", "selection", "late_bar_check"},
                         "invalidate_pricing": False,
                         "refresh_metadata": stage in {"lineage", "selection"},
                         "evidence_fingerprint": None,

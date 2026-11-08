@@ -8,7 +8,9 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download import check_summary
 from libs.alpaca_pricing_download.append import MAX_SYMBOLS, _cohorts, append_needs
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, HISTORY_START, timestamp
+from libs.alpaca_pricing_download.correction import applicable_contract
 from libs.alpaca_pricing_download.download import _endpoint_window, acquisition_asof
+from libs.alpaca_pricing_download.late_bars import session_ranges
 from libs.alpaca_pricing_download.live_check import plan as check_plan
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import load_labels
@@ -24,6 +26,7 @@ from .contract import LineageError, document_digest, reusable_decision
 from .projection import require_complete
 from .work_contract import (
     acquisition_fingerprint,
+    correction_satisfied,
     covers_pricing_start,
     lookup_fact,
     obligation,
@@ -37,7 +40,7 @@ from .work_contract import (
 
 @traced("boundaries")
 @compact_selection
-def boundaries(store, registry, *, context=None):
+def boundaries(store, registry, *, context=None, coalesce_late_bars=True):
     # TRUST BOUNDARY: accept the compact owners below before choosing work.
     # The index supplies membership/generations; the summary supplies live-check
     # baselines. Neither registry labels nor directory contents can replace them.
@@ -65,6 +68,24 @@ def boundaries(store, registry, *, context=None):
     if not checks["complete"]:
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
     serving = serving_controls(store) if context is None else context.select_serving()
+    repairs = select_late_bar_repairs(store, serving)
+    repairs["window_policy"] = "consecutive_sessions" if coalesce_late_bars else "exact_sessions"
+    for symbol, selected in repairs["sources"].items():
+        entry = index["symbols"].get(symbol, {})
+        request = entry.get("projection", {}).get("pricing_request")
+        if request and selected["source_sha256"] == entry["source_sha256"]:
+            sessions = [
+                day
+                for day in selected["sessions"]
+                if (request.get("history_start") or HISTORY_START)[:10] <= day < request["end_exclusive"][:10]
+            ]
+            selected["planned"] = {
+                "asof": request["asof"],
+                "start": request.get("history_start") or HISTORY_START,
+                "end_exclusive": request["end_exclusive"],
+                "sessions": sessions,
+                "ranges": session_ranges(sessions, coalesce=coalesce_late_bars, cutoff=request["end_exclusive"]),
+            }
     return {
         "store": str(store.absolute()),
         "index": index,
@@ -73,7 +94,7 @@ def boundaries(store, registry, *, context=None):
         "registry": set(load_labels(registry)),
         "state": universe_state.read_state(store),
         "serving_catalogue": serving_status(store, controls=serving),
-        "late_bar_repairs": select_late_bar_repairs(store, serving),
+        "late_bar_repairs": repairs,
     }
 
 
@@ -289,6 +310,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             "required_history_check": unfinished and prior.get("required_history_check", False),
             "correction_id": prior.get("correction_id") if unfinished else None,
             "pricing_correction": prior.get("pricing_correction") if unfinished else None,
+            "correction_completion": prior.get("correction_completion") if unfinished else None,
             "required_group": sorted(required_group),
             "acquire": entry is None
             or invalidate
@@ -379,13 +401,24 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         entry = eligible_by_symbol.get(symbol, {})
         projection = indexed.get("projection", {})
         if (
-            projection.get("history_correction_id") == item["correction_id"]
+            correction_satisfied(item, indexed.get("source_sha256"), projection.get("history_correction_id"))
             and entry.get("source_sha256")
             and entry["source_sha256"] == indexed.get("source_sha256")
         ):
             completed_corrections.add(symbol)
             continue
         contract = item.get("pricing_correction") or {}
+        request = projection.get("pricing_request") or {}
+        if contract and not applicable_contract(
+            contract,
+            store=accepted.get("store"),
+            symbol=symbol,
+            generation=entry.get("source_sha256") or indexed.get("source_sha256"),
+            start=request.get("history_start"),
+            end=entry.get("end_exclusive") or request.get("end_exclusive"),
+            asof=entry.get("asof") or request.get("asof"),
+        ):
+            continue
         if contract.get("scope") != "latest_session" or item.get("invalidate_pricing"):
             corrections[symbol] = "full_history"
             reused_comparisons.add(symbol)
@@ -517,6 +550,22 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         if symbol not in deferred
     }
     late_bar_sessions = sum(len(item["sessions"]) for item in late_bar_sources.values())
+    late_needs = [
+        {
+            "kind": "bars",
+            "why": "provider_late_bar_check",
+            "symbols": [symbol],
+            "asof": item["planned"]["asof"],
+            "adjustments": ["raw"],
+            "ranges": item["planned"]["ranges"],
+        }
+        for symbol, item in late_bar_sources.items()
+        if item.get("planned", {}).get("ranges")
+    ]
+    late_plans = [build_plan({"steps": [{"needs": late_needs}]}, merge_ranges=False)]
+    unplanned_sessions = sum(
+        len(item["sessions"]) for item in late_bar_sources.values() if "planned" not in item
+    )
 
     def count(plans):
         return sum(len(step["actions"]) for plan in plans for step in plan["steps"])
@@ -574,7 +623,9 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "late_bar_probe_manifest_reads": len(late_bar_sources),
             "late_bar_probe_sources": len(late_bar_sources),
             "late_bar_probe_sessions": late_bar_sessions,
-            "late_bar_probe_actions_upper_bound": late_bar_sessions,
+            "late_bar_window_policy": accepted["late_bar_repairs"].get("window_policy", "consecutive_sessions"),
+            "late_bar_probe_actions_upper_bound": count(late_plans) + unplanned_sessions,
+            "late_bar_probe_unplanned_sessions": unplanned_sessions,
             "append_approval_manifest_reads": len(append),
             "selected_history_obligation_manifest_reads": sum(
                 bool(item.get("required_history_check"))
@@ -605,7 +656,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "acquisition_actions_estimate": count(plans) + count(empty_plans) + count(correction_plans),
             "append_actions_before_reconciliation": count(append_plans),
             "http_pages_minimum": metadata_requests
-            + bool(late_bar_sessions)
+            + batches(late_plans)
             + batches([history])
             + bool(legacy_tails)
             + batches(plans, adaptive=True)
@@ -613,7 +664,8 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             + batches(correction_plans, adaptive=True)
             + batches(append_plans, adaptive=True),
             "http_pages_dense_history_estimate": metadata_requests
-            + late_bar_sessions
+            + pages(late_plans)
+            + unplanned_sessions
             + pages([history])
             + pages(plans)
             + pages(empty_plans)

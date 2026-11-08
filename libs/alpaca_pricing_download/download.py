@@ -32,10 +32,14 @@ from .contract import (
     symbol_label,
     timestamp,
 )
+from .correction import ProviderObservationConflict, accept_observations
+from .correction import complete as complete_correction
+from .correction import completed as completed_correction
 from .endpoints import (
     TAIL_SIZE,
     Endpoints,
     EndpointSelection,
+    endpoints_of,
     fetch_history,
     history_check_endpoints,
     merge_ranges,
@@ -173,18 +177,73 @@ def _join(left: dict, right: dict) -> dict:
     return result
 
 
+def _merge_selected_sessions(symbol, retained, acquisitions, selected):
+    """Add complete exact-session bundles without replacing accepted rows."""
+    required = {}
+    for row in selected.get("raw", ()):
+        day = timestamp(row[0]).astimezone(NEW_YORK).date()
+        required.setdefault(day, []).append(row)
+    if not required or any(len(rows) != 1 for rows in required.values()):
+        raise DownloadError(f"{symbol}: selected late observations must be unique by market session")
+    merged = {name: list(rows) for name, rows in retained.items()}
+    added = set()
+    consumed = set()
+    for acquisition in acquisitions:
+        if acquisition.symbol != symbol:
+            raise DownloadError("selected-session acquisition has a different symbol")
+        expected = {
+            day: rows[0]
+            for day, rows in required.items()
+            if acquisition.start <= timestamp(rows[0][0]) < acquisition.end
+        }
+        if not expected:
+            raise DownloadError("selected-session acquisition has no triggering observation")
+        expected_days = set(expected)
+        for name in ADJUSTMENTS:
+            by_day = {}
+            for row in acquisition.views[name]:
+                day = timestamp(row[0]).astimezone(NEW_YORK).date()
+                by_day.setdefault(day, []).append(row)
+            if set(by_day) != expected_days or any(len(rows) != 1 for rows in by_day.values()):
+                raise DownloadError(
+                    f"{symbol}: selected-session {name} acquisition is incomplete or exceeds its scope"
+                )
+        accept_observations(symbol, acquisition.views, {"raw": tuple(expected.values())})
+        consumed.update(expected_days)
+        for name in ADJUSTMENTS:
+            existing = {timestamp(row[0]).astimezone(NEW_YORK).date(): row for row in merged[name]}
+            if len(existing) != len(merged[name]):
+                raise DownloadError("retained pricing contains duplicate market sessions")
+            for row in acquisition.views[name]:
+                day = timestamp(row[0]).astimezone(NEW_YORK).date()
+                prior = existing.get(day)
+                if prior is not None:
+                    if not same_row(prior, row):
+                        raise DownloadError(
+                            f"{symbol}: selected-session acquisition conflicts with retained {name}"
+                        )
+                    continue
+                merged[name].append(row)
+                added.add(day)
+    if consumed != set(required):
+        raise DownloadError("selected-session acquisitions do not cover every triggering observation")
+    if not added:
+        raise DownloadError("selected-session correction added no observations")
+    return {name: tuple(sorted(rows, key=lambda row: timestamp(row[0]))) for name, rows in merged.items()}, {
+        "from": min(added).isoformat(),
+        "to": max(added).isoformat(),
+    }
+
+
 def _endpoint_window(row, asof, *, cutoff=None):
-    day = timestamp(row[0]).astimezone(NEW_YORK).date()
-    start = datetime(day.year, day.month, day.day, tzinfo=NEW_YORK)
+    from .endpoints import session_window
+
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # Mapping asof chooses an entity, not the end of its observations. A retired
     # label can map a request containing sessions later than that mapping date.
-    end = (start + timedelta(days=1)).astimezone(timezone.utc)
     # The accepted observation cutoff still bounds every request, including a
     # truncated final New York session. It is independent of entity mapping.
-    if cutoff is not None:
-        end = min(end, cutoff)
-    return start.astimezone(timezone.utc), end
+    return session_window(row, cutoff=cutoff)
 
 
 def _endpoints_match(
@@ -330,6 +389,8 @@ def publish_acquired(
     history_correction_id=None,
     old_documents=None,
     adjustment_acquisition=None,
+    adjustment_acquisitions=None,
+    observation_conflict=None,
     session_correction=None,
     preserve_correction=True,
     previous_source_sha256=None,
@@ -345,6 +406,7 @@ def publish_acquired(
     validated_all = set(changed_views) == set(paths)
     for content in changed_views.values():
         validate_activity(content)
+    equal_replacement = False
     if previous is not None and previous["anchor_month"] == anchor and validated_all:
         old = {}
         for kind, reference in previous["boundaries"].items():
@@ -352,10 +414,27 @@ def publish_acquired(
             if relative not in old_documents:
                 old_documents[relative] = boundary_document(root, reference, symbol, kind)
             old[kind] = old_documents[relative]
-        if equal_effective_replacement(previous, anchor, changed_views, old):
+        equal_replacement = equal_effective_replacement(previous, anchor, changed_views, old)
+        if equal_replacement:
             update = None
             if not repair_payloads:
                 changed_views = {}
+    if observation_conflict is not None:
+        evidence = observation_conflict.evidence
+        if not (
+            equal_replacement
+            and evidence.get("adjustment") == "all"
+            and evidence.get("acquired_observation") is not None
+            and evidence.get("session_rows") == 1
+        ):
+            raise observation_conflict
+        event(
+            "pricing_observation_resolved",
+            symbol=symbol,
+            disposition="exact_full_range_matches_retained_generation",
+            source_generation=previous_source_sha256,
+            session=evidence["session"],
+        )
     references = dict(previous["boundaries"]) if previous is not None else {}
     documents = {}
     payloads = {}
@@ -386,7 +465,12 @@ def publish_acquired(
         # guarantee only from a completed guarantee or a complete replacement.
         "activity_consistent": bool((previous or {}).get("activity_consistent")) or validated_all,
     }
-    if adjustment_acquisition is not None:
+    if adjustment_acquisitions is not None:
+        source["latest_adjustment_acquisition"] = {
+            "policy": "exact_selected_sessions_v1",
+            "ranges": [value.proof for value in adjustment_acquisitions],
+        }
+    elif adjustment_acquisition is not None:
         source["latest_adjustment_acquisition"] = adjustment_acquisition.proof
     elif previous is not None and "latest_adjustment_acquisition" in previous:
         source["latest_adjustment_acquisition"] = previous["latest_adjustment_acquisition"]
@@ -410,6 +494,45 @@ def publish_acquired(
         # notice must not manufacture a new generation solely for its ancestry.
         source = previous
         identical_generation = previous_source_sha256
+    if (
+        history_correction_id
+        and previous is not None
+        and update is None
+        and not changed_views
+        and not repair_payloads
+    ):
+        # Equal acquired prices, identical coverage/mapping and identity evidence.
+        # Attempt IDs and acquisition provenance belong to correction completion,
+        # not to the published data identity. Preserve the accepted source intact.
+        ignored = {
+            "history_changes",
+            "history_correction_id",
+            "latest_adjustment_acquisition",
+            "latest_session_correction",
+        }
+        comparable = {k: v for k, v in source.items() if k not in ignored}
+        # latest_request.start records the last acquisition slice, not retained
+        # coverage (history_start). Replacing the same span after an append must
+        # not manufacture a generation just because this request began earlier.
+        comparable["latest_request"] = {**source["latest_request"], "start": previous["latest_request"]["start"]}
+        if comparable == {k: v for k, v in previous.items() if k not in ignored}:
+            completion = complete_correction(root, history_correction_id, previous_source_sha256)
+            event(
+                "pricing_correction_completed",
+                symbol=symbol,
+                source_generation=previous_source_sha256,
+                publication_changed=False,
+            )
+            return {
+                "changed": False,
+                "files_written": 1,
+                "source": previous,
+                "source_sha256": previous_source_sha256,
+                "endpoints": selected_endpoints,
+                "pending_update": read_update(root, published=True),
+                "correction_completion": completion,
+                "updated_boundaries": [],
+            }
     handoff = {}
     written = publish(
         root,
@@ -430,6 +553,15 @@ def publish_acquired(
     # Consumers must use the source/endpoints/notice handoff, not reload or
     # re-authenticate the files the publisher just selected.
     source_generation = handoff["source_sha256"]
+    event(
+        "pricing_publication",
+        symbol=symbol,
+        previous_generation=previous_source_sha256,
+        source_generation=source_generation,
+        publication_changed=previous_source_sha256 != source_generation,
+        prices_changed=update is not None,
+        files_written=written,
+    )
     trace_source_selection(source, source_generation, symbol=symbol, reason="publication_completed")
     return {
         "changed": update is not None,
@@ -438,7 +570,125 @@ def publish_acquired(
         "source_sha256": source_generation,
         "endpoints": selected_endpoints,
         "pending_update": handoff["pending_update"],
+        "updated_boundaries": [
+            kind
+            for kind in changed_views
+            if repair_payloads or previous is None or references[kind] != previous["boundaries"].get(kind)
+        ],
     }
+
+
+@traced("pricing_selected_session_correction")
+def publish_selected_session_correction(
+    store,
+    symbol,
+    acquisitions,
+    selected_observations,
+    *,
+    expected_source_sha256,
+    history_correction_id,
+    on_check=None,
+):
+    """Merge fully acquired rows for only the positively selected sessions."""
+    symbol = symbol_label(symbol)
+    store = Path(store).absolute()
+    root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
+    with ticker_lock(root, exclusive=True):
+        recovered = recover(root, on_check=on_check)
+        previous = load_source(root, symbol)
+        current_sha256 = digest(json_bytes(previous)) if previous is not None else None
+        trace_source_selection(previous, current_sha256, symbol=symbol, reason="selected_session_execution")
+        event(
+            "pricing_generation_check",
+            symbol=symbol,
+            selected_generation=expected_source_sha256,
+            source_generation=current_sha256,
+            applicable=current_sha256 == expected_source_sha256,
+            correction_scope="selected_sessions",
+        )
+        if previous is None or current_sha256 != expected_source_sha256:
+            raise DownloadError("pricing source changed after selected-session acquisition")
+        if history_correction_id is not None and previous.get("history_correction_id") == history_correction_id:
+            return {
+                "symbol": symbol,
+                "status": "replaced",
+                "mode": "selected_sessions",
+                "consistency_check": "completed_correction",
+                "updated_boundaries": [],
+                "files_written": 0,
+                "source_sha256": current_sha256,
+                "recovered": recovered,
+                "requests": 0,
+                "changed": False,
+                "history_start": previous.get("history_start", HISTORY_START),
+                "request": previous["latest_request"],
+                "pending_update": read_update(root, published=True),
+            }
+        documents = {}
+        completed = read_boundary(root, previous, "completed_years", documents=documents)
+        year = read_boundary(root, previous, "current_year", documents=documents)
+        month = read_boundary(root, previous, "current_month", documents=documents)
+        year_prefix = _select(year, lambda value: value < previous["anchor_month"])
+        retained = _join(completed, _join(year_prefix, month))
+        merged, update = _merge_selected_sessions(symbol, retained, acquisitions, selected_observations)
+        selected_endpoints = endpoints_of(merged)
+        changed_views = updated_boundaries(
+            root,
+            previous,
+            previous["anchor_month"],
+            merged,
+            full_history=True,
+            read=partial(read_boundary, documents=documents),
+        )
+        written = publish_acquired(
+            root,
+            previous,
+            symbol,
+            previous["anchor_month"],
+            previous["latest_request"],
+            timestamp(previous.get("history_start", HISTORY_START)),
+            selected_endpoints,
+            changed_views,
+            update,
+            on_check=on_check,
+            history_correction_id=history_correction_id,
+            old_documents=documents,
+            adjustment_acquisitions=acquisitions,
+            preserve_correction=False,
+            previous_source_sha256=current_sha256,
+        )
+        event(
+            "pricing_selected_session_outcome",
+            symbol=symbol,
+            selected_sessions=len(
+                {timestamp(row[0]).astimezone(NEW_YORK).date() for row in selected_observations.get("raw", ())}
+            ),
+            previous_generation=current_sha256,
+            source_generation=written["source_sha256"],
+            generation_changed=current_sha256 != written["source_sha256"],
+            updated_boundaries=written["updated_boundaries"],
+        )
+        return {
+            "symbol": symbol,
+            "mode": "selected_sessions",
+            "consistency_check": "selected_observations",
+            "updated_boundaries": written["updated_boundaries"],
+            "files_written": written["files_written"],
+            "source_sha256": written["source_sha256"],
+            "recovered": recovered,
+            "restarted": False,
+            "has_data": any(selected_endpoints.values()),
+            "adjustment_acquisition": [value.proof for value in acquisitions],
+            "changed": written["changed"],
+            "history_start": written["source"]["history_start"],
+            "request": written["source"]["latest_request"],
+            "pending_update": written["pending_update"],
+            **{
+                key: written["source"][key]
+                for key in ("latest_session_correction", "history_changes")
+                if key in written["source"]
+            },
+        }
 
 
 @traced("pricing_download")
@@ -457,6 +707,9 @@ def download_pricing(
     endpoint_selection=None,
     acquisition_evidence_sha256: str | None = None,
     history_correction_id: str | None = None,
+    correction_observations=None,
+    correction_cause=None,
+    correction_completion=None,
     mapping_asof: str | None = None,
     context=None,
 ) -> dict:
@@ -488,9 +741,21 @@ def download_pricing(
         previous = load_source(root, symbol)
         current_sha256 = digest(json_bytes(previous)) if previous is not None else None
         if (
+            history_correction_id
+            and previous is not None
+            and previous.get("history_correction_id") != history_correction_id
+        ):
+            if correction_completion is None:
+                correction_completion = completed_correction(root, history_correction_id, current_sha256)
+            elif correction_completion and (
+                correction_completion.get("correction_id"),
+                correction_completion.get("source_sha256"),
+            ) != (history_correction_id, current_sha256):
+                raise DownloadError("correction completion generation changed; reselect before retrying")
+        if (
             history_correction_id is not None
             and previous is not None
-            and previous.get("history_correction_id") == history_correction_id
+            and (previous.get("history_correction_id") == history_correction_id or correction_completion)
         ):
             # The publication journal already completed this exact durable
             # obligation. Recovery cannot turn lost acknowledgement into new
@@ -507,6 +772,7 @@ def download_pricing(
                 "recovered": recovered,
                 "requests": 0,
                 "changed": False,
+                "correction_completion": correction_completion,
                 "history_start": previous.get("history_start", HISTORY_START),
                 "pending_update": read_update(root, published=True),
                 **{
@@ -621,6 +887,7 @@ def download_pricing(
                 "changed": False,
                 "history_start": previous["history_start"],
                 "pending_update": written["pending_update"],
+                "correction_completion": written.get("correction_completion"),
                 **{
                     key: written["source"][key]
                     for key in ("latest_session_correction", "history_changes")
@@ -723,6 +990,9 @@ def download_pricing(
                     else "mismatch"
                 )
         full_history = previous is None or refresh_all or extending or check == "mismatch"
+        selected_observations = dict(correction_observations or {})
+        if comparison is not None and not comparison.matched and full_history:
+            selected_observations["all"] = comparison.live_all
         correction = None
         preserves_correction_timestamps = False
         previous_session = endpoints.tail_all[-2][0] if check == "latest_session" else None
@@ -772,6 +1042,7 @@ def download_pricing(
             endpoints = _incremental_endpoints(endpoints, correction.views, correction_start)
         restarted = False
         for attempt in range(2):
+            observation_conflict = None
             start = history_start if full_history else previous_end
             request = {
                 "symbol": symbol,
@@ -818,22 +1089,54 @@ def download_pricing(
             selected_endpoints = (
                 acquired.endpoints if full_history else _incremental_endpoints(endpoints, views, start)
             )
+            empties_history = full_history and any(
+                name in prior_nonempty and not rows for name, rows in views.items()
+            )
+            if empties_history and not attempt:
+                # Preserve the existing one bounded exact acquisition fallback
+                # for a batch-suppressed view. No selected comparison is repeated.
+                full_history, restarted, check = True, True, "changed_during_acquisition"
+                continue
+            observed_instants = {}
+            if full_history and selected_observations:
+                accepted = getattr(client, "confirmed_observations", None)
+                try:
+                    observed_instants = accepted(acquired, selected_observations) if accepted else None
+                    if observed_instants is None:
+                        observed_instants = accept_observations(symbol, views, selected_observations)
+                except ProviderObservationConflict as error:
+                    evidence = error.evidence
+                    if (
+                        correction_cause != "selected_all_rows_changed"
+                        or evidence.get("adjustment") != "all"
+                        or evidence.get("acquired_observation") is None
+                    ):
+                        raise
+                    observation_conflict = error
+                    observed_instants = {
+                        name: frozenset(timestamp(row[0]) for row in rows)
+                        for name, rows in selected_observations.items()
+                    }
             # Matching first/latest all already approved the old generation.
             # Append never requests overlap or confirms its historical first rows again.
             first_ok = not full_history or _endpoints_match(
                 client,
                 symbol,
-                {name: selected_endpoints[name][:1] for name, _ in acquired.observed},
+                {
+                    name: tuple(
+                        row
+                        for row in selected_endpoints[name][:1]
+                        if timestamp(row[0]) not in observed_instants.get(name, ())
+                    )
+                    for name, _ in acquired.observed
+                },
                 asof,
                 cutoff=end,
-            )
-            empties_history = full_history and any(
-                name in prior_nonempty and not rows for name, rows in views.items()
             )
             # Removing published history requires a fresh confirmation. The planned
             # response is consumed once, so the bounded retry makes exact requests.
             # Ordinary empty appends must never enter this replacement-only guard.
-            if first_ok and not (empties_history and not attempt):
+            if first_ok:
                 break
             if attempt:
                 raise DownloadError("provider pricing changed during acquisition twice; publication unchanged")
@@ -874,6 +1177,7 @@ def download_pricing(
             history_correction_id=history_correction_id,
             old_documents=old_documents,
             adjustment_acquisition=acquired,
+            observation_conflict=observation_conflict,
             session_correction={
                 "session": comparison.correction_session,
                 "previous_session": previous_session,
@@ -891,8 +1195,21 @@ def download_pricing(
             preserve_correction=not full_history,
             previous_source_sha256=current_sha256,
         )
+        if full_history:
+            event(
+                "pricing_replacement_outcome",
+                symbol=symbol,
+                previous_generation=current_sha256,
+                source_generation=written["source_sha256"],
+                generation_changed=current_sha256 != written["source_sha256"],
+                effective_prices_changed=written["changed"],
+                files_written=written["files_written"],
+                updated_boundaries=written["updated_boundaries"],
+                first_all=selected_endpoints["all"][0] if selected_endpoints["all"] else None,
+            )
         return {
             "symbol": symbol,
+            "correction_completion": written.get("correction_completion"),
             "anchor_month": anchor,
             "request": request,
             "mode": "initial"
@@ -903,7 +1220,7 @@ def download_pricing(
             if correction
             else "update",
             "consistency_check": check,
-            "updated_boundaries": list(changed_views),
+            "updated_boundaries": written["updated_boundaries"],
             "files_written": written["files_written"],
             "source_sha256": written["source_sha256"],
             **{

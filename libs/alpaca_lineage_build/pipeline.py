@@ -253,11 +253,20 @@ def _prefetch_metadata(
                 added = _handoff_added_rows((pricing_handoff or {}).get(symbol))
                 if full or previous[symbol] is None:
                     lookup_symbols.update(request[0] for request in selected_requests)
-                elif added is not False:
+                elif added is not False and previous[symbol]["source_sha256"] != generations[symbol]:
                     # A source with new rows needs a current own-label observation.
                     # Historical queried labels remain covered by their completed
                     # report unless a newly returned action selects them on demand.
                     lookup_symbols.add(symbol)
+                event(
+                    "metadata_lookup_selection",
+                    symbol=symbol,
+                    selected=symbol in lookup_symbols,
+                    added_rows=added,
+                    source_changed=previous[symbol] is None
+                    or previous[symbol]["source_sha256"] != generations[symbol],
+                    historical_refresh=full,
+                )
         except (RuntimeError, OSError, ValueError):
             continue  # The normal group path reports this failure without stopping unrelated work.
     client.prefetch_corporate_actions(requests)
@@ -535,7 +544,7 @@ def process_group(
                         for prior in previous.values()
                     )
                 )
-                and (work_policy is None or work_policy.decision_inputs_satisfied(sources))
+                and (work_policy is None or work_policy.decision_inputs_satisfied(sources, selected))
             ):
                 event("lineage_required", symbol=seed, required=False, reason="accepted_unchanged_inputs")
                 receipts = {
@@ -1494,4 +1503,6 @@ def run_lineage(
         unmatched = sorted(evidence_client.event_supplements.keys() - evidence_client.applied_event_supplements)
         result["unmatched_event_supplements"] = unmatched
         result["failed"] += bool(unmatched)
+        if unmatched and work_policy is not None:
+            work_policy.command_failures.append({"stage": "lineage", "unmatched_event_supplements": unmatched})
     return result

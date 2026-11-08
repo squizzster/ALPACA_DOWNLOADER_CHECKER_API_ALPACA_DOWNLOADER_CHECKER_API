@@ -477,9 +477,7 @@ def describe(snapshot):
             legacy += 1
             continue
         endpoints = Endpoints({"all": (entry["first_all"], entry["last_all"])}, tail_all=entry["tail_all"])
-        for start, end in history_windows(
-            endpoints, cutoff=timestamp(entry["end_exclusive"]), utc_session_end=True
-        ):
+        for start, end in history_windows(endpoints, cutoff=timestamp(entry["end_exclusive"])):
             groups.add((start, end, entry["asof"]))
     return {
         "tickers": len(snapshot["entries"]),

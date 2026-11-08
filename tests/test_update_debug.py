@@ -36,6 +36,25 @@ class DebugTraceTests(unittest.TestCase):
                 self.assertIn(record["parent"], enters)
         return records
 
+    def test_exact_lookup_event_occurs_only_for_an_actual_cache_miss(self):
+        from test_alpaca_lineage_build import IdentityClient, asset
+
+        from libs.alpaca_lineage_build.metadata import EvidenceClient
+
+        provider = IdentityClient({"AAA": asset("AAA"), "111111111": asset("AAA")})
+        client = EvidenceClient(provider)
+        client._load_catalogue([asset("AAA"), asset("AAA")])
+        with patch("libs.alpaca_lineage_build.metadata.event") as emitted:
+            client.get_symbol_lookup("AAA")
+            client.get_symbol_lookup("AAA")
+            client.get_asset_lookup("111111111")
+            client.get_asset_lookup("111111111")
+        self.assertEqual(emitted.call_count, 2)
+        self.assertEqual(emitted.call_args_list[0].kwargs["lookup_kind"], "symbol")
+        self.assertEqual(emitted.call_args_list[0].kwargs["reason"], "catalogue_ambiguous")
+        self.assertEqual(emitted.call_args_list[1].kwargs["lookup_kind"], "cusip")
+        self.assertEqual(provider.request_count, 2)
+
     def test_pricing_reads_and_generation_bindings_preserve_complete_update_work(self):
         from collections import Counter
 
@@ -136,6 +155,12 @@ class DebugTraceTests(unittest.TestCase):
         differences = [v["details"] for v in records if v["stage"] == "history_endpoint_difference"]
         first = next(v for v in differences if v["symbol"] == "AAA" and v["endpoint"] == "first")
         self.assertIn("close", first["fields"]["sample"])
+        self.assertEqual(first["field_values"]["close"]["live"], "50")
+        replacements = [v["details"] for v in records if v["stage"] == "pricing_replacement_outcome"]
+        replacement = next(v for v in replacements if v["symbol"] == "AAA")
+        self.assertTrue(replacement["generation_changed"])
+        self.assertTrue(replacement["effective_prices_changed"])
+        self.assertEqual(replacement["first_all"]["sample"][4], "50")
         comparisons = [v["details"] for v in records if v["stage"] == "history_comparison"]
         comparison = next(v for v in comparisons if v["symbol"] == "AAA" and not v["matched"])
         bindings = [v["details"] for v in records if v["stage"] == "pricing_generation_check"]

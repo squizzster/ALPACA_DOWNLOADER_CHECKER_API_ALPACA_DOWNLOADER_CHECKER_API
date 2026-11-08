@@ -698,11 +698,16 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
     from .check_summary import refresh
 
     recovering = receipts is None
-    if recovering:
+    if recovering and not journal.get("projection_only"):
         invalidate(store, journal["sources"], owner="lineage")
     # A fresh journal contains only known changes. Recovery may already have
     # installed some of them, so compare existing files only on that path.
     state = _install(root, journal, compare=recovering)
+    if journal.get("projection_only"):
+        # Frozen representation-only output does not consume upstream work.
+        # Newer pricing notices/checks remain owned by ordinary maintenance.
+        path_at(root, ".pending.json").unlink()
+        return state
     recovered = _recovery_inputs(store, journal) if recovering else None
     if recovering:
         sources = recovered["sources"]
@@ -751,11 +756,20 @@ def publish(
     previous=None,
     sources=None,
     unchanged_decision=False,
+    projection_only=False,
 ) -> None:
     if not receipts:
         raise LineageError("lineage publication requires at least one receipt")
     if any(not reusable_decision(receipt) for receipt in receipts.values()):
         raise LineageError("lineage publication requires the authorized current policy")
+    if projection_only and (
+        not unchanged_decision
+        or previous is None
+        or notices
+        or checks
+        or any(receipt != previous.get(symbol) for symbol, receipt in receipts.items())
+    ):
+        raise LineageError("projection migration requires unchanged selected receipts and no upstream work")
     frozen_policy = next(iter(receipts.values())).get("correlation_policy")
     if not isinstance(frozen_policy, dict) or any(
         receipt.get("correlation_policy") != frozen_policy for receipt in receipts.values()
@@ -767,6 +781,9 @@ def publish(
 
     for symbol, receipt in receipts.items():
         old = read_receipt(root, symbol, index) if previous is None else previous[symbol]
+        if projection_only and not boundaries[symbol]:
+            updated[symbol] = index["symbols"][symbol]
+            continue
         old_paths = {entry["manifest"] for entry in old["boundaries"].values()} if old else set()
         new_paths = {entry["manifest"] for entry in receipt["boundaries"].values()}
         old_paths.update(
@@ -827,6 +844,8 @@ def publish(
         ),
         "notices": notices,
     }
+    if projection_only:
+        journal["projection_only"] = True
     if unchanged_decision:
         # The migration owner has established rule applicability once. This
         # publication guarantee covers the exact old/new outputs, so serving
@@ -838,6 +857,9 @@ def publish(
             "update_obligation_id",
             "evidence_requirements",
             "unavailable_obligations",
+            "assignment_handoffs",
+            "assignment_handoff_kinds",
+            "serving_ownership",
         }
         if previous is None or any(
             {k: v for k, v in receipt.items() if k not in ignored}
@@ -864,7 +886,8 @@ def publish(
     with publication_lock(root, exclusive=True):
         from libs.alpaca_pricing_download.check_summary import invalidate
 
-        invalidate(store, receipts, owner="lineage")
+        if not projection_only:
+            invalidate(store, receipts, owner="lineage")
         atomic_json(path_at(root, ".pending.json"), journal)
         state = finish_publication(store, root, journal, receipts=receipts, sources=sources)
         index["symbols"].update(updated)

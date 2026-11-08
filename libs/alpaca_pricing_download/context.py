@@ -13,6 +13,7 @@ class PricingContext:
     endpoint_selections: dict = field(default_factory=dict, compare=False)
     correction_acquisitions: dict = field(default_factory=dict, compare=False)
     suffix_acquisitions: dict = field(default_factory=dict, compare=False)
+    late_bar_observations: dict = field(default_factory=dict, compare=False)
 
 
 def accept_context(store, context=None):

@@ -311,6 +311,40 @@ class HttpBatchingTests(unittest.TestCase):
         self.assertEqual(report["expected_io"]["http_pages_minimum"], 5)
         self.assertEqual(report["expected_io"]["http_pages_dense_history_estimate"], 5)
 
+    def test_late_bar_preview_uses_mapped_selected_runs_and_execution_reuses_them(self):
+        from libs.alpaca_lineage_build.universe_plan import preview
+        from libs.alpaca_pricing_download.late_bars import session_ranges
+
+        sessions = ["2026-03-06", "2026-03-09", "2026-03-11"]
+        ranges = session_ranges(sessions, max_sessions=1)
+        self.assertEqual(len(ranges), 3)
+        self.assertEqual(len(session_ranges(sessions)), 2)
+        self.assertEqual(len(session_ranges(sessions, coalesce=False)), 3)
+        accepted = {
+            "summary": {"entries": []},
+            "index": {"symbols": {}},
+            "serving_catalogue": {"pending_symbols": []},
+            "late_bar_repairs": {
+                "window_policy": "consecutive_sessions",
+                "sources": {
+                    symbol: {"sessions": sessions, "planned": {"asof": asof, "ranges": session_ranges(sessions)}}
+                    for symbol, asof in (("A", "2026-03-12"), ("B", "2026-03-12"), ("C", "2026-03-13"))
+                },
+            },
+        }
+        report = preview(
+            accepted,
+            {"deferred": [{"symbol": "B"}], "work": {}},
+            {"catalogue_observed_at_utc": "now", "records": []},
+            "2026-03-14",
+        )
+        io = report["expected_io"]
+        self.assertEqual(io["late_bar_probe_sessions"], 6)
+        self.assertEqual(io["late_bar_probe_actions_upper_bound"], 4)
+        self.assertEqual(io["http_pages_minimum"], 5)  # Catalogue plus four mapped bar actions.
+        self.assertEqual(io["http_pages_dense_history_estimate"], 5)
+        self.assertEqual(io["late_bar_window_policy"], "consecutive_sessions")
+
     def test_metadata_preserves_nonretryable_transport_and_404_policies(self):
         for error in (
             HTTPError("test", 504, "timeout", {}, io.BytesIO()),

@@ -49,6 +49,8 @@ def project_receipt(receipt):
         "unavailable_obligations": receipt.get("unavailable_obligations", {}),
         "acquisition_evidence_sha256": receipt.get("acquisition_evidence_sha256"),
         "history_correction_id": receipt.get("history_correction_id"),
+        "assignment_handoffs_complete": bool(receipt.get("serving_ownership"))
+        and set(receipt.get("assignment_handoffs", ())) == set(receipt["boundaries"]),
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),
     }
 

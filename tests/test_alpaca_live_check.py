@@ -9,6 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+from test_alpaca_pricing_download import single_session_request
+
 from libs.alpaca_pricing_download import live_check
 from libs.alpaca_pricing_download.contract import FIELDS
 from libs.common.debug_trace import DebugTrace
@@ -199,7 +201,7 @@ class LiveCheckTests(unittest.TestCase):
         self.assertEqual({item["endpoint"] for item in result["differences"]}, {"first", "last"})
         self.assertEqual(len(calls), 2)
         self.assertEqual({p["start"][:10] for p in calls}, {"2016-07-05", "2026-10-14"})
-        self.assertTrue(all(p["start"][:10] == p["end"][:10] and p["adjustment"] == "all" for p in calls))
+        self.assertTrue(all(single_session_request(p) and p["adjustment"] == "all" for p in calls))
 
     def test_missing_first_endpoint_cannot_approve_matching_last(self):
         value = entry("A")
@@ -211,6 +213,24 @@ class LiveCheckTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertEqual(result["stats"]["matched"], 0)
         self.assertEqual(result["missing"], ["A"])
+
+    def test_full_new_york_session_is_used_for_first_and_cutoff_caps_tail(self):
+        from libs.alpaca_pricing_download.contract import timestamp
+
+        value = entry("A")
+        value["first_all"] = entry("A", "2016-07-05")["last_all"]
+        calls = []
+
+        def page(params):
+            calls.append(params)
+            day = params["start"][:10]
+            price = "123" if day != "2016-07-05" or params["end"].startswith("2016-07-06T03:59:59") else "99"
+            return {"bars": {"A": [bar(day, c=Decimal(price))]}}
+
+        result = live_check.verify(snapshot(value), page)
+        self.assertEqual(result["stats"]["matched"], 1)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(timestamp(p["end"]) < timestamp(value["end_exclusive"]) for p in calls))
 
     def test_plan_batches_exact_dates_and_saved_identity_mapping(self):
         value = snapshot(

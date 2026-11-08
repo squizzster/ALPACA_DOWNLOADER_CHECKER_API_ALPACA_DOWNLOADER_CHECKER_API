@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 
 import test_alpaca_universe_update as universe_fixture
 from test_alpaca_lineage_build import IdentityClient, asset
-from test_alpaca_pricing_download import FakeClient, bar
+from test_alpaca_pricing_download import FakeClient, bar, single_session_request
 from test_alpaca_universe_update import CatalogueClient
 
 from libs.alpaca_lineage_build import storage, universe_state
@@ -425,7 +425,15 @@ class DurableMaintenanceTests(unittest.TestCase):
             self.assertTrue(universe_state.read_state(case.store)["work"]["AAA"]["correction_id"])
             case.live["AAA"][-1] = case.old[-1]
             result = case.update()
-            self.assertTrue(result["complete"], result)
+            self.assertFalse(result["complete"], result)
+            self.assertTrue(
+                any(
+                    f.get("outcome", {}).get("outcome") == "provider_observation_conflict"
+                    for f in result["failures"]
+                )
+            )
+            case.live["AAA"][-1] = bar("2026-10-16", "50")
+            self.assertTrue(case.update(retry_blocked=True)["complete"])
             self.assertEqual(read_pricing_views(case.store, "AAA")["all"][0][4], "50")
 
     def test_completed_correction_is_reused_after_interruption_before_lineage(self):
@@ -444,9 +452,7 @@ class DurableMaintenanceTests(unittest.TestCase):
             case.pages.clear()
             result = case.update()
             self.assertTrue(result["complete"], result)
-            self.assertTrue(
-                all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in case.pages)
-            )
+            self.assertTrue(all(p["adjustment"] == "all" and single_session_request(p) for p in case.pages))
 
     def test_old_publication_acknowledgement_cannot_complete_a_new_refresh(self):
         with fixture() as case:
@@ -671,7 +677,7 @@ class DurableMaintenanceTests(unittest.TestCase):
                 )
                 if boundary != "before_acquisition":
                     self.assertTrue(
-                        all(p["adjustment"] == "all" and p["start"][:10] == p["end"][:10] for p in case.pages)
+                        all(p["adjustment"] == "all" and single_session_request(p) for p in case.pages)
                     )
 
     def test_older_invocation_cannot_reopen_accepted_larger_target(self):

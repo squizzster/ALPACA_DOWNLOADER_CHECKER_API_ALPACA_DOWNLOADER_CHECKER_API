@@ -161,5 +161,20 @@
     "modifications": [
       "Report conditional remaining pricing-request estimates from accepted work plans and observed wall-time throughput, refining late-bar plans without extra storage/provider reads; preserve heartbeat cadence and distinguish component work from completed updates."
     ]
+  },
+  {
+    "modifications": [
+      "Expose offline lineage migrate-assignments with explicit symbols or all-published scope under the normal exclusive store gate, retaining journal recovery and progress reporting without provider clients."
+    ]
+  },
+  {
+    "modifications": [
+      "Bound assignment migration by a group limit and expose the exact-session late-bar diagnostic override with matching update and preview defaults."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept explicit refresh completion before acknowledgement and resume completed pricing publications without renewing pending lineage work."
+    ]
   }
 ]

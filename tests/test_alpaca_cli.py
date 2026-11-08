@@ -28,6 +28,7 @@ class CanonicalCliTests(unittest.TestCase):
             ("lineage", "refresh", False, "exclusive"),
             ("lineage", "migrate-index", False, "exclusive"),
             ("lineage", "migrate-policy", False, "exclusive"),
+            ("lineage", "migrate-assignments", False, "exclusive"),
             ("lineage", "inspect", False, None),
             ("universe", "reconcile", False, "exclusive"),
             ("universe", "rebuild", False, "exclusive"),
@@ -77,6 +78,26 @@ class CanonicalCliTests(unittest.TestCase):
             self.assertEqual(expected, dispatch(args))
         self.assertEqual(store, migrate.call_args.args[0])
 
+    def test_assignment_migration_requires_scope_and_dispatches_without_live_clients(self):
+        parser = build_parser()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["lineage", "migrate-assignments"])
+        for scope, selected, whole in (
+            (["--symbol", "AAA", "--symbol", "BBB"], ["AAA", "BBB"], False),
+            (["--all-published"], None, True),
+        ):
+            with (
+                self.subTest(scope=scope),
+                patch("libs.alpaca_cli._pricing_end", side_effect=AssertionError("resolved live cutoff")),
+                patch("libs.alpaca_cli.clients", side_effect=AssertionError("constructed provider clients")),
+                patch("libs.alpaca_lineage_build.assignment_migration.migrate", return_value={}) as migrate,
+                redirect_stderr(io.StringIO()),
+            ):
+                dispatch(parser.parse_args(["lineage", "migrate-assignments", *scope]))
+                self.assertEqual(migrate.call_args.args[1], selected)
+                self.assertEqual(migrate.call_args.kwargs["all_published"], whole)
+                self.assertEqual(migrate.call_args.kwargs["limit"], 128)
+
     def test_retired_experiment_interface_fails_with_canonical_command(self):
         result = subprocess.run(
             [sys.executable, "-B", "-m", "libs.alpaca_pricing_download.live_check_experiment", "--help"],
@@ -123,3 +144,18 @@ class CanonicalCliTests(unittest.TestCase):
         ):
             dispatch(args)
         self.assertEqual(run.call_args.args[1], "2026-10-01")
+        self.assertTrue(run.call_args.kwargs["coalesce_late_bars"])
+
+    def test_exact_late_bar_override_reaches_plan_and_execution(self):
+        for planning in (False, True):
+            args = build_parser().parse_args(
+                ["update", "--through", "2026-09-30", "--exact-late-bars", *(["--plan"] if planning else [])]
+            )
+            owner = "plan_update" if planning else "run_update"
+            with (
+                patch("libs.alpaca_cli.clients", return_value=(object(), object())),
+                patch("libs.alpaca_lineage_build.universe_update." + owner, return_value={}) as run,
+                redirect_stderr(io.StringIO()),
+            ):
+                dispatch(args)
+            self.assertFalse(run.call_args.kwargs["coalesce_late_bars"])

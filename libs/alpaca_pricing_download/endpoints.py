@@ -51,7 +51,14 @@ def comparison_rows(first, tail):
     return tuple(tail) if timestamp(first[0]) == timestamp(tail[0][0]) else (first, *tail)
 
 
-def history_windows(endpoints, *, cutoff=None, utc_session_end=False):
+def session_window(row, *, cutoff=None):
+    day = timestamp(row[0]).astimezone(NEW_YORK).date()
+    start = datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK)
+    end = (start + timedelta(days=1)).astimezone(timezone.utc)
+    return start.astimezone(timezone.utc), min(end, cutoff) if cutoff else end
+
+
+def history_windows(endpoints, *, cutoff=None):
     """At most two disjoint windows: first session and the complete stored tail."""
     history_check_endpoints(endpoints)
     tail = getattr(endpoints, "tail_all", None)
@@ -61,19 +68,10 @@ def history_windows(endpoints, *, cutoff=None, utc_session_end=False):
         return ()
 
     def beginning(row):
-        day = timestamp(row[0]).astimezone(NEW_YORK).date()
-        return datetime.combine(day, datetime.min.time(), tzinfo=NEW_YORK)
+        return session_window(row, cutoff=cutoff)[0]
 
     def ending(row):
-        start = beginning(row)
-        # Preserve each existing comparison owner's exclusive bound. Daily
-        # summary checks end at next UTC midnight; ordinary acquisition uses
-        # the existing New York session window. Only the tail's start expands.
-        return (
-            datetime.combine(start.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-            if utc_session_end
-            else start + timedelta(days=1)
-        )
+        return session_window(row, cutoff=cutoff)[1]
 
     first = endpoints["all"][0]
     if len(tail) > 1 and timestamp(first[0]) == timestamp(tail[0][0]):

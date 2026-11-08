@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from sqlite_crash_fixture import leave_hot_journal
 from test_alpaca_lineage_build import IdentityClient, asset
-from test_alpaca_pricing_download import FakeClient, bar
+from test_alpaca_pricing_download import FakeClient, bar, single_session_request
 from test_alpaca_pricing_download import snapshot as files_snapshot
 
 from libs.alpaca_lineage_build import check_summary as projection
@@ -140,7 +140,7 @@ class UpdateEverythingTests(unittest.TestCase):
         replaced = refresh["pricing"]["results"]
         self.assertEqual([row["symbol"] for row in replaced], ["AAA"])
         self.assertEqual(replaced[0]["request"]["end_exclusive"], "2026-10-15T00:00:00Z")
-        self.assertEqual(len(self.calls), 8)  # Live check + full history/first checks + append.
+        self.assertEqual(len(self.calls), 7)  # Accepted all observation replaces its first confirmation.
         rows = read_pricing_views(self.store, "AAA")["all"]
         self.assertEqual(rows[0][1], "456")
         self.assertEqual(rows[1][5], "42")
@@ -457,7 +457,7 @@ class UpdateEverythingTests(unittest.TestCase):
         before = files_snapshot(self.store / "end_of_day/pricing/AAA")
 
         def fail_full_history(params):
-            if params["start"][:4] == "2016" and params["start"][:10] != params["end"][:10]:
+            if params["start"][:4] == "2016" and not single_session_request(params):
                 raise OSError("full history request failed")
             return self.page(params)
 

@@ -254,5 +254,31 @@
       "Carry immutable accepted summary rows and per-target append plans across planning, selection and execution without repeating row or tail validation or request compilation; changed entries and targets select new work.",
       "Retain completed acquisition endpoints and extent through publication; preserve partial and completed missing-suffix responses across boundary failures and retries within their source-generation, mapping and request scope."
     ]
+  },
+  {
+    "modifications": [
+      "Carry completed correction-trigger observations into replacement and durable recovery; validate newly acquired output against them and leave provider contradictions explicitly unresolved without historical rechecks. Preserve the bounded empty-view acquisition fallback and reuse accepted trigger rows as producer confirmations.",
+      "Coalesce only consecutive selected late-bar market sessions, preserving source mappings and unselected gaps. Retain completed independent actions across failures within their generation-bound operation; incomplete pagination establishes no observation.",
+      "Publish equal-price correction completion atomically outside the pricing generation, allowing interruption recovery without reacquisition, lineage republication or serving work."
+    ]
+  },
+  {
+    "modifications": [
+      "Deliver complete independent bar actions before starting the next request, retaining pagination atomicity and durable positive evidence through interruption.",
+      "Reconcile witnessed rows against unique acquired New York sessions, retain conflicting duplicate witnesses, and accept numerically equivalent duplicates without losing earlier observations.",
+      "Use shared cutoff-capped New York endpoint windows; report actual changed boundaries and support planned bounded consecutive-session or exact-session late-bar requests."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume applicable correction completion before acquisition planning; retain the handoff through publication and expose actual generation changes in DEBUG.",
+      "Validate serialized correction witness structure, finite string numbers and chronological order at durable ingress while retaining conflicting observations."
+    ]
+  },
+  {
+    "modifications": [
+      "Resolve selected full-history all-row conflicts without publication only when the exact complete replacement is logically identical to the accepted generation; otherwise retain the explicit provider-observation failure.",
+      "Acquire complete adaptive adjustment bundles for exact positively observed late-bar session runs and merge only missing, nonconflicting selected sessions into the generation-bound source without broad replacement, raw-only splicing or lineage-rule changes."
+    ]
   }
 ]

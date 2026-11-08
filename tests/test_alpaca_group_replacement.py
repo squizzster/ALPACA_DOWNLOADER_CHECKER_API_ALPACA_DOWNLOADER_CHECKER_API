@@ -8,7 +8,7 @@ from unittest.mock import patch
 from test_alpaca_durable_maintenance import ActionCatalogueClient, ProcessInterrupted, fixture
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_phase4_finalization import invoke
-from test_alpaca_pricing_download import FakeClient, bar
+from test_alpaca_pricing_download import FakeClient, bar, single_session_request
 
 from libs.alpaca_lineage_build import storage, universe_plan, universe_state
 from libs.alpaca_lineage_build.check_summary import rebuild
@@ -136,7 +136,7 @@ class GroupReplacementTests(unittest.TestCase):
 
                 def no_replacement(params):
                     self.assertEqual(params["adjustment"], "all")
-                    self.assertEqual(params["start"][:10], params["end"][:10], params)
+                    self.assertTrue(single_session_request(params), params)
                     return case.page(params)
 
                 with patch.object(case.pricing, "_get", side_effect=no_replacement):
@@ -171,7 +171,7 @@ class GroupReplacementTests(unittest.TestCase):
                 case.pages.clear()
 
                 def only_unbound_replacement(params):
-                    if params["start"][:10] < "2026-10-15" and params["start"][:10] != params["end"][:10]:
+                    if params["start"][:10] < "2026-10-15" and not single_session_request(params):
                         self.assertNotIn("AAA", params["symbols"].split(","))
                     return case.page(params)
 

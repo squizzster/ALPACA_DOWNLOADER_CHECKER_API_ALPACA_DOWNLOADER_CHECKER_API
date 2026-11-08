@@ -1,12 +1,12 @@
 """Batched acquisition and guarded replacement of existing pricing spans."""
 
 from dataclasses import replace
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 
 from libs.alpaca_data_api_solver import build_plan
-from libs.common.debug_trace import traced
+from libs.common.debug_trace import event, traced
 from libs.common.provider_http import balanced_batches
 
 from .adaptive import AdjustmentAcquisition, acquire_adjustments
@@ -23,17 +23,22 @@ from .contract import (
     symbol_label,
     timestamp,
 )
+from .correction import ProviderObservationConflict, accept_observations, applicable_contract
+from .correction import completed as completed_correction
+from .correction import observations as correction_observations
 from .download import (
     _endpoint_window,
     acquisition_asof,
     download_pricing,
     established_pricing_rejection,
     publish_acquired,
+    publish_selected_session_correction,
     request_end,
 )
 from .endpoints import EndpointSelection, comparison_rows, fetch_history, history_windows
 from .failures import AcquisitionFailure
 from .history_tail import publish_legacy_tail
+from .late_bars import session_ranges
 from .responses import CompletedBars, completed_bars
 from .storage import load_source, read_validator, regular_path, ticker_lock, trace_source_selection
 
@@ -57,23 +62,50 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None):
         contract = pending.get("pricing_correction")
         if correction_id is not None and source.get("history_correction_id") == correction_id:
             return {**request, "matched": True}
+        completion = pending.get("correction_completion")
+        if completion is not None and (completion.get("correction_id"), completion.get("source_sha256")) != (
+            correction_id,
+            request["source_sha256"],
+        ):
+            completion = None
+        if completion is None:
+            completion = completed_correction(root, correction_id, request["source_sha256"])
+        if completion is not None:
+            return {
+                **request,
+                "matched": True,
+                "completed_correction": True,
+                "required_correction_id": correction_id,
+                "correction_completion": completion,
+            }
         if correction_id is not None:
             if contract is not None and (
-                contract.get("schema_version") != 1
+                contract.get("schema_version") not in (1, 2, 3)
                 or contract.get("scope") not in ("latest_session", "full_history")
             ):
                 raise DownloadError("unsupported pending pricing correction; owning recovery required")
-            if contract is None or contract["scope"] == "full_history" or pending.get("invalidate_pricing"):
+            applicable = applicable_contract(
+                contract,
+                store=store,
+                symbol=symbol,
+                generation=request["source_sha256"],
+                start=request["start"],
+                end=request["end_exclusive"],
+                asof=request["asof"],
+            )
+            if contract is None or (applicable and contract["scope"] == "full_history"):
                 # The old generic correction ID does not establish a narrower
                 # cause. Its existing replacement obligation remains authoritative.
                 return {
                     **request,
                     "matched": False,
+                    "required_correction_id": correction_id,
                     "correction_scope": "full_history",
                     "correction_cause": (contract or {}).get("cause", "legacy_unspecified_replacement"),
+                    "correction_observations": (contract or {}).get("observations", {}),
                 }
-            selection = EndpointSelection.from_document(contract["selection"])
-            if selection.applies(
+            selection = EndpointSelection.from_document(contract["selection"]) if applicable else None
+            if selection is not None and selection.applies(
                 store, symbol, request["source_sha256"], contract["end_exclusive"], contract["asof"]
             ):
                 if contract["end_exclusive"][:10] > end_date:
@@ -124,6 +156,13 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None):
                 previous_source_sha256=request["source_sha256"],
             )
             request = _refresh_request(symbol, publication["source"], source_sha256=publication["source_sha256"])
+            return {
+                **request,
+                "matched": True,
+                "completed_correction": True,
+                "required_correction_id": correction_id,
+                "correction_completion": publication.get("correction_completion"),
+            }
         result = {
             **request,
             "matched": comparison.matched,
@@ -131,7 +170,7 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None):
             "correction_scope": comparison.decision,
             "correction_cause": "selected_all_rows_changed",
         }
-        if comparison.decision == "latest_session":
+        if comparison.decision in ("latest_session", "full_history"):
             result.update(
                 comparison_asof=request["asof"],
                 comparison_end_exclusive=request["end_exclusive"],
@@ -252,12 +291,15 @@ def prepare_refresh(
 
 
 @traced("provider_late_bar_check")
-def probe_late_bar_repairs(store, selection, *, client, end_date=None, progress=None):
+def probe_late_bar_repairs(
+    store, selection, *, client, end_date=None, progress=None, context=None, on_positive=None
+):
     """Probe only exact sessions named by a completed serving handoff.
 
     A positive raw-bar response selects the ordinary generation-bound full-span
     replacement. Empty responses leave the completed stored decision untouched.
     """
+    context = accept_context(store, context)
     sources = selection["sources"]
     report = {
         "catalogue_generation": selection["catalogue_generation"],
@@ -272,12 +314,14 @@ def probe_late_bar_repairs(store, selection, *, client, end_date=None, progress=
         "stale_sources": [],
         "beyond_target": [],
         "outside_retained_span": 0,
+        "failures": [],
+        "reused_ranges": 0,
         "requests": {},
     }
     if not sources:
         return [], report
     prepared = {item["symbol"]: item for item in prepare_refresh(store, sources)}
-    needs = []
+    needs, selected_sessions = [], {}
     for symbol, selected in sorted(sources.items()):
         request = prepared[symbol]
         if request["source_sha256"] != selected["source_sha256"]:
@@ -286,21 +330,27 @@ def probe_late_bar_repairs(store, selection, *, client, end_date=None, progress=
         if end_date is not None and request["end_exclusive"][:10] > end_date:
             report["beyond_target"].append(symbol)
             continue
-        ranges = []
-        for value in selected["sessions"]:
-            session = date.fromisoformat(value)
-            start = datetime.combine(session, time.min, tzinfo=NEW_YORK).astimezone(timezone.utc)
-            end = datetime.combine(session + timedelta(days=1), time.min, tzinfo=NEW_YORK).astimezone(
-                timezone.utc
-            )
-            if value < request["start"][:10] or value >= request["end_exclusive"][:10]:
-                report["outside_retained_span"] += 1
-                continue
-            ranges.append(
-                {
-                    "start": start.isoformat(),
-                    "end_exclusive": end.isoformat(),
-                }
+        sessions = [
+            value
+            for value in selected["sessions"]
+            if request["start"][:10] <= value < request["end_exclusive"][:10]
+        ]
+        report["outside_retained_span"] += len(selected["sessions"]) - len(sessions)
+        report["requested_sessions"] += len(sessions)
+        selected_sessions[symbol] = set(sessions)
+        planned = selected.get("planned")
+        if planned is not None and (
+            planned["asof"],
+            timestamp(planned["start"]),
+            timestamp(planned["end_exclusive"]),
+            planned["sessions"],
+        ) == (request["asof"], timestamp(request["start"]), timestamp(request["end_exclusive"]), sessions):
+            ranges = planned["ranges"]
+        else:
+            ranges = session_ranges(
+                sessions,
+                coalesce=selection.get("window_policy") != "exact_sessions",
+                cutoff=request["end_exclusive"],
             )
         if ranges:
             needs.append(
@@ -314,45 +364,145 @@ def probe_late_bar_repairs(store, selection, *, client, end_date=None, progress=
                 }
             )
     report["requested_sources"] = len(needs)
-    report["requested_sessions"] = sum(len(need["ranges"]) for need in needs)
     if not needs:
         return [], report
-    cache, _ = _prefetch(
-        needs,
-        client,
-        check=False,
-        metrics=report["requests"],
-        progress=progress,
-        merge_ranges=False,
-    )
-    returned = {}
+
+    def key(symbol, window, asof):
+        return (False, symbol, "raw", timestamp(window["start"]), timestamp(window["end_exclusive"]), asof)
+
+    def binding(symbol, window, asof):
+        return (prepared[symbol]["source_sha256"], *key(symbol, window, asof))
+
+    pending = []
+    for need in needs:
+        symbol = need["symbols"][0]
+        ranges = [
+            window
+            for window in need["ranges"]
+            if binding(symbol, window, need["asof"]) not in context.late_bar_observations
+        ]
+        report["reused_ranges"] += len(need["ranges"]) - len(ranges)
+        if ranges:
+            pending.append({**need, "ranges": ranges})
+
+    def failed(_step, action, error):
+        event(
+            "late_bar_action_failed",
+            symbols=action["request"]["params"]["symbols"],
+            asof=action["request"]["params"]["asof"],
+            start=action["request"]["params"]["start"],
+            end=action["request"]["params"]["end"],
+            outcome=failure_outcome(error),
+        )
+        report["failures"].append(
+            {
+                "symbols": sorted({s for target in action["deliver"] for s in target["symbols"]}),
+                "error": str(error),
+                "outcome": failure_outcome(error),
+            }
+        )
+
+    from .correction import merge_observations
+
+    returned, positive_dates = {}, {}
+
+    def completed(delta):
+        new = {}
+        for cache_key, value in delta.items():
+            symbol = cache_key[1]
+            rows = [
+                row
+                for row in value.rows
+                if timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() in selected_sessions[symbol]
+            ]
+            if rows:
+                new.setdefault(symbol, []).extend(rows)
+        requests = [
+            {
+                **prepared[symbol],
+                "correction_cause": "provider_late_observations",
+                "correction_observations": {"raw": rows},
+            }
+            for symbol, rows in sorted(new.items())
+        ]
+        if requests and on_positive is not None:
+            requests = on_positive(requests)
+        for symbol, rows in new.items():
+            event(
+                "late_bar_action_positive",
+                symbol=symbol,
+                rows=len(rows),
+                source_generation=prepared[symbol]["source_sha256"],
+                durable=on_positive is not None,
+            )
+        for request in requests:
+            symbol = request["symbol"]
+            if on_positive is None:
+                request["correction_observations"] = merge_observations(
+                    returned.get(symbol, {}).get("correction_observations", {}),
+                    request["correction_observations"],
+                )
+            returned[symbol] = request
+        for symbol, rows in new.items():
+            positive_dates.setdefault(symbol, set()).update(
+                timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows
+            )
+        # Commit the positive obligation before exposing completed action reuse.
+        for cache_key, value in delta.items():
+            context.late_bar_observations[(prepared[cache_key[1]]["source_sha256"], *cache_key)] = value
+
+    reused = {}
     for need in needs:
         symbol = need["symbols"][0]
         for window in need["ranges"]:
-            key = (
-                False,
-                symbol,
-                "raw",
-                timestamp(window["start"]),
-                timestamp(window["end_exclusive"]),
-                need["asof"],
-            )
-            if cache[key].rows:
-                session = timestamp(window["start"]).astimezone(NEW_YORK).date().isoformat()
-                returned.setdefault(symbol, []).append(session)
+            value = context.late_bar_observations.get(binding(symbol, window, need["asof"]))
+            if value is not None:
+                reused[key(symbol, window, need["asof"])] = value
+    completed(reused)
+    if pending:
+        _prefetch(
+            pending,
+            client,
+            check=False,
+            metrics=report["requests"],
+            progress=progress,
+            merge_ranges=False,
+            on_failure=failed,
+            on_completed=completed,
+        )
     report["returned_sources"] = len(returned)
-    report["returned_sessions"] = sum(len(values) for values in returned.values())
+    report["returned_sessions"] = sum(map(len, positive_dates.values()))
     return [
-        {**prepared[symbol], "provider_late_sessions": sessions} for symbol, sessions in sorted(returned.items())
+        {**request, "provider_late_sessions": sorted(positive_dates[symbol])}
+        for symbol, request in sorted(returned.items())
     ], report
 
 
 class PlannedClient:
     """Replay each buffered request once; retries use fresh provider responses."""
 
-    def __init__(self, client, cache, adjustments=None):
+    def __init__(
+        self, client, cache, adjustments=None, *, metrics=None, progress=None, correction_approvals=None
+    ):
         self.client, self.cache = client, cache
         self.adjustments = adjustments or {}
+        self.metrics, self.progress = metrics, progress
+        self.correction_approvals = correction_approvals or {}
+
+    def confirmed_observations(self, acquired, selected):
+        key = (acquired.symbol, acquired.start, acquired.end, acquired.asof)
+        approval = self.correction_approvals.pop(key, None)
+        if (
+            approval is not None
+            and approval[0] is acquired
+            and approval[1].keys() == selected.keys()
+            and all(approval[1][name] is rows for name, rows in selected.items())
+        ):
+            if isinstance(approval[2], ProviderObservationConflict):
+                raise approval[2]
+            return approval[2]
+        inherited = getattr(self.client, "confirmed_observations", None)
+        return inherited(acquired, selected) if inherited else None
 
     def take_adjustments(self, symbol, start, end, asof):
         key = symbol, start, end, asof
@@ -365,6 +515,27 @@ class PlannedClient:
         key = (asof is not None, symbol, adjustment, start, end, asof or end.date().isoformat())
         if key in self.cache:
             return self.cache.pop(key)
+        if self.metrics is not None:
+            # Deferred producer confirmations still use the common executor and
+            # report their pages. Trigger evidence is accepted before these run.
+            cached, _ = _prefetch(
+                [
+                    {
+                        "kind": "bars",
+                        "why": "acquisition_check",
+                        "symbols": [symbol],
+                        "adjustments": [adjustment],
+                        "asof": key[-1],
+                        "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
+                    }
+                ],
+                self.client,
+                check=key[0],
+                metrics=self.metrics,
+                progress=self.progress,
+                merge_ranges=False,
+            )
+            return cached[key]
         return self.client.fetch(symbol, adjustment, start, end, asof=asof)
 
     def fetch_acquired(self, symbol, adjustment, start, end, *, asof=None):
@@ -394,7 +565,9 @@ def _endpoint_needs(symbol, endpoints, asof, why, *, cutoff=None):
     ]
 
 
-def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, merge_ranges=True):
+def _prefetch(
+    needs, client, *, check, metrics, progress=None, on_failure=None, merge_ranges=True, on_completed=None
+):
     started = monotonic()
     pages_before = (metrics or {}).get("page_requests", 0)
     # Endpoint checks select exact sessions. Saving a page must not expand two
@@ -417,6 +590,27 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, 
             },
         )
     options = {"on_failure": on_failure} if on_failure is not None else {}
+    completed_cache = {}
+    if on_completed is not None:
+
+        def deliver(_step, _action, values):
+            delta = {}
+            for (_, index, offset, symbol, adjustment), value in values.items():
+                need = needs[index]
+                window = need["ranges"][offset]
+                key = (
+                    check,
+                    symbol,
+                    adjustment,
+                    timestamp(window["start"]),
+                    timestamp(window["end_exclusive"]),
+                    need["asof"],
+                )
+                delta[key] = value
+            on_completed(delta)
+            completed_cache.update(delta)
+
+        options["on_completed"] = deliver
     try:
         acquired = client.execute_plan(plan, metrics=metrics, **options)
     except (RuntimeError, OSError, ValueError):
@@ -439,6 +633,8 @@ def _prefetch(needs, client, *, check, metrics, progress=None, on_failure=None, 
                 "page_requests": (metrics or {}).get("page_requests", 0) - pages_before,
             },
         )
+    if on_completed is not None:
+        return completed_cache, plan
     cache = {}
     for index, need in enumerate(needs):
         symbol = need["symbols"][0]
@@ -478,6 +674,7 @@ def acquire_full(
     on_failure=None,
     acquired=None,
     observations=None,
+    required_observations=None,
 ):
     """Acquire shared ranges; only new/replaced histories need producer confirmation.
 
@@ -493,7 +690,7 @@ def acquire_full(
         acquired=acquired,
         observations=observations,
     )
-    probes = []
+    probes, correction_approvals = [], {}
     for need, state in zip(needs, states, strict=True):
         symbol, end = state.symbol, state.end
         if state.completed is None:
@@ -502,6 +699,24 @@ def acquire_full(
             # A completed first/latest all comparison already approved this
             # generation. These are new-session rows only. No historical probes.
             continue
+        required = (required_observations or {}).get(symbol, {})
+        confirmed = {}
+        if required:
+            if any(not rows for rows in state.completed.views.values()):
+                continue  # The locked downloader owns the bounded empty-view fallback.
+            try:
+                confirmed = accept_observations(symbol, state.completed.views, required)
+            except ProviderObservationConflict as error:
+                # Carry the completed contradiction to the locked publisher.
+                # Only that owner can determine, from accepted logical digests,
+                # whether this exact full-range output reproduced the retained
+                # generation. Do not repeat either provider observation.
+                confirmed = {
+                    name: frozenset(timestamp(row[0]) for row in rows) for name, rows in required.items()
+                }
+                correction_approvals[state.key] = (state.completed, required, error)
+            else:
+                correction_approvals[state.key] = (state.completed, required, confirmed)
         endpoints = state.completed.endpoints
         # These are fresh producer checks for newly acquired output, not a
         # revalidation of completed stored history. Their independent responses
@@ -509,7 +724,12 @@ def acquire_full(
         probes.extend(
             _endpoint_needs(
                 symbol,
-                {name: endpoints[name][:1] for name in state.observed},
+                {
+                    name: tuple(
+                        row for row in endpoints[name][:1] if timestamp(row[0]) not in confirmed.get(name, ())
+                    )
+                    for name in state.observed
+                },
                 need["asof"],
                 "acquisition_check",
                 cutoff=end,
@@ -520,7 +740,14 @@ def acquire_full(
         if probes
         else ({}, {"steps": []})
     )
-    return PlannedClient(client, checked, {state.key: state for state in states}), {
+    return PlannedClient(
+        client,
+        checked,
+        {state.key: state for state in states},
+        metrics=metrics,
+        progress=progress,
+        correction_approvals=correction_approvals,
+    ), {
         "schema_version": acquisition["schema_version"],
         "steps": acquisition["steps"] + checks["steps"],
     }
@@ -621,7 +848,7 @@ def acquire_retained(
         except (RuntimeError, OSError, ValueError) as error:
             failures[symbol] = (AcquisitionFailure.from_error(error), False)
     comparison = PlannedClient(client, dict(cache))
-    needs, retained = [], {}
+    needs, retained, replacements = [], {}, {}
     for symbol, (source, endpoints) in selected.items():
         if symbol in failures:
             continue
@@ -647,6 +874,8 @@ def acquire_retained(
         if decision.decision != "full_history":
             start = timestamp(source["latest_request"]["end_exclusive"])
             retained[symbol] = endpoints
+        else:
+            replacements[symbol] = {"all": decision.live_all}
         needs.append(
             {
                 "kind": "bars",
@@ -675,6 +904,7 @@ def acquire_retained(
                 progress=progress,
                 on_failure=failed,
                 acquired=acquired,
+                required_observations=replacements,
             )
             yield (
                 sorted(symbols),
@@ -697,11 +927,52 @@ def replace_prepared(
         raise DownloadError("refresh cohort size must be a positive integer")
     context = accept_context(store, context)
     results, metrics = [], {}
+    from .acquire import MeasuredRequests
+
+    client = MeasuredRequests(client, metrics)
     checked_baseline = False
     for offset in range(0, len(prepared), cohort_size):
         cohort = prepared[offset : offset + cohort_size]
+        for item in cohort:
+            if item.get("recover_correction") and "correction_completion" not in item:
+                root = regular_path(
+                    Path(store).absolute(), f"end_of_day/pricing/{item['symbol']}", published=True
+                )
+                with ticker_lock(root, exclusive=False):
+                    item["correction_completion"] = (
+                        completed_correction(root, item["required_correction_id"], item["source_sha256"])
+                        or False
+                    )
+            if item.get("correction_completion"):
+                item["completed_correction"] = True
+                event(
+                    "correction_completion_consumed",
+                    symbol=item["symbol"],
+                    correction_id=item["required_correction_id"],
+                    source_generation=item["source_sha256"],
+                )
+        required = {item["symbol"]: correction_observations(item) for item in cohort}
+        failures = {}
+
+        def failed(_step, action, error):
+            for target in action["deliver"]:
+                for symbol in target["symbols"]:
+                    failures[symbol] = {
+                        "symbol": symbol,
+                        "status": "failed",
+                        "error": str(error),
+                        "outcome": failure_outcome(error),
+                    }
+
         if progress:
             progress("acquiring", {"done": offset, "total": len(prepared), "cohort": len(cohort)})
+        late_symbols = {
+            item["symbol"]
+            for item in cohort
+            if item.get("correction_scope") == "full_history"
+            and item.get("correction_cause") == "provider_late_observations"
+            and not item.get("completed_correction")
+        }
         needs = [
             {
                 "kind": "bars",
@@ -713,6 +984,7 @@ def replace_prepared(
             }
             for item in cohort
             if item.get("correction_scope") not in ("latest_session", "unchanged")
+            and item["symbol"] not in late_symbols
             and not item.get("completed_correction")
         ]
         retained, observations = {}, {}
@@ -742,6 +1014,29 @@ def replace_prepared(
                 for lower, upper, mapping in scopes
             )
             retained[symbol] = item["endpoint_selection"]
+        selected_needs, selected_observations = [], {}
+        for item in cohort:
+            symbol = item["symbol"]
+            if symbol not in late_symbols:
+                continue
+            raw = required[symbol].get("raw", ())
+            days = [timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in raw]
+            for window in session_ranges(days, cutoff=item["end_exclusive"]):
+                start = timestamp(window["start"])
+                stop = timestamp(window["end_exclusive"])
+                rows = tuple(tuple(row) for row in raw if start <= timestamp(row[0]) < stop)
+                key = (symbol, start, stop, item["asof"])
+                selected_observations[key] = (CompletedBars(symbol, "raw", start, stop, item["asof"], rows),)
+                selected_needs.append(
+                    {
+                        "kind": "bars",
+                        "why": "selected_session_correction",
+                        "symbols": [symbol],
+                        "asof": item["asof"],
+                        "adjustments": list(ADJUSTMENTS),
+                        "ranges": [window],
+                    }
+                )
         try:
             consumer, _ = (
                 acquire_full(
@@ -751,9 +1046,23 @@ def replace_prepared(
                     progress=progress,
                     retained_endpoints=retained,
                     observations=observations,
+                    required_observations=required,
+                    on_failure=failed,
                 )
                 if needs
                 else (client, None)
+            )
+            selected_states, _ = (
+                acquire_adjustments(
+                    selected_needs,
+                    client,
+                    metrics=metrics,
+                    progress=progress,
+                    on_failure=failed,
+                    observations=selected_observations,
+                )
+                if selected_needs
+                else ([], None)
             )
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
@@ -768,27 +1077,50 @@ def replace_prepared(
             if progress:
                 progress("pricing", {"done": len(results), "total": len(prepared), "failed": len(cohort)})
             continue
+        selected_by_symbol = {}
+        for state in selected_states:
+            if state.failure is None and state.completed is not None:
+                selected_by_symbol.setdefault(state.symbol, []).append(state.completed)
         if not checked_baseline:
             if before_publish:
                 before_publish()
             checked_baseline = True
         for item in cohort:
+            if item["symbol"] in failures:
+                results.append(failures[item["symbol"]])
+                continue
             try:
-                local = item.get("correction_scope") in ("latest_session", "unchanged")
-                result = download_pricing(
-                    store,
-                    item["symbol"],
-                    item["end_exclusive"][:10],
-                    client=consumer,
-                    refresh_all=not local,
-                    from_date=item["start"][:10],
-                    # Preserve the selected generation across network I/O.
-                    expected_source_sha256=None if local else item["source_sha256"],
-                    selected_source_sha256=item["source_sha256"],
-                    endpoint_selection=item.get("endpoint_selection"),
-                    history_correction_id=item.get("required_correction_id"),
-                    context=context,
-                )
+                if item["symbol"] in late_symbols:
+                    acquisitions = selected_by_symbol.get(item["symbol"], ())
+                    if not acquisitions:
+                        raise DownloadError("selected-session acquisition did not complete")
+                    result = publish_selected_session_correction(
+                        store,
+                        item["symbol"],
+                        acquisitions,
+                        required[item["symbol"]],
+                        expected_source_sha256=item["source_sha256"],
+                        history_correction_id=item.get("required_correction_id"),
+                    )
+                else:
+                    local = item.get("correction_scope") in ("latest_session", "unchanged")
+                    result = download_pricing(
+                        store,
+                        item["symbol"],
+                        item["end_exclusive"][:10],
+                        client=consumer,
+                        refresh_all=not local,
+                        from_date=item["start"][:10],
+                        # Preserve the selected generation across network I/O.
+                        expected_source_sha256=None if local else item["source_sha256"],
+                        selected_source_sha256=item["source_sha256"],
+                        endpoint_selection=item.get("endpoint_selection"),
+                        history_correction_id=item.get("required_correction_id"),
+                        correction_observations=required[item["symbol"]],
+                        correction_cause=item.get("correction_cause"),
+                        correction_completion=item.get("correction_completion", False),
+                        context=context,
+                    )
                 result["status"] = "replaced"
             except (RuntimeError, OSError, ValueError) as error:
                 result = {
