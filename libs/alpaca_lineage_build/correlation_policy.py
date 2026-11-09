@@ -452,9 +452,17 @@ def _compile_schema_four(
         "implementation.lineage_version",
     )
     implementation_tuple = (correlation_version, lineage_version)
-    if implementation_tuple not in {(59, 33), (76, 34), (77, 34), (CORRELATION_VERSION, LINEAGE_VERSION)}:
+    if implementation_tuple not in {
+        (59, 33),
+        (76, 34),
+        (77, 34),
+        (78, 34),
+        (79, 34),
+        (80, 35),
+        (CORRELATION_VERSION, LINEAGE_VERSION),
+    }:
         raise CorrelationPolicyError(
-            "schema-v4 implementation must be the preserved 59/33, 76/34 or 77/34 profile or the running "
+            "schema-v4 implementation must be a preserved 59/33, 76/34, 77/34 or 78/34 profile or the running "
             f"{CORRELATION_VERSION}/{LINEAGE_VERSION} profile"
         )
 
@@ -568,7 +576,8 @@ def _compile_schema_four(
         fallback_profile = PUBLISHED_PROFILE
         expected_role = (
             PRODUCTION_POLICY_ROLE
-            if implementation_tuple in {(76, 34), (77, 34), (CORRELATION_VERSION, LINEAGE_VERSION)}
+            if implementation_tuple
+            in {(76, 34), (77, 34), (78, 34), (79, 34), (80, 35), (CORRELATION_VERSION, LINEAGE_VERSION)}
             else "published_reference"
         )
     elif profile_values == (CORRECTED_RECONCILIATION, CORRECTED_SUFFIX, INDEPENDENT_DEPENDENCY):

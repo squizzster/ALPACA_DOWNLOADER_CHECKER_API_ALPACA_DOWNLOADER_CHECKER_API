@@ -44,6 +44,9 @@ class PricingInput:
     accepted_identity_memberships: dict | None = None
     accepted_report: dict | None = None
     reprojected_sessions: dict | None = None
+    accepted_current_source_ownership: dict | None = None
+    accepted_sourced_rename_ownership: dict | None = None
+    accepted_sourced_rename_membership: dict | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
         # Ignored paths satisfy the injected interface; they must not trigger filesystem access.
@@ -63,6 +66,7 @@ def load_pricing(
     partitions=None,
     source_sha256=None,
     selected_correction=...,
+    selected_change_from=None,
     projection_from=None,
 ) -> PricingInput:
     """Caller owns the ticker EX lock, including every later read and acknowledgement."""
@@ -101,12 +105,21 @@ def load_pricing(
         else None
     )
     prefix_ends = {}
+    # Pricing already published the actual first changed session. Carry that
+    # accepted scope into append assembly: a weekend before month/year rollover
+    # cannot require reopening a closed partition with no newly produced rows.
+    # Corrections/projections retain their independently selected owning scope.
+    assembly_from = (
+        max(resume_from, selected_change_from)
+        if resume_from is not None and selected_change_from and not corrected
+        else resume_from
+    )
     views = (
         {adjustment: () for adjustment in ADJUSTMENTS}
         if resume_from is not None
         and projection_from is None
         and unchanged_rows(source, previous, selected=generation)
-        else _added_views(root, source, resume_from, read=read, prefix_ends=prefix_ends if corrected else None)
+        else _added_views(root, source, assembly_from, read=read, prefix_ends=prefix_ends if corrected else None)
         if resume_from is not None
         else (
             read(root, source, "current_month", selected=selected)

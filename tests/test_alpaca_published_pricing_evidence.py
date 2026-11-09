@@ -10,6 +10,7 @@ from test_alpaca_security_lineage import MissingIdentityClient
 
 from libs.alpaca_lineage_build import pipeline
 from libs.alpaca_lineage_build import storage as lineage_storage
+from libs.alpaca_lineage_build.contract import VERSION
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.pricing import load_pricing
 from libs.alpaca_pricing_download import storage
@@ -51,7 +52,7 @@ class PublishedPricingDispositionTests(unittest.TestCase):
                 root = self.store / "end_of_day/lineage"
                 index = lineage_storage.read_index(root, "GOOG")
                 receipt = lineage_storage.read_receipt(root, "GOOG", index)
-                self.assertEqual(receipt["schema_version"], 34)
+                self.assertEqual(receipt["schema_version"], VERSION)
                 self.assertEqual(receipt["evidence"]["symbol_disposition"]["classification"], expected)
                 series = receipt["evidence"]["symbol_disposition"]["market_data_series_identity"]
                 if populated:

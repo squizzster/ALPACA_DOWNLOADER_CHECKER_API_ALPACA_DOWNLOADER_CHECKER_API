@@ -181,5 +181,10 @@
     "modifications": [
       "Add lineage rebuild --all-published with read-only plan and DEBUG tracing, using retained accepted inputs without provider credentials and preserving the canonical exclusive operation gate."
     ]
+  },
+  {
+    "modifications": [
+      "Wait for the exclusive store gate in canonical writer commands, reporting a cancellable WAIT phase before provider or store work; preserve nonblocking CSV exports and library defaults."
+    ]
   }
 ]

@@ -7,7 +7,15 @@ from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.alpaca_data_api_solver import build_plan, split_action
 from libs.alpaca_pricing_download.contract import DownloadError, symbol_label
 from libs.alpaca_security_lineage.event_supplements import SCHEMA_VERSION as EVENT_SUPPLEMENT_SCHEMA_VERSION
-from libs.alpaca_security_lineage.event_supplements import provider_actions
+from libs.alpaca_security_lineage.event_supplements import (
+    SUCCESSION_KIND,
+    SUCCESSION_SCHEMA_VERSION,
+    EventProjection,
+    accept_supplements,
+    provider_actions,
+    succession_items,
+    supplement_key,
+)
 from libs.alpaca_security_lineage.lineage import (
     action_date,
     action_identity_key,
@@ -48,6 +56,11 @@ def mapping_dependencies(evidence, lookup):
         return result
 
     endpoints = labels(evidence.get("corporate_actions", ()))
+    endpoints.update(
+        item["match"]["symbol"]
+        for item in succession_items(evidence)
+        if identifier in (item["facts"]["old_cusip"], item["facts"]["new_cusip"])
+    )
     canonical = lookup.get("asset") or {}
     if canonical.get("symbol"):
         endpoints.add(canonical["symbol"])
@@ -135,8 +148,11 @@ class EvidenceClient:
         self.work_policy = None
         self.restricted_identifiers = set()
         self.retained_symbols = {}
-        self.event_supplements = {item["match"]["id"]: item for item in event_supplements}
+        accepted_supplements = accept_supplements(event_supplements) if event_supplements else ()
+        self.event_supplements = {supplement_key(item): item for item in accepted_supplements}
         self.retained_event_supplements = {}
+        self.event_projection = EventProjection()
+        self._retained_supplement_evidence = {}
         self.applied_event_supplements = set()
         if observation is not None:
             self._load_catalogue(observation["records"])
@@ -243,6 +259,8 @@ class EvidenceClient:
         """New producer reports must use this operation's acquired observations."""
         if self.supplements_for(evidence) != evidence.get("event_supplements", []):
             return False
+        if self.successions_for(evidence) != list(succession_items(evidence)):
+            return False
         for lookup in evidence["asset_lookups"]:
             identifier = lookup["lookup"]
             observed = (
@@ -261,30 +279,73 @@ class EvidenceClient:
             if lookup["lookup_kind"] == "cusip" and not self.mapping_current(evidence, lookup):
                 return False
         self.applied_event_supplements.update(
-            item["match"]["id"] for item in evidence.get("event_supplements", ())
+            supplement_key(item)
+            for item in (*evidence.get("event_supplements", ()), *succession_items(evidence))
         )
         return True
 
     def retain_event_supplements(self, evidences):
         """Share completed event facts across the selected dependency group."""
         for evidence in evidences:
+            if not evidence.get("event_supplements") and evidence.get("sourced_successions") is None:
+                continue
+            if id(evidence) in self._retained_supplement_evidence:
+                continue
             if evidence.get("event_supplements") and (
                 type(evidence.get("event_supplement_schema_version")) is not int
                 or evidence["event_supplement_schema_version"] != EVENT_SUPPLEMENT_SCHEMA_VERSION
             ):
                 raise LineageError("unsupported retained event supplement schema")
-            for item in evidence.get("event_supplements", ()):
-                key = item["match"]["id"]
+            successions = evidence.get("sourced_successions")
+            if successions is not None and (
+                not isinstance(successions, dict)
+                or type(successions.get("schema_version")) is not int
+                or successions["schema_version"] != SUCCESSION_SCHEMA_VERSION
+                or not isinstance(successions.get("facts"), list)
+            ):
+                raise LineageError("unsupported retained sourced succession schema")
+            originals = (
+                {action.get("id"): action for action in provider_actions(evidence)}
+                if evidence.get("event_supplements")
+                else {}
+            )
+            projected = (
+                {action.get("id"): action for action in evidence.get("corporate_actions", ())}
+                if evidence.get("event_supplements")
+                else {}
+            )
+            for item in (*evidence.get("event_supplements", ()), *succession_items(evidence)):
+                key = supplement_key(item)
                 prior = self.retained_event_supplements.setdefault(key, item)
-                if prior != item and key not in self.event_supplements:
+                retained_matches = prior is item or prior == item
+                if not retained_matches and key not in self.event_supplements:
                     raise LineageError(f"conflicting retained event supplements: {key}")
-                if self.event_supplements.get(key) == item:
-                    self.applied_event_supplements.add(key)
+                chosen = self.event_supplements.get(key, prior)
+                chosen_matches = retained_matches if chosen is prior else chosen is item or chosen == item
+                if chosen_matches:
+                    if key in self.event_supplements:
+                        self.applied_event_supplements.add(key)
+                    if item["kind"] != SUCCESSION_KIND:
+                        self.event_projection.retain(originals[key], chosen, projected.get(key))
+            self._retained_supplement_evidence[id(evidence)] = evidence
 
     def supplements_for(self, evidence):
         keys = {action.get("id") for action in provider_actions(evidence)}
         available = self.retained_event_supplements | self.event_supplements
-        return [available[key] for key in sorted(keys & available.keys())]
+        return [
+            available[key]
+            for key in sorted(keys & available.keys())
+            if available[key]["kind"] != SUCCESSION_KIND
+        ]
+
+    def successions_for(self, evidence):
+        symbol = evidence.get("query", {}).get("input_symbol")
+        available = self.retained_event_supplements | self.event_supplements
+        return [
+            item
+            for _, item in sorted(available.items())
+            if item["kind"] == SUCCESSION_KIND and item["match"]["symbol"] == symbol
+        ]
 
     def all_event_supplements(self):
         return list((self.retained_event_supplements | self.event_supplements).values())
@@ -649,6 +710,7 @@ class WindowClient:
     # change. A newly acquired endpoint has the same authority on every route.
     def __init__(self, client, symbol, previous, refresh):
         self.client, self.symbol = client, symbol
+        self.event_projection = client.event_projection if client is not None else None
         self.previous = previous
         self.start = None if refresh or previous is None else previous["anchor_month"] + "-01"
         self.lookup_sources = {}

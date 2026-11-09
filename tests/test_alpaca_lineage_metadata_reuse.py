@@ -120,7 +120,7 @@ class MetadataReuseTests(unittest.TestCase):
     def test_metadata_version_gate_ignores_only_valid_correlation_versions(self):
         current = contract.versions()
         prior = {**current, "correlation": current["correlation"] - 1}
-        for version in (2, 3, 4, 5, contract.VERSION - 1):
+        for version in (2, 3, 4, 5, contract.POLICY_PROVENANCE_LINEAGE_VERSION - 1):
             legacy = {**prior, "lineage": version}
             legacy.pop("correlation_policy_sha256")
             self.assertTrue(contract.reusable_metadata_versions(legacy))

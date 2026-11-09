@@ -179,6 +179,7 @@ class PreparedSource(list):
     def __init__(self, items):
         super().__init__(items)
         self.inert_bridges = {}
+        self.closed_history_evidence = None
 
 
 def shared_inert_bridges(

@@ -247,19 +247,42 @@ def append_history_invalidation(previous, inputs):
     return {"added_symbols": added, "unresolved_symbols": unresolved, "incomplete_symbols": incomplete}
 
 
-def requires_lineage(previous, evidence, *, pricing_unchanged, refresh=False, append=False):
+def requires_lineage(
+    previous,
+    evidence,
+    *,
+    pricing_unchanged,
+    refresh=False,
+    append=False,
+    completed_deltas=None,
+    auxiliary_previous=None,
+    auxiliary_current=None,
+):
     """Unknown or changed inputs select the existing complete lineage pipeline."""
-    if refresh or not pricing_unchanged or previous.keys() != evidence.keys():
+    if previous.keys() != evidence.keys() or (refresh or not pricing_unchanged) and completed_deltas is None:
         return True
-    required = False
+    required = refresh or not pricing_unchanged
     empty_history = append and all(prior and prior.get("source_rows") == 0 for prior in previous.values())
     for symbol, prior in previous.items():
         if prior is None or not reusable_decision(prior):
             required = True
             continue
-        delta = evidence_delta(prior["evidence"], evidence[symbol], append=append)
+        delta = evidence_delta(
+            prior["evidence"], evidence[symbol], append=append or completed_deltas is not None
+        )
+        if completed_deltas is not None:
+            completed_deltas[symbol] = delta
         if empty_history and delta["scope"] == "complete_group":
             delta = {**delta, "scope": "added_sessions", "reason": "no_retained_rows"}
         event("lineage_evidence_delta", symbol=symbol, **delta)
         required |= delta["scope"] == "complete_group"
+    if completed_deltas is not None:
+        before, after = auxiliary_previous or {}, auxiliary_current or {}
+        if before.keys() != after.keys():
+            completed_deltas.clear()
+            return True
+        for symbol, current in after.items():
+            delta = evidence_delta(before[symbol], current, append=True)
+            completed_deltas[symbol] = delta
+            required |= delta["scope"] == "complete_group"
     return required

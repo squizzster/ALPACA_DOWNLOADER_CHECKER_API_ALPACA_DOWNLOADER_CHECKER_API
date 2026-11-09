@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from copy import deepcopy
+from datetime import date
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 
@@ -10,8 +11,164 @@ from .contract import LineageError
 HANDOFF_VERSION = 1
 
 
+def _valid_rename_certificate(certificate):
+    required = {
+        "action_id",
+        "old_symbol",
+        "new_symbol",
+        "old_cusip",
+        "new_cusip",
+        "old_id",
+        "new_id",
+        "boundary",
+        "legal_date",
+        "labels",
+    }
+    if not isinstance(certificate, dict) or set(certificate) != required:
+        return False
+    if any(not isinstance(certificate[key], str) or not certificate[key] for key in required - {"labels"}):
+        return False
+    labels = certificate["labels"]
+    if not isinstance(labels, list) or not labels or len(labels) > 100:
+        return False
+    try:
+        days = [certificate["boundary"], certificate["legal_date"]]
+        previous, names = None, set()
+        for label in labels:
+            if (
+                not isinstance(label, list)
+                or len(label) != 3
+                or any(not isinstance(item, str) or not item for item in label)
+            ):
+                return False
+            name, first, last = label
+            if (
+                first >= last
+                or previous is not None
+                and first != previous
+                or name in names
+                or name == certificate["new_symbol"]
+            ):
+                return False
+            previous = last
+            names.add(name)
+            days.extend((first, last))
+        return (
+            all(date.fromisoformat(day).isoformat() == day for day in days)
+            and labels[-1][0] == certificate["old_symbol"]
+            and previous == certificate["boundary"]
+            and certificate["legal_date"] <= certificate["boundary"]
+            and all(
+                len(certificate[key]) == 9 and certificate[key].isascii() and certificate[key].isalnum()
+                for key in ("old_cusip", "new_cusip")
+            )
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _valid_rename_handoffs(previous):
+    """Validate each newly read envelope once, not its completed upstream proof."""
+    if "sourced_rename_ownership" not in previous or "sourced_rename_membership" not in previous:
+        return False
+    membership, source = previous["sourced_rename_membership"], previous["sourced_rename_ownership"]
+    certificates = {}
+    if membership is not None:
+        if (
+            not isinstance(membership, dict)
+            or set(membership) != {"version", "certificates", "issues"}
+            or type(membership["version"]) is not int
+            or membership["version"] != 1
+        ):
+            return False
+        if not isinstance(membership["certificates"], list) or not isinstance(membership["issues"], list):
+            return False
+        for item in membership["certificates"]:
+            if not _valid_rename_certificate(item) or item["action_id"] in certificates:
+                return False
+            certificates[item["action_id"]] = item
+        if any(
+            not isinstance(item, dict)
+            or set(item) != {"reason_code", "corporate_action_id"}
+            or any(not isinstance(value, str) or not value for value in item.values())
+            for item in membership["issues"]
+        ):
+            return False
+    if source is None:
+        return True
+    if (
+        not isinstance(source, dict)
+        or set(source) != {"version", "symbol", "first", "last", "action_id"}
+        or type(source["version"]) is not int
+        or source["version"] != 1
+        or source["symbol"] != previous.get("symbol")
+    ):
+        return False
+    if not isinstance(source["action_id"], str) or source["action_id"] not in certificates:
+        return False
+    certificate = certificates[source["action_id"]]
+    try:
+        return (
+            all(date.fromisoformat(source[key]).isoformat() == source[key] for key in ("first", "last"))
+            and certificate["new_symbol"] == source["symbol"]
+            and certificate["boundary"] <= source["last"]
+            and certificate["labels"][0][1] <= source["first"] <= source["last"]
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def validate_handoff(previous):
     """A declared completed handoff cannot fall back to legacy assembly."""
+    if previous and previous.get("schema_version", 0) >= 36 and (not _valid_rename_handoffs(previous)):
+        raise LineageError("incomplete sourced-rename ownership handoff; finish owning lineage recovery")
+    if previous and previous.get("schema_version", 0) >= 35:
+        certificate = previous.get("current_source_ownership")
+        dates_valid = certificate is None
+        if isinstance(certificate, dict):
+            try:
+                dates_valid = all(
+                    date.fromisoformat(certificate[key]).isoformat() == certificate[key]
+                    for key in ("first", "last", "departure_date")
+                )
+            except (KeyError, TypeError, ValueError):
+                dates_valid = False
+        if (
+            "current_source_ownership" not in previous
+            or certificate is not None
+            and not (
+                isinstance(certificate, dict)
+                and set(certificate)
+                == {
+                    "version",
+                    "symbol",
+                    "asset_id",
+                    "first",
+                    "last",
+                    "departed_asset_id",
+                    "departure_action_id",
+                    "departure_date",
+                }
+                and type(certificate.get("version")) is int
+                and certificate.get("version") == 1
+                and certificate.get("symbol") == previous.get("symbol")
+                and all(
+                    isinstance(certificate.get(key), str) and certificate[key]
+                    for key in (
+                        "asset_id",
+                        "first",
+                        "last",
+                        "departed_asset_id",
+                        "departure_action_id",
+                        "departure_date",
+                    )
+                )
+                and dates_valid
+                and certificate["asset_id"] != certificate["departed_asset_id"]
+                and certificate["departure_date"] < certificate["first"] <= certificate["last"]
+            )
+        ):
+            raise LineageError("incomplete current-source ownership handoff; finish owning lineage recovery")
     if not previous or "continuation_handoff_version" not in previous:
         return
     if (

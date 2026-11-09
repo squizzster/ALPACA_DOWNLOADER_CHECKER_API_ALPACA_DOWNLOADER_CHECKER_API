@@ -31,7 +31,11 @@ Pricing/lineage/serving `RUNTIME_VERSION` tracks releases; their `VERSION` const
 contracts. A runtime bump alone neither invalidates completed decisions nor authorizes reconstruction.
 Correlation likewise separates runtime releases from `CORRELATION_VERSION`, the rule implementation selected
 by authorized policy. Reuse optimizations preserve that rule identity and its completed assignments.
-Lineage computation revisions independently invalidate known defective derived decisions while preserving accepted pricing and metadata; the lineage owner records the revision on receipts and compact index entries. Readable schemas need not be reusable. Owner compatibility gates decide reuse; do not relabel stored artifacts
+An exact retained-policy applicability proof can preserve an earlier completed decision's original provenance;
+it authorizes neither executing the earlier policy as current nor promoting potentially affected decisions.
+Metadata membership and mapped-source ownership have separate completion handoffs in the selecting lineage
+receipt; a pricing change alone does not invalidate an unchanged metadata decision.
+Lineage computation revisions independently select owning reconstruction of earlier derived decisions while preserving accepted pricing and metadata; the lineage owner records the revision on receipts and compact index entries. Readable schemas need not be reusable. Owner compatibility gates decide reuse; do not relabel stored artifacts
 to make numbers agree.
 
 - [Pricing representation](docs/technical-contracts.md#standalone-artifacts): source and selected boundary versions may differ.

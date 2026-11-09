@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_alpaca_end_of_day_api as fixture
+from test_alpaca_succession_compatibility import retained_policy_runtime
 
 from alpaca_end_of_day import standalone
 from libs.alpaca_lineage_build import certificate_migration, pipeline, storage
@@ -66,6 +67,8 @@ def install_v76(case, *, serving=True, correlation=76):
 
 class CertificateMigrationTests(unittest.TestCase):
     def setUp(self):
+        # This exact 76/77 -> 79 transition must not follow future production policy.
+        retained_policy_runtime(self, computation_revision=2)
         self.case = fixture.NativeCase()
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)

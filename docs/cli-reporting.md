@@ -24,7 +24,9 @@ Each inspected boundary is coherent separately, not one cross-producer transacti
 [Status authority](../libs/alpaca_lineage_build/status.py): `inspect_status`.
 
 Canonical exit codes: 0 success; 1 failure/incomplete work; 2 invalid arguments; 3 busy store/reader/export lock.
-Standalone reads may wait with `--wait`; CSV exports always fail immediately when busy. Executable keyboard
+Store-writing commands wait for the store gate, emitting an immediate diagnostic and holding the `WAIT` heartbeat
+until acquisition; Ctrl-C cancels the wait before store or provider work. Standalone reads may wait with `--wait`;
+CSV exports always fail immediately when busy. Executable keyboard
 interruption exits 130. [Policy-lab exit codes](policy-lab.md#all-lineage-audit) differ.
 
 ## Optional update debug trace
@@ -148,7 +150,7 @@ reports zero with `eta_scope: "data_update"`. Subsequent registry Git work has i
 The estimator reads no store, debug file or provider endpoint and persists no timing cache.
 
 Canonical phase definitions and adapters live in
-[command_progress.py](../libs/alpaca_cli/command_progress.py): `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,
+[command_progress.py](../libs/alpaca_cli/command_progress.py): `WAIT`, `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,
 `PRICING`, `LINEAGE`, `MIGRATE`, `SUMMARY`, `UNIVERSE`, `STATUS`, `READ`, `RESOLVE`, `EXPORT`, `COMMIT`, `PUSH`.
 Existing callbacks replace held status with their stage, supported scalar counters and available counts.
 The adapter carries producer `completed`/`selected` counts into `current`/`total` when coherent, counts supplied

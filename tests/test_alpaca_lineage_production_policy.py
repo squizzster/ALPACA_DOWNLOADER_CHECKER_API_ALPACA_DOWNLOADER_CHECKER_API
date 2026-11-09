@@ -38,6 +38,7 @@ from libs.alpaca_lineage_build.correlation_policy import (
     load_authorized_policy,
     load_policy,
 )
+from libs.alpaca_lineage_build.correlation_policy_contract import POLICY_PROVENANCE_LINEAGE_VERSION
 from libs.alpaca_lineage_build.migration import (
     _locked_sources_for_migration,
     can_promote_observation_decision,
@@ -209,6 +210,13 @@ class ProductionPolicyAuthorizationTests(TestCase):
                 {"CURRENT": copy.deepcopy(evidence)},
                 policy=policy,
             )
+            for report in reports.values():
+                self.assertEqual(
+                    {"version": 1, "certificates": [], "issues": []}
+                    if policy.implementation_correlation_version >= 81
+                    else None,
+                    report.pop("sourced_rename_membership"),
+                )
             return {
                 symbol: {key: value for key, value in report.items() if key != "correlation_policy"}
                 for symbol, report in reports.items()
@@ -641,7 +649,7 @@ class PolicyRecoveryAndMigrationTests(TestCase):
                     storage._validate_journal_policy(changed)
 
         for schema_version in SUPPORTED_VERSIONS:
-            if schema_version >= VERSION:
+            if schema_version >= POLICY_PROVENANCE_LINEAGE_VERSION:
                 continue
             with self.subTest(schema_version=schema_version):
                 legacy = {

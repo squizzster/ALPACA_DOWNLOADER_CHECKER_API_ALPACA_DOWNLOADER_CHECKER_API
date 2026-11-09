@@ -1600,6 +1600,44 @@ def _same_symbol_handoff_action_shape(
     )
 
 
+def exact_same_symbol_endpoint_agreement(lineage, edge, *, endpoints=None):
+    """The shared independent endpoint gate for same-label substitutions.
+
+    Call only at the continuity producer. Completed certificates carry this
+    decision to chronology and membership without another lookup projection.
+    """
+    symbol = edge.predecessor_symbol
+    predecessor, successor = (
+        endpoints
+        if endpoints is not None
+        else (
+            exact_cusip_lookup_asset(lineage, edge.predecessor_cusip),
+            exact_cusip_lookup_asset(lineage, edge.successor_cusip),
+        )
+    )
+    current = exact_symbol_lookup_asset(lineage, symbol)
+    return not (
+        predecessor is None
+        or successor is None
+        or current is None
+        or predecessor.get("id") != edge.predecessor_asset_id
+        or successor.get("id") != edge.successor_asset_id
+        or current.get("id") != edge.successor_asset_id
+        or predecessor.get("symbol") != symbol
+        or successor.get("symbol") != symbol
+        or predecessor.get("status") != "inactive"
+        or predecessor.get("tradable") is not False
+        or successor.get("status") != "active"
+        or successor.get("tradable") is not True
+        or current.get("status") != "active"
+        or current.get("tradable") is not True
+        or predecessor.get("exchange") in (None, "", "OTC")
+        or predecessor.get("exchange") != successor.get("exchange")
+        or current.get("exchange") != successor.get("exchange")
+        or _known_owners(lineage, symbol) != {edge.predecessor_asset_id, edge.successor_asset_id}
+    )
+
+
 def _exact_same_symbol_handoff(
     lineage,
     intervals,
@@ -1638,29 +1676,7 @@ def _exact_same_symbol_handoff(
         for candidate in candidates
         if symbol in (candidate.predecessor_symbol, candidate.successor_symbol)
     ]
-    predecessor = exact_cusip_lookup_asset(lineage, edge.predecessor_cusip)
-    successor = exact_cusip_lookup_asset(lineage, edge.successor_cusip)
-    current = exact_symbol_lookup_asset(lineage, symbol)
-    if (
-        predecessor is None
-        or successor is None
-        or current is None
-        or predecessor.get("id") != edge.predecessor_asset_id
-        or successor.get("id") != edge.successor_asset_id
-        or current.get("id") != edge.successor_asset_id
-        or predecessor.get("symbol") != symbol
-        or successor.get("symbol") != symbol
-        or predecessor.get("status") != "inactive"
-        or predecessor.get("tradable") is not False
-        or successor.get("status") != "active"
-        or successor.get("tradable") is not True
-        or current.get("status") != "active"
-        or current.get("tradable") is not True
-        or predecessor.get("exchange") in (None, "", "OTC")
-        or predecessor.get("exchange") != successor.get("exchange")
-        or current.get("exchange") != successor.get("exchange")
-        or _known_owners(lineage, symbol) != {edge.predecessor_asset_id, edge.successor_asset_id}
-    ):
+    if not exact_same_symbol_endpoint_agreement(lineage, edge):
         return False
 
     own_intervals = [item for item in intervals if item.historical_symbol == symbol]
@@ -1718,6 +1734,10 @@ def assess_name_change_history(
     completed_event_scope=True,
 ):
     """Certify source bounds without reading reports produced by these edges."""
+    if not any(edge.edge_type == "name_change" for edge in candidates):
+        # A completed sourced substitution needs no numerical rename proof.
+        # Do not prepare price grids when this group has no rename candidate.
+        return NameChangeAssessment()
     # This is the independent continuity producer. Its complete selected source
     # inputs may prove a bounded rename; assignments derived from that same
     # disputed edge cannot prove it. Downstream adapters consume the resulting

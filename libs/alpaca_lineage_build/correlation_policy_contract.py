@@ -13,13 +13,15 @@ PRODUCTION_POLICY_SCHEMA_VERSION = 4
 PRODUCTION_POLICY_ID = "alpaca_security_correlation"
 PRODUCTION_POLICY_VERSION = "1.0.0"
 PRODUCTION_POLICY_ROLE = "production"
-PRODUCTION_EXECUTION_PROFILE = "correlation_v78_policy_engine"
-PRODUCTION_CORRELATION_VERSION = 78
-PRODUCTION_LINEAGE_VERSION = 34
+PRODUCTION_EXECUTION_PROFILE = "correlation_v81_policy_engine"
+PRODUCTION_CORRELATION_VERSION = 81
+PRODUCTION_LINEAGE_VERSION = 36
 POLICY_PROVENANCE_LINEAGE_VERSION = 34
 PRODUCTION_POLICY_SEMANTIC_SHA256 = "ebe0d4a6c14f32ee8e9e23ab842d4f01f1ef80ea264230cd87260c0187d4f307"
 
 RETAINED_V76_SEMANTIC_SHA256 = "ebe0d4a6c14f32ee8e9e23ab842d4f01f1ef80ea264230cd87260c0187d4f307"
+RETAINED_V78_SEMANTIC_SHA256 = "ebe0d4a6c14f32ee8e9e23ab842d4f01f1ef80ea264230cd87260c0187d4f307"
+RETAINED_V79_SEMANTIC_SHA256 = "ebe0d4a6c14f32ee8e9e23ab842d4f01f1ef80ea264230cd87260c0187d4f307"
 
 _ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
@@ -86,4 +88,70 @@ def reusable_policy(provenance: Any) -> bool:
     """Use semantic identity for compatibility; file bytes are provenance only."""
     return valid_policy_provenance(provenance) and all(
         provenance.get(key) == value for key, value in expected_policy_identity().items()
+    )
+
+
+def retained_v78_policy(provenance: Any) -> bool:
+    """Recognize completed v78 provenance without authorizing new execution.
+
+    The v79 rule is gated solely by the new sourced-successions extension,
+    which the v78 producer could not publish. Completed v78 decisions therefore
+    retain their meaning and provenance until their actual inputs change. This
+    exception must not follow future production versions automatically.
+    """
+    frozen = {
+        "schema_version": 4,
+        "policy_id": "alpaca_security_correlation",
+        "policy_version": "1.0.0",
+        "policy_role": "production",
+        "execution_profile": "correlation_v78_policy_engine",
+        "implementation": {"correlation_version": 78, "lineage_version": 34},
+        "semantic_sha256": RETAINED_V78_SEMANTIC_SHA256,
+    }
+    return (
+        PRODUCTION_CORRELATION_VERSION == 79
+        and PRODUCTION_LINEAGE_VERSION == 34
+        and valid_policy_provenance(provenance)
+        and all(provenance.get(key) == value for key, value in frozen.items())
+    )
+
+
+def retained_v79_policy(provenance: Any) -> bool:
+    """Recognize the exact prior policy, without authorizing its execution.
+
+    Decision compatibility additionally requires compact producer evidence that
+    the new closed-departure exception cannot apply. This policy identity alone
+    never approves reuse or promotion of an affected unresolved decision.
+    """
+    frozen = {
+        "schema_version": 4,
+        "policy_id": "alpaca_security_correlation",
+        "policy_version": "1.0.0",
+        "policy_role": "production",
+        "execution_profile": "correlation_v79_policy_engine",
+        "implementation": {"correlation_version": 79, "lineage_version": 34},
+        "semantic_sha256": RETAINED_V79_SEMANTIC_SHA256,
+    }
+    return (
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(80, 35), (81, 36)}
+        and valid_policy_provenance(provenance)
+        and all(provenance.get(key) == value for key, value in frozen.items())
+    )
+
+
+def retained_v80_policy(provenance):
+    """Only the exact completed prior producer, never new policy execution."""
+    frozen = {
+        "schema_version": 4,
+        "policy_id": "alpaca_security_correlation",
+        "policy_version": "1.0.0",
+        "policy_role": "production",
+        "execution_profile": "correlation_v80_policy_engine",
+        "implementation": {"correlation_version": 80, "lineage_version": 35},
+        "semantic_sha256": PRODUCTION_POLICY_SEMANTIC_SHA256,
+    }
+    return (
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) == (81, 36)
+        and valid_policy_provenance(provenance)
+        and all(provenance.get(key) == value for key, value in frozen.items())
     )

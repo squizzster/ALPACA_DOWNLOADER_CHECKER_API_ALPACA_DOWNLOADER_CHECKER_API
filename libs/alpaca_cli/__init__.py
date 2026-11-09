@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 36
+VERSION = 37
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -337,7 +337,21 @@ def _store_operation(args):
     mode = _store_operation_mode(args)
     if mode is None:
         return nullcontext()
-    return operation_lock(args.store, exclusive=mode == "exclusive")
+
+    def on_wait():
+        message = "Waiting for the store lock; press Ctrl-C to cancel."
+        reporter = getattr(args, "_lifecycle", None)
+        if reporter is not None:
+            reporter.update("WAIT", message=message, context={"estimated_remaining_seconds": "TBD"})
+            reporter.diagnostic(message)
+        event("store_lock_waiting")
+
+    return operation_lock(
+        args.store,
+        exclusive=mode == "exclusive",
+        wait=mode == "exclusive",
+        on_wait=on_wait if mode == "exclusive" else None,
+    )
 
 
 @traced("dispatch")
@@ -671,6 +685,8 @@ def main(argv=None):
         with span("store_operation"):
             with _store_operation(args):
                 event("store_lock_acquired")
+                if not csv_export:
+                    hold_operation(reporter, args)
                 result = dispatch(args)
         if isinstance(result, int):
             code = result

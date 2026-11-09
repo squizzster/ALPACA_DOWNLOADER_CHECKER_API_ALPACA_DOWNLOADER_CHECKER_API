@@ -26,13 +26,17 @@ class AppliedOwnershipIntervalRule:
     order: int
     name: str
     supporting_action_ids: tuple[str, ...]
+    supporting_fact_ids: tuple[str, ...] = ()
 
     def as_report_object(self) -> dict[str, Any]:
-        return {
+        result = {
             "order": self.order,
             "name": self.name,
             "supporting_corporate_action_ids": list(self.supporting_action_ids),
         }
+        if self.supporting_fact_ids:
+            result["supporting_sourced_fact_ids"] = list(self.supporting_fact_ids)
+        return result
 
 
 @dataclass(frozen=True)
@@ -63,7 +67,7 @@ class TickerOwnershipInterval:
                 for action_id in applied_rule.supporting_action_ids
             )
         )
-        return {
+        result = {
             "historical_symbol": self.historical_symbol,
             "start_date_inclusive": (
                 self.start_date_inclusive.isoformat() if self.start_date_inclusive is not None else None
@@ -74,6 +78,10 @@ class TickerOwnershipInterval:
             "supporting_corporate_action_ids": list(supporting_action_ids),
             "ownership_interval_rules": [applied_rule.as_report_object() for applied_rule in self.applied_rules],
         }
+        fact_ids = tuple(dict.fromkeys(fact for rule in self.applied_rules for fact in rule.supporting_fact_ids))
+        if fact_ids:
+            result["supporting_sourced_fact_ids"] = list(fact_ids)
+        return result
 
 
 @dataclass(frozen=True)
@@ -84,6 +92,7 @@ class _OwnershipIntervalRuleContext:
     uuid_lineage_edges: tuple = ()
     allow_closed_prior_action_anchored_suffix: bool = False
     closed_prior_terminal_conflicts: bool = True
+    sourced_successions: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -150,7 +159,7 @@ def _merge_exact_intervals(
             intervals_by_key[interval.interval_key()] = interval
             continue
         applied_rules_by_key = {
-            (rule.order, rule.name, rule.supporting_action_ids): rule
+            (rule.order, rule.name, rule.supporting_action_ids, rule.supporting_fact_ids): rule
             for rule in (*existing.applied_rules, *interval.applied_rules)
         }
         intervals_by_key[interval.interval_key()] = TickerOwnershipInterval(
@@ -805,6 +814,36 @@ def _apply_same_ticker_stock_merger_transition_rule(
     rule_name: str,
 ) -> _OwnershipIntervalRuleResult:
     intervals = list(existing_intervals)
+    # A completed sourced certificate carries both exact endpoints and its own
+    # provenance. This adapter assembles dated intervals; it never authenticates
+    # those endpoints again or converts the researched event into a merger.
+    for certificate in context.sourced_successions:
+        applied = AppliedOwnershipIntervalRule(
+            order=rule_order,
+            name=rule_name,
+            supporting_action_ids=(),
+            supporting_fact_ids=(certificate.source_fact_id,),
+        )
+        intervals.extend(
+            (
+                TickerOwnershipInterval(
+                    certificate.predecessor_symbol,
+                    certificate.predecessor_cusip,
+                    certificate.predecessor_asset_id,
+                    None,
+                    certificate.effective_date,
+                    (applied,),
+                ),
+                TickerOwnershipInterval(
+                    certificate.successor_symbol,
+                    certificate.successor_cusip,
+                    certificate.successor_asset_id,
+                    certificate.effective_date,
+                    None,
+                    (applied,),
+                ),
+            )
+        )
     transitions, evidence_issues = _parse_same_ticker_stock_merger_transitions(
         context,
         rule_order,
@@ -1136,6 +1175,7 @@ def prepare_ticker_ownership(
     include_action_anchored_current_suffix: bool = False,
     allow_closed_prior_action_anchored_suffix: bool = False,
     closed_prior_terminal_conflicts: bool = True,
+    sourced_successions: tuple = (),
 ) -> PreparedTickerOwnership:
     # This owner translates dated evidence into ticker-ownership intervals.
     # Intervals constrain row allocation; they do not themselves merge provider
@@ -1163,6 +1203,7 @@ def prepare_ticker_ownership(
         ),
         allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
         closed_prior_terminal_conflicts=closed_prior_terminal_conflicts,
+        sourced_successions=sourced_successions,
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
     established = None
@@ -1192,6 +1233,7 @@ def build_ticker_ownership_intervals(
     include_action_anchored_current_suffix: bool = False,
     allow_closed_prior_action_anchored_suffix: bool = False,
     closed_prior_terminal_conflicts: bool = True,
+    sourced_successions: tuple = (),
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
     prepared = prepare_ticker_ownership(
         lineage,
@@ -1200,5 +1242,6 @@ def build_ticker_ownership_intervals(
         include_action_anchored_current_suffix=include_action_anchored_current_suffix,
         allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
         closed_prior_terminal_conflicts=closed_prior_terminal_conflicts,
+        sourced_successions=sourced_successions,
     )
     return list(prepared.complete), list(prepared.complete_issues)

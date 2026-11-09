@@ -88,6 +88,7 @@ FIELDS.update({"expected_" + name: int for name in EXPECTED_FIELDS})
 PHASES = {
     name: Phase(message, FIELDS)
     for name, message in {
+        "WAIT": "Waiting for the store lock; press Ctrl-C to cancel.",
         "UPDATE": "Updating pricing, lineage and the serving catalogue.",
         "RECOVERY": "Recovering interrupted publications.",
         "CATALOGUE": "Reading or maintaining the serving catalogue.",

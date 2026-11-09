@@ -37,7 +37,7 @@ from .terminal_episode import (
     has_informative_trading,
     has_prolonged_carry_forward,
 )
-from .ticker_reuse_gap import adjustment_session_consensus
+from .ticker_reuse_gap import AdjustmentSessionConsensus
 
 
 def _source_context(authenticated_download) -> dict[str, Any]:
@@ -241,14 +241,20 @@ def build_security_correlation_report(
         )
 
     authenticated_work_items = cache.prepared_source(authenticated_work_items)
-    session_consensus = adjustment_session_consensus(
-        (
-            (
-                f"{source['adjustment']}:{source['data_file']}",
-                session_dates,
-            )
-            for _, source, session_dates in authenticated_work_items
+    accepted_current_source = (
+        symbol in cache.accepted_current_source_ownership or symbol in cache.accepted_rename_sources
+    )
+    # The continuation owner already accepted the unchanged complete prefix and
+    # the new grid/seam. Re-hashing that historical session set is not a new fact.
+    session_consensus = (
+        AdjustmentSessionConsensus(
+            len(authenticated_work_items),
+            tuple(f"{source['adjustment']}:{source['data_file']}" for _, source, _ in authenticated_work_items),
+            True,
+            None,
         )
+        if accepted_current_source
+        else cache.source_session_consensus(authenticated_work_items)
     )
     distinct_uuid_transition = assess_one_session_distinct_uuid_transition(
         lineage,
@@ -264,59 +270,79 @@ def build_security_correlation_report(
 
     # Incremental runs contain only the open boundary; they cannot establish a
     # whole-source prefix. Earlier published assignments remain trusted as-is.
-    complete_source = all(
+    complete_source = not accepted_current_source and all(
         descriptor.get("rows", len(download.rows)) == len(download.rows)
         for download, _, _ in authenticated_work_items
         for descriptor in local_downloads
         if isinstance(descriptor, dict) and descriptor.get("file") == download.path.name
     )
-    predecessor_prefixes = assess_predecessor_prefixes(
-        symbol,
-        lineage,
-        intervals,
-        uuid_lineage_edges,
-        authenticated_work_items,
-        correlation_loader=correlation_loader if complete_source else None,
-        source_rows_loader=source_rows_loader,
+    predecessor_prefixes = (
+        ()
+        if accepted_current_source
+        else assess_predecessor_prefixes(
+            symbol,
+            lineage,
+            intervals,
+            uuid_lineage_edges,
+            authenticated_work_items,
+            correlation_loader=correlation_loader if complete_source else None,
+            source_rows_loader=source_rows_loader,
+        )
     )
-    mapped_continuations = assess_mapped_continuations(
-        symbol,
-        lineage,
-        intervals,
-        uuid_lineage_edges,
-        authenticated_work_items,
-        correlation_loader=correlation_loader if complete_source else None,
-        source_rows_loader=source_rows_loader,
-        include_successor_prefix=cache.mapped_successor_prefixes,
-        include_successor_split_chain=cache.mapped_successor_split_chains,
-        include_active_successor_prefix=cache.active_successor_prefixes,
+    mapped_continuations = (
+        ()
+        if accepted_current_source
+        else assess_mapped_continuations(
+            symbol,
+            lineage,
+            intervals,
+            uuid_lineage_edges,
+            authenticated_work_items,
+            correlation_loader=correlation_loader if complete_source else None,
+            source_rows_loader=source_rows_loader,
+            include_successor_prefix=cache.mapped_successor_prefixes,
+            include_successor_split_chain=cache.mapped_successor_split_chains,
+            include_active_successor_prefix=cache.active_successor_prefixes,
+        )
     )
-    independent_history = assess_independent_historical_intervals(
-        symbol,
-        lineage,
-        intervals,
-        uuid_lineage_edges,
-        authenticated_work_items,
-        correlation_loader=correlation_loader if complete_source else None,
-        source_rows_loader=source_rows_loader,
+    independent_history = (
+        ()
+        if accepted_current_source
+        else assess_independent_historical_intervals(
+            symbol,
+            lineage,
+            intervals,
+            uuid_lineage_edges,
+            authenticated_work_items,
+            correlation_loader=correlation_loader if complete_source else None,
+            source_rows_loader=source_rows_loader,
+        )
     )
-    independent_history += assess_independent_donor_prefixes(
-        symbol,
-        lineage,
-        intervals,
-        uuid_lineage_edges,
-        authenticated_work_items,
-        correlation_loader=correlation_loader if complete_source else None,
-        source_rows_loader=source_rows_loader,
+    independent_history += (
+        ()
+        if accepted_current_source
+        else assess_independent_donor_prefixes(
+            symbol,
+            lineage,
+            intervals,
+            uuid_lineage_edges,
+            authenticated_work_items,
+            correlation_loader=correlation_loader if complete_source else None,
+            source_rows_loader=source_rows_loader,
+        )
     )
-    independent_history += assess_bridged_initial_prefix(
-        symbol,
-        lineage,
-        intervals,
-        uuid_lineage_edges,
-        authenticated_work_items,
-        correlation_loader=correlation_loader if complete_source else None,
-        source_rows_loader=source_rows_loader,
+    independent_history += (
+        ()
+        if accepted_current_source
+        else assess_bridged_initial_prefix(
+            symbol,
+            lineage,
+            intervals,
+            uuid_lineage_edges,
+            authenticated_work_items,
+            correlation_loader=correlation_loader if complete_source else None,
+            source_rows_loader=source_rows_loader,
+        )
     )
     bridged_episodes = (
         assess_bridged_traded_episodes(symbol, lineage, intervals, authenticated_work_items)
@@ -354,20 +380,43 @@ def build_security_correlation_report(
         if complete_source
         else None
     )
-    closed_history_evidence = (
-        complete_source
-        and any(
+    if complete_source and authenticated_work_items.closed_history_evidence is None:
+        authenticated_work_items.closed_history_evidence = any(
             source["adjustment"] == "raw" and has_informative_trading(download.rows)
             for download, source, _ in authenticated_work_items
-        )
-        and all(
+        ) and all(
             not has_prolonged_carry_forward(rows)
             for rows in {
                 id(download.rows): download.rows for download, _, _ in authenticated_work_items
             }.values()
         )
+    closed_history_evidence = accepted_current_source or (
+        complete_source and authenticated_work_items.closed_history_evidence
     )
-    retired_lower_bound = retired_history_lower_bound(symbol, intervals, authenticated_work_items)
+    current_source_ownership = cache.current_source_ownership(
+        symbol,
+        supplied_lineage,
+        intervals,
+        uuid_lineage_edges,
+        authenticated_work_items,
+        session_consensus,
+        complete=complete_source,
+        informative=closed_history_evidence,
+        evidence_issues=evidence_issues,
+    )
+    sourced_rename_ownership = cache.rename_source(
+        symbol,
+        supplied_lineage,
+        authenticated_work_items,
+        session_consensus,
+        complete=complete_source,
+        informative=closed_history_evidence,
+    )
+    retired_lower_bound = (
+        None
+        if accepted_current_source
+        else retired_history_lower_bound(symbol, intervals, authenticated_work_items)
+    )
     retired_continuation = (
         assess_retired_continuation(
             symbol,
@@ -451,6 +500,9 @@ def build_security_correlation_report(
                 ),
                 row_rules=row_correlation_rules,
                 established_segments=established,
+                current_source_ownership=current_source_ownership,
+                sourced_rename_histories=cache._rename_histories.get(symbol, ()),
+                sourced_rename_mapping=cache._rename_mappings.get(symbol),
             )
         )
         if accepted is None and not established:
@@ -505,6 +557,9 @@ def build_security_correlation_report(
 
     return {
         "correlation_version": CORRELATION_VERSION,
+        "current_source_ownership": current_source_ownership.to_report() if current_source_ownership else None,
+        "sourced_rename_ownership": sourced_rename_ownership,
+        "sourced_rename_membership": cache.rename_membership_report(supplied_lineage),
         "symbol": symbol,
         "boundary": {
             "owner": "alpaca_end_of_day_security_correlation",

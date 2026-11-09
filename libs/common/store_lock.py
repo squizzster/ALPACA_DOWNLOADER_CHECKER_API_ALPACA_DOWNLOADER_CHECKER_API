@@ -11,8 +11,8 @@ class StoreBusyError(RuntimeError):
 
 
 @contextmanager
-def operation_lock(store, *, exclusive):
-    """Take the store-wide gate without waiting or interpreting path existence as state."""
+def operation_lock(store, *, exclusive, wait=False, on_wait=None):
+    """Take the kernel gate, optionally waiting after one nonblocking attempt."""
     # The kernel lock is authority, not the persistent pathname. DO NOT remove
     # a supposedly stale lock file: replacing its inode lets two owners proceed.
     # This outer gate orders writers/exports; selected owner locks still protect
@@ -28,7 +28,14 @@ def operation_lock(store, *, exclusive):
                 (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB,
             )
         except BlockingIOError as error:
-            raise StoreBusyError("store is busy with an export or update; retry later") from error
+            if not wait:
+                raise StoreBusyError("store is busy with an export or update; retry later") from error
+            if on_wait is not None:
+                on_wait()
+            # Keep this descriptor/inode and sleep in the kernel. Repeated
+            # probes or pathname checks establish no new scheduling fact.
+            # KeyboardInterrupt still crosses the outer descriptor cleanup.
+            fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         try:
             yield
         finally:

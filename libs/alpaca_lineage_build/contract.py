@@ -13,6 +13,11 @@ from .correlation_policy_contract import (
     PRODUCTION_CORRELATION_VERSION,
     PRODUCTION_LINEAGE_VERSION,
     PRODUCTION_POLICY_SEMANTIC_SHA256,
+    RETAINED_V78_SEMANTIC_SHA256,
+    RETAINED_V79_SEMANTIC_SHA256,
+    retained_v78_policy,
+    retained_v79_policy,
+    retained_v80_policy,
     reusable_policy,
     valid_sha256,
 )
@@ -20,11 +25,11 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 63
-COMPUTATION_REVISION = 1
+RUNTIME_VERSION = 67
+COMPUTATION_REVISION = 2
 # A runtime repair is not a new data policy. DO NOT force completed stores through
 # reconstruction merely to align runtime and persisted publication version numbers.
-VERSION = 34  # Persisted publication and policy contract, independent of runtime releases.
+VERSION = 36  # Persisted publication and policy contract, independent of runtime releases.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -79,14 +84,122 @@ def reusable_computation(document: dict) -> bool:
     )
 
 
-def reusable_decision(document: dict) -> bool:
-    """Require both the runtime tuple and the authorized policy meaning."""
+def current_decision(document: dict) -> bool:
+    """Recognize output computed under the current authorized policy."""
     return (
         isinstance(document, dict)
         and reusable_computation(document)
         and reusable_versions(document.get("versions"))
         and reusable_policy(document.get("correlation_policy"))
     )
+
+
+def retained_v78_decision(document: dict) -> bool:
+    """Recognize the frozen revision-1 compatibility boundary only.
+
+    Receipt/index producers accepted these inputs before sourced successions
+    existed. Consumers must not open evidence or prices to prove that absence
+    again. Newly submitted facts invalidate the selected group's evidence at its
+    existing owning reuse gate, before this completed result can be consumed.
+    Revision 2 deliberately retires this reuse path and selects reconstruction.
+    """
+    return (
+        isinstance(document, dict)
+        and VERSION == 34
+        and REPORT_VERSION == 4
+        and COMPUTATION_REVISION == 1
+        and isinstance(document.get("versions"), dict)
+        and document["versions"].get("correlation") == 78
+        and reusable_computation(document)
+        and document.get("versions")
+        == {
+            "lineage": 34,
+            "identity_report": 4,
+            "correlation": 78,
+            "correlation_policy_sha256": RETAINED_V78_SEMANTIC_SHA256,
+            "calendar_sha256": us_market_hours_sha256(),
+        }
+        and retained_v78_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v79_decision(document: dict) -> bool:
+    """Keep provably unaffected completed decisions under their original policy.
+
+    The v80 exception can change only unresolved rows in a source with distinct
+    departing and current UUIDs. The accepted receipt/index already supplies both
+    facts. Consume that compact handoff; never reopen evidence, assignments or
+    prices to prove applicability again. Changed inputs retain their ordinary
+    owning reconciliation gates. Missing compact evidence fails closed.
+    """
+    if not (
+        isinstance(document, dict)
+        and (VERSION, PRODUCTION_CORRELATION_VERSION) in {(35, 80), (36, 81)}
+        and COMPUTATION_REVISION == 2
+        and reusable_computation(document)
+        and document.get("versions")
+        == {
+            "lineage": 34,
+            "identity_report": REPORT_VERSION,
+            "correlation": 79,
+            "correlation_policy_sha256": RETAINED_V79_SEMANTIC_SHA256,
+            "calendar_sha256": us_market_hours_sha256(),
+        }
+        and REPORT_VERSION == 4
+        and retained_v79_policy(document.get("correlation_policy"))
+    ):
+        return False
+    counts = document if "unresolved_rows" in document else document.get("projection", {})
+    unresolved = counts.get("unresolved_rows") if isinstance(counts, dict) else None
+    assets = document.get("asset_ids")
+    members = document.get("group_members")
+    if (
+        members is None
+        and isinstance(document.get("input_sources"), dict)
+        and isinstance(document.get("unavailable_pricing", {}), dict)
+    ):
+        members = (*document["input_sources"], *document.get("unavailable_pricing", {}))
+    return (
+        (type(unresolved) is int and unresolved == 0)
+        or (isinstance(assets, list) and len(assets) != 2)
+        or (isinstance(members, (list, tuple)) and len(members) != 2)
+    )
+
+
+def retained_v80_decision(document):
+    """The v80 producer cannot publish the new sourced-rename fact kind.
+
+    New facts invalidate their selected group at metadata ingress. Unchanged
+    completed v80 calculations retain their provenance without body reads.
+    """
+    return (
+        isinstance(document, dict)
+        and VERSION == 36
+        and COMPUTATION_REVISION == 2
+        and REPORT_VERSION == 4
+        and reusable_computation(document)
+        and document.get("versions")
+        == {
+            "lineage": 35,
+            "identity_report": 4,
+            "correlation": 80,
+            "correlation_policy_sha256": PRODUCTION_POLICY_SEMANTIC_SHA256,
+            "calendar_sha256": us_market_hours_sha256(),
+        }
+        and retained_v80_policy(document.get("correlation_policy"))
+    )
+
+
+def reusable_decision(document: dict) -> bool:
+    """Accept current outputs and exactly applicable retained-policy handoffs."""
+    if isinstance(document, dict) and isinstance(document.get("versions"), dict):
+        if document["versions"].get("correlation") == 78:
+            return retained_v78_decision(document)
+        if document["versions"].get("correlation") == 80 and PRODUCTION_CORRELATION_VERSION == 81:
+            return retained_v80_decision(document)
+        if document["versions"].get("correlation") == 79 and PRODUCTION_CORRELATION_VERSION in (80, 81):
+            return retained_v79_decision(document)
+    return current_decision(document)
 
 
 def reusable_metadata_versions(published: dict) -> bool:

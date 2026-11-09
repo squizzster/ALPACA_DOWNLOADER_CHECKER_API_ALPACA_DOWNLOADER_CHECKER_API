@@ -23,7 +23,7 @@ emit deterministic differences. Authorities: [compare](../libs/alpaca_lineage_po
 
 ## Current schema-4 policies
 
-[Canonical production YAML](../resources/alpaca_security_correlation_policy.yaml) binds correlation-78/lineage-34.
+[Canonical production YAML](../resources/alpaca_security_correlation_policy.yaml) binds correlation-79/lineage-34.
 It retains the frozen correlation-59/lineage-33 fixed-point structure and adds the strict exact same-symbol handoff
 certificate, bounded-entry form, bounded shared-UUID histories, complete-current-source early-successor bridge and
 terminal carry-forward exclusion, post-padding bounded alias, vacant-ticker non-observation, pre-entry carry-forward
@@ -58,7 +58,7 @@ Explicit legacy resources remain executable:
 [experimental schema 3](../resources/alpaca_security_correlation_experimental_v58_legacy_policy.yaml).
 The v58 `correlation_v58_single_phase` profile runs one fixed point with frozen first-three ownership rules and
 v58 row/default/terminal cascade, never v59 reconciliation/fourth-rule fallback. Focused comparison may use a
-completed 33/59, frozen 34/76 or 34/77, or current 34/78 baseline while replaying historical candidates from trusted inputs. This neither
+completed 33/59, frozen 34/76 or 34/77, or current 34/79 baseline while replaying historical candidates from trusted inputs. This neither
 rolls production back, authorizes publication nor admits v58 to all-lineage audit.
 
 ## Corrected candidate profile
@@ -128,7 +128,7 @@ identity invariants; and mapping correction the candidate would require.
 does not weaken `parity` or exit status. Its sole non-exact allowance remains the historical first-three versus
 first-four rule-order provenance: every group receipt must be uniform, every other diagnostic/decision dimension
 must match, and there may be no reconciliation, selected suffix, applied interval or second phase in the fallback
-trace. This comparison classification does not authorize an earlier receipt for current 34/78 publication;
+trace. This comparison classification does not authorize an earlier receipt for current 34/79 publication;
 current production requires recalculation. Raw differences remain reported.
 
 Audit conclusions: `exact_parity`, `decision_parity_with_migrated_diagnostics`, `differences`.

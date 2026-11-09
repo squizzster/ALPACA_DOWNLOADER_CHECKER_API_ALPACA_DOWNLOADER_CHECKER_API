@@ -6,6 +6,9 @@ from zoneinfo import ZoneInfo
 
 from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY
 
+from . import sourced_rename
+from .closed_departure import METHOD as CURRENT_SOURCE_METHOD
+from .closed_departure import CurrentSourceOwnership, assess_current_source, continue_current_source
 from .current_symbol_reuse import (
     CURRENT_SYMBOL_REUSE_RULE_NAME,
     CurrentSymbolReuseAssessment,
@@ -43,6 +46,7 @@ from .source_continuity import (
     retired_source_identity,
     same_symbol_continuation_ids,
 )
+from .sourced_succession import certify_sourced_successions
 from .terminal_episode import (
     VACANT_TICKER_BRIDGE_REASON,
     DatedDeparturePrefix,
@@ -60,6 +64,7 @@ from .ticker_reuse_gap import (
     INACTIVE_CURRENT_SUFFIX_RULE_NAME,
     AdjustmentSessionConsensus,
     TickerReuseGapAssessment,
+    adjustment_session_consensus,
     assess_ticker_reuse_gap,
 )
 from .uuid_lineage import (
@@ -160,6 +165,8 @@ class _RowRuleContext:
     terminal_carry_forward_exclusions: tuple = ()
     pre_entry_carry_forward_exclusions: tuple = ()
     closed_prior_action_anchored_suffixes: bool = False
+    current_source_ownership: CurrentSourceOwnership | None = None
+    sourced_rename_mapping: sourced_rename.RenameCertificate | sourced_rename.DisputedMapping | None = None
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -254,6 +261,9 @@ class CorrelationCache:
         active_successor_prefixes=True,
         closed_prior_action_anchored_suffixes=True,
         stable_phase_handoffs=True,
+        sourced_succession_certificates=True,
+        sourced_rename_certificates=True,
+        closed_departure_current_sources=True,
     ):
         self.ownership_interval_rules = ownership_interval_rules
         self.row_correlation_rules = row_correlation_rules
@@ -278,6 +288,18 @@ class CorrelationCache:
         self.active_successor_prefixes = active_successor_prefixes
         self.closed_prior_action_anchored_suffixes = closed_prior_action_anchored_suffixes
         self.stable_phase_handoffs = stable_phase_handoffs
+        self.sourced_succession_certificates = sourced_succession_certificates
+        self.sourced_rename_certificates = sourced_rename_certificates
+        self._rename_group = None
+        self._rename_sources = {}
+        self._rename_mappings = {}
+        self._rename_histories = {}
+        self.accepted_rename_sources = {}
+        self.accepted_rename_membership = None
+        self._rename_membership_report = None
+        self.selected_evidence = None
+        self.rename_scope_complete = True
+        self.closed_departure_current_sources = closed_departure_current_sources
         self._sessions = {}
         self._downloads = {}
         self._decisions = {}
@@ -285,8 +307,97 @@ class CorrelationCache:
         self._name_change_sources = {}
         self._name_changes = {}
         self._continuity = {}
+        self._uuid_candidates = {}
+        self._sourced_successions = {}
         self._source_work = {}
         self.accepted_identity_memberships = {}
+        self.accepted_current_source_ownership = {}
+        self._current_source_ownership = {}
+        self._session_consensus = {}
+
+    def rename_certificates(self, lineage):
+        if not self.sourced_rename_certificates:
+            return (), ()
+        if self._rename_group is None:
+            if self.accepted_rename_membership is not None:
+                self._rename_group = (
+                    tuple(
+                        sourced_rename.RenameCertificate.from_report(v)
+                        for v in self.accepted_rename_membership["certificates"]
+                    ),
+                    tuple(self.accepted_rename_membership["issues"]),
+                )
+            else:
+                self._rename_group = sourced_rename.certify_group(
+                    (self.selected_evidence or {"selected": lineage}).values(),
+                    complete=self.rename_scope_complete,
+                )
+        return self._rename_group
+
+    def rename_membership_report(self, lineage):
+        if not self.sourced_rename_certificates:
+            return None
+        if self._rename_membership_report is None:
+            certificates, issues = self.rename_certificates(lineage)
+            self._rename_membership_report = self.accepted_rename_membership or {
+                "version": 1,
+                "certificates": [c.to_report() for c in certificates],
+                "issues": list(issues),
+            }
+        return self._rename_membership_report
+
+    def rename_source(self, symbol, lineage, *args, **kwargs):
+        if not self.sourced_rename_certificates:
+            return None
+        if symbol not in self._rename_sources:
+            accepted = self.accepted_rename_sources.get(symbol)
+            self._rename_mappings[symbol] = (
+                next(c for c in self.rename_certificates(lineage)[0] if c.action_id == accepted[0]["action_id"])
+                if accepted is not None
+                else sourced_rename.mapped_certificate(
+                    symbol, lineage, self.rename_certificates(lineage)[0], args[0]
+                )
+            )
+            self._rename_sources[symbol] = (
+                {**accepted[0], "last": max(accepted[0]["last"], accepted[1] or accepted[0]["last"])}
+                if accepted is not None
+                else sourced_rename.source_history(symbol, self._rename_mappings[symbol], *args, **kwargs)
+            )
+            self._rename_histories[symbol] = sourced_rename.histories(
+                self._rename_sources[symbol], self._rename_mappings[symbol]
+            )
+        return self._rename_sources[symbol]
+
+    def source_session_consensus(self, items):
+        ordered = sorted(items, key=lambda item: item[0].path.name)
+        key = tuple(id(item[0]) for item in ordered)
+        if key not in self._session_consensus:
+            self._session_consensus[key] = adjustment_session_consensus(
+                (f"{source['adjustment']}:{download.path.name}", sessions)
+                for download, source, sessions in ordered
+            )
+        return self._session_consensus[key]
+
+    def current_source_ownership(self, symbol, lineage, *args, **kwargs):
+        if not self.closed_departure_current_sources:
+            return None
+        # The selected group and its source/evidence bindings are immutable.
+        # Preserve even a completed negative assessment across views and phases.
+        if symbol not in self._current_source_ownership:
+            accepted = self.accepted_current_source_ownership.get(symbol)
+            self._current_source_ownership[symbol] = (
+                continue_current_source(accepted[0], lineage, accepted[1])
+                if accepted is not None
+                else assess_current_source(
+                    symbol,
+                    lineage,
+                    *args,
+                    complete_sources=self._name_change_sources,
+                    source_consensus=self.source_session_consensus,
+                    **kwargs,
+                )
+            )
+        return self._current_source_ownership[symbol]
 
     def prepared_source(self, items):
         from .terminal_episode import PreparedSource
@@ -299,8 +410,17 @@ class CorrelationCache:
     def inherit_continuity(self, established):
         # Same selected inputs and established rules; only the certified fourth
         # rule changes. Reuse the completed chronology and continuity authorities.
+        self._rename_group = established._rename_group
+        self._rename_membership_report = established._rename_membership_report
+        self._rename_sources = dict(established._rename_sources)
+        self._rename_mappings = dict(established._rename_mappings)
+        self._rename_histories = dict(established._rename_histories)
         self._continuity = dict(established._continuity)
+        self._uuid_candidates = dict(established._uuid_candidates)
+        self._sourced_successions = dict(established._sourced_successions)
         self._source_work = dict(established._source_work)
+        self._current_source_ownership = dict(established._current_source_ownership)
+        self._session_consensus = dict(established._session_consensus)
 
     def register_name_change_source(self, symbol, downloads, *, complete):
         if not complete:
@@ -326,7 +446,33 @@ class CorrelationCache:
         if cached is None:
             shared = self._continuity.get(id(lineage)) if self.stable_phase_handoffs else None
             if shared is None:
-                candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
+                if id(lineage) not in self._uuid_candidates:
+                    candidates, edge_issues = build_uuid_lineage_edges(lineage, candidates_only=True)
+                    # The completed graph is authoritative even when later
+                    # preparation fails. Retain immutable producer values and
+                    # copy only their containers before adding sourced edges.
+                    self._uuid_candidates[id(lineage)] = (lineage, tuple(candidates), tuple(edge_issues))
+                _, accepted_candidates, accepted_issues = self._uuid_candidates[id(lineage)]
+                candidates, edge_issues = list(accepted_candidates), list(accepted_issues)
+                if id(lineage) not in self._sourced_successions:
+                    successions, succession_issues = (
+                        certify_sourced_successions(lineage)
+                        if self.sourced_succession_certificates
+                        else ((), ())
+                    )
+                    # Retain the completed certificate immediately. A peer or
+                    # later chronology failure cannot authorize its proof again.
+                    self._sourced_successions[id(lineage)] = (lineage, successions, succession_issues)
+                _, successions, succession_issues = self._sourced_successions[id(lineage)]
+                renames, rename_issues = self.rename_certificates(lineage)
+                if renames:
+                    renamed_actions = {certificate.action_id for certificate in renames}
+                    candidates = [edge for edge in candidates if edge.action_id not in renamed_actions]
+                    candidates.extend(certificate.identity_edge() for certificate in renames)
+                candidates.extend(edge for c in renames for edge in c.label_edges())
+                edge_issues.extend(rename_issues)
+                candidates.extend(successions)
+                edge_issues.extend(succession_issues)
             else:
                 _, candidates, edges, edge_issues, assessment, prepared = shared
             # DO NOT REMOVE WITHOUT USER AUTH!#
@@ -348,8 +494,15 @@ class CorrelationCache:
                         include_action_anchored_current_suffix=True,
                         allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
                         closed_prior_terminal_conflicts=self.completed_event_scope,
+                        sourced_successions=successions,
                     )
                 )
+                if shared is None and renames:
+                    prepared = replace(
+                        prepared,
+                        established=sourced_rename.apply_chronology(prepared.established, renames),
+                        complete=sourced_rename.apply_chronology(prepared.complete, renames),
+                    )
                 intervals = list(prepared.complete)
                 phase_intervals = {
                     False: (prepared.established, prepared.established_issues),
@@ -363,6 +516,7 @@ class CorrelationCache:
                     include_action_anchored_current_suffix=include_action_anchored_current_suffix,
                     allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
                     closed_prior_terminal_conflicts=self.completed_event_scope,
+                    sourced_successions=successions,
                 )
                 phase_intervals = {include_action_anchored_current_suffix: (intervals, interval_issues)}
             assessment = (
@@ -371,7 +525,7 @@ class CorrelationCache:
                 else assess_name_change_history(
                     lineage,
                     intervals,
-                    candidates,
+                    [edge for edge in candidates if edge.action_id not in {c.action_id for c in renames}],
                     self._name_change_sources,
                     exact_same_symbol_handoffs=self.exact_same_symbol_handoffs,
                     bounded_entry_same_symbol_handoffs=self.bounded_entry_same_symbol_handoffs,
@@ -390,6 +544,10 @@ class CorrelationCache:
                 )
             )
             if shared is None:
+                if renames:
+                    assessment = replace(
+                        assessment, accepted=assessment.accepted | frozenset(c.action_id for c in renames)
+                    )
                 edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)
                 edge_issues.extend(continuity_issues)
                 if self.stable_phase_handoffs:
@@ -546,6 +704,13 @@ def _apply_name_change_boundary_conflict_rule(context: _RowRuleContext) -> _RowD
 
 
 def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision | None:
+    if (
+        isinstance(context.sourced_rename_mapping, sourced_rename.DisputedMapping)
+        and context.session_date < context.sourced_rename_mapping.boundary_date
+    ):
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH, reason_codes=("sourced_rename_disputed_predecessor_membership",)
+        )
     historical_gap = context.historical_asof_gap
     if historical_gap is not None and historical_gap.contains_unresolved_tail(context.session_date):
         mapped = [item for item in context.mapped_continuations if item.contains(context.session_date)]
@@ -741,14 +906,20 @@ def _dated_same_symbol_predecessors(
             action for rule in predecessor.applied_rules for action in rule.supporting_action_ids
         }
         successor_actions = {action for rule in successor.applied_rules for action in rule.supporting_action_ids}
+        predecessor_facts = {fact for rule in predecessor.applied_rules for fact in rule.supporting_fact_ids}
+        successor_facts = {fact for rule in successor.applied_rules for fact in rule.supporting_fact_ids}
         if not any(
-            edge.edge_type in ("name_change", "stock_merger")
+            edge.edge_type in ("name_change", "stock_merger", "holding_company_succession")
             and edge.effective_date == boundary
             and (edge.predecessor_symbol, edge.predecessor_cusip, edge.predecessor_asset_id)
             == predecessor.identity_key()
             and (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
             == successor.identity_key()
-            and edge.action_id in predecessor_actions & successor_actions
+            and (
+                edge.action_id in predecessor_actions & successor_actions
+                if edge.source_fact_id is None
+                else edge.source_fact_id in predecessor_facts & successor_facts
+            )
             for edge in edges
         ):
             return frozenset()
@@ -759,6 +930,16 @@ def _dated_same_symbol_predecessors(
 
 
 def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecision | None:
+    if (
+        context.sourced_rename_mapping is not None
+        and context.session_date < context.sourced_rename_mapping.boundary_date
+    ):
+        # A current entity mapping cannot fall back to an unrelated previous
+        # occupant of its request label. Only source-certified prior intervals
+        # may allocate this mapped prefix; membership alone does not own rows.
+        return _RowDecision(
+            branch=UNCORRELATED_BRANCH, reason_codes=("sourced_rename_mapped_history_requires_source_scope",)
+        )
     requested_symbol_matches = _interval_matches(
         context.intervals,
         context.session_date,
@@ -842,6 +1023,16 @@ def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision 
             candidates=tuple(sorted(excluded_candidates)),
         )
     own_intervals = [item for item in context.intervals if item.historical_symbol == context.requested_symbol]
+    current_source = context.current_source_ownership
+    if current_source is not None and current_source.contains(context.session_date):
+        return _RowDecision(
+            branch=CORRELATED_BRANCH,
+            asset_id=current_source.asset_id,
+            identity_confidence="source_bound_current_candidate",
+            warning_codes=("missing_dated_ticker_ownership_interval",),
+            historical_symbol=current_source.symbol,
+            correlation_method=CURRENT_SOURCE_METHOD,
+        )
     if any(
         rule.name == "name_change_ticker_transition" for item in own_intervals for rule in item.applied_rules
     ) and not any(item.contains(context.session_date) for item in own_intervals):
@@ -1367,6 +1558,9 @@ def correlate_download_rows(
     name_change_assessment: NameChangeAssessment = NameChangeAssessment(),
     row_rules: tuple[RowCorrelationRule, ...] | None = None,
     established_segments: tuple[dict[str, Any], ...] = (),
+    current_source_ownership: CurrentSourceOwnership | None = None,
+    sourced_rename_histories=(),
+    sourced_rename_mapping=None,
 ) -> dict[str, list[dict[str, Any]]]:
     # This owner allocates rows from supplied intervals and bounded certificates.
     # Those proofs belong to the same selected group; DO NOT reacquire evidence
@@ -1389,7 +1583,7 @@ def correlate_download_rows(
         *independent_history,
         *(
             IndependentHistoricalInterval(item.first, item.last, item.interval)
-            for item in name_change_assessment.histories
+            for item in (*name_change_assessment.histories, *sourced_rename_histories)
             if item.symbol == requested_symbol
         ),
     )
@@ -1458,21 +1652,29 @@ def correlate_download_rows(
         )
     )
 
-    ticker_reuse_gap = assess_ticker_reuse_gap(
-        tuple(session_date for _, _, session_date in parsed_rows),
-        source,
-        lineage,
-        intervals,
-        adjustment_consensus,
-        evidence_issues,
+    ticker_reuse_gap = (
+        None
+        if current_source_ownership is not None
+        else assess_ticker_reuse_gap(
+            tuple(session_date for _, _, session_date in parsed_rows),
+            source,
+            lineage,
+            intervals,
+            adjustment_consensus,
+            evidence_issues,
+        )
     )
-    current_symbol_reuse = assess_current_symbol_reuse(
-        tuple(session_date for _, _, session_date in parsed_rows),
-        source,
-        lineage,
-        intervals,
-        adjustment_consensus,
-        evidence_issues,
+    current_symbol_reuse = (
+        None
+        if current_source_ownership is not None
+        else assess_current_symbol_reuse(
+            tuple(session_date for _, _, session_date in parsed_rows),
+            source,
+            lineage,
+            intervals,
+            adjustment_consensus,
+            evidence_issues,
+        )
     )
     # Pricing gaps and ticker occupancy cannot revoke an accepted continuation.
     # Unrelated reused-symbol occupants already have no edge to the prior lineage.
@@ -1485,6 +1687,8 @@ def correlate_download_rows(
         ticker_reuse_gap=ticker_reuse_gap,
         distinct_uuid_transition=distinct_uuid_transition,
         current_symbol_reuse=current_symbol_reuse,
+        current_source_ownership=current_source_ownership,
+        sourced_rename_mapping=sourced_rename_mapping,
         dated_same_symbol_predecessors=dated_same_symbol_predecessors,
         predecessor_prefixes=predecessor_prefixes,
         mapped_continuations=mapped_continuations,

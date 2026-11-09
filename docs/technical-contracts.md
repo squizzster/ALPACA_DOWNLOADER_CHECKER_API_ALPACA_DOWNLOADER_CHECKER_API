@@ -12,7 +12,7 @@ closed without repair.
 summary views per invocation. Revisions/publisher-returned changes refresh them; no persistent context cache or
 alternative authority. Changed inputs invalidate dependent work only.
 
-Lineage computation revision 1 selects full retained-input reconstruction of earlier derived decisions. Receipt and compact-index revision fields become authoritative only after the new calculation publishes; metadata and pricing acceptance stay independent. Explicit rebuild selects one seed per complete group, keeps individual retained request bounds and auxiliary mappings, and skips completed revision-current groups before body reads on retry. Missing retained evidence or a newly required pricing correction remains a blocker. Serving preserves an identity's numerical prefix only through its accepted last owned source position, so receiving later rows from a repaired spurious identity checks that new suffix without replaying earlier history.
+Lineage computation revision 2 selects full retained-input reconstruction of earlier derived decisions. Receipt and compact-index revision fields become authoritative only after the new calculation publishes; metadata and pricing acceptance stay independent. Explicit rebuild selects one seed per complete group, keeps individual retained request bounds and auxiliary mappings, and skips completed revision-current groups before body reads on retry. Missing retained evidence or a newly required pricing correction remains a blocker. Serving preserves an identity's numerical prefix only through its accepted last owned source position, so receiving later rows from a repaired spurious identity checks that new suffix without replaying earlier history.
 
 ## Standalone artifacts
 
@@ -44,8 +44,28 @@ Authorities: [contract.py](../libs/alpaca_pricing_download/contract.py),
 Pricing format 32 publishes the comparison tail; format 31 remains readable in place and obtains the missing tail
 through the selected metadata upgrade below. Supported sources may select older unchanged boundary receipts;
 versions need not match. Compatibility requires no price rewrite or relabeling; unknown future formats
-fail closed. [Runtime versus publication versions](../VERSION_TRACKER.md#compatibility) also preserves lineage-34
-formats and accepted policy identity; runtime repairs alone do not invalidate completed decisions.
+fail closed. [Runtime versus publication versions](../VERSION_TRACKER.md#compatibility) also preserves supported
+lineage formats and applicable accepted policy identity; runtime repairs alone do not invalidate completed decisions.
+
+Lineage format 35 requires `current_source_ownership`, either null or the completed version-1 bounded current-source
+certificate. The enclosing receipt binds it to selected pricing, effective request context and accepted group
+evidence. Receipt ingress accepts its envelope once. Compatible continuation carries it through the existing
+in-memory handoff, including a peer's unresolved-history fallback; consumers do not repeat its source-grid,
+chronology or activity proof. Missing or incomplete required handoffs select owning recovery. The
+[lineage rules](lineage.md#ownership-evidence-limits) define initial eligibility and invalidation; no additional
+storage artifact or upstream acquisition is introduced.
+
+Lineage format 36 additionally requires `sourced_rename_membership` and `sourced_rename_ownership`. The former
+is null or a version-1 completed group result containing certificates and explicit issues; empty results remain
+completed handoffs. The latter is null or a version-1 source scope naming its symbol, observed first/last dates
+and a certificate's `action_id`. It references the membership handoff rather than duplicating that certificate.
+Receipt ingress validates these envelopes once. Metadata applicability governs membership independently of
+pricing ancestry; source applicability governs row ownership. Missing or incompatible required handoffs fail
+closed into owning recovery. [Sourced event facts](lineage.md#sourced-event-facts) own their evidence gates.
+
+Append partition assembly consumes pricing's already-read actual changed-session notice. An intervening weekend
+at month/year rollover does not select an older pricing partition with no new rows. Correction and projection
+dates retain their own selected scopes; no calendar reconstruction or historical price audit establishes them.
 
 Newly produced lineage assignments carry version-1 `assignment_handoffs` in their selecting receipt. Each
 handoff binds one boundary generation, canonical comparison facts, a selected adjacent `.projection.json`
@@ -329,8 +349,14 @@ lineage/summary coverage; interrupted registration is local recovery, not a dela
 
 [WorkPolicy](../libs/alpaca_lineage_build/work_contract.py) and [durable state](../libs/alpaca_lineage_build/universe_state.py)
 retain stable obligation IDs, accepted endpoints, evidence fingerprints, complete groups, refresh/replacement
-requirements and retry state. Persist dependency/correction requirements before requests. Lineage stamps only
-satisfied locked inputs: coverage cannot erase unperformed refresh/correction or failed checks. Completed
+requirements and retry state. Persist dependency/correction requirements before requests.
+
+An explicit scoped work-state read selects symbol keys in SQL before decoding bodies and may exclude completed
+work. Its partial view is suitable only for a caller's already bounded complete groups; it is not a global
+work census or independent evidence of reverse pending relationships. Registration intents and state revision
+remain compact global authorities. Ordinary unscoped registration retains its full work selection.
+
+Lineage stamps only satisfied locked inputs: coverage cannot erase unperformed refresh/correction or failed checks. Completed
 replacements/extensions survive interrupted acknowledgement; a matching last row alone proves neither.
 Workflow acknowledgement alone does not create a lineage or serving generation. Unchanged retry completion
 uses the accepted index's coverage and group, together with a fresh check bound to its pricing generation.
@@ -463,7 +489,9 @@ fails closed into explicit index migration.
 
 [operation_lock](../libs/common/store_lock.py) uses stable `.<store-name>.operation.lock` beside the store. CSV export
 holds nonblocking shared `flock` from catalogue selection through run manifest; every store-writing CLI command
-holds nonblocking exclusive `flock` throughout. Store gate precedes owner locks. Writers exclude writers/exports;
+waits for exclusive `flock` and holds it throughout. A busy writer makes one nonblocking attempt, reports its wait,
+then blocks on the same descriptor until acquisition or interruption, without polling or reading store boundaries.
+The internal library defaults to nonblocking acquisition; callers explicitly select waiting. Store gate precedes owner locks. Writers exclude writers/exports;
 read-only exports may coexist. Exit, including `SIGKILL`, releases the kernel lock; path remains, with no PID or
 stale-lock recovery.
 Direct internal producer functions require their caller to provide this outer exclusion when used alongside

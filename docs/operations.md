@@ -114,7 +114,7 @@ Recheck `status` after owner maintenance; success at one boundary does not estab
 ./alpaca-cli-eod lineage rebuild --all-published --debug /tmp/alpaca-lineage-rebuild.jsonl
 ```
 
-This explicitly selected universe operation recomputes obsolete lineage computation revisions from each complete group's retained prices and accepted metadata, at their actual individual ranges and mappings. It requires no credentials and makes no provider requests or pricing writes. Missing, pending or incompatible retained inputs remain explicit blockers; the rebuild does not widen acquisition or silently refresh evidence. The computation revision publishes through the owning journal after full evaluation. Retry skips completed current-revision groups before receipt or payload reads. The command then performs an explicit serving rebuild, retaining applicable numerical checkpoints and establishing legacy export applicability. This repair run is separate from daily live-price freshness and normal-update performance acceptance.
+The current computation revision is 2. This explicitly selected universe operation recomputes obsolete lineage computation revisions from each complete group's retained prices and accepted metadata, at their actual individual ranges and mappings. It requires no credentials and makes no provider requests or pricing writes. Missing, pending or incompatible retained inputs remain explicit blockers; the rebuild does not widen acquisition or silently refresh evidence. The computation revision publishes through the owning journal after full evaluation. Retry skips completed current-revision groups before receipt or payload reads. The command then performs an explicit serving rebuild, retaining applicable numerical checkpoints and establishing legacy export applicability. This repair run is separate from daily live-price freshness and normal-update performance acceptance.
 
 ## Serving catalogue maintenance
 
@@ -191,8 +191,12 @@ start is 2016 unless later `--from`; reject starts before 2016, after the resolv
 held observations before registration/requests. Finish missing boundaries through [setup](#adopt-or-reconstruct-an-existing-store).
 
 Selected lineage updates may include `--event-supplements FILE.json` for researched split endpoints, exact
-derivative-event scope or unchanged-symbol listing transfers. See the
+derivative-event scope, unchanged-symbol listing transfers or a documented holding-company succession. See the
 [sourced event contract](lineage.md#sourced-event-facts) before preparing that input.
+Use explicit selected symbols and `--no-pricing-acquisition` for an evidence-only repair over retained prices.
+The owner reuses completed metadata and requests only missing or invalidated mappings. Changed facts select
+complete affected-group evaluation and ordinary journaled lineage/serving publication. A retained-input rebuild
+does not accept new supplements. Unchanged repeated work reuses the retained facts without the input file.
 
 | Command | Scope |
 |---|---|
@@ -205,8 +209,9 @@ derivative-event scope or unchanged-symbol listing transfers. See the
 | `lineage update/refresh --no-pricing-acquisition` | Metadata requests remain possible. |
 
 Pricing uses up to three workers sharing a 199-request/minute invocation budget, not an account-wide limit.
-Lineage has one writer/store; others wait at its owner lock. The CLI's outer operation gate fails immediately
-when busy. Failed batches retain independent successes. Approved append is internal, with no public shortcut.
+Lineage has one writer/store; others wait at its owner lock. CLI writers wait at the outer operation gate
+before store or provider work; see [lock reporting and cancellation](cli-reporting.md#completion-and-status).
+Failed batches retain independent successes. Approved append is internal, with no public shortcut.
 [Lock order and recovery](technical-contracts.md#publication-and-recovery).
 
 ## Read and export

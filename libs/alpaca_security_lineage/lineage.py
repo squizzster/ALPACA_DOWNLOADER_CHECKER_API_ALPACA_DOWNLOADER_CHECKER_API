@@ -5,7 +5,7 @@ from typing import Any
 
 from .alpaca_http import AlpacaIdentityClient
 from .event_supplements import SCHEMA_VERSION as EVENT_SUPPLEMENT_SCHEMA_VERSION
-from .event_supplements import project_actions
+from .event_supplements import SUCCESSION_KIND, SUCCESSION_SCHEMA_VERSION, EventProjection, supplement_key
 from .query_dates import local_query_dates
 from .settings import (
     CUSIP_FIELD_PATTERN,
@@ -172,12 +172,25 @@ def build_identity_report(
     # Evidence acquisition ends here; it does not establish row ownership or
     # public identity membership. Consumers retain explicit lookup outcomes and
     # provider dates; DO NOT turn a present-day symbol/CUSIP lookup into history.
+    project_actions = getattr(client, "event_projection", None) or EventProjection()
+    project_actions = project_actions.bind(event_supplements)
     start_date, end_date = query_dates or local_query_dates(local_report)
     pending_symbols = deque([symbol])
     queued_symbols = {symbol}
     queried_symbols = []
     actions_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     asset_lookups_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    sourced_successions = sorted(
+        (
+            item
+            for item in event_supplements
+            if item["kind"] == SUCCESSION_KIND and item["match"]["symbol"] == symbol
+        ),
+        key=supplement_key,
+    )
+    succession_cusips = {
+        item["facts"][key] for item in sourced_successions for key in ("old_cusip", "new_cusip")
+    }
 
     def queue_symbol(candidate: str) -> None:
         if candidate in queued_symbols:
@@ -208,7 +221,7 @@ def build_identity_report(
                     ),
                 ):
                     actions_by_key[action_identity_key(action)] = action
-                    projected, _ = project_actions([action], event_supplements)
+                    projected, _ = project_actions([action])
                     for equity_action in projected:
                         for related_symbol in sorted(related_name_change_symbols(equity_action)):
                             queue_symbol(related_symbol)
@@ -217,8 +230,8 @@ def build_identity_report(
             actions_by_key.values(),
             key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
         )
-        actions, applied_supplements = project_actions(provider_corporate_actions, event_supplements)
-        cusips = extract_cusips(actions)
+        actions, applied_supplements = project_actions(provider_corporate_actions)
+        cusips = sorted(set(extract_cusips(actions)) | succession_cusips)
         for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
             for identifier in identifiers:
                 lookup_key = (lookup_kind, identifier)
@@ -255,8 +268,8 @@ def build_identity_report(
         actions_by_key.values(),
         key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
     )
-    actions, applied_supplements = project_actions(provider_corporate_actions, event_supplements)
-    cusips = extract_cusips(actions)
+    actions, applied_supplements = project_actions(provider_corporate_actions)
+    cusips = sorted(set(extract_cusips(actions)) | succession_cusips)
     asset_lookups = [
         asset_lookups_by_key[(lookup_kind, identifier)]
         for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips))
@@ -298,6 +311,19 @@ def build_identity_report(
     evidence_by_symbol_cusip: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in symbol_cusip_evidence(actions):
         evidence_by_symbol_cusip.setdefault((item["symbol"], item["cusip"]), []).append(item)
+    for item in sourced_successions:
+        for role in ("old", "new"):
+            cusip = item["facts"][role + "_cusip"]
+            evidence_by_symbol_cusip.setdefault((symbol, cusip), []).append(
+                {
+                    "evidence_type": "sourced_holding_company_succession",
+                    "source_id": item["match"]["source_id"],
+                    "symbol": symbol,
+                    "cusip": cusip,
+                    "role": role,
+                    "exchange_effective_date": item["facts"]["exchange_effective_date"],
+                }
+            )
     occupancy_evidence = [
         {
             "symbol": evidence_symbol,
@@ -376,4 +402,10 @@ def build_identity_report(
             event_supplements=applied_supplements,
             provider_corporate_actions=provider_corporate_actions,
         )
+    if sourced_successions:
+        result["sourced_successions"] = {
+            "schema_version": SUCCESSION_SCHEMA_VERSION,
+            "facts": sourced_successions,
+        }
+        result["provider_corporate_actions"] = provider_corporate_actions
     return result

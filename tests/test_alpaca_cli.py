@@ -2,18 +2,18 @@
 
 import argparse
 import io
+import json
 import subprocess
 import sys
-import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from libs.alpaca_cli import _store_operation_mode, build_parser, dispatch, end_exclusive, main
-from libs.alpaca_pricing_download.storage import initialize_store
-from libs.common.store_lock import operation_lock
+from libs.alpaca_heartbeat import LifecycleReporter, run_cli
+from libs.common.store_lock import StoreBusyError
 
 
 class CanonicalCliTests(unittest.TestCase):
@@ -49,18 +49,131 @@ class CanonicalCliTests(unittest.TestCase):
                 args = SimpleNamespace(command=command, operation=operation, plan=plan)
                 self.assertEqual(_store_operation_mode(args), expected)
 
-    def test_update_is_busy_before_clients_or_dispatch_when_export_holds_store(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            store = Path(temporary) / "data_pricing"
-            initialize_store(store)
-            errors = io.StringIO()
-            with (
-                operation_lock(store, exclusive=False),
-                patch("libs.alpaca_cli.clients", side_effect=AssertionError("writer passed store gate")),
-                redirect_stderr(errors),
-            ):
-                self.assertEqual(main(["update", "--store", str(store)]), 3)
-            self.assertIn("store is busy with an export or update", errors.getvalue())
+    def test_writer_reports_waiting_before_work_and_restores_operation_after_acquisition(self):
+        errors, output = io.StringIO(), io.StringIO()
+        reporters, sequence = [], []
+        clock = [1000.0]
+        message = "Waiting for the store lock; press Ctrl-C to cancel."
+
+        def reporter(*args, **kwargs):
+            value = LifecycleReporter(*args, **kwargs, clock=lambda: clock[0])
+            reporters.append(value)
+            return value
+
+        @contextmanager
+        def gate(store, *, exclusive, wait=False, on_wait=None):
+            self.assertEqual(store, Path("/unused/test-store"))
+            self.assertTrue(exclusive)
+            self.assertTrue(wait)
+            self.assertTrue(callable(on_wait))
+            sequence.append("attempt")
+            clients.assert_not_called()
+            dispatched.assert_not_called()
+            on_wait()
+            sequence.append("waiting")
+            records = [json.loads(line) for line in errors.getvalue().splitlines()]
+            self.assertEqual(records[-1]["schema"], "alpaca.lifecycle.diagnostic")
+            self.assertEqual(records[-1]["phase"], "WAIT")
+            self.assertEqual(records[-1]["message"], message)
+            # Sample the registered waiting phase without a real clock delay.
+            clock[0] += 10
+            reporters[0]._emit_due()
+            heartbeat = json.loads(errors.getvalue().splitlines()[-1])
+            self.assertEqual(heartbeat["phase"], "WAIT")
+            self.assertEqual(heartbeat["context"]["estimated_remaining_seconds"], "TBD")
+            clients.assert_not_called()
+            dispatched.assert_not_called()
+            sequence.append("acquired")
+            yield
+            sequence.append("released")
+
+        def work(args):
+            self.assertEqual(sequence, ["attempt", "waiting", "acquired"])
+            self.assertEqual(args._lifecycle._held["phase"], "UPDATE")
+            sequence.append("dispatch")
+            return {"complete": True}
+
+        with (
+            patch("libs.alpaca_cli.LifecycleReporter", side_effect=reporter),
+            patch("threading.Thread.start"),
+            patch("libs.alpaca_cli.operation_lock", side_effect=gate) as locked,
+            patch(
+                "libs.alpaca_cli.clients", side_effect=AssertionError("clients before acquired gate")
+            ) as clients,
+            patch("libs.alpaca_cli.dispatch", side_effect=work) as dispatched,
+            patch("libs.alpaca_cli.commit_registry"),
+            redirect_stderr(errors),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(main(["update", "--store", "/unused/test-store"]), 0)
+        locked.assert_called_once()
+        clients.assert_not_called()
+        dispatched.assert_called_once()
+        self.assertEqual(sequence, ["attempt", "waiting", "acquired", "dispatch", "released"])
+        records = [json.loads(line) for line in errors.getvalue().splitlines()]
+        self.assertEqual(sum(item["schema"] == "alpaca.lifecycle.diagnostic" for item in records), 1)
+        self.assertEqual(records[-1]["last_phase"], "UPDATE")
+        self.assertEqual(records[-1]["exit_code"], 0)
+
+    def test_cancelled_wait_reports_terminal_130_without_dispatch_or_clients(self):
+        errors = io.StringIO()
+
+        @contextmanager
+        def cancelled(_store, *, exclusive, wait=False, on_wait=None):
+            self.assertTrue(exclusive)
+            self.assertTrue(wait)
+            on_wait()
+            clients.assert_not_called()
+            dispatched.assert_not_called()
+            raise KeyboardInterrupt
+            yield  # pragma: no cover - make the cancelled gate a context manager.
+
+        with (
+            patch("threading.Thread.start"),
+            patch("libs.alpaca_cli.operation_lock", side_effect=cancelled),
+            patch(
+                "libs.alpaca_cli.clients", side_effect=AssertionError("cancelled waiter created clients")
+            ) as clients,
+            patch(
+                "libs.alpaca_cli.dispatch", side_effect=AssertionError("cancelled waiter dispatched")
+            ) as dispatched,
+            patch("libs.alpaca_cli.commit_registry", side_effect=AssertionError("cancelled waiter committed")),
+            redirect_stderr(errors),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(run_cli(lambda: main(["update", "--store", "/unused/test-store"])), 130)
+        clients.assert_not_called()
+        dispatched.assert_not_called()
+        records = [json.loads(line) for line in errors.getvalue().splitlines()]
+        self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
+        self.assertEqual(records[-1]["last_phase"], "WAIT")
+        self.assertEqual(records[-1]["status"], "aborted")
+        self.assertEqual(records[-1]["exit_code"], 130)
+
+    def test_csv_store_gate_still_fails_fast_without_wait_callback(self):
+        errors = io.StringIO()
+
+        @contextmanager
+        def busy(_store, *, exclusive, wait=False, on_wait=None):
+            self.assertFalse(exclusive)
+            self.assertFalse(wait)
+            self.assertIsNone(on_wait)
+            raise StoreBusyError("store is busy with an export or update; retry later")
+            yield  # pragma: no cover - make the busy gate a context manager.
+
+        with (
+            patch("threading.Thread.start"),
+            patch("libs.alpaca_cli.operation_lock", side_effect=busy),
+            patch(
+                "libs.alpaca_cli.dispatch", side_effect=AssertionError("busy exporter dispatched")
+            ) as dispatched,
+            redirect_stderr(errors),
+        ):
+            self.assertEqual(main(["export", "csv", "--store", "/unused/test-store"]), 3)
+        dispatched.assert_not_called()
+        records = [json.loads(line) for line in errors.getvalue().splitlines()]
+        self.assertFalse(any(item["phase"] == "WAIT" for item in records))
+        self.assertEqual(records[-1]["exit_code"], 3)
 
     def test_policy_migration_dispatches_before_dates_or_clients(self):
         store = Path("/data2/alpaca/test-store")

@@ -5,9 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from test_alpaca_durable_maintenance import fixture
+from test_alpaca_succession_compatibility import frozen_decision
 
 from libs import alpaca_cli
-from libs.alpaca_lineage_build import pipeline, storage
+from libs.alpaca_lineage_build import contract, pipeline, storage
 from libs.alpaca_lineage_build.contract import COMPUTATION_REVISION
 from libs.alpaca_lineage_build.rebuild import rebuild
 from libs.alpaca_pricing_download import storage as pricing_storage
@@ -46,6 +47,81 @@ class LineageRebuildTests(unittest.TestCase):
             self.assertEqual(result["selected_symbols"], 1)
             self.assertEqual(result["provider_requests"], 0)
             self.assertEqual(result["computation_revision"], COMPUTATION_REVISION)
+
+    def test_revision_one_publications_rebuild_once_from_retained_inputs(self):
+        self.assertEqual(COMPUTATION_REVISION, 2)
+        for correlation in (78, 79):
+            with self.subTest(correlation=correlation), fixture() as case:
+                root = case.store / "end_of_day/lineage"
+                index = storage.read_index(root)
+                entry = index["symbols"]["AAA"]
+                receipt = storage.read_receipt(root, "AAA", index)
+                previous = (
+                    frozen_decision()
+                    if correlation == 78
+                    else {key: receipt[key] for key in ("versions", "correlation_policy")}
+                )
+                previous = {**previous, "computation_revision": 1}
+                receipt.update(previous)
+                prior_entry = {
+                    **entry,
+                    **previous,
+                    "sha256": storage.document_digest(receipt),
+                    "projection": {**entry["projection"], "computation_revision": 1},
+                }
+                # A complete former publication, not an incomplete fixture or absent marker.
+                storage._install(
+                    root,
+                    {
+                        "schema_version": 34,
+                        "correlation_policy": previous["correlation_policy"],
+                        "retire": [],
+                        "documents": {"AAA/lineage.manifest.json": receipt},
+                        "index_updates": {"AAA": prior_entry},
+                    },
+                )
+                self.assertFalse(contract.reusable_decision(prior_entry))
+                with patch.object(storage, "read_receipt", side_effect=AssertionError("plan read body")):
+                    plan = rebuild(case.store, all_published=True, plan=True)
+                self.assertEqual(plan["selected_symbols"], 1)
+                self.assertEqual(plan["selected_groups"], 1)
+                self.assertEqual(plan["already_current_symbols"], 0)
+                with (
+                    patch.object(pricing_storage, "publish", side_effect=AssertionError("pricing rewritten")),
+                    patch.object(pipeline, "correlate", wraps=pipeline.correlate) as evaluated,
+                    patch.object(
+                        pipeline,
+                        "acquire",
+                        side_effect=AssertionError("accepted metadata requested again"),
+                    ),
+                ):
+                    result = rebuild(case.store, all_published=True)
+                self.assertTrue(result["complete"], result)
+                self.assertEqual(result["recomputed_symbols"], ["AAA"])
+                self.assertEqual(result["provider_requests"], 0)
+                self.assertEqual(result["pricing_writes"], 0)
+                self.assertEqual(evaluated.call_count, 1)
+                current = storage.read_index(root)["symbols"]["AAA"]
+                self.assertEqual(current["source_sha256"], entry["source_sha256"])
+                self.assertEqual(current["computation_revision"], 2)
+                self.assertEqual(current["versions"]["correlation"], contract.versions()["correlation"])
+                self.assertTrue(contract.reusable_decision(current))
+                with (
+                    patch.object(storage, "read_receipt", side_effect=AssertionError("completed body reopened")),
+                    patch.object(
+                        pipeline, "_current_sources", side_effect=AssertionError("completed source reopened")
+                    ),
+                    patch.object(
+                        pipeline, "correlate", side_effect=AssertionError("completed calculation repeated")
+                    ),
+                    patch.object(
+                        storage, "publish", side_effect=AssertionError("completed decision republished")
+                    ),
+                ):
+                    repeated = rebuild(case.store, all_published=True)
+                self.assertTrue(repeated["complete"], repeated)
+                self.assertEqual(repeated["selected_symbols"], 0)
+                self.assertEqual(repeated["already_current_symbols"], 1)
 
     def test_obsolete_computation_rebuilds_from_accepted_inputs_then_retry_skips(self):
         with fixture() as case:

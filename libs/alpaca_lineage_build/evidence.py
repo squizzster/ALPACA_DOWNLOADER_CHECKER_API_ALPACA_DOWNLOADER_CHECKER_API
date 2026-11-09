@@ -136,13 +136,16 @@ class EvidenceCapture:
         # A full diagnostic may read closed session grids even when processing
         # reused their assignments. Those grids do NOT trigger another calculation.
         views = {
-            name: inputs[name] if inputs is not None and not resumed else load_pricing(store, name)
+            name: inputs[name]
+            if inputs is not None and not (resumed is True or resumed and name in resumed)
+            else load_pricing(store, name)
             for name in receipts
         }
         self.capture(receipts, boundaries, views, reports, notices, resumed=resumed, offline=False)
 
     def capture(self, receipts, boundaries, views, reports, notices, *, resumed, offline):
         for symbol, receipt in receipts.items():
+            source_resumed = resumed is True or bool(resumed and symbol in resumed)
             view = views.get(symbol)
             if receipt is None:
                 self.sources[symbol] = {
@@ -156,7 +159,7 @@ class EvidenceCapture:
             assignments = published_assignments(receipt, boundaries[symbol])
             for segment in assignments:
                 fresh = report is not None and (
-                    not resumed
+                    not source_resumed
                     or any(
                         current["adjustment"] == segment["adjustment"]
                         and current["first_session_date"]
@@ -177,7 +180,7 @@ class EvidenceCapture:
             changed_inputs.extend(name for name in unavailable_pricing(receipt) if name in views)
             self.sources[symbol] = {
                 "status": "calculated_with_closed_reuse"
-                if resumed and report
+                if source_resumed and report
                 else "calculated"
                 if report
                 else "reused_publication",
@@ -192,7 +195,7 @@ class EvidenceCapture:
                 "receipt": receipt,
                 "assignments": assignments,
                 "actual_calculation_scope": "added_sessions"
-                if resumed and report
+                if source_resumed and report
                 else "full_history"
                 if report
                 else None,

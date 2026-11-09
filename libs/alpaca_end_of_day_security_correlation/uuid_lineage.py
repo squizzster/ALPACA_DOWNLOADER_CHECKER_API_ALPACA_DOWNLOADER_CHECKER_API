@@ -12,7 +12,7 @@ IDENTITY_PRESERVING_SPLIT_EDGE_TYPES = frozenset(("forward_split", "reverse_spli
 @dataclass(frozen=True)
 class UuidLineageEdge:
     edge_type: str
-    action_id: str
+    action_id: str | None
     effective_date: date
     predecessor_asset_id: str
     predecessor_symbol: str
@@ -20,11 +20,12 @@ class UuidLineageEdge:
     successor_asset_id: str
     successor_symbol: str
     successor_cusip: str
+    source_fact_id: str | None = None
+    legal_effective_date: date | None = None
 
     def as_report_object(self) -> dict[str, Any]:
-        return {
+        result = {
             "edge_type": self.edge_type,
-            "corporate_action_id": self.action_id,
             "effective_date": self.effective_date.isoformat(),
             "predecessor": {
                 "asset_id": self.predecessor_asset_id,
@@ -37,6 +38,12 @@ class UuidLineageEdge:
                 "cusip": self.successor_cusip,
             },
         }
+        if self.source_fact_id is not None:
+            result["sourced_fact_id"] = self.source_fact_id
+            result["legal_effective_date"] = self.legal_effective_date.isoformat()
+        else:
+            result["corporate_action_id"] = self.action_id
+        return result
 
 
 @dataclass(frozen=True)

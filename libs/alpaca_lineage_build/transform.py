@@ -26,6 +26,7 @@ def correlate(
     pricing_generations=None,
     execution_trace=None,
     evidence_projection=None,
+    auxiliary_evidence=None,
 ):
     """Run the shared compiled policy against one already-loaded complete group."""
     # Correlation owns NEW identity decisions. Inputs/evidence already crossed
@@ -42,6 +43,7 @@ def correlate(
         pricing_generations=pricing_generations,
         execution_trace=execution_trace,
         evidence_projection=evidence_projection,
+        auxiliary_evidence=auxiliary_evidence,
     )
 
 
@@ -61,6 +63,9 @@ def retained_decision_report(previous, *, policy):
         },
         "correlation_policy": policy.provenance() if policy is not None else previous["correlation_policy"],
         "source_row_count": 0,
+        "current_source_ownership": previous.get("current_source_ownership"),
+        "sourced_rename_ownership": previous.get("sourced_rename_ownership"),
+        "sourced_rename_membership": previous.get("sourced_rename_membership"),
         "correlated": {"row_count": 0, "segments": []},
         "uncorrelated": {"row_count": 0, "segments": []},
     }
@@ -323,6 +328,9 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for key in sorted({(item["from"], item["to"], item["security_id"]) for item in intervals})
         ],
         "evidence": evidence,
+        "current_source_ownership": report.get("current_source_ownership"),
+        "sourced_rename_ownership": report.get("sourced_rename_ownership"),
+        "sourced_rename_membership": report.get("sourced_rename_membership"),
         "evidence_issues": report["evidence_issues"],
         "ownership_interval_rule_order": report["ownership_interval_rule_order"],
         "row_correlation_rule_order": report["row_correlation_rule_order"],

@@ -1,8 +1,10 @@
-"""Exact v76/v77 -> v78 applicability proof and metadata-only migration.
+"""Exact v76/v77 applicability proof and metadata-only migration.
 
 This doorman inspects whether the changed producers can apply. It neither
 assigns rows nor predicts a mapping response. Unproved groups use the ordinary
 pipeline; unchanged groups preserve their already completed decisions.
+The v79 sourced-only extension cannot apply to these older publications, so
+their existing v78 applicability proof remains authoritative for that target.
 """
 
 from pathlib import Path
@@ -13,6 +15,7 @@ from .acquisition import unavailable_pricing
 from .contract import LineageError, reusable_decision, versions
 from .correlation_policy_contract import (
     RETAINED_V76_SEMANTIC_SHA256,
+    RETAINED_V78_SEMANTIC_SHA256,
     expected_policy_identity,
     valid_policy_provenance,
 )
@@ -23,7 +26,7 @@ def retained_version(value):
     previous = value.get("versions", {}).get("correlation")
     if previous not in (76, 77):
         return False
-    semantic = RETAINED_V76_SEMANTIC_SHA256 if previous == 76 else versions()["correlation_policy_sha256"]
+    semantic = RETAINED_V76_SEMANTIC_SHA256 if previous == 76 else RETAINED_V78_SEMANTIC_SHA256
     expected = {**versions(), "correlation": previous, "correlation_policy_sha256": semantic}
     provenance = value.get("correlation_policy")
     old_policy = {
@@ -34,7 +37,7 @@ def retained_version(value):
     }
     return (
         versions()["lineage"] == 34
-        and versions()["correlation"] == 78
+        and versions()["correlation"] in (78, 79)
         and value.get("versions") == expected
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == item for key, item in old_policy.items())

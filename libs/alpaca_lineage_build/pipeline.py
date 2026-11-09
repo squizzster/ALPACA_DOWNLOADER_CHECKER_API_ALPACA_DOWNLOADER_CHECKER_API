@@ -17,6 +17,7 @@ from libs.alpaca_pricing_download.update_checks import (
     complete_checks,
     read_checks,
 )
+from libs.alpaca_security_lineage.event_supplements import RENAME_KIND
 from libs.common.debug_trace import event, traced
 
 from . import storage
@@ -30,6 +31,9 @@ from .contract import (
     MAX_CLOSURE,
     VERSION,
     LineageError,
+    current_decision,
+    retained_v78_decision,
+    retained_v79_decision,
     reusable_computation,
     reusable_decision,
     reusable_metadata_versions,
@@ -514,6 +518,8 @@ def process_group(
             evidence_client.retain_event_supplements(retained_evidence)
             changed_event_supplements = not retained_rebuild and any(
                 evidence_client.supplements_for(facts) != facts.get("event_supplements", [])
+                or evidence_client.successions_for(facts)
+                != facts.get("sourced_successions", {}).get("facts", [])
                 for facts in retained_evidence
             )
             from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
@@ -532,6 +538,18 @@ def process_group(
                 or all(evidence_client.evidence_current(prior["evidence"]) for prior in previous.values())
             )
             computation_current = all(reusable_computation(prior) for prior in previous.values())
+            # Select completed-decision compatibility once for this coherent
+            # receipt view; acknowledgement consumes the selected mode below.
+            decision_modes = {
+                name: "v78"
+                if retained_v78_decision(prior)
+                else "v79"
+                if retained_v79_decision(prior)
+                else "current"
+                if current_decision(prior)
+                else None
+                for name, prior in previous.items()
+            }
             # Absence belongs to its own request/mapping, not its siblings' price
             # envelopes. The locked source selection has already established that
             # no source or pending publication supersedes it.
@@ -577,8 +595,8 @@ def process_group(
                 and (
                     promoted_decision
                     or all(
-                        reusable_decision(prior) or can_promote_observation_decision(prior, correlation_policy)
-                        for prior in previous.values()
+                        decision_modes[name] or can_promote_observation_decision(prior, correlation_policy)
+                        for name, prior in previous.items()
                     )
                 )
                 and (work_policy is None or work_policy.decision_inputs_satisfied(sources, selected))
@@ -587,9 +605,18 @@ def process_group(
                 receipts = {
                     symbol: {
                         **prior,
-                        "schema_version": VERSION,
-                        "versions": versions(),
-                        "correlation_policy": correlation_policy.provenance(),
+                        # Carry an applicable frozen decision's exact provenance
+                        # through acknowledgement;
+                        # it is not a new calculation or header migration.
+                        **(
+                            {}
+                            if decision_modes[symbol] in {"v78", "v79"}
+                            else {
+                                "schema_version": VERSION,
+                                "versions": versions(),
+                                "correlation_policy": correlation_policy.provenance(),
+                            }
+                        ),
                     }
                     for symbol, prior in previous.items()
                 }
@@ -817,6 +844,7 @@ def process_group(
                                 source=sources[symbol],
                                 source_sha256=selected[symbol],
                                 selected_correction=corrections[symbol],
+                                selected_change_from=(notices.get(symbol) or {}).get("from"),
                                 previous_boundaries=old_boundaries[symbol],
                                 resume_from=(
                                     projections.get(symbol)
@@ -959,6 +987,44 @@ def process_group(
                             required.setdefault(symbol, {"from": start, "end_exclusive": end})
                 if not required:
                     check_unavailable_pricing(store, unavailable, locked, sources=sources)
+                    retained_membership = next(
+                        (
+                            prior.get("sourced_rename_membership")
+                            for prior in previous.values()
+                            if prior and prior.get("sourced_rename_membership")
+                        ),
+                        None,
+                    )
+                    membership_scope_applies = (
+                        retained_membership is not None
+                        and not changed_event_supplements
+                        and all(
+                            prior and set(prior["input_sources"]) | unavailable_pricing(prior).keys() == group
+                            for prior in previous.values()
+                        )
+                    )
+                    # An empty completed result depends only on fact absence and
+                    # selected closure. Provider observations cannot manufacture
+                    # operator facts. Price replacement therefore needs no extra
+                    # metadata comparison to carry this already accepted result.
+                    membership_is_empty = (
+                        retained_membership is not None
+                        and not retained_membership["certificates"]
+                        and not retained_membership["issues"]
+                    )
+                    empty_membership_applies = (
+                        membership_scope_applies
+                        and membership_is_empty
+                        and not any(
+                            item["kind"] == RENAME_KIND
+                            for facts in (
+                                *evidence.values(),
+                                *(item["evidence"] for item in unavailable.values()),
+                            )
+                            for item in facts.get("event_supplements", ())
+                        )
+                    )
+                    membership_deltas = {} if membership_scope_applies and not membership_is_empty else None
                     historical_lineage = requires_lineage(
                         previous,
                         evidence,
@@ -966,7 +1032,35 @@ def process_group(
                         and (unchanged or all(complete_append(view) for view in inputs.values())),
                         refresh=refresh,
                         append=resume,
+                        completed_deltas=membership_deltas,
+                        auxiliary_previous={
+                            name: item["evidence"]
+                            for name, item in unavailable_pricing(previous.get(seed)).items()
+                        }
+                        if membership_deltas is not None
+                        else None,
+                        auxiliary_current={name: item["evidence"] for name, item in unavailable.items()}
+                        if membership_deltas is not None
+                        else None,
                     )
+                    accepted_membership = (
+                        retained_membership
+                        if empty_membership_applies
+                        or membership_deltas is not None
+                        and membership_deltas.keys() == previous.keys() | unavailable.keys()
+                        and all(delta["scope"] != "complete_group" for delta in membership_deltas.values())
+                        else None
+                    )
+                    # This source's completed proof survives a peer's unresolved
+                    # fallback. The existing owners have already accepted pricing
+                    # ancestry, effective mappings, added grids and group evidence.
+                    accepted_current_sources = {
+                        name: prior
+                        for name, prior in previous.items()
+                        if resume
+                        and not historical_lineage
+                        and (prior.get("current_source_ownership") or prior.get("sourced_rename_ownership"))
+                    }
                     append_invalidation = (
                         append_history_invalidation(previous, inputs)
                         if resume and not historical_lineage
@@ -1014,7 +1108,9 @@ def process_group(
                             }
                             old_boundaries[name].update(read_boundaries(prior, kinds=missing))
                         inputs = {
-                            name: load_pricing(
+                            name: inputs[name]
+                            if name in accepted_current_sources
+                            else load_pricing(
                                 store,
                                 name,
                                 source=source,
@@ -1025,8 +1121,23 @@ def process_group(
                             for name, source in sources.items()
                         }
                     resume = not historical_lineage
-                    if resume and not no_new_rows:
-                        for name, prior in previous.items():
+                    if accepted_membership is not None:
+                        for view in inputs.values():
+                            view.accepted_sourced_rename_membership = accepted_membership
+                    for name, certificate in accepted_current_sources.items():
+                        inputs[name].accepted_current_source_ownership = certificate.get(
+                            "current_source_ownership"
+                        )
+                        inputs[name].accepted_sourced_rename_ownership = certificate.get(
+                            "sourced_rename_ownership"
+                        )
+                    if (resume or accepted_current_sources) and not no_new_rows:
+                        resumed_previous = {
+                            name: prior
+                            for name, prior in previous.items()
+                            if resume or name in accepted_current_sources
+                        }
+                        for name, prior in resumed_previous.items():
                             last = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
                             if "identity_memberships" not in prior and last:
                                 anchor = prior["anchor_month"]
@@ -1039,8 +1150,10 @@ def process_group(
                                 )
                                 if kind not in old_boundaries[name]:
                                     old_boundaries[name].update(read_boundaries(prior, kinds={kind}))
-                        membership = identity_memberships(previous, old_boundaries)
+                        membership = identity_memberships(resumed_previous, old_boundaries)
                         for name, view in inputs.items():
+                            if name not in resumed_previous:
+                                continue
                             view.accepted_identity_memberships = {
                                 **membership,
                                 **identity_memberships({name: previous[name]}, {name: old_boundaries[name]}),
@@ -1092,6 +1205,10 @@ def process_group(
                                     policy=correlation_policy,
                                     selected_group=sorted(component),
                                     unavailable_pricing=sorted(component & unavailable.keys()),
+                                    auxiliary_evidence={
+                                        name: unavailable[name]["evidence"]
+                                        for name in component & unavailable.keys()
+                                    },
                                     evidence_generations={
                                         member: storage.document_digest(evidence[member]) for member in members
                                     },
@@ -1122,7 +1239,7 @@ def process_group(
                                 sorted(set(deps[symbol]) | unavailable.keys()),
                                 prior,
                                 old,
-                                resume_closed=resume,
+                                resume_closed=resume or symbol in accepted_current_sources,
                             )
                             receipts[symbol]["input_sources"] = {
                                 name: inputs[name].source_sha256
@@ -1175,7 +1292,7 @@ def process_group(
                                 inputs=inputs,
                                 reports=None if no_new_rows else reports,
                                 notices=notices,
-                                resumed=resume,
+                                resumed=True if resume else frozenset(accepted_current_sources),
                             )
                         return {
                             "symbol": seed,
@@ -1188,11 +1305,10 @@ def process_group(
                             "reused_closed_boundaries": resume,
                             "historical_rows_reused": sum(
                                 item["rows"]
-                                for view in inputs.values()
+                                for name, view in inputs.items()
+                                if resume or name in accepted_current_sources
                                 for item in view.previous_assignment_summary.values()
-                            )
-                            if resume
-                            else 0,
+                            ),
                             "pricing_rows_processed": sum(
                                 len(rows) for view in inputs.values() for rows in view.views.values()
                             ),
@@ -1345,9 +1461,9 @@ def run_lineage(
     if event_supplements and symbols is None:
         raise LineageError("event supplements require explicit selected symbols")
     if event_supplements:
-        from libs.alpaca_security_lineage.event_supplements import validate_supplements
+        from libs.alpaca_security_lineage.event_supplements import accept_supplements
 
-        event_supplements = validate_supplements(list(event_supplements))
+        event_supplements = accept_supplements(event_supplements)
     context = accept_context(store, context, work_policy)
     metadata_before = identity_client.request_count
     pricing_metrics = {}

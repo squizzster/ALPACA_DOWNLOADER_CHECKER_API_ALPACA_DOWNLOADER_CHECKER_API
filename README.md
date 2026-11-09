@@ -7,7 +7,7 @@ the data boundary.
 
 **Before continuing boundary or handoff work, read the [Trust-boundary implementation handoff](docs/trust-boundary-handoff.html).**
 It records the audit findings, verified fixes, remaining gaps, owning regressions and live verification limits.
-Lineage rules and correlation policy remain unchanged. [AGENTS.md](AGENTS.md) remains authoritative.
+The review covers trust repairs and evidence-gated lineage extensions. [AGENTS.md](AGENTS.md) remains authoritative.
 
 Requires Python 3.11, Unix `flock` and `America/New_York` timezone data. Production policy compilation uses
 [PyYAML](requirements.txt); Parquet additionally uses [PyArrow](requirements-bloodhound.txt).

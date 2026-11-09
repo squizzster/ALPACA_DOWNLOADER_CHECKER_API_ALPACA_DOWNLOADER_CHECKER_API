@@ -69,17 +69,51 @@ def count_pending(store):
 
 
 @traced("universe_state_read")
-def read_state(store):
+def read_state(store, *, symbols=None, pending_only=False):
+    """Read global compact controls and only the explicitly selected work bodies.
+
+    ``None`` retains the full-work boundary. A selected caller must supply its
+    accepted complete group; the returned partial work map is not a universe
+    census. SQL selects those primary keys before body decoding or ingress
+    validation, without discovering dependencies from unselected work payloads.
+    ``pending_only`` additionally consumes the stored completion status without
+    reopening completed correction evidence at ingress.
+    """
     # TRUST BOUNDARY: this database owns intentions/retry outcomes, not market
     # data validity. A saved status cannot substitute for a producer selector.
+    selected = None
+    if symbols is not None:
+        if isinstance(symbols, (str, bytes)):
+            raise ValueError("symbols must be a collection of symbol labels")
+        selected = tuple(symbols)
+        if any(not isinstance(symbol, str) or not symbol for symbol in selected):
+            raise ValueError("symbols must contain nonempty symbol labels")
+        selected = tuple(sorted(set(selected)))
     try:
         with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
             connection.execute("BEGIN")
             _check(connection)
-            work = {
-                symbol: _read_work(value)
-                for symbol, value in connection.execute("SELECT symbol, body FROM work")
-            }
+            work = {}
+            if selected is None:
+                queries = [("SELECT symbol, body FROM work", ())]
+            else:
+                # Bounded parameter batches also support older SQLite builds;
+                # every query remains an indexed selection of requested keys.
+                queries = [
+                    (
+                        "SELECT symbol, body FROM work WHERE symbol IN ("
+                        + ",".join("?" for _ in selected[offset : offset + 900])
+                        + ")",
+                        selected[offset : offset + 900],
+                    )
+                    for offset in range(0, len(selected), 900)
+                ]
+            for statement, parameters in queries:
+                if pending_only:
+                    statement += " WHERE " if selected is None else " AND "
+                    statement += "json_extract(body, '$.status') IS NOT 'complete'"
+                for symbol, value in connection.execute(statement, parameters):
+                    work[symbol] = _read_work(value)
             registration = [
                 symbol
                 for (symbol,) in connection.execute(
