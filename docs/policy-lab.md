@@ -1,5 +1,9 @@
 # Correlation policy lab
 
+For a single public-API CLI with an editable research YAML, recorded ticker explanations and explicit
+selected/all-group replay, use the [lineage rule tool](lineage-debug.md). Its `--all` evaluates every
+indexed group; the lab's `audit` below retains conservative affected-group selection and its hard timeout.
+
 The lab replays YAML-selected correlation against completed lineage. `compare` selects one complete identity
 group; explicit `audit` checks the completed selector in one bounded pass. Both are read-only: no provider
 requests, evidence/price changes, lineage publication, YAML rewriting or acquisition-universe selection.

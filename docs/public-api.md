@@ -161,3 +161,30 @@ and acknowledgement. It uses no provider client.
 `run_pipeline(request_json: bytes) -> bytes` sequences all three JSON stages under
 one continuous operation lock. The [Phase 3 contract](development.md#pipeline-phase-3-complete-pipeline)
 owns controller locking, independent execution and failure semantics.
+
+## Lineage diagnostics
+
+`debug_lineage(request_json: bytes) -> bytes` and `lineage_debug_cli(argv=None) -> int` expose the
+[standalone lineage rule tool](lineage-debug.md). The diagnostic never publishes production data or
+requests provider evidence. `LineageDebugError` reports invalid or unavailable required input.
+
+```python
+import json
+from alpaca_end_of_day import debug_lineage
+
+report = json.loads(
+    debug_lineage(
+        json.dumps({"schema": "alpaca.lineage.debug.request", "schema_version": 1, "operation": "rules"}).encode(
+            "utf-8"
+        )
+    )
+)
+```
+
+The request/result schemas are `alpaca.lineage.debug.request` / `alpaca.lineage.debug.report`, version 1.
+Operations: `init`; `rules` (`policy` optional); `explain` (`store`, `symbol`, optional `session`,
+`adjustment`, `max_segments`); `run` (`store`, optional `policy`, either `symbols` or `all: true`, optional
+`max_differences`, `timeout_seconds`); `export` (`manifest`, optional `symbols`, `multiple_only`);
+`handoff` (`input`, optional `symbols`). Paths are strings; symbol collections are JSON lists.
+The guide owns their semantics, limits and CLI examples. An explicit research replay returns independent
+failures and completed peer reports; inspect `execution_complete` separately from comparison `parity`.

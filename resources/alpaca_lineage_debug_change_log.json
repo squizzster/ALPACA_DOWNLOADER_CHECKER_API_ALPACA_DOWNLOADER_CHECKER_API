@@ -1,0 +1,8 @@
+[
+  {
+    "date": "2026-11-12",
+    "modifications": [
+      "Introduce read-only lineage research with editable whitelisted rule order/subsets in one YAML policy, actual shared-engine replay, recorded decisions, saved handoff inspection and completed-export ticker instances."
+    ]
+  }
+]

@@ -335,12 +335,13 @@ def _migration_preserved_rule_order_provenance(
 
 
 @contextmanager
-def _load_group(store: Path, seed_symbol: str):
+def _load_group(store: Path, seed_symbol: str, *, selection=None):
     # Explicit comparison owns this selected complete-group replay. The snapshot
     # selects and locks its publications; input generation checks bind the replay
     # to those facts. DO NOT repair pending work, fetch replacement evidence or
     # expand into unrelated groups when an input cannot be consumed.
-    with reader_snapshot(store, lambda root: select_inputs(root, seed_symbol)) as snapshot:
+    select = selection if selection is not None else lambda root: select_inputs(root, seed_symbol)
+    with reader_snapshot(store, select) as snapshot:
         seed_receipt = snapshot["receipts"].get(seed_symbol)
         if not isinstance(seed_receipt, dict):
             raise PolicyLabError(f"no published lineage for {seed_symbol}")

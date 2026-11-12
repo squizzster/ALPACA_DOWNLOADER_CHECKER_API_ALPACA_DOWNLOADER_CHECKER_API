@@ -24,6 +24,7 @@ Runtime validators check one-based changelog array position against the owning c
 | [API solver](libs/alpaca_data_api_solver/__init__.py): `VERSION` | [Solver history](resources/alpaca_data_api_solver_change_log.json) |
 | [Recovery registry](libs/alpaca_recovery_registry/__init__.py): `VERSION` | [Registry history](resources/alpaca_recovery_registry_change_log.json) |
 | [Policy lab](libs/alpaca_lineage_policy_lab/contract.py): `LAB_VERSION` | [Lab history](resources/alpaca_lineage_policy_lab_change_log.json) |
+| [Lineage rule tool](libs/alpaca_lineage_debug/__init__.py): `VERSION` | [Debug history](resources/alpaca_lineage_debug_change_log.json) |
 | [Parquet export](libs/alpaca_bloodhound_export/__init__.py): `VERSION` | [Export history](resources/alpaca_bloodhound_export_change_log.json) |
 
 ## Compatibility

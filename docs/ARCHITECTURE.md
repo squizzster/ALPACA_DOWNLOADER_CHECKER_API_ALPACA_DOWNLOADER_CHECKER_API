@@ -62,6 +62,8 @@ Ordered authorities: [ownership intervals](../libs/alpaca_end_of_day_security_co
 Lineage's compiler/evaluator serve production and offline replay; correlation owns ordered rule registries and
 certificate-backed rule factories. [Lineage](lineage.md) owns policy authorization, reuse and evidence constraints;
 the [policy lab](policy-lab.md) owns read-only candidate comparison/audit.
+The [lineage rule tool](lineage-debug.md) exposes recorded explanations and explicit selected/all-group
+research through the public JSON API, reusing that shared engine without production publication.
 
 ## Serving and consumption
 
@@ -91,6 +93,7 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | [alpaca_security_lineage](../libs/alpaca_security_lineage/) | Identity/action acquisition and normalization. |
 | [alpaca_end_of_day_security_correlation](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row assignments, UUID rules, certified rule factories. |
 | [alpaca_lineage_policy_lab](../libs/alpaca_lineage_policy_lab/) | Read-only selection/comparison/audit using the shared policy core. |
+| [alpaca_lineage_debug](../libs/alpaca_lineage_debug/) | Public JSON diagnostics, research YAML selection, group replay, recorded explanations, saved handoffs and export-instance reports. |
 | [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
 | [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Numerical source-choice consumption guards. |
 | [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |

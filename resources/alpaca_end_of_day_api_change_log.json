@@ -226,5 +226,11 @@
     "modifications": [
       "Expose serve_pipeline and run_pipeline as transient JSON APIs with coordinated operation locking and explicit stage errors."
     ]
+  },
+  {
+    "date": "2026-11-12",
+    "modifications": [
+      "Expose read-only lineage diagnostics through a public JSON API and standalone CLI: policy visibility, selected/all-group research replay, recorded explanations, saved handoffs and export ticker instances."
+    ]
   }
 ]

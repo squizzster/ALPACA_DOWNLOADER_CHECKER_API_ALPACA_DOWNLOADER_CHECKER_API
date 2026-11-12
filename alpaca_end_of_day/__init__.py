@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 42
+API_VERSION = 43
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -822,6 +822,7 @@ __all__ = [
     "MetadataObservation",
     "PublicIdUnavailableError",
     "PipelineStageError",
+    "LineageDebugError",
     "ReaderBusyError",
     "Security",
     "StandaloneReader",
@@ -832,11 +833,39 @@ __all__ = [
     "produce_histories_pipeline",
     "run_pipeline",
     "serve_pipeline",
+    "debug_lineage",
+    "lineage_debug_cli",
 ]
 
 
 class PipelineStageError(RuntimeError):
     """A pipeline stage failed to produce its completed JSON result."""
+
+
+class LineageDebugError(RuntimeError):
+    """A read-only lineage diagnostic could not consume its selected inputs."""
+
+
+def debug_lineage(request_json: bytes) -> bytes:
+    """Inspect recorded lineage or explicitly evaluate a YAML research policy.
+
+    The versioned JSON contract never requests provider data or publishes to the
+    production store. Candidate replay is explicitly selected by operation=run.
+    """
+    from libs.alpaca_lineage_debug.api import execute
+
+    try:
+        _validate_api_change_log()
+        return execute(request_json)
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError) as error:
+        raise LineageDebugError(str(error)) from error
+
+
+def lineage_debug_cli(argv=None) -> int:
+    """Run the standalone lineage diagnostic's public command-line adapter."""
+    from libs.alpaca_lineage_debug.command_line import main
+
+    return main(argv)
 
 
 def prepare_pipeline(request_json: bytes) -> bytes:

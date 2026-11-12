@@ -33,6 +33,8 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Technical contracts](docs/technical-contracts.md): authoritative artifacts, pricing, work state, serving and recovery.
 - [Lineage](docs/lineage.md): policy-bound reuse, metadata continuation, ownership evidence and correction limits.
 - [Correlation policy lab](docs/policy-lab.md): read-only comparison/audit, candidate constraints and parity meanings.
+- [Lineage rule tool](docs/lineage-debug.md): one YAML research policy, rule index, ticker explanations,
+  selected/all-group replay, saved handoffs and exported ticker instances.
 
 ## Change and verify
 

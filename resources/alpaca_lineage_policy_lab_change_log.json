@@ -93,5 +93,11 @@
     "modifications": [
       "Compile correlation91 composed public-continuity refinement and retain frozen correlation90 execution and complete baseline readability."
     ]
+  },
+  {
+    "date": "2026-11-12",
+    "modifications": [
+      "Allow an explicit diagnostic owner to supply its already selected complete group to the shared replay loader, preserving one selector read and deduplicated group evaluation."
+    ]
   }
 ]
