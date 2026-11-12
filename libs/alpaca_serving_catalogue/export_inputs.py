@@ -135,14 +135,51 @@ def complete_unchanged_pricing(store, symbol, generation):
         accept(connection, {"pricing": {symbol: generation}})
 
 
-def pending_lineage(store):
+def pending_lineage(store, *, initializing=False):
     """Select compact intentions once; only the lineage owner can resolve them."""
     from .storage import path
 
     with closing(connect_sqlite(path(store), readonly=True)) as connection:
-        if not complete(connection):
+        if not initializing and not complete(connection):
             raise CatalogueError("export input applicability incomplete; run catalogue rebuild")
         return dict(connection.execute("SELECT symbol, generation FROM export_inputs WHERE kind='lineage'"))
+
+
+def pending_counts(store, symbols=None):
+    """Report outstanding applicability work for published serving components.
+
+    The owner has already accepted this database's contract. Its work queue does
+    not establish whether publication invalidations were acknowledged. Read that
+    separate compact completion fact once, without reopening any upstream body.
+    Sources outside published components cannot invalidate an existing export.
+    A focused request includes all members of its selected published components.
+    """
+    from .storage import path
+
+    counts = {"pricing": 0, "lineage": 0}
+    if symbols is not None and not symbols:
+        return counts
+    predicate, parameters = "", ()
+    if symbols is not None:
+        predicate = (
+            " WHERE m.group_key IN (SELECT group_key FROM members "
+            "WHERE symbol IN (SELECT value FROM json_each(?)))"
+        )
+        parameters = (json.dumps(sorted(symbols)),)
+    try:
+        with closing(connect_sqlite(path(store), readonly=True)) as connection:
+            rows = connection.execute(
+                "SELECT i.kind, COUNT(*) FROM export_inputs i "
+                "JOIN members m ON m.symbol=i.symbol" + predicate + " GROUP BY i.kind",
+                parameters,
+            )
+            for kind, count in rows:
+                if kind not in counts:
+                    raise CatalogueError("unknown export input publication owner")
+                counts[kind] = count
+    except sqlite3.Error as error:
+        raise CatalogueError("export input applicability unavailable; finish owning recovery") from error
+    return counts
 
 
 def reconcile_lineage(store, selected, generation):

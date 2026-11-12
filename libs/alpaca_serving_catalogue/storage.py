@@ -351,7 +351,7 @@ def assert_group(store, key, token):
 
 
 @traced("serving_publish")
-def commit(store, previous, groups):
+def commit(store, previous, groups, *, held_lineage=None):
     """Replace complete old contributions atomically. No public ID collision merges."""
     # This producer validates newly computed serving outputs before one SQLite
     # transaction installs bodies, public projections and its new selector.
@@ -409,6 +409,14 @@ def commit(store, previous, groups):
             raise CatalogueError(
                 "conflicting public identity or group membership; no catalogue published"
             ) from error
+        if held_lineage:
+            # The worker selected these intentions before evaluation. This new
+            # complete component supersedes them; exact deletion preserves any
+            # renewal, and the surrounding transaction preserves them on rollback.
+            selected = {name for group in groups for name in group["references"]["lineage"]}
+            export_inputs.accept(
+                connection, {"lineage": {s: g for s, g in held_lineage.items() if s in selected}}
+            )
         published = _write_state(connection, complete=state["complete"])
     from libs.alpaca_lineage_build.recovery_handoffs import serving_published
 

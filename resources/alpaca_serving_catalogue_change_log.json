@@ -201,5 +201,10 @@
     "modifications": [
       "Consume explicitly accepted serving controls and lineage index without repeating selector reads in the completed pipeline serving handoff."
     ]
+  },
+  {
+    "modifications": [
+      "Include outstanding export-input invalidations for published serving components in maintenance completion, preserving scoped component boundaries without upstream reads or schema changes; atomically consume exact held superseded lineage intentions with new component publication while retaining renewed intentions and rollback obligations."
+    ]
   }
 ]

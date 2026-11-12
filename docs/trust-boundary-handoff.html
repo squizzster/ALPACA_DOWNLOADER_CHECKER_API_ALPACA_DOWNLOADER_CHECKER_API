@@ -241,6 +241,19 @@ prices/assignments and selected year-long recovery inputs, including real pipe t
 They measure JSON and memory cost, not complete stage or live-universe throughput. The
 whole-document contract remains sensitive to the amount of materialized history. These
 changes do not close F09, F15, F58 or F64 or establish the operational runtime target.</p>
+<p>Serving completion reports outstanding export-input invalidations by pricing and lineage owner,
+using one compact aggregate over current published component members at its completion boundary.
+An empty scheduling queue cannot establish that separate publication-applicability fact. Applicable
+outstanding invalidations retain an incomplete result; unrelated never-served or retired sources do not
+invalidate existing exports. Focused completion includes all members of selected published components.
+The <a href="../tests/test_alpaca_export_applicability.py">export-applicability regressions</a> cover
+unmatched invalidations, complete-component scope, reconciliation, interrupted publication and forbidden
+upstream reads. New component commits atomically consume their exact held superseded lineage intentions;
+renewed intentions and rollback preserve obligations. An acknowledgement failure after commit reuses the
+completed publication without receipt, assignment, price or decision replay. Component applicability
+comparisons are carried from reconciliation into queued work without repetition. This changes reporting/completion behavior without changing stored schemas, selectors,
+eligibility policy or numerical decisions. It does not establish a successful live update or close the
+remaining lineage findings.</p>
 <h2>Live verification and limits</h2>
 <p>The completed advancing update took 73m57s with zero reported failures and pending work; it met the
 90-minute maximum but missed the 60-minute target. Its immediate same-cutoff rerun took 34m06.9s.

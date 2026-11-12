@@ -187,6 +187,7 @@ def maintain(
         root = writer_view.root
         if (root / ".pending.json").exists():
             raise CatalogueError("lineage publication pending; resume its owner first")
+        intentions, matching_groups = {}, {}
         if not (bootstrap or rebuild):
             selected_state = (
                 controls["state"]
@@ -198,10 +199,12 @@ def maintain(
             pending = work.read(store)
             intentions = export_inputs.pending_lineage(store)
             if (not pending and not intentions) or scope == set():
+                outstanding = export_inputs.pending_counts(store, scope)
                 return {
                     **result,
-                    "complete": True,
+                    "complete": not any(outstanding.values()),
                     "pending_symbols": [],
+                    "pending_export_inputs": outstanding,
                     "generation": selected_state["generation"],
                     "catalogue_complete": selected_state["complete"],
                 }
@@ -229,11 +232,24 @@ def maintain(
             # completed serving selection matching the index is authoritative:
             # finish stale intentions without replaying its upstream work.
             acknowledged = {}
-            applicable = intentions.keys() if scope is None else intentions.keys() & scope
+            if scope is None:
+                applicable = intentions.keys()
+            else:
+                # A focused request owns the complete selected published
+                # component, including a peer's abandoned intention when the
+                # current index and catalogue already select the same decision.
+                selected_groups = {
+                    controls["members"][symbol] for symbol in scope if symbol in controls["members"]
+                }
+                applicable = {
+                    symbol for symbol in intentions if controls["members"].get(symbol) in selected_groups
+                }
             for symbol in applicable:
                 key = controls["members"].get(symbol)
                 prior = controls["groups"].get(key)
-                if prior is not None and _matches(prior, entries):
+                if key not in matching_groups:
+                    matching_groups[key] = prior is not None and _matches(prior, entries)
+                if matching_groups[key]:
                     acknowledged[symbol] = intentions[symbol]
             export_inputs.reconcile_lineage(store, acknowledged, controls["state"]["generation"])
             result["reconciled_export_inputs"] = len(acknowledged)
@@ -258,13 +274,15 @@ def maintain(
                 for group in prior_controls["groups"].values()
             ):
                 migrated = migrate_projections(store, prior_controls, progress=progress)
+                outstanding = export_inputs.pending_counts(store)
                 return {
                     **result,
                     **migrated,
                     "reused_groups": migrated["projection_groups"],
-                    "complete": migrated["catalogue_complete"],
+                    "complete": migrated["catalogue_complete"] and not any(outstanding.values()),
                     "operation": "projection_migration",
                     "pending_symbols": sorted(work.read(store)),
+                    "pending_export_inputs": outstanding,
                 }
         # This accepted view remains pinned by the lineage worker and is passed
         # intact to selected-group readers below. Bootstrap updates this same
@@ -272,6 +290,7 @@ def maintain(
         # receipt bodies to repair a missing membership projection.
         if bootstrap or rebuild:
             storage.initialize(store, rebuild=rebuild)
+            intentions = export_inputs.pending_lineage(store, initializing=True)
             result["membership_projection_receipts"] = _project_group_members(root, index)
             with lineage.publication_lock(root, exclusive=True):
                 work.seed(store, entries)
@@ -313,7 +332,9 @@ def maintain(
                         # a data change. A completed matching decision needs only
                         # acknowledgement, not evaluation or republication.
                         bound = not rebind_exports or export_bindings.get(key) == prior["decision_generation"]
-                        if _matches(prior, entries) and bound:
+                        if key not in matching_groups:
+                            matching_groups[key] = _matches(prior, entries)
+                        if matching_groups[key] and bound:
                             retained.add(key)
                             covered.update(prior["references"]["lineage"])
                             result["reused_groups"] += 1
@@ -395,7 +416,16 @@ def maintain(
                     if component & entries.keys() - covered:
                         raise CatalogueError("selected catalogue component is incomplete")
                     if replaced or groups:
-                        controls["state"] = storage.commit(store, replaced, groups)
+                        controls["state"] = storage.commit(
+                            store,
+                            replaced,
+                            groups,
+                            **(
+                                {"held_lineage": {s: intentions[s] for s in component if s in intentions}}
+                                if intentions
+                                else {}
+                            ),
+                        )
                         if context is not None:
                             context.serving = None
                         result["published_components"] += 1
@@ -423,7 +453,12 @@ def maintain(
                 tracing.close()
         remaining = work.read(store)
         result["pending_symbols"] = sorted(remaining.keys() & selected if scope is not None else remaining)
-        if not result["pending_symbols"] and not result["failed"]:
+        result["pending_export_inputs"] = export_inputs.pending_counts(store, scope)
+        if (
+            not result["pending_symbols"]
+            and not result["failed"]
+            and not any(result["pending_export_inputs"].values())
+        ):
             state = storage.finish_bootstrap(store) if bootstrap or rebuild else controls["state"]
             result["complete"] = True
             result["generation"] = state["generation"]

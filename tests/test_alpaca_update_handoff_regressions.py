@@ -522,7 +522,10 @@ class UpdateHandoffRegressions(unittest.TestCase):
                 {"AAA": "complete", "BBB": "retry", "CCC": "pending" if invalidate_legacy else "complete"},
             )
             serving = maintain(store)
-            self.assertEqual(serving["complete"], not invalidate_legacy, serving)
+            # BBB's pricing publication remains unaccepted after its lineage
+            # failure. Successful peers publish, but the operation is incomplete.
+            self.assertFalse(serving["complete"], serving)
+            self.assertGreaterEqual(serving["pending_export_inputs"]["pricing"], 1)
             self.assertEqual(serving["pending_symbols"], ["CCC"] if invalidate_legacy else [])
             self.assertEqual(serving["evaluated_groups"], 1 if invalidate_legacy else 2)
             from libs.alpaca_pricing_download.update_checks import read_checks

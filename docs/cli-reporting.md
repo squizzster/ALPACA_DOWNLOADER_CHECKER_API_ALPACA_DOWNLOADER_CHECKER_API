@@ -10,6 +10,8 @@ Every command in `alpaca-cli-eod` and `alpaca-lineage-lab` uses the shared lifec
 The `maintenance` stage handles existing eligible summary members before discovery; `maintenance_after_discovery`
 handles newly eligible or invalidated members and late-bar work. Reused checks issue no additional comparison
 requests. The final `complete` value includes both stages and serving completion.
+Serving reports `pending_export_inputs` counts for pricing and lineage invalidations affecting published
+components; applicable unfinished invalidations prevent completion even when its scheduling queue is empty.
 Work-plan fields are conditional, not a guarantee of total requests; see
 [preview scope](operations.md#daily-update). Published unresolved identity may be completed processing.
 

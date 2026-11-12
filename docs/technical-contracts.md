@@ -890,6 +890,15 @@ maintenance. Explicit work conversion preserves queued obligations; no implicit 
 
 Maintenance first accepts the compact catalogue state and complete work queue. An empty queue returns without
 loading catalogue group/member maps or lineage membership; only selected work requires those maps.
+Completion additionally reports `pending_export_inputs` by pricing/lineage owner from one compact aggregate
+against current published component membership. An applicable outstanding invalidation keeps maintenance
+incomplete even with an empty serving-work queue. A focused request covers every member of its selected
+published components; never-served or retired sources do not invalidate an existing export. This completion
+fact neither reopens upstream artifacts nor changes catalogue schemas or eligibility decisions.
+A new component publication also consumes its held superseded lineage intentions in the same transaction.
+Deletion is conditional on the exact selected intention and restricted to the newly published members;
+renewed intentions, unrelated components and rolled-back publications retain their obligations.
+The worker carries each completed component-applicability comparison into queue consumption.
 
 Serving retains the accepted store compatibility and lineage index in a view owned by its held lineage writer
 lock. Selected readers consume those entries without reopening the index, rechecking its protocol or repeating
