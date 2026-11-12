@@ -481,7 +481,19 @@ def refresh_existing(
             work = work_policy.work.get(symbol, {}) if work_policy else {}
             contract = work.get("pricing_correction")
             correction_id = work.get("correction_id")
-            if work.get("correction_completion") and not work.get("required_history_check"):
+            # A prior-operation correction cannot suppress the fresh selected
+            # comparison for a new advance. Its recorded disposition remains
+            # available below for identical witnesses. A producer completion
+            # obtained in this operation still owns its accepted retained span.
+            advancing = (
+                end_date is not None
+                and entry["end_exclusive"][:10] < end_date
+                and work_policy is not None
+                and symbol in work_policy.completed_corrections
+            )
+            if work.get("correction_completion") and (
+                not work.get("required_history_check") or advancing and not work.get("invalidate_pricing")
+            ):
                 carried_completions.add(symbol)
                 contract, correction_id = None, None
             if contract is not None and (

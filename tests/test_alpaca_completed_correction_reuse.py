@@ -15,9 +15,48 @@ from libs.alpaca_lineage_build import universe_state
 from libs.alpaca_lineage_build.completed_corrections import applicable
 from libs.alpaca_pricing_download import correction, refresh
 from libs.alpaca_pricing_download.contract import VALIDATOR_FILE, timestamp
+from libs.alpaca_pricing_download.download import read_pricing_views
 
 
 class CompletedCorrectionReuseTests(unittest.TestCase):
+    def test_completed_old_correction_does_not_hide_a_change_when_advancing(self):
+        with fixture() as case:
+            case.records[:] = [asset("AAA")]
+            case.identity = CatalogueClient(case.records)
+            page = case.pricing._get
+
+            def context_difference(params):
+                values = copy.deepcopy(page(params))
+                if params["adjustment"] == "all" and timestamp(params["end"]) - timestamp(
+                    params["start"]
+                ) < timedelta(days=2):
+                    for rows in values["bars"].values():
+                        for row in rows:
+                            if row["t"] == case.old[0]["t"]:
+                                row["v"] = 12345
+                return values
+
+            with patch.object(case.pricing, "_get", side_effect=context_difference):
+                self.assertTrue(case.update("2026-10-17")["complete"])
+            prior = universe_state.read_state(case.store)["work"]["AAA"]
+            self.assertTrue(prior["correction_completion"])
+            case.live["AAA"] = [case.old[0], {**case.old[-1], "v": 98765}, bar("2026-10-19")]
+            acquire = refresh.acquire_full
+
+            def localized(needs, *args, **kwargs):
+                self.assertTrue(
+                    all(window["start"][:10] >= "2026-10-16" for need in needs for window in need["ranges"]),
+                    "latest correction widened to completed history",
+                )
+                return acquire(needs, *args, **kwargs)
+
+            with patch.object(refresh, "acquire_full", side_effect=localized):
+                advanced = case.update("2026-10-20")
+            self.assertTrue(advanced["complete"], advanced)
+            for rows in read_pricing_views(case.store, "AAA").values():
+                self.assertEqual(rows[-2][5], "98765", "old correction hid a new selected-row change")
+                self.assertEqual(rows[-1][0][:10], "2026-10-19")
+
     def test_same_witness_reuses_completed_disposition_after_json_without_history_io(self):
         with fixture() as case:
             case.records[:] = [asset("AAA")]

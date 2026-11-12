@@ -18,7 +18,7 @@ from .evidence import export_evidence, import_evidence
 from .execution import stage_lock
 from .state import export_recovery, export_state, import_state
 
-VERSION = 4
+VERSION = 5
 SCHEMA_VERSION = 1
 
 

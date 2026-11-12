@@ -6,7 +6,6 @@ consumes its in-memory summary; it does not repeat provider history checks.
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from functools import partial
 from pathlib import Path
 
 from libs.common.debug_trace import event, in_context, traced
@@ -151,6 +150,7 @@ def _publish_append(
     approved_source_sha256=None,
     endpoint_selection=None,
     adjustment_acquisition=None,
+    retained_partitions=None,
 ):
     symbol = entry["symbol"]
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
@@ -214,7 +214,18 @@ def _publish_append(
                 raise DownloadError(f"{symbol}: append would overlap approved {name} history")
         # Read only the hot month. Approved history is retained, never requested again.
         old_documents = {}
-        read_selected = partial(load_published_boundary, selected=True, documents=old_documents)
+
+        def read_selected(root, source, kind):
+            boundary = source["boundaries"][kind]
+            key = str(root), kind, boundary["sha256"]
+            held = (retained_partitions or {}).get(key)
+            if held is None:
+                return load_published_boundary(root, source, kind, selected=True, documents=old_documents)
+            views, document = held
+            old_documents[boundary["manifest"]] = document
+            event("append_partition_reuse", symbol=symbol, boundary=kind, boundary_sha256=key[-1])
+            return dict(views)
+
         anchor = (end - timedelta(days=1)).strftime("%Y-%m")
         selected = _incremental_endpoints(endpoints, views, start)
         update = adjustment_acquisition.extent if adjustment_acquisition else session_extent(endpoints_of(views))
@@ -283,6 +294,7 @@ def append_entries(
     endpoint_selections=None,
     context=None,
     acquired=None,
+    retained_partitions=None,
 ):
     """Batch explicit trusted baselines through the ordinary append publisher."""
     if workers not in (1, 2, 3):
@@ -362,6 +374,7 @@ def append_entries(
                     approved_source_sha256=approved_generations.get(symbol),
                     endpoint_selection=(endpoint_selections or {}).get(symbol),
                     adjustment_acquisition=state.completed,
+                    retained_partitions=retained_partitions,
                 )
             except (RuntimeError, OSError, ValueError, KeyError) as error:
                 return {
@@ -391,7 +404,9 @@ def append_entries(
 
 
 @traced("pricing_append")
-def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=None, context=None):
+def append_ready(
+    store, snapshot, end_date=None, *, client, workers=3, progress=None, context=None, retained_partitions=None
+):
     """Consume the approved handoff directly; no disk discovery or history recheck.
 
     Input is the existing minimal summary snapshot, optionally selection-filtered.
@@ -412,4 +427,5 @@ def append_ready(store, snapshot, end_date=None, *, client, workers=3, progress=
         before_publish=lambda: assert_current(store, snapshot["token"]),
         approved_generations=snapshot.get("approved_generations"),
         context=context,
+        retained_partitions=retained_partitions,
     )
