@@ -52,6 +52,32 @@ def remember_partition(store, source, kind, generation, views):
     return selected[1][key]
 
 
+def append_partitions(store, symbols):
+    """Lend already-materialized partitions and their publication documents.
+
+    The append owner selects its current source under its lock and uses only an
+    exact store/path/boundary-generation match. Changed boundaries require new
+    assembly; a new consumer alone never authorizes rereading these held rows.
+    """
+    selected = _selected.get()
+    store = Path(store).absolute()
+    if selected is None or selected[0] != store:
+        return {}
+    symbols, result = set(symbols), {}
+    for (record_kind, key), views in selected[1].items():
+        if record_kind != "pricing_partition" or key[0] not in symbols:
+            continue
+        symbol, kind, generation = key
+        document = selected[1].get(("pricing_partition_document", key))
+        if document is None:
+            from .contract import LineageError
+
+            raise LineageError(f"{symbol}: materialized pricing partition lacks its publication document")
+        root = store / "end_of_day" / "pricing" / symbol
+        result[str(root), kind, generation] = (views, document)
+    return result
+
+
 def lineage_published(store, journal, receipts=None):
     """Retain frozen journal output across recovery and serving in this operation."""
     selected = _selected.get()

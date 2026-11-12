@@ -14,6 +14,7 @@ from libs.common.debug_trace import traced
 from . import storage
 from .context import accept_context
 from .pipeline import run_lineage
+from .recovery_handoffs import append_partitions
 from .refresh import refresh_existing
 
 
@@ -197,6 +198,7 @@ def update_everything(
                 workers=workers,
                 progress=progress,
                 context=context.pricing(),
+                retained_partitions=append_partitions(store, (e["symbol"] for e in snapshot["entries"])),
             )
             if work_policy is not None:
                 work_policy.record_results(appended, stage="append")

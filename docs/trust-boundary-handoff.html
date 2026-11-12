@@ -272,8 +272,21 @@ without historical reads or calculations. Pending acknowledgement does not revok
 The <a href="../tests/test_alpaca_completed_correction_reuse.py">completed correction reuse regressions</a> cover
 real JSON execution, append, publication-before-acknowledgement interruption, repeated acquisition/payload/validator
 prohibitions and genuine witness, mapping, scope and generation invalidation. Existing workflow fields retain
-these results without a new archive or production format. This removes the identified redundant-work path;
+these results without a new archive or production format. A new operation advancing beyond completed coverage performs
+its required fresh comparison: the prior correction's completion cannot hide a newly changed selected row.
+The advancing regression preserves a localized correction and missing-session append without widening acquisition.
+This removes the identified redundant-work path;
 operational acceptance still requires the ordinary advancing run.</p>
+<p>The <a href="../tests/test_alpaca_append_partition_handoff.py">append partition handoff regressions</a>
+exercise a full correction through lineage, append and serving, including month/year rollover. They reject
+reopening the same selected payload generation and verify the resulting histories. Lineage lends both decoded
+rows and their already-read publication documents to append; later lineage assembly also consumes unchanged
+held partitions. A separate ordinary append crosses the real history-to-serving JSON boundary while forbidding
+receipt or assignment output rereads after the lineage publisher completes. Normal publication now lends those
+bodies just as recovery does. Store and boundary-generation mismatches select their actual assembly rather than
+using stale rows. These transient values use the existing JSON handoff; production formats and lineage policy are
+unchanged. This repairs the reproduced correction-to-append and fresh-lineage handoff omissions, not every possible repeated-read path;
+F15 remains partial and operational acceptance requires measured execution.</p>
 <h2>Live verification and limits</h2>
 <p>The completed advancing update took 73m57s with zero reported failures and pending work; it met the
 90-minute maximum but missed the 60-minute target. Its immediate same-cutoff rerun took 34m06.9s.

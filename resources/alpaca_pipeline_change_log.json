@@ -18,5 +18,10 @@
     "modifications": [
       "Carry completed correction decisions explicitly in the serialized work policy so fresh history processes retain accepted request-context resolutions without changing production formats."
     ]
+  },
+  {
+    "modifications": [
+      "Carry selected pricing partition documents, normally published lineage receipts and assignment bodies through the existing transient recovery transport for downstream reuse without new production storage."
+    ]
   }
 ]

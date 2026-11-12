@@ -314,5 +314,10 @@
     "modifications": [
       "Carry newly observed session-membership changes explicitly in completed history comparisons so consumers can compose accepted correction dispositions with freshly checked append tails without repeating their calculations."
     ]
+  },
+  {
+    "modifications": [
+      "Consume store- and boundary-generation-bound materialized partition handoffs during approved append and rollover instead of decoding the same retained partition again."
+    ]
   }
 ]

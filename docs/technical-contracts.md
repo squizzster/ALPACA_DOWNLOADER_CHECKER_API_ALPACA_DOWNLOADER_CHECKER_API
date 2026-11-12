@@ -339,6 +339,18 @@ the containing gzip is selected output construction; it is not a full-history pr
 references remain retained. The source records correction cause, prior generation, preceding session and whether
 exact timestamp membership was preserved, alongside truthful ancestry beginning at the corrected session.
 
+When lineage materializes corrected partitions before a subsequent append, its transient handoff carries
+the decoded rows and their already-read publication documents. Append and later lineage assembly consume
+matching store, partition and boundary-generation records without reopening their manifests or payloads.
+A changed selected boundary needs its own assembly; an unchanged boundary remains reusable across source
+envelope changes and rollover. These values cross the ordinary JSON transport and are not retained separately.
+Normal lineage publication also carries its completed receipt and newly produced assignment bodies to serving,
+under their exact selected generations, using the same handoff as publication recovery.
+A correction completion carried from an earlier operation does not by itself complete a newly requested advance
+beyond retained coverage. That advance receives its required selected comparison, consuming the earlier disposition
+only when the new witnesses support it; a changed selected row takes its newly selected correction scope.
+Producer completion obtained in the current operation remains authoritative for its accepted retained span.
+
 New-range acquisition uses the `alpaca_adjustment_equivalence_v2` empirical policy in
 [adjustment_policy.py](../libs/alpaca_pricing_download/adjustment_policy.py). It requests `raw`, then `all`.
 Equality of their complete newly acquired payloads selects the all-equal pattern after two views. Otherwise,

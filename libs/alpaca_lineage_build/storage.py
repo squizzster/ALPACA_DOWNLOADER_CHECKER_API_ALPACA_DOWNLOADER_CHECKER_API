@@ -751,10 +751,9 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
     if receipts is not None:
         refresh(store, receipts, sources=sources)
     _acknowledge(store, journal, sources=sources, recovered=recovered)
-    if recovering:
-        from .recovery_handoffs import lineage_published
+    from .recovery_handoffs import lineage_published
 
-        lineage_published(store, journal, receipts)
+    lineage_published(store, journal, receipts)
     path_at(root, ".pending.json").unlink()
     return state
 

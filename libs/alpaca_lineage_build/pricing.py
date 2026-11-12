@@ -95,11 +95,22 @@ def load_pricing(
     partitions = {} if partitions is None else partitions
 
     def read(root, source, kind, *, selected=True):
-        from .recovery_handoffs import remember_partition
+        from .recovery_handoffs import recall, remember, remember_partition
 
         key = (str(root), kind, source["boundaries"][kind]["sha256"])
         if key not in partitions:
-            partitions[key] = load_published_boundary(root, source, kind, selected=selected)
+            held = recall(store, "pricing_partition", (symbol, kind, key[-1]))
+            if held is not None:
+                partitions[key] = held
+        if key not in partitions:
+            documents = {}
+            partitions[key] = load_published_boundary(root, source, kind, selected=selected, documents=documents)
+            remember(
+                store,
+                "pricing_partition_document",
+                (symbol, kind, key[-1]),
+                documents[source["boundaries"][kind]["manifest"]],
+            )
         else:
             event(
                 "lineage_partition_reuse",
