@@ -202,6 +202,13 @@ def _refined_candidate(selected, control, maximum):
 
 
 def evaluate(store, seed, policy, control_policy, selected, maximum):
+    mode = getattr(policy, "control_mode", "replay")
+    if mode in {"accepted_publication", "documented_scopes"}:
+        from .documented import evaluate as evaluate_accepted
+        from .documented import scoped_facts
+
+        if mode == "accepted_publication" or scoped_facts(policy, selected["selected_group"]):
+            return evaluate_accepted(store, seed, policy, control_policy, selected, maximum)
     control = {}
     control_report = _compare_loaded_group(
         store, seed, control_policy, selected, max_differences=maximum, completed=control

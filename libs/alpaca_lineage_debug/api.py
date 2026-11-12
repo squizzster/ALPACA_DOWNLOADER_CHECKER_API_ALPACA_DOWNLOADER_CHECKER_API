@@ -21,7 +21,7 @@ REPORT_SCHEMA = "alpaca.lineage.debug.report"
 FIELDS = {
     "init": set(),
     "rules": {"policy"},
-    "explain": {"store", "symbol", "session", "adjustment", "max_segments"},
+    "explain": {"store", "symbol", "session", "adjustment", "max_segments", "include_metadata_handoff"},
     "run": {
         "store",
         "policy",
@@ -32,6 +32,7 @@ FIELDS = {
         "control_policy",
         "screen_report",
         "reuse_report",
+        "metadata_handoff",
     },
     "screen": {"store", "policy", "control_policy"},
     "export": {"manifest", "symbols", "multiple_only"},
@@ -64,6 +65,13 @@ def path(value, name):
     if type(value) is not str or not value:
         raise ValueError(f"{name} must be a nonempty path string")
     return value
+
+
+def report_file(value, name):
+    document = json.loads(Path(path(value, name)).read_bytes(), object_pairs_hook=unique)
+    if not isinstance(document, dict):
+        raise ValueError(f"{name} must contain a JSON object")
+    return document
 
 
 def execute(data):
@@ -133,6 +141,9 @@ def dispatch(command, request):
             **rule_index(load_policy(path(request.get("policy", str(DEFAULT_POLICY)), "policy"))),
         }
     if command == "explain":
+        capture = request.get("include_metadata_handoff", False)
+        if type(capture) is not bool:
+            raise ValueError("include_metadata_handoff must be boolean")
         session = request.get("session")
         if session is not None and (
             type(session) is not str or date.fromisoformat(session).isoformat() != session
@@ -147,6 +158,7 @@ def dispatch(command, request):
             session=session,
             adjustment=adjustment,
             maximum=integer(request.get("max_segments", 100), "max_segments", 10000),
+            include_metadata_handoff=capture,
         )
     if command == "run":
         selected = symbols(request.get("symbols", []))
@@ -163,7 +175,10 @@ def dispatch(command, request):
         control = load_policy(path(control, "control_policy")) if control is not None else None
         if ("screen_report" in request or "reuse_report" in request) and control is None:
             raise ValueError("screen and completed-report consumption require an explicit control_policy")
-        if getattr(policy, "membership_refinement", None) and control is None:
+        if (
+            getattr(policy, "membership_refinement", None)
+            or getattr(policy, "control_mode", "replay") in {"accepted_publication", "documented_scopes"}
+        ) and control is None:
             raise ValueError("membership refinement requires an explicit control_policy")
         if control is not None and getattr(control, "membership_refinement", None):
             raise ValueError("the control policy must disable experimental membership refinement")
@@ -175,11 +190,14 @@ def dispatch(command, request):
             max_differences=integer(request.get("max_differences", 20), "max_differences", 1000),
             timeout_seconds=timeout,
             control_policy=control,
-            screen_report=json.loads(Path(path(request["screen_report"], "screen_report")).read_bytes())
+            screen_report=report_file(request["screen_report"], "screen_report")
             if "screen_report" in request
             else None,
-            reuse_report=json.loads(Path(path(request["reuse_report"], "reuse_report")).read_bytes())
+            reuse_report=report_file(request["reuse_report"], "reuse_report")
             if "reuse_report" in request
+            else None,
+            metadata_handoff=report_file(request["metadata_handoff"], "metadata_handoff")
+            if "metadata_handoff" in request
             else None,
         )
     if command == "export":

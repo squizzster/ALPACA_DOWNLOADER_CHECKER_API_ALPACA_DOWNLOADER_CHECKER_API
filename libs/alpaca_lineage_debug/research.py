@@ -8,7 +8,7 @@ from libs.alpaca_lineage_policy_lab.comparison import _compare_loaded_group, _lo
 from libs.alpaca_pricing_download.contract import symbol_label
 
 from . import accept_report
-from .policy import policy_applies
+from .policy import policy_applies, policy_applies_to_group
 
 
 def failure(error):
@@ -50,8 +50,17 @@ def evaluate_group(
     # Keep materialized inputs local to one call, including its exception path.
     # The returned comparison and failure strings retain no pricing objects.
     extra = {} if screen_record is None else {"held_receipts": screen_record["receipts"]}
+    if screen_record is not None and "boundaries" in screen_record:
+        extra["held_boundaries"] = screen_record["boundaries"]
     if accepted_store is not None:
         extra["accepted_store"] = accepted_store
+    if getattr(policy, "control_mode", "replay") in {"accepted_publication", "documented_scopes"}:
+        from .documented import materialize_sources, scoped_facts
+
+        if scoped_facts(policy, group):
+            extra["materialize_symbols"] = lambda receipts: materialize_sources(
+                policy, receipts, group, membership_pairs_handoff=(screen_record or {}).get("membership_pairs")
+            )
     with _load_group(store, seed, selection=held_selection(index, group), **extra) as selected:
         if screen_record is not None and "membership_pairs" in screen_record:
             selected["membership_pair_handoff"] = [
@@ -112,10 +121,34 @@ def run(
     control_policy=None,
     screen_report=None,
     reuse_report=None,
+    metadata_handoff=None,
 ):
     started = time.monotonic()
+    if metadata_handoff is not None:
+        if not isinstance(metadata_handoff, dict):
+            raise ValueError("selected metadata handoff must be an object")
+        metadata_handoff = metadata_handoff.get("metadata_handoff", metadata_handoff)
+        if (
+            not isinstance(metadata_handoff, dict)
+            or metadata_handoff.get("boundary") != "alpaca_lineage_research_selected_metadata"
+            or type(metadata_handoff.get("schema_version")) is not int
+            or metadata_handoff["schema_version"] != 1
+            or metadata_handoff.get("store") != str(Path(store).absolute())
+            or not isinstance(metadata_handoff.get("selector"), dict)
+        ):
+            raise ValueError("invalid selected metadata handoff envelope")
     if screen_report is None:
-        store, root, index = select(store)
+        if metadata_handoff is not None and not all_groups:
+            store = Path(store).absolute()
+            root = store / "end_of_day/lineage"
+            index = {
+                "symbols": metadata_handoff.get("index_entries", {}),
+                "projection_state": metadata_handoff.get("selector"),
+            }
+            with storage.publication_lock(root):
+                storage.assert_index_current(root, index)
+        else:
+            store, root, index = select(store)
     else:
         from .screen import accept_screen
 
@@ -140,13 +173,35 @@ def run(
         if screen_report is None
         else {tuple(item["group"]): item for item in screen_report["unaffected_groups"]}
     )
+    if metadata_handoff is not None:
+        value = metadata_handoff
+        group = value.get("group", [])
+        if (
+            value.get("boundary") != "alpaca_lineage_research_selected_metadata"
+            or value.get("schema_version") != 1
+            or type(value.get("schema_version")) is not int
+            or value.get("store") != str(store)
+            or value.get("selector") != index["projection_state"]
+            or not isinstance(group, list)
+            or not group
+            or any(not isinstance(name, str) for name in group)
+            or group != sorted(set(group))
+            or any(tuple(entries.get(name, {}).get("group_members", ())) != tuple(group) for name in group)
+            or value.get("receipt_generations") != {name: entries[name]["sha256"] for name in group}
+            or set(value.get("receipts", {})) != set(group)
+            or set(value.get("boundaries", {})) != set(group)
+        ):
+            raise ValueError("selected metadata handoff has incompatible store, group or generation bindings")
+        screened[tuple(group)] = {**value, **({"membership_pairs": []} if tuple(group) in unaffected else {})}
+    for group in list(unaffected):
+        if any(set(entry["symbols"]).intersection(group) for entry in getattr(policy, "documented_facts", ())):
+            del unaffected[group]
     reused = {}
     if reuse_report is not None:
-        accept_report(reuse_report, "run")
+        accept_report(reuse_report, "run", allow_previous=True)
         if (
             reuse_report.get("mode") != "paired_same_inputs"
             or reuse_report.get("store") != str(store)
-            or not policy_applies(reuse_report.get("candidate_policy", {}), policy)
             or control_policy is None
             or not policy_applies(reuse_report.get("control_policy", {}), control_policy)
             or reuse_report.get("scope", {}).get("selector") != index["projection_state"]
@@ -155,6 +210,8 @@ def run(
         ):
             raise ValueError("completed paired report has incompatible operation bindings")
         for result in reuse_report["groups"]:
+            if not policy_applies_to_group(reuse_report.get("candidate_policy", {}), policy, result["group"]):
+                raise ValueError("completed paired report has changed candidate facts in its group")
             if any(
                 entries.get(source, {}).get("sha256") != generation
                 for source, generation in result["baseline"]["receipt_generations"].items()
@@ -232,8 +289,14 @@ def run(
             "published_control_drift_groups": sum(
                 not item["published_to_control"]["parity"] for item in results if "published_to_control" in item
             ),
-            "control_drift_assessed_groups": len(results),
-            "control_drift_unassessed_groups": len(proven),
+            "control_drift_assessed_groups": sum(
+                item.get("control_kind") != "accepted_publication_no_replay" for item in results
+            ),
+            "control_drift_unassessed_groups": len(proven)
+            + sum(item.get("control_kind") == "accepted_publication_no_replay" for item in results),
+            "accepted_publication_control_groups": sum(
+                item.get("control_kind") == "accepted_publication_no_replay" for item in results
+            ),
         },
         "groups": results,
         "unaffected_groups": proven,

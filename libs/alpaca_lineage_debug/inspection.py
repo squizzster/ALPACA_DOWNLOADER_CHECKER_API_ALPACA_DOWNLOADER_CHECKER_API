@@ -8,12 +8,14 @@ from libs.alpaca_lineage_build.evidence import published_assignments, rule_path
 from libs.alpaca_pricing_download.contract import symbol_label
 
 
-def explain(store, symbol, *, session=None, adjustment="raw", maximum=100):
+def explain(store, symbol, *, session=None, adjustment="raw", maximum=100, include_metadata_handoff=False):
+    if include_metadata_handoff and session is not None:
+        raise ValueError("complete metadata capture requires an unfiltered session scope")
     symbol = symbol_label(symbol)
     with storage.reader_snapshot(
         Path(store), lambda root: storage.select_inputs(root, symbol), include_boundaries=False
     ) as snapshot:
-        sources = {}
+        sources, held_boundaries = {}, {}
         candidates = []
         for name, receipt in sorted(snapshot["receipts"].items()):
             if receipt is None:
@@ -32,6 +34,7 @@ def explain(store, symbol, *, session=None, adjustment="raw", maximum=100):
             boundaries = snapshot["boundaries"].get(name)
             if boundaries is None:
                 boundaries = storage.read_boundaries(Path(store) / "end_of_day/lineage", receipt, kinds=kinds)
+            held_boundaries[name] = boundaries
             # Empty unselected branches adapt this scoped selection to the
             # existing assignment iterator; they make no assertion about storage.
             scoped = {
@@ -102,7 +105,7 @@ def explain(store, symbol, *, session=None, adjustment="raw", maximum=100):
                             "meaning": "overlapping selected segment bounds; exact shared sessions are not established by bounds alone",
                         }
                     )
-        return {
+        result = {
             "status": "complete",
             "execution_complete": True,
             "mode": "published_metadata_only",
@@ -119,3 +122,18 @@ def explain(store, symbol, *, session=None, adjustment="raw", maximum=100):
                 "Multiple ticker labels, multiple public identities and competing numerical observations are distinct facts.",
             ],
         }
+        if include_metadata_handoff:
+            result["metadata_handoff"] = {
+                "boundary": "alpaca_lineage_research_selected_metadata",
+                "schema_version": 1,
+                "store": str(Path(store).absolute()),
+                "selector": snapshot["entries"].token,
+                "group": sorted(snapshot["entries"]),
+                "index_entries": dict(snapshot["entries"]),
+                "receipt_generations": {
+                    name: entry["sha256"] for name, entry in snapshot["entries"].items() if entry is not None
+                },
+                "receipts": snapshot["receipts"],
+                "boundaries": held_boundaries,
+            }
+        return result

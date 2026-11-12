@@ -252,7 +252,12 @@ def select_observations(
         if opened:
             active, frozen, occupants = _partition_choices(reports, retained_choices, opened)
         selected, corrections = _select_new_observations(
-            inputs, active, row_cache=row_cache, source_occupants=occupants, instants=instants
+            inputs,
+            active,
+            row_cache=row_cache,
+            source_occupants=occupants,
+            instants=instants,
+            equality_outcomes=equality_outcomes,
         )
     else:
         selected, corrections = deepcopy(active), {}

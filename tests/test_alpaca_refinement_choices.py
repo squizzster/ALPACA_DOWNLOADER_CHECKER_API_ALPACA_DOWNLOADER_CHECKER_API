@@ -85,8 +85,23 @@ class RefinedChoiceTests(TestCase):
                     "libs.alpaca_pricing_download.activity.validate_activity",
                     side_effect=AssertionError("accepted activity replayed"),
                 ):
+                    equality = {}
                     result, corrections = select_observations(
-                        inputs, candidate, retained_choices=_retained(reports, trace["changes"], selected)
+                        inputs,
+                        candidate,
+                        retained_choices=_retained(reports, trace["changes"], selected),
+                        equality_outcomes=equality,
+                    )
+                self.assertEqual(len(equality), 4 if old_value == "10" else 0)
+                with patch(
+                    "libs.alpaca_lineage_build.observations._select_new_observations",
+                    side_effect=AssertionError("completed equality recalculated"),
+                ):
+                    select_observations(
+                        inputs,
+                        result,
+                        retained_choices=_retained(result, [], selected),
+                        equality_outcomes=equality,
                     )
                 self.assertFalse(corrections)
                 self.assertTrue(

@@ -40,6 +40,9 @@ def build_parser():
             sub.add_argument("--store", default=str(REPOSITORY / "data_pricing"))
         if name == "run":
             sub.add_argument(
+                "--metadata-handoff", help="Consume selected metadata already captured for this case."
+            )
+            sub.add_argument(
                 "--screen-report", help="Consume a metadata screen without rereading its index or receipts."
             )
             sub.add_argument("--reuse-report", help="Carry a completed paired result under matching bindings.")
@@ -56,6 +59,11 @@ def build_parser():
         if name == "screen":
             sub.add_argument("--control-policy", required=True)
         if name == "explain":
+            sub.add_argument(
+                "--include-metadata-handoff",
+                action="store_true",
+                help="Include exact selected metadata in JSON for a subsequent run.",
+            )
             sub.add_argument("--ticker", "--symbol", dest="symbol", required=True)
             sub.add_argument("--session")
             sub.add_argument("--adjustment", default="raw")

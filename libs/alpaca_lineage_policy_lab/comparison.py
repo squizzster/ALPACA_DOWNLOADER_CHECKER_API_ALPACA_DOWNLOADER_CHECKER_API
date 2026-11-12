@@ -335,7 +335,16 @@ def _migration_preserved_rule_order_provenance(
 
 
 @contextmanager
-def _load_group(store: Path, seed_symbol: str, *, selection=None, held_receipts=None, accepted_store=None):
+def _load_group(
+    store: Path,
+    seed_symbol: str,
+    *,
+    selection=None,
+    held_receipts=None,
+    held_boundaries=None,
+    accepted_store=None,
+    materialize_symbols=None,
+):
     # Explicit comparison owns this selected complete-group replay. The snapshot
     # selects and locks its publications; input generation checks bind the replay
     # to those facts. DO NOT repair pending work, fetch replacement evidence or
@@ -354,7 +363,9 @@ def _load_group(store: Path, seed_symbol: str, *, selection=None, held_receipts=
             snapshot = {
                 **snapshot,
                 "receipts": held_receipts,
-                "boundaries": {name: read_boundaries(root, receipt) for name, receipt in held_receipts.items()},
+                "boundaries": held_boundaries
+                if held_boundaries is not None
+                else {name: read_boundaries(root, receipt) for name, receipt in held_receipts.items()},
             }
         seed_receipt = snapshot["receipts"].get(seed_symbol)
         if not isinstance(seed_receipt, dict):
@@ -383,9 +394,14 @@ def _load_group(store: Path, seed_symbol: str, *, selection=None, held_receipts=
                 raise PolicyLabError(f"{symbol}: published receipt has no normalized evidence")
             receipts[symbol] = receipt
 
+        needed = set(receipts) if materialize_symbols is None else set(materialize_symbols(receipts))
+        if not needed <= set(receipts):
+            raise PolicyLabError("research materialization selected an unavailable source")
         sources = {}
         inputs = {}
         for symbol, expected_generation in sorted(expected_sources.items()):
+            if symbol not in needed:
+                continue
             if symbol not in snapshot["locked"]:
                 raise PolicyLabError(f"{symbol}: selected pricing source is not locked")
             pricing_root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
@@ -416,6 +432,7 @@ def _load_group(store: Path, seed_symbol: str, *, selection=None, held_receipts=
             "unavailable_pricing": sorted(unavailable),
             "auxiliary_evidence": {name: item["evidence"] for name, item in unavailable.items()},
             "selected_group": sorted(selected_group),
+            "materialized_sources": sorted(needed),
         }
 
 

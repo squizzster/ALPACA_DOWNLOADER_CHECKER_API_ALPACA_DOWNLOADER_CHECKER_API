@@ -7,7 +7,7 @@ from libs.alpaca_lineage_build import storage
 
 from . import accept_report
 from .paired import same_cascade
-from .policy import policy_applies
+from .policy import policy_applies, policy_applies_to_group
 from .research import failure, select
 
 
@@ -29,7 +29,10 @@ def screen(store, policy, control):
         storage.assert_index_current(root, index)
         for group in groups:
             available = [source for source in group if source in index["symbols"]]
-            if len(available) < 2:
+            documented = any(
+                set(entry["symbols"]).intersection(group) for entry in getattr(policy, "documented_facts", ())
+            )
+            if len(available) < 2 and not documented:
                 unaffected.append({"group": list(group), "reason": "no_different_indexed_donor_source"})
                 continue
             try:
@@ -41,7 +44,7 @@ def screen(store, policy, control):
                 record = {"group": list(group), "receipts": receipts}
                 if pairs is None:
                     unknown.append(record)
-                elif pairs:
+                elif pairs or documented:
                     record["membership_pairs"] = [
                         {
                             "source": pair["source"],
@@ -97,12 +100,12 @@ def screen(store, policy, control):
 
 
 def accept_screen(value, store, policy, control):
-    accept_report(value, "screen")
+    accept_report(value, "screen", allow_previous=True)
     if value.get("operation") != "screen" or value.get("mode") != "membership_applicability_screen":
         raise ValueError("expected a completed lineage membership screen")
     if value.get("store") != str(Path(store).absolute()) or not value.get("execution_complete"):
         raise ValueError("screen has an incompatible store binding or incomplete coverage")
-    if not policy_applies(value["candidate_policy"], policy) or not policy_applies(
+    if not policy_applies_to_group(value["candidate_policy"], policy, []) or not policy_applies(
         value["control_policy"], control
     ):
         raise ValueError("screen belongs to another control/candidate policy")

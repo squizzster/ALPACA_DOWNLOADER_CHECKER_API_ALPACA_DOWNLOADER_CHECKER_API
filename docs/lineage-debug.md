@@ -186,6 +186,66 @@ applicability records the affected group without replaying it or discarding inde
 Reports created before the required implementation/store bindings are present are rejected; the tool never
 silently reconstructs them. Saved research reports are explicit operator outputs outside the production store.
 
+## Research a documented chronology
+
+Research YAML can also supply new primary-source facts through the existing
+[sourced-fact contract](lineage.md#sourced-event-facts). These are evidence assertions, not ticker exceptions
+in the rules. Under `research`, `documented_facts` is a list of entries containing explicit `symbols`, a
+`supplements` list of complete `dated_market_occupancy` facts in schema 3, 4 or 5, and optional
+`refine_accepted_dates` (boolean, default true). Each supplement retains its complete endpoints, episodes,
+actual legal treatment and primary document provenance. No provider UUID or price may be invented.
+
+Use `control_mode: documented_scopes`. Groups intersecting those fact scopes consume the accepted publication
+as their unchanged control; they do not replay the old cascade. Other groups retain the existing replay control
+and membership experiment. `control_mode: accepted_publication` selects that control for every evaluated group.
+Both require an explicit unchanged `--control-policy` and the same executable cascade. Accepted-publication
+parity means the published handoff was carried, not that a full control replay matched it. Reports count these
+controls separately from assessed and unassessed replay drift.
+
+The producer binds new facts once to retained exact metadata and accepted source-local components. Changed
+accepted fact IDs require explicit owning reconciliation; unchanged facts retain their existing acceptance.
+Untouched documented owners/routes survive alongside the fresh plan. Competing chronologies and changed source
+contexts remain errors. Positive dated refinement does not authorize filling unknown rows under a foreign
+current symbol context. `refine_accepted_dates: false` keeps earlier positive ownership, explanations and
+numerical choices closed while the documented owner evaluates unresolved observations.
+
+Only newly owned or joined component positions enter numerical selection with their exact counterpart rows.
+The handoff retains completed choices and requested equality outcomes, whose timestamps are JSON strings.
+An empty captured equality list differs from an earlier execution that never requested that optional capture;
+missing results do not authorize recomputation. Candidate receipts, assignments and accurately clipped report
+positions travel in `candidate_handoff`, explicitly marked as research with no publication authorization.
+Production policy, recovery integration and storage formats remain unchanged.
+
+The named membership screen also carries its accepted necessary-condition proof when new facts are added.
+Groups intersecting a fresh factual scope cannot inherit its old unaffected classification. Completed results
+for other groups remain applicable when their effective rule/fact/control scope is unchanged. A report containing
+a changed group must be explicitly projected to compatible completed groups before `--reuse-report`; retain its
+original provenance and mark omitted work incomplete. Supported version-2 and earlier version-3 reports have an
+explicit compatibility reader for the unchanged engine/metadata contracts; unknown implementations and unbound
+reports are rejected.
+
+Metadata selects possible documented-owner sources before pricing materialization. Other identity components
+remain metadata-only. Enabled membership refinement additionally retains both sides of its completed pair
+handoffs; missing membership scope/capabilities cannot prove an exclusion. This bounds research input assembly;
+it does not authenticate prices or establish live production performance.
+
+Capture the metadata already read during a complete explanation and pass it directly to a subsequent run:
+
+```bash
+./alpaca-lineage-debug explain --store data_pricing --ticker SSNT \
+  --include-metadata-handoff --format json > /tmp/lineage-case-input.json
+./alpaca-lineage-debug run --store data_pricing --tickers SSNT \
+  --policy /tmp/lineage-candidate.yaml \
+  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --metadata-handoff /tmp/lineage-case-input.json --format json > /tmp/lineage-case-result.json
+```
+
+The capture contains selected index entries, receipt/assignment bodies and actual store/selector/generation
+bindings. A session-filtered explanation cannot claim a complete capture. Selected consumption uses those
+entries without another index-body read; `--all` still needs its full selector or an applicable screen. Changed
+bindings stop consumption before pricing assembly. This is an explicitly saved research input, not a normal-run
+archive or recovery mechanism.
+
 ## Ticker instances in a completed CSV export
 
 ```bash

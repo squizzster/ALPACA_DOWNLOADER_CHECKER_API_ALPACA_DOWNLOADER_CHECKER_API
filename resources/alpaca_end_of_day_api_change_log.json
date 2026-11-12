@@ -237,5 +237,10 @@
     "modifications": [
       "Expose explicit paired control/candidate impact, metadata-screen handoffs and generation-bound completed-result reuse through the existing read-only lineage diagnostic JSON boundary."
     ]
+  },
+  {
+    "modifications": [
+      "Expose scoped documented-chronology research and accepted-publication controls through the read-only lineage diagnostic JSON API."
+    ]
   }
 ]

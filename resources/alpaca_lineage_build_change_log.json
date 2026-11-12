@@ -567,5 +567,10 @@
     "modifications": [
       "Allow selected read-only diagnostic groups to consume the operation\u2019s completed immutable store/path acceptance without reopening its manifest; generation applicability remains independently checked."
     ]
+  },
+  {
+    "modifications": [
+      "Forward newly completed numerical equality through retained-choice selection to its requesting producer; preserve accepted rows without repeating their comparisons."
+    ]
   }
 ]

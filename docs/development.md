@@ -29,6 +29,8 @@ Use generic evidence rules; the main agent owns implementation/acceptance.
    before the experiment. Preserve exact requests and completed results as explicit research artifacts
    outside the production store. Inspect [published evidence](operations.md#focused-standalone-work);
    inspection reads, refresh may acquire/publish.
+   Check whether the queue artifact predates an accepted repair. A stale export is not authority to repeat
+   that repair. Capture selected diagnostic metadata when it must cross to the next research operation.
 2. Use a fresh research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`. Supply the question,
    evidence/current rules and no preferred verdict. Request primary-source facts, uncertainty, counterexamples
    and a generic rule concept. Researchers never edit/publish; report unavailable configurations.
@@ -52,6 +54,8 @@ Use generic evidence rules; the main agent owns implementation/acceptance.
    explicit preserved control implementation or an opt-in candidate path. Assert outputs and forbidden work,
    including actual invalidation and partial failure. Research replay alone does not prove incremental
    production continuation, interruption or append preservation.
+   New primary facts can use an explicit accepted-publication control without repeating a completed full
+   replay. Choose unresolved-only projection when accepted historical dates and owners already agree.
 6. Measure wider impact after focused success. Derive the expected work from completed selectors first.
    A metadata-only exclusion requires a proven necessary condition for this exact candidate; unknown inputs
    remain selected, and arbitrary YAML changes cannot borrow a specialized screen. Carry accepted index,

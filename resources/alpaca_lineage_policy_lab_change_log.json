@@ -104,5 +104,10 @@
     "modifications": [
       "Carry completed published comparison frames, row indexes and digests across paired evaluations; consume selected screen receipts and immutable store acceptance without rereading those boundaries."
     ]
+  },
+  {
+    "modifications": [
+      "Consume already captured selected assignment bodies alongside held receipts when constructing a generation-bound research input; no repeat metadata reads or historical authentication."
+    ]
   }
 ]
