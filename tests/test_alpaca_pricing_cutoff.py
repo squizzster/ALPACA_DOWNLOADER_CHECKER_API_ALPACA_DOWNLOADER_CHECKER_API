@@ -154,7 +154,8 @@ class PricingCutoffTests(unittest.TestCase):
                 before = universe_state.read_state(case.store)["work"]["AAA"]
                 with patch.object(case.pricing, "_get", side_effect=AssertionError("deferred pricing request")):
                     code, result, errors = invoke(case, "update", "--through", "2026-10-17")
-                self.assertEqual(code, 1, (result, errors))
+                self.assertEqual(code, 0, (result, errors))
+                self.assertEqual(result["outcome"], "completed_with_warnings")
                 self.assertFalse(result["complete"])
                 after = universe_state.read_state(case.store)["work"]["AAA"]
                 self.assertEqual(after["pricing_end_exclusive"], accepted_end)

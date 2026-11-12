@@ -16,7 +16,7 @@ from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timesta
 from .endpoints import Endpoints, compare_history, comparison_rows, different_fields, history_windows
 from .http import execute_bar_plan
 
-VERSION = 10
+VERSION = 11
 DEFAULT_BATCH_SIZE = 4000
 
 
@@ -80,7 +80,7 @@ def changed_fields(stored, live):
     }
 
 
-def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
+def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None, missing_route=None):
     """Compare the producer's baseline once and carry usable observations forward."""
     started = time.monotonic()
     action_plan = plan(snapshot, batch_size)
@@ -169,6 +169,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
     actual = defaultdict(list)
     for value in acquired.values():
         actual[value.symbol].extend(value.rows)
+    mapped_endpoints = []
     for symbol, entry in entries.items():
         if symbol in failed:
             continue
@@ -181,6 +182,67 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
             by_day[_day(row)] = row
         if symbol in failed:
             continue
+        if missing_route is not None:
+            for endpoint, stored in _endpoints(entry):
+                day = _day(stored)
+                if day in by_day:
+                    continue
+                try:
+                    route = missing_route(entry, day.isoformat())
+                except (RuntimeError, OSError, ValueError) as error:
+                    failures.append({"symbols": [symbol], "reason": str(error)[:300]})
+                    failed.add(symbol)
+                    break
+                if route is None:
+                    continue
+                start, end = history_windows(
+                    Endpoints({"all": (stored,)}, tail_all=(stored,)),
+                    cutoff=datetime.fromisoformat(entry["end_exclusive"].replace("Z", "+00:00")),
+                )[0]
+                alternate = build_plan(
+                    {
+                        "steps": [
+                            {
+                                "needs": [
+                                    {
+                                        "kind": "bars",
+                                        "why": "boundary_check",
+                                        "symbols": [route["symbol"]],
+                                        "adjustments": ["all"],
+                                        "asof": route["asof"],
+                                        "ranges": [
+                                            {"start": start.isoformat(), "end_exclusive": end.isoformat()}
+                                        ],
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    merge_ranges=False,
+                )
+                metrics["mapped_endpoint_probes"] = metrics.get("mapped_endpoint_probes", 0) + 1
+                route_failures = []
+                observed = execute_bar_plan(
+                    alternate,
+                    get_page,
+                    metrics=metrics,
+                    on_failure=lambda step, action, error: route_failures.append(error),
+                )
+                if route_failures:
+                    failures.append({"symbols": [symbol], "reason": str(route_failures[0])[:300]})
+                    failed.add(symbol)
+                    break
+                rows = [row for value in observed.values() for row in value.rows]
+                if len(rows) == 1 and _day(rows[0]) == day:
+                    by_day[day] = rows[0]
+                    actual[symbol].append(rows[0])
+                    detail = {"symbol": symbol, "endpoint": endpoint, "session": day.isoformat(), **route}
+                    detail["symbol"] = symbol
+                    detail["mapped_symbol"] = route["symbol"]
+                    mapped_endpoints.append(detail)
+                    event("mapped_history_endpoint", **detail)
+            if symbol in failed:
+                continue
         stats["checked"] += 1
         absent = False
         for endpoint, stored in _endpoints(entry):
@@ -259,6 +321,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None):
         "matched": sorted(matched),
         "comparisons": decisions,
         "missing": sorted(missing),
+        "mapped_endpoints": mapped_endpoints,
         "missing_endpoints": sorted(missing_endpoints, key=lambda item: (item["symbol"], item["session"])),
         "failures": failures,
     }

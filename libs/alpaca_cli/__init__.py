@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 39
+VERSION = 40
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -718,12 +718,33 @@ def main(argv=None):
                 result = {**result, "pricing_cutoff": args.pricing_cutoff}
             with span("result_output"):
                 print(json.dumps(result, separators=(",", ":"), allow_nan=False))
-            code = (
-                int(not result["processing_complete"])
-                if args.command == "status"
-                else int(bool(result.get("failed") or result.get("blockers") or result.get("complete") is False))
+            completed_update = (
+                args.command == "update" and not args.plan and result.get("execution_complete") is True
             )
-        if args.command == "update" and not args.plan and code == 0:
+            if completed_update and result.get("complete") is False:
+                reporter.diagnostic(
+                    "Update finished with warnings; required work remains outstanding. "
+                    "See warnings, failures and pending_work in the result JSON.",
+                    level="warning",
+                )
+            code = (
+                0
+                if completed_update
+                else (
+                    int(not result["processing_complete"])
+                    if args.command == "status"
+                    else int(
+                        bool(result.get("failed") or result.get("blockers") or result.get("complete") is False)
+                    )
+                )
+            )
+        if (
+            args.command == "update"
+            and not args.plan
+            and code == 0
+            and isinstance(result, dict)
+            and result.get("complete") is True
+        ):
             commit_registry(REPOSITORY, DEFAULT_REGISTRY, reporter)
         finish(
             "success" if code == 0 else "error",

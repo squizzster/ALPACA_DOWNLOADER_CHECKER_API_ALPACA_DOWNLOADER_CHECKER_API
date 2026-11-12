@@ -196,5 +196,10 @@
     "modifications": [
       "Run ordinary update through Prepare, Histories and Serve JSON boundaries under its existing continuous gate; capture exact handoffs alongside the optional DEBUG trace."
     ]
+  },
+  {
+    "modifications": [
+      "Exit successfully with a warning diagnostic when daily pipeline execution finishes with unresolved work; preserve explicit incomplete data results, fatal execution errors and complete-only registry bookkeeping."
+    ]
   }
 ]

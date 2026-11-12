@@ -546,5 +546,10 @@
     "modifications": [
       "Route daily orchestration through the three serialized pipeline owners, preserving exclusive cutoffs, incomplete reports, accepted decisions and existing production formats."
     ]
+  },
+  {
+    "modifications": [
+      "Finish independent daily work with explicit complete/completed_with_warnings outcomes, retaining incomplete obligations and exact missing comparison endpoints without replaying completed work; consume published positive UUID membership and dated same-CUSIP rename evidence to route only missing comparison endpoints under historical labels."
+    ]
   }
 ]

@@ -647,23 +647,37 @@ class UpdateHandoffRegressions(unittest.TestCase):
             self.assertEqual([e["symbol"] for e in ready[0]["entries"]], ["BBB"])
             self.assertIn("AAA", result["deferred_symbols"])
 
-    def test_partial_match_cannot_approve_its_blocked_dependency_group(self):
-        with fixture() as case:
-            store = seed_group(case)
-            assets = {s: asset(s) for s in ("AAA", "BBB")}
-            case.live = {"AAA": case.old + [bar("2026-10-19")], "BBB": [case.old[-1]]}
-            result = run_update(
-                store,
-                "2026-10-20",
-                pricing_client=case.pricing,
-                identity_client=ActionCatalogueClient(
-                    list(assets.values()), [rename()], exact={**assets, "111111111": assets["BBB"]}
-                ),
-                registry=case.registry,
-            )
-            self.assertFalse(result["complete"], result)
-            for symbol in assets:
-                self.assertEqual(len(read_pricing_views(store, symbol)["all"]), 2)
+    def test_partial_match_only_approves_group_after_missing_endpoint_route_completes(self):
+        for alternative_present in (False, True):
+            with self.subTest(alternative_present=alternative_present), fixture() as case:
+                store = seed_group(case)
+                assets = {s: asset(s) for s in ("AAA", "BBB")}
+                case.live = {"AAA": case.old + [bar("2026-10-19")], "BBB": [case.old[-1]]}
+                page = case.pricing._get
+                mapped = []
+
+                def observe(params):
+                    if params["asof"] == case.old[0]["t"][:10]:
+                        mapped.append(dict(params))
+                        if not alternative_present:
+                            return {"bars": {}}
+                    return page(params)
+
+                with patch.object(case.pricing, "_get", side_effect=observe):
+                    result = run_update(
+                        store,
+                        "2026-10-20",
+                        pricing_client=case.pricing,
+                        identity_client=ActionCatalogueClient(
+                            list(assets.values()), [rename()], exact={**assets, "111111111": assets["BBB"]}
+                        ),
+                        registry=case.registry,
+                    )
+                self.assertEqual(result["complete"], alternative_present, result)
+                self.assertEqual(len(mapped), 1, "mapped endpoint must not repeat")
+                self.assertEqual(mapped[0]["symbols"], "AAA")
+                self.assertEqual(len(read_pricing_views(store, "AAA")["all"]), 3 if alternative_present else 2)
+                self.assertEqual(len(read_pricing_views(store, "BBB")["all"]), 2)
 
     def test_all_failed_refresh_does_not_enter_append(self):
         with fixture() as case:

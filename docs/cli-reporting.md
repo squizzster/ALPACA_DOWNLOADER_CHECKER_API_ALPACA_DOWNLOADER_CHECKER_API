@@ -9,7 +9,11 @@ Every command in `alpaca-cli-eod` and `alpaca-lineage-lab` uses the shared lifec
 `update` reports completion, failures, pending work, effective cutoff, stage results and request counts.
 The `maintenance` stage handles existing eligible summary members before discovery; `maintenance_after_discovery`
 handles newly eligible or invalidated members and late-bar work. Reused checks issue no additional comparison
-requests. The final `complete` value includes both stages and serving completion.
+requests. The final `complete` value includes both stages and serving completion. A finished daily pipeline reports
+`outcome: complete` or `outcome: completed_with_warnings`, with explicit `warnings`, failures and pending work.
+A completed attempt exits zero even when required data work remains; its warning diagnostic and `complete: false`
+keep that limitation visible. Registry Git bookkeeping runs only for fully complete data results. An execution
+that cannot return the complete attempt, malformed input and interrupted publication retain their error paths.
 Serving reports `pending_export_inputs` counts for pricing and lineage invalidations affecting published
 components; applicable unfinished invalidations prevent completion even when its scheduling queue is empty.
 Work-plan fields are conditional, not a guarantee of total requests; see
@@ -25,7 +29,7 @@ empty/nonempty history, unresolved rows and complete assignment; exclusive cover
 Each inspected boundary is coherent separately, not one cross-producer transaction.
 [Status authority](../libs/alpaca_lineage_build/status.py): `inspect_status`.
 
-Canonical exit codes: 0 success; 1 failure/incomplete work; 2 invalid arguments; 3 busy store/reader/export lock.
+Canonical exit codes: 0 success or completed daily update with warnings; 1 execution failure or other incomplete work; 2 invalid arguments; 3 busy store/reader/export lock.
 Store-writing commands wait for the store gate, emitting an immediate diagnostic and holding the `WAIT` heartbeat
 until acquisition; Ctrl-C cancels the wait before store or provider work. Standalone reads may wait with `--wait`;
 CSV exports always fail immediately when busy. Executable keyboard
@@ -175,7 +179,7 @@ Git only; the terminal record still reflects the completed data update. See
 Success stops reporting and flushes one `FINAL_EXIT` (`status: success`, code 0). Caught failure first flushes
 `alpaca.lifecycle.error`, version 4: error type/message, latest accepted phase, elapsed seconds, available
 causes/traceback; then `FINAL_EXIT` (`status: error`). Existing command exit codes determine terminal
-success/error; incomplete work and policy differences remain nonzero. Keyboard interruption emits
+success/error; finished daily updates with warnings exit zero, while other incomplete work and policy differences remain nonzero. Keyboard interruption emits
 `status: aborted`, code 130. Finalization never waits for the next heartbeat; none follows it.
 
 Writes are serialized/flushed. Progress/final records are at most 4 KiB; errors 16 KiB, including newline.

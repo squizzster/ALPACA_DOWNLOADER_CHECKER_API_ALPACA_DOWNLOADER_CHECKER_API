@@ -51,5 +51,10 @@
     "modifications": [
       "Align first/tail comparisons, omission probes and preview counts with acquisition's full New York session bounds capped at accepted coverage."
     ]
+  },
+  {
+    "modifications": [
+      "Resolve missing selected endpoints through explicit accepted dated lineage routes, retaining other acquired observations and comparing once without upstream audits or same-mapping retries."
+    ]
   }
 ]

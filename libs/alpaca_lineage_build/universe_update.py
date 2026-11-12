@@ -752,6 +752,16 @@ def serve_locked(store, histories, *, context, progress=None):
         for failure in serving.get("failures", [{"error": serving["error"]}] if "error" in serving else [])
     )
     result["complete"] = histories["history_complete"] and serving["complete"] and not result["failed"]
+    result["outcome"] = "complete" if result["complete"] else "completed_with_warnings"
+    result["warnings"] = [] if result["complete"] else [dict(item) for item in result["failures"]]
+    if not result["complete"] and not result["warnings"]:
+        result["warnings"].append(
+            {
+                "stage": "completion",
+                "reason": "required work remains outstanding",
+                "pending_work": result["pending_work"],
+            }
+        )
     if progress:
         progress(
             "completion",

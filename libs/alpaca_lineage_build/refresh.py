@@ -562,7 +562,19 @@ def refresh_existing(
         # DO NOT reopen ticker histories to re-prove the stored baseline here.
         selected_scopes = {entry["symbol"]: requested_scope(entry["symbol"]) for entry in candidates}
         with span("live_history_check", symbols=len(selected_snapshot["entries"])) as check_trace:
-            handoff = verify(selected_snapshot, pricing_client._get)
+            from .comparison_routes import historical_route
+
+            def missing_route(entry, day):
+                indexed = selected_index["symbols"].get(entry["symbol"])
+                if indexed is None or indexed["source_sha256"] != entry.get("source_sha256"):
+                    return None
+                receipt = storage.read_receipt(context.accept_store().root, entry["symbol"], selected_index)
+                route = historical_route(receipt, day, entry["source_sha256"])
+                if route is not None:
+                    route["lineage_generation"] = indexed["sha256"]
+                return route
+
+            handoff = verify(selected_snapshot, pricing_client._get, missing_route=missing_route)
             check_trace.update(complete=handoff["complete"], **handoff["stats"], requests=handoff["requests"])
         assert_current(store, snapshot["token"])
         # Live-check completion is per symbol. A peer's missing endpoint or
@@ -630,9 +642,17 @@ def refresh_existing(
             if work_policy is not None:
                 for failure in handoff["failures"]:
                     work_policy.fail(failure["symbols"], failure, stage="history_check")
-                work_policy.fail(
-                    handoff["missing"], {"reason": "missing live comparison bar"}, stage="history_check"
-                )
+                for symbol in handoff["missing"]:
+                    work_policy.fail(
+                        [symbol],
+                        {
+                            "reason": "missing live comparison bar",
+                            "missing_endpoints": [
+                                item for item in handoff["missing_endpoints"] if item["symbol"] == symbol
+                            ],
+                        },
+                        stage="history_check",
+                    )
             error = DownloadError(
                 f"live check incomplete: {handoff['stats']['missing']} missing, "
                 f"{handoff['stats']['failed']} failed; no replacements started"

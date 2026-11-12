@@ -254,6 +254,17 @@ completed publication without receipt, assignment, price or decision replay. Com
 comparisons are carried from reconciliation into queued work without repetition. This changes reporting/completion behavior without changing stored schemas, selectors,
 eligibility policy or numerical decisions. It does not establish a successful live update or close the
 remaining lineage findings.</p>
+<p>Missing pricing endpoints may consume a selected receipt's accepted UUID membership and dated
+same-CUSIP rename observations to plan one historical-label request for that exact session. Other acquired
+observations remain held for the original comparison; this does not repeat identity proof or authorize history
+replacement from absence. Unknown/foreign membership, changed source bindings and competing or unlike routes
+retain incomplete work. The <a href="../tests/test_alpaca_comparison_routes.py">dated comparison-route regressions</a>
+forbid repeated requests/calculations and cover route failure with a completed peer. Daily execution that reaches
+its final result reports complete or completed_with_warnings and exits zero with explicit unresolved work;
+malformed/lost handoffs and fatal execution errors remain failures. The
+<a href="../tests/test_alpaca_pipeline_runner.py">pipeline runner regressions</a> cover missing first observations,
+three stages executed once, warning diagnostics and retained obligations. These changes do not close the open
+lineage findings or establish live operational acceptance.</p>
 <h2>Live verification and limits</h2>
 <p>The completed advancing update took 73m57s with zero reported failures and pending work; it met the
 90-minute maximum but missed the 60-minute target. Its immediate same-cutoff rerun took 34m06.9s.

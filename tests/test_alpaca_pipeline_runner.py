@@ -345,6 +345,45 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(json.loads(captured[0].read_bytes())["complete"])
         self.probe(0)
 
+    def test_missing_first_bar_finishes_pipeline_with_warning_without_rechecking_peers(self):
+        from libs import alpaca_cli
+        from libs.alpaca_pipeline import runner
+
+        f = self.f
+        f.live["AAA"] = [f.old[-1], bar("2026-10-19")]
+        update = universe_update.run_update
+        output, errors = io.StringIO(), io.StringIO()
+
+        def fixture_registry(*args, **kwargs):
+            return update(*args, registry=f.registry, **kwargs)
+
+        with (
+            patch.object(alpaca_cli, "clients", return_value=(f.pricing, f.identity)),
+            patch.object(alpaca_cli, "commit_registry", side_effect=AssertionError("partial registry commit")),
+            patch.object(universe_update, "run_update", side_effect=fixture_registry),
+            patch.object(runner, "prepare", wraps=runner.prepare) as prepare,
+            patch.object(runner, "produce_histories", wraps=runner.produce_histories) as histories,
+            patch.object(runner, "serve", wraps=runner.serve) as serve,
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            code = alpaca_cli.main(["update", "--store", str(f.store), "--through", "2026-10-19"])
+        self.assertEqual(code, 0, errors.getvalue())
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["execution_complete"])
+        self.assertFalse(result["complete"], "missing data must remain explicit")
+        self.assertEqual(result["outcome"], "completed_with_warnings")
+        self.assertEqual(result["pending_work"], 1)
+        self.assertTrue(result["stages"]["serving_catalogue"]["complete"])
+        self.assertEqual(result["warnings"][0]["missing_endpoints"][0]["endpoint"], "first")
+        self.assertEqual((prepare.call_count, histories.call_count, serve.call_count), (1, 1, 1))
+        self.assertEqual(f.identity.catalogue_calls, 1)
+        records = [json.loads(line) for line in errors.getvalue().splitlines()]
+        self.assertTrue(any(r.get("level") == "warning" for r in records))
+        self.assertEqual(records[-1]["exit_code"], 0)
+        first_requests = [p for p in f.pages if p["start"][:10] == f.old[0]["t"][:10]]
+        self.assertEqual(len(first_requests), 1, f.pages)
+
     def test_failure_and_interruption_stop_dependents_and_release_gate(self):
         from libs.alpaca_pipeline import runner
 

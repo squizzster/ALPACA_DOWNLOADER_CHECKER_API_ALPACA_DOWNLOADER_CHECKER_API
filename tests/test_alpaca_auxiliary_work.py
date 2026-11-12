@@ -150,8 +150,10 @@ class AuxiliaryWorkTests(unittest.TestCase):
                 outcome={"outcome": "invalid_symbol", "http_status": 400},
             )
             count = len(attempts)
-            code, _, _ = invoke(case, "update", "--through", "2026-10-16")
-            self.assertEqual(code, 1)
+            code, warning, _ = invoke(case, "update", "--through", "2026-10-16")
+            self.assertEqual(code, 0)
+            self.assertFalse(warning["complete"])
+            self.assertEqual(warning["outcome"], "completed_with_warnings")
             self.assertEqual(len(attempts), count)
             code, result, errors = invoke(
                 case,

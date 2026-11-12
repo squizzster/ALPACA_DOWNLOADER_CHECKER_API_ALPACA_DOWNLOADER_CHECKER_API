@@ -429,7 +429,16 @@ that bar, so a completed omission triggers one singleton confirmation action wit
 and mapping date. Returned endpoints are retained; failed batches are not interpreted as absence. A request
 already executed singly, including a 414 subdivision, is not repeated. Confirmations exhaust pagination through
 the same limiter/retry policy; failed confirmations remain failures and completed empty confirmations remain
-missing. Results and debug events identify each missing endpoint; request metrics count probes and recovered
+missing. A missing selected endpoint may use an alternative dated provider label only when the selected,
+source-generation-bound lineage receipt already publishes its positive UUID membership and same-CUSIP rename
+observations tied to that identity's UUID. Historical mapping uses the endpoint's date and requests only that
+session in `all`; other acquired endpoints remain held. Unknown membership, unlike exchanges, conflicting routes
+and changed source bindings select no alternate request. Only missing selected sources need receipt bodies;
+carried receipts remain authoritative. This is provider request planning from accepted facts, not a new identity
+calculation. Backward routing stops at each earlier rename; later reuse of that label cannot redirect the old identity.
+This request choice does not allocate rows or require already allocated ownership of the missing date.
+Recovered observations enter the original single comparison. Missing alternate observations stay
+incomplete and route errors preserve independent completed peers. Results and debug events identify each missing endpoint; request metrics count probes and recovered
 endpoints. This rule does not infer ticker identity from a companion's returned bar.
 Transport, shape or pagination errors leave actions incomplete. Replacement emptying a
 previously nonempty view needs bounded fresh producer confirmation; ordinary empty appends/initial empty histories
