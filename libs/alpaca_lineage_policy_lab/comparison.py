@@ -191,7 +191,7 @@ def _group_dimensions(boundaries, inputs, receipts, *, row_indexes=None):
     return result
 
 
-def _difference(baseline, candidate, maximum):
+def _difference(baseline, candidate, maximum, *, baseline_sha256=None, candidate_sha256=None):
     changed = []
     count = 0
     for key in sorted(set(baseline) | set(candidate)):
@@ -204,8 +204,8 @@ def _difference(baseline, candidate, maximum):
             changed.append({"key": list(key), "baseline": before, "candidate": after})
     return {
         "count": count,
-        "baseline_sha256": _digest_mapping(baseline),
-        "candidate_sha256": _digest_mapping(candidate),
+        "baseline_sha256": _digest_mapping(baseline) if baseline_sha256 is None else baseline_sha256,
+        "candidate_sha256": _digest_mapping(candidate) if candidate_sha256 is None else candidate_sha256,
         "examples": changed,
     }
 
@@ -335,13 +335,27 @@ def _migration_preserved_rule_order_provenance(
 
 
 @contextmanager
-def _load_group(store: Path, seed_symbol: str, *, selection=None):
+def _load_group(store: Path, seed_symbol: str, *, selection=None, held_receipts=None, accepted_store=None):
     # Explicit comparison owns this selected complete-group replay. The snapshot
     # selects and locks its publications; input generation checks bind the replay
     # to those facts. DO NOT repair pending work, fetch replacement evidence or
     # expand into unrelated groups when an input cannot be consumed.
     select = selection if selection is not None else lambda root: select_inputs(root, seed_symbol)
-    with reader_snapshot(store, select) as snapshot:
+    options = {} if accepted_store is None else {"accepted_store": accepted_store}
+    if held_receipts is None:
+        context = reader_snapshot(store, select, **options)
+    else:
+        context = reader_snapshot(store, select, include_receipts=False, include_boundaries=False, **options)
+    with context as snapshot:
+        if held_receipts is not None:
+            from libs.alpaca_lineage_build.storage import read_boundaries
+
+            root = store / "end_of_day/lineage"
+            snapshot = {
+                **snapshot,
+                "receipts": held_receipts,
+                "boundaries": {name: read_boundaries(root, receipt) for name, receipt in held_receipts.items()},
+            }
         seed_receipt = snapshot["receipts"].get(seed_symbol)
         if not isinstance(seed_receipt, dict):
             raise PolicyLabError(f"no published lineage for {seed_symbol}")
@@ -412,6 +426,9 @@ def _compare_loaded_group(
     selected: dict[str, Any],
     *,
     max_differences: int,
+    comparison_handoff=None,
+    completed=None,
+    refine=None,
 ) -> dict[str, Any]:
     """Evaluate one already selected complete group without further storage reads."""
     inputs = selected["inputs"]
@@ -528,6 +545,10 @@ def _compare_loaded_group(
         active_suffix = execution.get("active_suffix")
         if not isinstance(evidence_quality, dict) or not isinstance(active_suffix, dict):
             raise PolicyLabError("policy evaluation returned an incomplete execution trace")
+    raw_reports = reports
+    refinement = None
+    if refine is not None:
+        reports, refinement = refine(reports, raw_evidence, selected)
     reports, mapping_corrections = select_observations(inputs, reports)
     candidate_boundaries = {}
     for symbol, view in inputs.items():
@@ -538,23 +559,39 @@ def _compare_loaded_group(
             receipts[symbol]["dependencies"],
         )
 
-    row_indexes = {}
-    baseline = _group_dimensions(selected["boundaries"], inputs, receipts, row_indexes=row_indexes)
+    if comparison_handoff is None:
+        row_indexes = {}
+        baseline = _group_dimensions(selected["boundaries"], inputs, receipts, row_indexes=row_indexes)
+        baseline["group_diagnostics"] = _group_diagnostics(receipts)
+        comparison_handoff = {
+            "dimensions": baseline,
+            "row_indexes": row_indexes,
+            "digests": {name: _digest_mapping(values) for name, values in baseline.items()},
+            "memberships": _memberships(baseline["semantic"]),
+            "counts": _row_counts(baseline["semantic"]),
+            "reported_counts": _published_counts(receipts),
+        }
+    else:
+        baseline = comparison_handoff["dimensions"]
+        row_indexes = comparison_handoff["row_indexes"]
     candidate = _group_dimensions(candidate_boundaries, inputs, receipts, row_indexes=row_indexes)
+    candidate["group_diagnostics"] = _group_diagnostics(reports)
+    candidate_digests = {name: _digest_mapping(values) for name, values in candidate.items()}
     differences = {
-        name: _difference(baseline[name], candidate[name], max_differences)
-        for name in ("semantic", "observation", "explanation")
+        name: _difference(
+            baseline[name],
+            candidate[name],
+            max_differences,
+            baseline_sha256=comparison_handoff["digests"][name],
+            candidate_sha256=candidate_digests[name],
+        )
+        for name in candidate
     }
-    differences["group_diagnostics"] = _difference(
-        _group_diagnostics(receipts),
-        _group_diagnostics(reports),
-        max_differences,
-    )
-    baseline_memberships = _memberships(baseline["semantic"])
+    baseline_memberships = comparison_handoff["memberships"]
     candidate_memberships = _memberships(candidate["semantic"])
-    baseline_counts = _row_counts(baseline["semantic"])
+    baseline_counts = comparison_handoff["counts"]
     candidate_counts = _row_counts(candidate["semantic"])
-    baseline_reported_counts = _published_counts(receipts)
+    baseline_reported_counts = comparison_handoff["reported_counts"]
     candidate_reported_counts = _candidate_counts(reports)
     memberships_match = baseline_memberships == candidate_memberships
     counts_match = baseline_counts == candidate_counts
@@ -577,6 +614,23 @@ def _compare_loaded_group(
     )
     migration_classification = "migration_preserved_rule_order_provenance" if migrated_rule_order else None
     migration_compatible = decision_parity and (diagnostic_snapshot_match or migrated_rule_order)
+    if completed is not None:
+        completed.update(
+            published=comparison_handoff,
+            candidate={
+                "dimensions": candidate,
+                "digests": candidate_digests,
+                "memberships": candidate_memberships,
+                "counts": candidate_counts,
+                "mapping_corrections": mapping_corrections,
+                "partition_complete": reports_complete,
+            },
+            refinement=refinement,
+            reports=reports,
+            raw_reports=raw_reports,
+            candidate_boundaries=candidate_boundaries,
+            evidence=evidence,
+        )
     return {
         "schema_version": LAB_SCHEMA_VERSION,
         "lab_version": LAB_VERSION,

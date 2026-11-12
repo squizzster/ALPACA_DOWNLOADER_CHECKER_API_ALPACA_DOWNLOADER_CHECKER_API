@@ -64,6 +64,9 @@ certificate-backed rule factories. [Lineage](lineage.md) owns policy authorizati
 the [policy lab](policy-lab.md) owns read-only candidate comparison/audit.
 The [lineage rule tool](lineage-debug.md) exposes recorded explanations and explicit selected/all-group
 research through the public JSON API, reusing that shared engine without production publication.
+Its paired comparison separates stored/control drift from candidate impact on one loaded group. The
+correlation-owned [component refinement](../libs/alpaca_end_of_day_security_correlation/component_refinement.py)
+is an explicitly selected research producer; authorized production does not invoke it.
 
 ## Serving and consumption
 

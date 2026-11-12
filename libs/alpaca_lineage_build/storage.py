@@ -234,6 +234,7 @@ def reader_snapshot(
     include_boundaries=True,
     include_receipts=True,
     writer_view=None,
+    accepted_store=None,
 ):
     """Snapshot selection, release gate, lock prices, reselect; never invert locks.
 
@@ -242,8 +243,17 @@ def reader_snapshot(
     protect it throughout consumption. Unrelated groups can publish during reads.
     """
     if writer_view is None:
-        check_store(store)
-        root = regular_path(store, "end_of_day/lineage")
+        if accepted_store is None:
+            check_store(store)
+            root = regular_path(store, "end_of_day/lineage")
+        else:
+            if (
+                not isinstance(accepted_store, AcceptedStore)
+                or Path(store).absolute() != accepted_store.store
+                or accepted_store.root != accepted_store.store / "end_of_day/lineage"
+            ):
+                raise LineageError("accepted store belongs to another reader scope")
+            root = accepted_store.root
     else:
         writer_view.require_active(store)
         root = writer_view.root

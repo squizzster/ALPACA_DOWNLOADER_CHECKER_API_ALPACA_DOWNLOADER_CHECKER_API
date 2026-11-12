@@ -24,23 +24,45 @@ expired handoffs and interruption. Preserve those assertions when changing the m
 
 Use generic evidence rules; the main agent owns implementation/acceptance.
 
-1. Agree the disputed ownership/continuity interval and batch scope. Inspect
-   [published evidence](operations.md#focused-standalone-work); inspection reads, refresh may acquire/publish.
+1. Define one active case: disputed identity/continuity interval, complete affected group, question and
+   expected result. Record store, selector, receipt/pricing, policy and executable implementation bindings
+   before the experiment. Preserve exact requests and completed results as explicit research artifacts
+   outside the production store. Inspect [published evidence](operations.md#focused-standalone-work);
+   inspection reads, refresh may acquire/publish.
 2. Use a fresh research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`. Supply the question,
    evidence/current rules and no preferred verdict. Request primary-source facts, uncertainty, counterexamples
    and a generic rule concept. Researchers never edit/publish; report unavailable configurations.
-3. Map facts to deterministic internal evidence. Bind researched ownership evidence to retained source
-   observations; do not invent unobserved bars or opaque provider UUIDs. Prefer existing-rule corrections;
-   new rules need ordered gates/vetoes.
-4. Compare plausible owners with leaving the history unallocated under the
+3. Compare that reference with completed internal decisions using the
+   [lineage rule tool](lineage-debug.md). Classify the discrepancy: evidence, ownership rule, membership
+   propagation, numerical choice or consumer interpretation. Bind research to retained observations;
+   do not invent unobserved bars, provider UUIDs or failed predicate explanations. Separate security identity,
+   dated market labels and numerical authority. A conflicting event date need not negate agreement on identity.
+4. Propose one generic candidate in the responsible owner when the retained evidence reasonably supports
+   it. Prefer existing-rule corrections; new predicates need ordered gates and counterexamples. Preserve
+   accepted owner, price and scope decisions outside the actual change. Compare plausible owners with
+   leaving the history unallocated under the
    [allocation criterion](lineage.md#ownership-allocation-criterion). A missing certificate is one weakness
    to weigh, not automatic rejection of converging evidence. Test the positive case, nearest counterexample,
    dates and adjacent rules across complete affected groups. Include credible allocation without the
    particular certificate, a case where nonallocation is most likely, and genuinely tied alternatives.
-   Reuse confirmed facts; close each case before the next.
-5. Compare the final cascade on identical approved inputs for every affected identity: gains/losses,
-   reassignment and membership. Run full checks; publish only within authorization. Distinguish evidence
-   changes from rule changes.
+   Reuse confirmed facts; do not fix a technical handoff by repeating its producer's work.
+5. Test the case and nearest counterexamples locally. Use an explicit unchanged control and candidate on
+   identical held inputs; report published/control drift separately from candidate-only effects. An unchanged
+   cascade lends its completed control calculations to a later research refinement. Python changes need an
+   explicit preserved control implementation or an opt-in candidate path. Assert outputs and forbidden work,
+   including actual invalidation and partial failure. Research replay alone does not prove incremental
+   production continuation, interruption or append preservation.
+6. Measure wider impact after focused success. Derive the expected work from completed selectors first.
+   A metadata-only exclusion requires a proven necessary condition for this exact candidate; unknown inputs
+   remain selected, and arbitrary YAML changes cannot borrow a specialized screen. Carry accepted index,
+   receipt and comparison handoffs without rereads or recalculation. Report changed stocks/dates/decisions,
+   diagnostic-only differences, covered and failed/unknown scope, and bounded examples separately from exact
+   counts. A candidate-unaffected proof is not a claim that the stored lineage is correct.
+7. The main agent reviews and closes the case with its verdict, evidence, counterexamples, measured impact
+   and remaining limits before starting another case. Run full checks and the mandatory trust review before
+   a code handoff. Distinguish evidence changes from rule changes. An accepted read-only candidate is separate
+   from ordinary producer integration and production publication; publish only within authorization and after
+   the owning continuation/recovery checks establish that scope.
 
 Misattribution and withholding supported history are both errors. Preserve supported intervals and explicit
 ambiguity. Standalone resolution does not establish online availability.

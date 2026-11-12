@@ -96,6 +96,96 @@ differences; `2` invalid input, failed/incomplete diagnostic or output delivery;
 deadline; `130` interruption. Genuine ambiguity is a recorded semantic result, not a technical error.
 Candidate differences do not authorize publishing the candidate or automatically establish better lineage.
 
+## Paired candidate impact
+
+Use an explicit unchanged control to distinguish existing publication drift from a proposed change:
+
+```bash
+./alpaca-lineage-debug run --store data_pricing --tickers CISSV \
+  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --policy /tmp/lineage-candidate.yaml --format json > /tmp/lineage-impact.json
+```
+
+The same command accepts `--all` instead of `--tickers` after focused validation. Each selected group is
+loaded once. The report separates `published_to_control`, `control_to_candidate` and
+`published_to_candidate`. Counts and per-source timestamp bounds cover every difference; examples alone
+are bounded. Paired decision parity covers ownership, labels, numerical selections, membership and mapping
+corrections. Explanation-only differences remain visible separately. Failed and unevaluated groups prevent
+a complete conclusion. No production publication occurs.
+
+Both arms execute within this installed implementation. An ordinary YAML candidate that changes the
+cascade receives its own evaluation on the held inputs; completed baseline normalization, row indexes and
+digests carry forward. Identical executable cascades reuse the completed control. A Python change needs an
+explicit preserved control implementation or an opt-in candidate with the unchanged path still present;
+changing Python globally and naming two YAML files does not restore the earlier implementation.
+
+The research YAML supports one experimental membership producer:
+
+```yaml
+research:
+  membership_refinement: accepted_same_security_containing_component_v1
+```
+
+`init` leaves that setting null. Enabling it requires `--control-policy`; the control must leave it disabled.
+The producer consumes an already completed containing identity, the exact retained same-CUSIP rename
+observation, the shared dated provider UUID/CUSIP and the donor report's completed directed split edges.
+Every additional member needs that same-security extension path. Mere containment, shared UUIDs, ticker
+similarity, spin-offs, mergers and competing destinations cannot authorize this refinement. Conflicting
+rename dates can agree on identity; the experiment retains the existing labels and does not choose a date.
+
+The candidate replaces only the applicable `security_identity` and `canonical_security.security_id`.
+It retains dated UUID/CUSIP, source positions, ownership explanations, prices and unrelated identities.
+For the same cascade it consumes completed control reports and numerical choices, opening only the newly
+joined observation contest through the existing eight-view selector. No UUID edges or identity hashes are
+reconstructed. The applicability plan reports affected positions, source/receipt generations and the accepted
+extension edges. A genuinely changed binding requires a new experiment rather than replaying a consumer.
+
+This is an opt-in read-only research producer. It does not change authorized production policy, integrate a
+repair into ordinary append/recovery, or prove that a complete production publication will preserve it.
+Those producer integration, interruption and later-append checks remain separate acceptance work.
+
+## Screen and carry a membership study
+
+For the named membership candidate with an otherwise unchanged cascade, a metadata screen can establish
+which groups cannot be affected without replaying prices or rules:
+
+```bash
+./alpaca-lineage-debug screen --store data_pricing \
+  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --policy /tmp/lineage-candidate.yaml --format json > /tmp/lineage-screen.json
+./alpaca-lineage-debug run --store data_pricing --all \
+  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --policy /tmp/lineage-candidate.yaml --screen-report /tmp/lineage-screen.json \
+  --format json > /tmp/lineage-impact.json
+```
+
+The completed index excludes groups without another indexed donor. Selected multi-source receipts supply
+accepted source-local components. No strict cross-source containment pair proves this candidate cannot
+apply; missing compact membership remains unknown and is retained for evaluation. Positive pairs identify
+possibilities, not confirmed changes. The smaller component must itself be accepted in its source receipt;
+a component created solely by control replay cannot gain this research authority.
+
+The screen reports expected pricing-source scope before evaluation and carries its full accepted index,
+selected receipts and component pairs through JSON. Consumption checks the selector's actual applicability,
+then uses those values without rereading index or receipt bodies. Immutable store/path acceptance likewise
+crosses selected reader groups without reopening the store manifest. Each distinct rename and extension
+proof is completed once and lent to its view-specific segments.
+
+Proven candidate-unaffected groups have no control replay: their classification does **not** establish
+published/control parity or overall lineage correctness. The impact report distinguishes assessed control
+drift from unassessed groups, evaluated groups from proven exclusions, failures and remaining scope.
+The screen is specific to this named candidate and rejects a changed YAML cascade.
+
+An applicable completed paired report can be supplied with `--reuse-report /tmp/previous-impact.json`.
+Completed peer groups from incomplete attempts remain usable; failed groups are not manufactured into
+success. The diagnostic's own schema, version, implementation, store, selector and semantic policy bindings
+must match. Formatting or moving an equivalent YAML file does not invalidate its meaning. A real invocation
+gap checks selected receipt and pricing applicability, never prices or completed calculations. Failed
+applicability records the affected group without replaying it or discarding independent peer results.
+
+Reports created before the required implementation/store bindings are present are rejected; the tool never
+silently reconstructs them. Saved research reports are explicit operator outputs outside the production store.
+
 ## Ticker instances in a completed CSV export
 
 ```bash

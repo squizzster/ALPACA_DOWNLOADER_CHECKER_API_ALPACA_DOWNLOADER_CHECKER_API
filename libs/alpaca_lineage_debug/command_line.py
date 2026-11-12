@@ -26,6 +26,7 @@ def build_parser():
         ("rules", "List ordered rules, phases and current code locations."),
         ("explain", "Explain one complete group's recorded decisions without reading prices."),
         ("run", "Explicitly replay a policy for selected tickers or every indexed group."),
+        ("screen", "Plan the membership experiment using only completed metadata."),
         ("export", "Report dated ticker instances in a completed CSV export."),
         ("handoff", "Inspect a saved stage document without running the pipeline."),
     ):
@@ -33,11 +34,18 @@ def build_parser():
         sub.add_argument("--format", choices=("text", "json"), default="text")
         if name == "init":
             sub.add_argument("--output", type=Path, help="New YAML file; existing files are never overwritten.")
-        if name in ("rules", "run"):
+        if name in ("rules", "run", "screen"):
             sub.add_argument("--policy", default=str(DEFAULT_POLICY))
-        if name in ("run", "explain"):
+        if name in ("run", "explain", "screen"):
             sub.add_argument("--store", default=str(REPOSITORY / "data_pricing"))
         if name == "run":
+            sub.add_argument(
+                "--screen-report", help="Consume a metadata screen without rereading its index or receipts."
+            )
+            sub.add_argument("--reuse-report", help="Carry a completed paired result under matching bindings.")
+            sub.add_argument(
+                "--control-policy", help="Evaluate unchanged control and candidate on the same held inputs."
+            )
             scope = sub.add_mutually_exclusive_group(required=True)
             scope.add_argument("--tickers", "--symbols", dest="symbols", nargs="+")
             scope.add_argument("--all", action="store_true")
@@ -45,6 +53,8 @@ def build_parser():
             sub.add_argument(
                 "--timeout-seconds", type=float, help="Optional deadline checked between complete groups."
             )
+        if name == "screen":
+            sub.add_argument("--control-policy", required=True)
         if name == "explain":
             sub.add_argument("--ticker", "--symbol", dest="symbol", required=True)
             sub.add_argument("--session")
@@ -86,6 +96,10 @@ def render(report):
             lines.append(
                 f"  {', '.join(group['group'])}: {'parity' if comparison['parity'] else 'differences'} {changed}"
             )
+            if "published_to_control" in group:
+                lines.append(
+                    f"    stored/control drift: {not group['published_to_control']['parity']}; candidate-only decisions changed: {not comparison['decision_parity']}"
+                )
         for item in report["failures"]:
             lines.append(f"  {', '.join(item['group'])}: ERROR {item['error']}")
     elif operation == "explain":
@@ -119,6 +133,12 @@ def render(report):
             )
             for item in ticker["instances"]:
                 lines.append(f"  {item['public_id']} {item['ranges']} {item['csv']}")
+    elif operation == "screen":
+        lines.append(json.dumps(report["summary"], sort_keys=True))
+        lines.append(f"Expected evaluation I/O: {report['expected_io']}")
+        for group in report["candidate_groups"]:
+            lines.append("  Possible candidate effect: " + ", ".join(group["group"]))
+        lines.append("Use --format json to carry the accepted index and selected receipt values into run.")
     else:
         lines.append(json.dumps(report, sort_keys=True, indent=2))
     for limit in report.get("limits", []):

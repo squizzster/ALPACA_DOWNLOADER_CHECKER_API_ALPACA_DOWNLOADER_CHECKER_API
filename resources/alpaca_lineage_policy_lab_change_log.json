@@ -99,5 +99,10 @@
     "modifications": [
       "Allow an explicit diagnostic owner to supply its already selected complete group to the shared replay loader, preserving one selector read and deduplicated group evaluation."
     ]
+  },
+  {
+    "modifications": [
+      "Carry completed published comparison frames, row indexes and digests across paired evaluations; consume selected screen receipts and immutable store acceptance without rereading those boundaries."
+    ]
   }
 ]

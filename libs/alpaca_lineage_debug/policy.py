@@ -8,7 +8,7 @@ import copy
 import hashlib
 import inspect
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -20,12 +20,39 @@ from libs.alpaca_end_of_day_security_correlation import (
     security_identity,
     terminal_fallback,
 )
+from libs.alpaca_end_of_day_security_correlation.component_refinement import NAME as REFINEMENT_NAME
 from libs.alpaca_lineage_build import correlation_policy as compiler
 from libs.alpaca_lineage_build import observations, transform
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = compiler.CANONICAL_POLICY_PATH
 RESEARCH_ROLE = "research_candidate"
+
+
+def policy_applies(recorded, current):
+    """Formatting and file location are provenance, not executable applicability."""
+    actual = current.as_report_object()
+    return all(
+        recorded.get(name) == actual.get(name)
+        for name in (
+            "semantic_sha256",
+            "implementation",
+            "execution_profile",
+            "policy_role",
+            "research",
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ResearchPolicy(compiler.CompiledPolicy):
+    membership_refinement: str | None = None
+
+    def provenance(self):
+        return {**super().provenance(), "research": {"membership_refinement": self.membership_refinement}}
+
+    def as_report_object(self):
+        return {**super().as_report_object(), "research": {"membership_refinement": self.membership_refinement}}
 
 
 def load_policy(path):
@@ -52,6 +79,11 @@ def load_policy(path):
     ownership = compiler._rule_names(established.get("ownership_rules"), "ownership_rules")
     rows = compiler._rule_names(established.get("row_rules"), "row_rules")
     normalized = copy.deepcopy(document)
+    options = normalized.pop("research", {"membership_refinement": None})
+    compiler._mapping(options, "research", ("membership_refinement",))
+    refinement = options["membership_refinement"]
+    if refinement is not None and refinement != REFINEMENT_NAME:
+        raise ValueError("unknown research membership refinement")
     normalized["policy_role"] = "production"
     target = normalized["execution"]["established_fixed_point"]
     target["ownership_rules"] = [rule.name for rule in compiler.OWNERSHIP_INTERVAL_RULES[:3]]
@@ -77,9 +109,11 @@ def load_policy(path):
         "base_semantic_sha256": base.semantic_sha256,
         "ownership_rules": ownership,
         "row_rules": rows,
+        "research": options,
     }
+    research = ResearchPolicy(**base.__dict__, membership_refinement=refinement)
     return replace(
-        base,
+        research,
         policy_role=RESEARCH_ROLE,
         established_ownership_rules=ownership_rules,
         ownership_rules=(*ownership_rules, base.ownership_rules[-1]),
@@ -94,6 +128,7 @@ def template():
     document = yaml.load(DEFAULT_POLICY.read_bytes(), Loader=compiler._UniqueSafeLoader)
     document["policy_id"] = "lineage_research"
     document["policy_role"] = RESEARCH_ROLE
+    document["research"] = {"membership_refinement": None}
     return (
         "# Research only: reorder or remove registered rules in the lists below.\n"
         "# The unresolved default, terminal rule and numerical postprocessor remain explicit.\n"

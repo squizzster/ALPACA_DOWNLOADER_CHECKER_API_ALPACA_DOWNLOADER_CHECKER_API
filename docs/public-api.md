@@ -184,7 +184,8 @@ report = json.loads(
 The request/result schemas are `alpaca.lineage.debug.request` / `alpaca.lineage.debug.report`, version 1.
 Operations: `init`; `rules` (`policy` optional); `explain` (`store`, `symbol`, optional `session`,
 `adjustment`, `max_segments`); `run` (`store`, optional `policy`, either `symbols` or `all: true`, optional
-`max_differences`, `timeout_seconds`); `export` (`manifest`, optional `symbols`, `multiple_only`);
+`max_differences`, `timeout_seconds`, `control_policy`, `screen_report`, `reuse_report`);
+`screen` (`store`, `policy`, `control_policy`); `export` (`manifest`, optional `symbols`, `multiple_only`);
 `handoff` (`input`, optional `symbols`). Paths are strings; symbol collections are JSON lists.
 The guide owns their semantics, limits and CLI examples. An explicit research replay returns independent
 failures and completed peer reports; inspect `execution_complete` separately from comparison `parity`.

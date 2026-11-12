@@ -9,7 +9,7 @@ import yaml
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, symbol_label
 
-from . import SCHEMA_VERSION, VERSION
+from . import SCHEMA_VERSION, VERSION, implementation_binding
 from .export import instances
 from .handoff import inspect_handoff
 from .inspection import explain
@@ -22,7 +22,18 @@ FIELDS = {
     "init": set(),
     "rules": {"policy"},
     "explain": {"store", "symbol", "session", "adjustment", "max_segments"},
-    "run": {"store", "policy", "symbols", "all", "max_differences", "timeout_seconds"},
+    "run": {
+        "store",
+        "policy",
+        "symbols",
+        "all",
+        "max_differences",
+        "timeout_seconds",
+        "control_policy",
+        "screen_report",
+        "reuse_report",
+    },
+    "screen": {"store", "policy", "control_policy"},
     "export": {"manifest", "symbols", "multiple_only"},
     "handoff": {"input", "symbols"},
 }
@@ -85,6 +96,7 @@ def execute(data):
             "schema": REPORT_SCHEMA,
             "schema_version": SCHEMA_VERSION,
             "debug_version": VERSION,
+            "implementation_binding": implementation_binding(),
             "operation": command,
             "pipeline": [
                 {"stage": "Prepare", "owns": "baseline recovery, selection and registration"},
@@ -104,6 +116,14 @@ def execute(data):
 
 
 def dispatch(command, request):
+    if command == "screen":
+        from .screen import screen
+
+        return screen(
+            path(request.get("store"), "store"),
+            load_policy(path(request.get("policy"), "policy")),
+            load_policy(path(request.get("control_policy"), "control_policy")),
+        )
     if command == "init":
         return {"status": "complete", "execution_complete": True, "yaml": template()}
     if command == "rules":
@@ -138,13 +158,29 @@ def dispatch(command, request):
             type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
         ):
             raise ValueError("timeout_seconds must be a positive finite number")
+        policy = load_policy(path(request.get("policy", str(DEFAULT_POLICY)), "policy"))
+        control = request.get("control_policy")
+        control = load_policy(path(control, "control_policy")) if control is not None else None
+        if ("screen_report" in request or "reuse_report" in request) and control is None:
+            raise ValueError("screen and completed-report consumption require an explicit control_policy")
+        if getattr(policy, "membership_refinement", None) and control is None:
+            raise ValueError("membership refinement requires an explicit control_policy")
+        if control is not None and getattr(control, "membership_refinement", None):
+            raise ValueError("the control policy must disable experimental membership refinement")
         return run(
             path(request.get("store"), "store"),
-            load_policy(path(request.get("policy", str(DEFAULT_POLICY)), "policy")),
+            policy,
             selected,
             all_groups=all_groups,
             max_differences=integer(request.get("max_differences", 20), "max_differences", 1000),
             timeout_seconds=timeout,
+            control_policy=control,
+            screen_report=json.loads(Path(path(request["screen_report"], "screen_report")).read_bytes())
+            if "screen_report" in request
+            else None,
+            reuse_report=json.loads(Path(path(request["reuse_report"], "reuse_report")).read_bytes())
+            if "reuse_report" in request
+            else None,
         )
     if command == "export":
         multiple = request.get("multiple_only", True)

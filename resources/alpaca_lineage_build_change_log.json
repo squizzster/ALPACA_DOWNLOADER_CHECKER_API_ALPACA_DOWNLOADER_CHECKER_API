@@ -562,5 +562,10 @@
       "Carry decoded pricing partitions and their selected publication documents into append and later lineage assembly, and carry normally published lineage receipts and assignment bodies through JSON to serving without reopening accepted artifacts.",
       "Keep completed corrections bound to their accepted coverage: advancing requests still compare selected rows and detect new local changes without widening acquisition."
     ]
+  },
+  {
+    "modifications": [
+      "Allow selected read-only diagnostic groups to consume the operation\u2019s completed immutable store/path acceptance without reopening its manifest; generation applicability remains independently checked."
+    ]
   }
 ]
