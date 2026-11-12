@@ -33,7 +33,7 @@ def command_policy(store, end_date, *, state=None, context=None, retry_blocked=F
         if not satisfying_entry(s, item, index["symbols"], pending)
         and (reason := restriction(item, end_date, retry_blocked=retry_blocked))
     ]
-    return WorkPolicy(store, index, work, deferred, end_date, context=context)
+    return WorkPolicy(store, index, work, deferred, end_date, context=context, completed_work=state["work"])
 
 
 @contextmanager

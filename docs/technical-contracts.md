@@ -378,8 +378,15 @@ supersession without repeating its completed resolving request. This resolves un
 repeat an accepted history comparison or expire evidence by time. Missing or ambiguous sessions, conflicting
 original witnesses for one session, other-view conflicts, a still-old response or a third value remain pending.
 Reconciliation accounts for every accumulated witness before either disposition. Consumers retain that completed
-disposition instead of repeating reconciliation; an actual changed generation, correction ID or request binding
-invalidates the recovery receipt.
+disposition instead of repeating reconciliation. The accepted workflow boundary carries completed equal-source
+correction contracts and their completion receipts across fresh JSON stages. Identical newly selected witnesses
+consume that completed disposition without a new correction ID, full-range acquisition, payload reads or digest
+calculations. Completed correction evidence is not numerically revalidated at workflow ingress, including after
+publication but before acknowledgement. New work preserves those existing fields; append producers retarget the
+completion receipt only across their certified unchanged prefix. A later comparison composes the handled prefix
+with its freshly checked tail. The comparison producer carries added-session evidence so consumers do not repeat
+membership calculations. Changed witnesses outside the accepted prefix, new session membership, incompatible
+mapping, store or unaccepted generation retain owning correction work. No new persistence format is introduced.
 
 Positive raw late-bar observations take a separate correction path. Consecutive selected sessions are acquired at
 their exact ranges and mapping with the accepted raw response as the adaptive first stage, so raw is not requested

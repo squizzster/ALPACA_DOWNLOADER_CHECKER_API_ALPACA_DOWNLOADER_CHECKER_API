@@ -13,5 +13,10 @@
     "modifications": [
       "Complete Serve JSON execution and sequence all three stages under one controller-owned operation lock, carrying exact exclusive cutoffs and retaining DEBUG-only handoffs."
     ]
+  },
+  {
+    "modifications": [
+      "Carry completed correction decisions explicitly in the serialized work policy so fresh history processes retain accepted request-context resolutions without changing production formats."
+    ]
   }
 ]

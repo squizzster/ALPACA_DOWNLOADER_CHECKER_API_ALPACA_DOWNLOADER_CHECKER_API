@@ -551,5 +551,10 @@
     "modifications": [
       "Finish independent daily work with explicit complete/completed_with_warnings outcomes, retaining incomplete obligations and exact missing comparison endpoints without replaying completed work; consume published positive UUID membership and dated same-CUSIP rename evidence to route only missing comparison endpoints under historical labels."
     ]
+  },
+  {
+    "modifications": [
+      "Carry completed source-unchanged correction contracts from accepted workflow state through selection and consume their identical fresh comparison witnesses without renewing work, reacquiring history or rereading completion artifacts."
+    ]
   }
 ]

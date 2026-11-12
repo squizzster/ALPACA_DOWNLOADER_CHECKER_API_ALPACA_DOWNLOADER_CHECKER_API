@@ -273,7 +273,9 @@ output delivery. Producer checks for genuinely new data remain in their owners.
 
 `alpaca_end_of_day.run_pipeline(request_json: bytes) -> bytes` runs the complete
 pipeline. Individual APIs are `prepare_pipeline`, `produce_histories_pipeline`
-and `serve_pipeline`, each consuming and returning bytes. The final Serve result
+and `serve_pipeline`, each consuming and returning bytes. Completed correction contracts travel in the
+explicit work-policy state alongside outstanding requirements; new workflow selection must not discard their
+producer disposition or reacquire the same unchanged history. The final Serve result
 is the existing compact update report, including explicit failures and overall
 completion. Serve selects components, prepares and assesses required inputs,
 publishes the existing catalogue and acknowledges completed work. It has no

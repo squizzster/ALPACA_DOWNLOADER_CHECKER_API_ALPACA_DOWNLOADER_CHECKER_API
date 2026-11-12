@@ -34,6 +34,7 @@ class HistoryComparison:
     changed_sessions: tuple[str, ...]
     live_all: tuple[tuple[str, ...], ...]
     field_changes: tuple = ()
+    added_sessions: tuple[str, ...] = ()
 
     @property
     def matched(self):
@@ -134,7 +135,13 @@ def compare_history(first, tail, live):
         decision = "latest_session"
     else:
         decision = "full_history"
-    return HistoryComparison(decision, changed, tuple(actual[key] for key in sorted(actual)), fields)
+    return HistoryComparison(
+        decision,
+        changed,
+        tuple(actual[key] for key in sorted(actual)),
+        fields,
+        tuple(actual[key][0] for key in sorted(extra)),
+    )
 
 
 def validate_tail(tail, first, last):

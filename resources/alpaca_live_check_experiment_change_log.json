@@ -56,5 +56,10 @@
     "modifications": [
       "Resolve missing selected endpoints through explicit accepted dated lineage routes, retaining other acquired observations and comparing once without upstream audits or same-mapping retries."
     ]
+  },
+  {
+    "modifications": [
+      "Retain explicit added-session evidence from the comparison producer alongside changed fields, allowing precise consumption of already completed unchanged-source corrections."
+    ]
   }
 ]

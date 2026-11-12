@@ -475,11 +475,15 @@ def refresh_existing(
         )
         durable_selections, durable_full, completion_handoffs = {}, {}, {}
         full_obligations, completed_corrections, session_completed = set(), set(), set()
+        carried_completions = set()
         for entry in candidates:
             symbol = entry["symbol"]
             work = work_policy.work.get(symbol, {}) if work_policy else {}
             contract = work.get("pricing_correction")
             correction_id = work.get("correction_id")
+            if work.get("correction_completion") and not work.get("required_history_check"):
+                carried_completions.add(symbol)
+                contract, correction_id = None, None
             if contract is not None and (
                 contract.get("schema_version") not in (1, 2, 3)
                 or contract.get("scope") not in ("latest_session", "full_history")
@@ -582,6 +586,33 @@ def refresh_existing(
         # Retain only the accepted summary and selected generation, without
         # opening validators/payloads or granting unfinished corrections.
         matched = set(handoff["matched"])
+        resolved = set()
+        if work_policy is not None:
+            from .completed_corrections import applicable as completed_comparison_applies
+
+            for symbol, comparison in handoff["comparisons"].items():
+                if comparison["decision"] != "full_history":
+                    continue
+                entry = next(e for e in candidates if e["symbol"] == symbol)
+                generation = selected_sources.get(symbol, accepted_generations.get(symbol))
+                if completed_comparison_applies(
+                    work_policy.completed_corrections.get(symbol),
+                    store=context.store,
+                    entry=entry,
+                    generation=generation,
+                    live_all=comparison["live_all"],
+                    changed_sessions=comparison["changed_sessions"],
+                    added_sessions=comparison["added_sessions"],
+                    invalidated=work_policy.work.get(symbol, {}).get("invalidate_pricing", False),
+                ):
+                    resolved.add(symbol)
+                    matched.add(symbol)
+                    event(
+                        "history_completed_correction_reused",
+                        symbol=symbol,
+                        source_generation=generation,
+                        correction_id=work_policy.completed_corrections[symbol]["correction_id"],
+                    )
         differing = {item["symbol"] for item in handoff["differences"]}
         completed = matched | differing
         for difference in handoff["differences"]:
@@ -603,7 +634,8 @@ def refresh_existing(
                     symbol=symbol,
                     store=str(store),
                     source_generation=generation,
-                    matched=symbol in matched,
+                    matched=symbol in handoff["matched"],
+                    completed_correction_reused=symbol in resolved,
                     summary_token=snapshot["token"],
                     asof=entry["asof"],
                     end_exclusive=entry["end_exclusive"],
@@ -612,6 +644,8 @@ def refresh_existing(
                 )
             if symbol in completed and generation is not None:
                 decision = HistoryComparison(**handoff["comparisons"][symbol])
+                if symbol in resolved:
+                    decision = HistoryComparison("unchanged", (), decision.live_all)
                 scope = selected_scopes[symbol]
                 context.cache_history("comparison", symbol, (dict(entry), generation, decision), scope)
                 compared[symbol] = decision
@@ -623,6 +657,7 @@ def refresh_existing(
                 and generation is not None
                 and (
                     symbol in session_completed
+                    or symbol in carried_completions
                     or not (work_policy is not None and work_policy.work.get(symbol, {}).get("correction_id"))
                 )
             ):
@@ -670,6 +705,7 @@ def refresh_existing(
             if work_policy is not None
             and work_policy.work.get(entry["symbol"], {}).get("correction_id")
             and entry["symbol"] not in session_completed - differing
+            and entry["symbol"] not in carried_completions
         }
         prepared = prepare_refresh(
             store,

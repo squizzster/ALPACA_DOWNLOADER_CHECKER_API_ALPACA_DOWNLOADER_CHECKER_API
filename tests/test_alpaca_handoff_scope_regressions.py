@@ -149,7 +149,7 @@ class PhysicalCompletionTests(unittest.TestCase):
 
 
 class WorkflowIngressTests(unittest.TestCase):
-    def test_no_work_update_accepts_unselected_completed_evidence_once(self):
+    def test_no_work_update_does_not_revalidate_unselected_completed_evidence(self):
         with fixture() as case:
             case.records[:] = [asset("AAA")]
             row = ["2016-01-04T05:00:00Z", "1", "2", "1", "2", "10", "2", "1"]
@@ -174,7 +174,7 @@ class WorkflowIngressTests(unittest.TestCase):
                 result = case.update()
             self.assertTrue(result["complete"], result)
             self.assertEqual(result["plan"]["work"], {})
-            self.assertEqual(len(accepted), 1)
+            self.assertEqual(len(accepted), 0)
 
     def test_status_count_consumes_no_observation_body_and_keeps_pending(self):
         with tempfile.TemporaryDirectory() as temporary:

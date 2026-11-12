@@ -302,6 +302,9 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         # route to them. A summarized maintained source reaches its accepted target
         # through live check -> approved append. Carrying prior.acquire forward
         # would make a temporary recovery detour survive every later restart.
+        retain_completion = bool(
+            prior.get("correction_completion") and prior.get("pricing_correction") and not invalidate
+        )
         item = {
             "required_sourced_facts": {
                 **(prior.get("required_sourced_facts", {}) if unfinished else {}),
@@ -317,9 +320,11 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             "status": "pending",
             "attempts": prior.get("attempts", 0),
             "required_history_check": unfinished and prior.get("required_history_check", False),
-            "correction_id": prior.get("correction_id") if unfinished else None,
-            "pricing_correction": prior.get("pricing_correction") if unfinished else None,
-            "correction_completion": prior.get("correction_completion") if unfinished else None,
+            "correction_id": prior.get("correction_id") if unfinished or retain_completion else None,
+            "pricing_correction": prior.get("pricing_correction") if unfinished or retain_completion else None,
+            "correction_completion": prior.get("correction_completion")
+            if unfinished or retain_completion
+            else None,
             "required_group": sorted(required_group),
             "acquire": entry is None
             or invalidate

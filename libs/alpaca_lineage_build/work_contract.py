@@ -188,10 +188,17 @@ class RegistrationIncomplete(LineageError):
 class WorkPolicy:
     """One invocation's restrictions; the database owns intentions, never prices."""
 
-    def __init__(self, store, index, work, deferred, end, *, context=None):
+    def __init__(self, store, index, work, deferred, end, *, context=None, completed_work=None):
         self.store, self.end = store, end
         self.index = index
         self.context = context
+        self.completed_corrections = {
+            s: item
+            for s, item in (work if completed_work is None else completed_work).items()
+            if item.get("correction_completion")
+            and item.get("pricing_correction")
+            and item["correction_completion"].get("correction_id") == item.get("correction_id")
+        }
         self.work = {s: item for s, item in work.items() if item.get("status") != "complete"}
         self.graph = work_graph(index["symbols"], self.work)
         self.required_groups = {}

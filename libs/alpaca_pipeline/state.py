@@ -47,6 +47,7 @@ POLICY_FIELDS = (
     "command_failures",
     "history_approved",
     "completed_decisions",
+    "completed_corrections",
     "restricted_identifiers",
     "current_group",
     "rule_applications",

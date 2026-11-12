@@ -25,7 +25,13 @@ def _read_work(value):
     from libs.alpaca_pricing_download.correction import validate_durable_observations
 
     item = json.loads(value)
-    validate_durable_observations(item.get("pricing_correction"))
+    # Completed requirements are a producer handoff, not new correction input.
+    # Selecting their receipt bindings later must not replay numeric validation.
+    contract = item.get("pricing_correction")
+    completed = item.get("correction_completion") or {}
+    accepted = completed and completed.get("correction_id") == item.get("correction_id")
+    if item.get("status") != "complete" and not accepted and contract is not None:
+        validate_durable_observations(contract)
     return item
 
 

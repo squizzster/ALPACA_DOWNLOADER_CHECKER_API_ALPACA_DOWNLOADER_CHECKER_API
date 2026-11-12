@@ -309,5 +309,10 @@
     "modifications": [
       "Carry committed summary-generation revisions into transient downstream handoffs without rereading accepted summary bodies; check lock-gap applicability for partial history runs."
     ]
+  },
+  {
+    "modifications": [
+      "Carry newly observed session-membership changes explicitly in completed history comparisons so consumers can compose accepted correction dispositions with freshly checked append tails without repeating their calculations."
+    ]
   }
 ]

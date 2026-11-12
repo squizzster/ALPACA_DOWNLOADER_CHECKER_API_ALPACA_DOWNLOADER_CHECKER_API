@@ -16,7 +16,7 @@ from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timesta
 from .endpoints import Endpoints, compare_history, comparison_rows, different_fields, history_windows
 from .http import execute_bar_plan
 
-VERSION = 11
+VERSION = 12
 DEFAULT_BATCH_SIZE = 4000
 
 

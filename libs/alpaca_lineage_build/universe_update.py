@@ -394,6 +394,7 @@ def _prepare_locked(
         selection["deferred"],
         end,
         context=context,
+        completed_work=accepted["state"]["work"],
     )
     policy.rule_applications = applications
     # Reuse the accepted work policy's graph instead of reconstructing the
