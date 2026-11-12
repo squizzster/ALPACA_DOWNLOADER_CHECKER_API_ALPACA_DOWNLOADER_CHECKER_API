@@ -75,7 +75,9 @@ class RetainedLineageRebuildTests(unittest.TestCase):
         }
         # Produce the actual old append failure through the real publication
         # path, then install its unmarked legacy envelope as a synthetic fixture.
-        with patch.object(pipeline, "identity_memberships", return_value={}):
+        with patch.object(
+            pipeline, "scoped_identity_memberships", side_effect=lambda previous, _: dict.fromkeys(previous, {})
+        ):
             case.run_build(symbols=["FUN"], client=client, pricing_handoff=publications)
         self.assertNotEqual(
             case.assignments("FUN")[-1]["security_identity"]["security_id"], accepted["security_id"]

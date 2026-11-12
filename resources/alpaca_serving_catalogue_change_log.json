@@ -120,5 +120,81 @@
     "modifications": [
       "Allow serving SQLite writers to wait up to 120 seconds for contending public snapshots; preserve atomic rollback and owning journal recovery when the wait expires or publication is interrupted."
     ]
+  },
+  {
+    "modifications": [
+      "Compose exact accepted numerical checkpoints under changed public membership IDs without reopening unchanged historical prices; preserve partial and negative capabilities and transactional recovery."
+    ]
+  },
+  {
+    "modifications": [
+      "Assemble a missing legacy whole-donor session-date projection from only its accepted raw transfer positions after exact generation and complete ownership-transfer binding; retain numerical outcomes and coverage capabilities without historical validation, and persist the completed date projection under the joined identity."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume selected checkpoint bodies carried by owning lineage transfer recovery within the same store and catalogue generation, without rereading their accepted decision bodies or changing serving acceptance."
+    ]
+  },
+  {
+    "modifications": [
+      "Project dated descriptive metadata onto every selected publication range, and assemble a missing unmarked legacy session-date projection only when an applicable accepted numerical history needs a new supported suffix; retain numerical and calendar outcomes and persist the completed dates through catalogue publication and acknowledgement recovery.",
+      "Keep accepted mapped-history rows pending before price reads when unchanged UUID membership and preserved pricing ancestry lose their owner solely to unsupported name-change history without a scoped invalidation handoff; report exact lost source positions and preserve the previous catalogue checkpoint."
+    ]
+  },
+  {
+    "modifications": [
+      "Publish generation-bound offline ownership decisions for affected UUID components while retaining accepted numerical checkpoints and serving independent identities; reconcile completed or abandoned lineage export intentions under the owning worker and journal boundary without upstream reads or decision replay."
+    ]
+  },
+  {
+    "modifications": [
+      "Replace obsolete numerical source-coverage ranking with a version-2 contributing-source membership handoff. Consume legacy checkpoint source keys without replaying subset or overlap calculations, retaining accepted numerical outcomes, ancestry, ownership and date-boundary gates."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume generation-bound dated-label projections from lineage while retaining completed source, ownership and numerical choices; project accepted session labels into serving metadata without historical payload reads or repeated numerical validation."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume scoped numerical source revisions against their exact completed checkpoints, retain approved dates and outside numerical outcomes, and validate only newly selected observation bundles. Carry selected values through publication with bounded assembly for unfinished recovery."
+    ]
+  },
+  {
+    "modifications": [
+      "Borrow explicit lineage numerical-choice capabilities into new serving checkpoints for generation-bound membership-transfer recovery; numerical input equality and previous outcomes retain their existing scope."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve exact accepted numerical donors while extending recovered history before their approved span, including simultaneous appends; check only newly selected sessions and seams."
+    ]
+  },
+  {
+    "modifications": [
+      "Extend recovered earlier history under an unchanged public ID while retaining exact accepted middle selections and numerical outcomes, including simultaneous append and interrupted acknowledgement."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume versioned primary dated security descriptions from completed lineage assignments independently of current reused-ticker provider descriptions, preserving applicable numerical eligibility approvals."
+    ]
+  },
+  {
+    "modifications": [
+      "Inherit applicable clean numerical approvals for dates whose completed source-work decision established equal eight-view bundles; retain explicit donor/date bindings, reject incomplete declared projections and validate only changed selected values."
+    ]
+  },
+  {
+    "modifications": [
+      "Select equality-donor metadata only for fresh serving dates; a completed prefix does not require unused legacy date capabilities. Retain completed prefix/input preparation and assembled histories under exact operation receipt, pricing, prior-decision and policy bindings across downstream interruption."
+    ]
+  },
+  {
+    "modifications": [
+      "Compose numerical approvals through version3 membership transfers with independent old/new dated labels, projecting metadata from accepted dates without repeating numerical validation."
+    ]
   }
 ]

@@ -53,5 +53,45 @@
     "modifications": [
       "Permit comparison of retained correlation-77 publications with correlation-78 candidates while preserving legacy replay semantics; include changed event-scope and completed-query prerequisites in audit selection."
     ]
+  },
+  {
+    "modifications": [
+      "Carry the selected pricing generation into retained replay without recalculating its digest, include unavailable members' accepted auxiliary evidence in correlation, and share one held session-date index between baseline and candidate normalization."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept a frozen 37/82 baseline for selected comparison with the authorized dated-market profile while retaining its original accepted receipts and input generations."
+    ]
+  },
+  {
+    "modifications": [
+      "Permit retained 37/83, 37/84 and 37/85 publications as baseline-only comparison data after bounded market, parent and recapitalization changes; this does not authorize historical policy execution in production."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain completed correlation-86 publications as baseline-only inputs when current production adds documented first-ownership evidence under correlation-87."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve completed correlation-87 publications as baseline-only data while authorizing scoped containing-membership resolution under correlation-88."
+    ]
+  },
+  {
+    "modifications": [
+      "Compile and compare documented public-common reclassification under correlation89 while retaining the frozen correlation88 execution profile and completed input handoffs."
+    ]
+  },
+  {
+    "modifications": [
+      "Compile correlation90 dated public-common refinement with frozen correlation89 replay and complete retained baseline support."
+    ]
+  },
+  {
+    "modifications": [
+      "Compile correlation91 composed public-continuity refinement and retain frozen correlation90 execution and complete baseline readability."
+    ]
   }
 ]

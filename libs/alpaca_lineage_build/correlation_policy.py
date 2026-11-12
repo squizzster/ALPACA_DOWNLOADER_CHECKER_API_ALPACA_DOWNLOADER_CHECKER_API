@@ -459,6 +459,16 @@ def _compile_schema_four(
         (78, 34),
         (79, 34),
         (80, 35),
+        (81, 36),
+        (82, 37),
+        (83, 37),
+        (84, 37),
+        (85, 37),
+        (86, 37),
+        (87, 37),
+        (88, 37),
+        (89, 37),
+        (90, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -577,7 +587,24 @@ def _compile_schema_four(
         expected_role = (
             PRODUCTION_POLICY_ROLE
             if implementation_tuple
-            in {(76, 34), (77, 34), (78, 34), (79, 34), (80, 35), (CORRELATION_VERSION, LINEAGE_VERSION)}
+            in {
+                (76, 34),
+                (77, 34),
+                (78, 34),
+                (79, 34),
+                (80, 35),
+                (81, 36),
+                (82, 37),
+                (83, 37),
+                (84, 37),
+                (85, 37),
+                (86, 37),
+                (87, 37),
+                (88, 37),
+                (89, 37),
+                (90, 37),
+                (CORRELATION_VERSION, LINEAGE_VERSION),
+            }
             else "published_reference"
         )
     elif profile_values == (CORRECTED_RECONCILIATION, CORRECTED_SUFFIX, INDEPENDENT_DEPENDENCY):
@@ -592,7 +619,27 @@ def _compile_schema_four(
         "execution.observation_selection",
         ("type", "implementation"),
     )
-    expected_observation = f"lineage_v{lineage_version}"
+    expected_observation = f"lineage_v{lineage_version}" + (
+        "_documented_public_continuity_v1"
+        if correlation_version >= 91
+        else "_documented_dated_refinement_v1"
+        if correlation_version == 90
+        else "_documented_public_reclassification_v1"
+        if correlation_version == 89
+        else "_documented_scoped_membership_v1"
+        if correlation_version == 88
+        else "_documented_public_security_v1"
+        if correlation_version == 87
+        else "_documented_recapitalization_v1"
+        if correlation_version == 86
+        else "_public_parent_continuation_v1"
+        if correlation_version == 85
+        else "_dated_market_occupancy_v2"
+        if correlation_version == 84
+        else "_dated_market_occupancy_v1"
+        if correlation_version == 83
+        else ""
+    )
     if observation != {
         "type": "fixed_python_postprocessor",
         "implementation": expected_observation,
@@ -670,7 +717,25 @@ def _compile_schema_four(
             },
             "observation_selection": {
                 "type": "fixed_python_postprocessor",
-                "implementation": "lineage_observation_selection",
+                "implementation": "lineage_observation_selection_documented_public_continuity_v1"
+                if correlation_version >= 91
+                else "lineage_observation_selection_documented_dated_refinement_v1"
+                if correlation_version == 90
+                else "lineage_observation_selection_documented_public_reclassification_v1"
+                if correlation_version == 89
+                else "lineage_observation_selection_documented_scoped_membership_v1"
+                if correlation_version == 88
+                else "lineage_observation_selection_documented_public_security_v1"
+                if correlation_version == 87
+                else "lineage_observation_selection_documented_recapitalization_v1"
+                if correlation_version == 86
+                else "lineage_observation_selection_public_parent_continuation_v1"
+                if correlation_version == 85
+                else "lineage_observation_selection_dated_market_occupancy_v2"
+                if correlation_version == 84
+                else "lineage_observation_selection_dated_market_occupancy_v1"
+                if correlation_version == 83
+                else "lineage_observation_selection",
             },
         },
     }

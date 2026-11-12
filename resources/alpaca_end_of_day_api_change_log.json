@@ -176,5 +176,40 @@
     "modifications": [
       "Bind CSV export to one coherent catalogue generation and producer-maintained export-input applicability selection, rejecting changed selected inputs without upstream authentication or historical scans."
     ]
+  },
+  {
+    "modifications": [
+      "Expose completed security_relations through standalone evidence, including unresolved external endpoints, without identity inference or changes to online-only DataLibrary."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume producer-selected numerical observations identically across all eight views; competing retained selections require explicit owning lineage recovery without value comparisons, source-coverage ranking or historical-ticker fallback. Preserve each selected observation's accepted label union."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry generation-bound selected pricing manifests and rows through each locked history assembly. Accept a selected manifest once across alias views and dated segments, avoid repeated cached-boundary checks, and bind local payload caches to their actual selected generations."
+    ]
+  },
+  {
+    "modifications": [
+      "Expose the selected snapshot\u2019s completed explicit choice handoffs to the serving producer independently of serving ownership; no additional price reads or selection calculations."
+    ]
+  },
+  {
+    "modifications": [
+      "Assemble serving extensions outside accepted spans from exact new row positions, retaining completed middle history without repeated numerical assembly."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume operation-held immutable pricing partitions under the current selected boundary token before opening manifests or payloads; changed boundaries retain their owning selected assembly path."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume completed dated metadata refinements and label-aware membership transfers while retaining selected numerical observations and explicit historical ambiguity."
+    ]
   }
 ]

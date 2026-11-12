@@ -502,14 +502,24 @@ def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) 
     entry = index["symbols"].get(symbol)
     if entry is None:
         return None
+    from .recovery_handoffs import recall
+
+    carried = recall(root.parent.parent, "receipt", (symbol, entry["sha256"]))
+    if carried is not None:
+        return carried
     value = (selected_loader or selected_document)(
         path_at(root, f"{symbol}/lineage.manifest.json", published=True), entry["sha256"]
     )
     if value.get("symbol") != symbol or value.get("schema_version") not in SUPPORTED_VERSIONS:
         raise LineageError("invalid lineage receipt")
+    from .assignment_handoff import accept_observation_choices
     from .continuation import validate_handoff
 
     validate_handoff(value)
+    accept_observation_choices(value)
+    from .recovery_handoffs import remember
+
+    remember(root.parent.parent, "receipt", (symbol, entry["sha256"]), value)
     return value
 
 
@@ -566,14 +576,20 @@ def read_boundaries(root: Path, receipt: dict, *, selected_loader=None, kinds=No
 def read_assignment_projection(root, receipt, kind, handoff, *, selected_loader=None):
     """Consume the selected projection through the owning path/scope boundary."""
     from .assignment_handoff import assemble
+    from .recovery_handoffs import recall
+
+    projection_path = path_at(
+        root,
+        f"{receipt['symbol']}/{receipt['boundaries'][kind]['manifest']}.projection.json",
+        published=True,
+    )
+    carried = recall(root.parent.parent, "assignment", (receipt["symbol"], kind, handoff["generation"]))
+    if carried is not None:
+        return carried
 
     return assemble(
         (selected_loader or selected_document)(
-            path_at(
-                root,
-                f"{receipt['symbol']}/{receipt['boundaries'][kind]['manifest']}.projection.json",
-                published=True,
-            ),
+            projection_path,
             handoff["projection_sha256"],
         )
     )
@@ -729,6 +745,10 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
     if receipts is not None:
         refresh(store, receipts, sources=sources)
     _acknowledge(store, journal, sources=sources, recovered=recovered)
+    if recovering:
+        from .recovery_handoffs import lineage_published
+
+        lineage_published(store, journal, receipts)
     path_at(root, ".pending.json").unlink()
     return state
 
@@ -766,9 +786,120 @@ def publish(
     sources=None,
     unchanged_decision=False,
     projection_only=False,
+    source_envelope_recovery=False,
+    membership_transfer_recovery=False,
+    selection_inputs=None,
 ) -> None:
     if not receipts:
         raise LineageError("lineage publication requires at least one receipt")
+    envelope_fields = {"current_source_ownership", "sourced_rename_ownership", "closed_source_handoff_version"}
+    transfer_fields = {"membership_only_rebind", "membership_transfer_handoff_version"}
+    if membership_transfer_recovery and any(boundaries.values()):
+
+        def selection_free(document):
+            return {
+                **document,
+                "adjustments": [
+                    {
+                        **view,
+                        "segments": [
+                            {
+                                k: v
+                                for k, v in segment.items()
+                                if k not in {"observation_selection", "observation_tickers"}
+                            }
+                            for segment in view["segments"]
+                        ],
+                    }
+                    for view in document["adjustments"]
+                ],
+            }
+
+        if selection_inputs is None or any(
+            kind not in selection_inputs.get(symbol, {})
+            or selection_free(document) != selection_free(selection_inputs[symbol][kind])
+            for symbol, documents in boundaries.items()
+            for kind, document in documents.items()
+        ):
+            raise LineageError("membership recovery changed accepted row ownership or assignment dates")
+        for symbol, documents in boundaries.items():
+            receipt, old = receipts[symbol], previous[symbol]
+            if (
+                receipt["boundaries"].keys() != old["boundaries"].keys()
+                or receipt["assignment_handoffs"].keys() != old["assignment_handoffs"].keys()
+                or receipt.get("serving_ownership") != old.get("serving_ownership")
+                or any(
+                    (
+                        {k: v for k, v in binding.items() if k != "sha256"}
+                        != {k: v for k, v in old["boundaries"][kind].items() if k != "sha256"}
+                        or receipt["assignment_handoffs"][kind]["generation"] != binding["sha256"]
+                    )
+                    if kind in documents
+                    else (
+                        binding != old["boundaries"][kind]
+                        or receipt["assignment_handoffs"][kind] != old["assignment_handoffs"][kind]
+                    )
+                    for kind, binding in receipt["boundaries"].items()
+                )
+            ):
+                raise LineageError("membership recovery changed an unselected assignment binding")
+    if membership_transfer_recovery and (
+        previous is None
+        or notices
+        or checks
+        or unchanged_decision
+        or projection_only
+        or source_envelope_recovery
+        or any(
+            {
+                k: v
+                for k, v in receipt.items()
+                if k
+                not in (
+                    transfer_fields
+                    | (
+                        {"boundaries", "assignment_handoffs", "serving_ownership"}
+                        if boundaries[symbol]
+                        else set()
+                    )
+                )
+            }
+            != {
+                k: v
+                for k, v in previous[symbol].items()
+                if k
+                not in (
+                    transfer_fields
+                    | (
+                        {"boundaries", "assignment_handoffs", "serving_ownership"}
+                        if boundaries[symbol]
+                        else set()
+                    )
+                )
+            }
+            for symbol, receipt in receipts.items()
+        )
+    ):
+        raise LineageError("membership transfer recovery changed accepted lineage decisions")
+    if source_envelope_recovery and (
+        not unchanged_decision
+        or previous is None
+        or notices
+        or checks
+        or any(boundaries.values())
+        or any(
+            {k: v for k, v in receipt.items() if k not in envelope_fields}
+            != {k: v for k, v in previous[symbol].items() if k not in envelope_fields}
+            or receipt != previous[symbol]
+            and receipt.get("closed_source_handoff_version") != 1
+            or any(
+                receipt.get(key) != previous[symbol].get(key)
+                for key in envelope_fields - {"closed_source_handoff_version"}
+            )
+            for symbol, receipt in receipts.items()
+        )
+    ):
+        raise LineageError("source envelope recovery changed accepted lineage inputs")
     if any(not reusable_decision(receipt) for receipt in receipts.values()):
         raise LineageError("lineage publication requires the authorized current policy")
     if projection_only and (
@@ -872,7 +1003,7 @@ def publish(
         "notices": notices,
         "export_input_changes": export_input_changes,
     }
-    if projection_only:
+    if projection_only or source_envelope_recovery or membership_transfer_recovery:
         journal["projection_only"] = True
     if unchanged_decision:
         # The migration owner has established rule applicability once. This
@@ -889,6 +1020,8 @@ def publish(
             "assignment_handoff_kinds",
             "serving_ownership",
         }
+        if source_envelope_recovery:
+            ignored.update(envelope_fields)
         if previous is None or any(
             {k: v for k, v in receipt.items() if k not in ignored}
             != {k: v for k, v in previous[symbol].items() if k not in ignored}
@@ -917,7 +1050,7 @@ def publish(
     with publication_lock(root, exclusive=True):
         from libs.alpaca_pricing_download.check_summary import invalidate
 
-        if not projection_only:
+        if not (projection_only or source_envelope_recovery or membership_transfer_recovery):
             invalidate(store, receipts, owner="lineage")
         atomic_json(path_at(root, ".pending.json"), journal)
         state = finish_publication(store, root, journal, receipts=receipts, sources=sources)

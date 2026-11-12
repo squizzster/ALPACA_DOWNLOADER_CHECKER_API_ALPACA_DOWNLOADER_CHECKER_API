@@ -8,7 +8,8 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timesta
 from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
-from .contract import policy
+from .contract import CatalogueError, policy
+from .offline import available_checkpoints, previous_checkpoints, select_offline
 from .reuse import extend_ticker_ranges, select_prefixes
 
 _VACANT_TICKER_BRIDGE_REASON = "certified_vacant_ticker_bridge_non_observation"
@@ -141,6 +142,29 @@ def _metadata(group, public_id):
                 "effective_through": None,
             }
         interval = segment.get("ticker_ownership_interval") or {}
+        description = interval.get("security_description")
+        if description is not None:
+            if (
+                not isinstance(description, dict)
+                or type(description.get("version")) is not int
+                or description["version"] != 1
+                or set(description)
+                != {"version", "name", "exchange", "asset_class", "instrument_kind", "registrant_cik"}
+            ):
+                raise CatalogueError("unsupported dated security description; finish owning lineage recovery")
+            # Lineage owns this dated description and its primary evidence.
+            # In particular, today's reused-ticker CUSIP description cannot
+            # substitute for an earlier listed security's completed metadata.
+            for field in ("name", "exchange", "asset_class"):
+                text = description[field]
+                if text is not None:
+                    observations[(field, text, "", segment["from"], segment["to"])] = {
+                        "field": field,
+                        "value": text,
+                        "observed_at": None,
+                        "effective_from": segment["from"],
+                        "effective_through": segment["to"],
+                    }
         if value and interval.get("cusip") == value:
             first = max(segment["from"], interval.get("start_date_inclusive") or segment["from"])
             end_exclusive = interval.get("end_date_exclusive")
@@ -295,30 +319,84 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
     # this producer owns serving eligibility. Consume those decisions as given,
     # then validate only history work not covered by a reusable serving prefix.
     # DO NOT acquire provider evidence or replay lineage rules to certify input.
+    from . import preparation
+
     decisions, securities = [], []
-    inputs, offsets = group.serving_inputs()
-    prefixes = select_prefixes(
-        group, previous, inputs, offsets, **({"rebuild_projection": True} if rebuild_projection else {})
+    previous = tuple(previous)
+    binding = preparation.scope(group, previous, rebuild_projection)
+    prepared = preparation.selected(binding)
+    if prepared is None:
+        inputs, offsets = group.serving_inputs()
+        previous = previous_checkpoints(previous)
+    else:
+        inputs, offsets, previous = prepared["inputs"], prepared["offsets"], prepared["previous"]
+    from .source_equivalence import accepted_dates
+
+    selected_securities = prepared["securities"] if prepared else group.summary["securities"]
+    offline_ids, offline = (
+        prepared["offline"]
+        if prepared
+        else select_offline(group, previous, inputs, offsets, securities=selected_securities)
     )
+    prefixes = (
+        prepared["prefixes"]
+        if prepared
+        else (
+            select_prefixes(
+                group,
+                available_checkpoints(previous, offline_ids),
+                inputs,
+                offsets,
+                **({"rebuild_projection": True} if rebuild_projection else {}),
+            )
+            if any(item["public_id"] not in offline_ids for item in selected_securities)
+            else {}
+        )
+    )
+    if prepared is None:
+        preparation.completed(
+            binding,
+            {
+                "inputs": inputs,
+                "offsets": offsets,
+                "previous": previous,
+                "securities": selected_securities,
+                "offline": (offline_ids, offline),
+                "prefixes": prefixes,
+            },
+        )
     validation = {"inputs": inputs, "identities": {}, "prefix_records": [], "revision_prefix_version": 1}
+    if hasattr(group, "observation_choice_handoffs"):
+        validation["observation_choice_handoffs"] = group.observation_choice_handoffs()
     work = {"reused_history_prefixes": 0, "full_history_evaluations": 0, "checked_bars": 0}
-    for security in group.summary["securities"]:
+    for security in selected_securities:
         public_id = security["public_id"]
+        if public_id in offline_ids:
+            decisions.append({"public_id": public_id, "eligible": False, "reasons": [offline["reason"]]})
+            continue
         reasons = set()
         if set(security["adjustments"]) != set(ADJUSTMENTS):
             decisions.append({"public_id": public_id, "eligible": False, "reasons": ["missing_views"]})
             continue
         prefix = prefixes.get(public_id)
+        if prefix is not None and "source_revision" in prefix:
+            prefix = preparation.revised(binding, group, public_id, prefix, work)
         members, observations = _metadata(group, public_id)
         if prefix is None:
             work["full_history_evaluations"] += 1
         try:
             try:
-                views, coverage = group.serving_histories(public_id, prefix=prefix)
+                views, coverage = preparation.histories(binding, group, public_id, prefix)
             except HistoryPrefixChanged:
+                if prefix is not None and "accepted_span" in prefix:
+                    raise ValueError(
+                        "outside-span extension overlaps accepted history; bounded serving recovery required"
+                    )
+                if prefix is not None and "source_revision" in prefix:
+                    raise ValueError("source revision prefix changed; owning bounded reconciliation required")
                 prefix = None
                 work["full_history_evaluations"] += 1
-                views, coverage = group.serving_histories(public_id)
+                views, coverage = preparation.histories(binding, group, public_id, None)
         except UnservableHistoryError:
             if prefix is not None:
                 work["reused_history_prefixes"] += 1
@@ -333,8 +411,19 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         validation["identities"][public_id] = coverage
         raw = views["raw"]["bars"]
         sessions = [b["session"] for b in raw]
+        equal_source_dates = (
+            accepted_dates(group, previous, inputs, public_id=public_id, sessions=set(sessions))
+            if sessions
+            else {}
+        )
+        outside = bool(prefix and "accepted_span" in prefix)
+        before = [bar for bar in raw if outside and bar["session"] < prior["first_session"]]
+        after = [bar for bar in raw if not outside or bar["session"] > prior["last_session"]]
+        if outside and len(before) + len(after) != len(raw):
+            raise ValueError("serving extension reopened its accepted numerical span")
+        final_session = after[-1]["session"] if after else prior["last_session"] if prior else None
         if (
-            not sessions
+            not after
             and prior
             and prior["coverage"]["session_count"] >= 2
             and prior.get("before_last_raw_bar") is None
@@ -343,21 +432,28 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             # It cannot claim a preceding-row boundary that was never published.
             # A later append supplies that boundary from the accepted last row.
             validation.pop("revision_prefix_version", None)
-        before_last_reasons = set(prior["price_reasons"] if prior else ())
+        before_last_reasons = set(
+            (prior.get("before_last_price_reasons") or ())
+            if outside and not after
+            else prior["price_reasons"]
+            if prior
+            else ()
+        )
         if not sessions and prior is None:
             reasons.add("empty_history")
         for adjustment, view in views.items():
             if [b["session"] for b in view["bars"]] != sessions:
                 price_reasons.add("incompatible_sessions")
-                if (
-                    sessions
-                    and [b["session"] for b in view["bars"] if b["session"] < sessions[-1]] != sessions[:-1]
-                ):
+                if sessions and [b["session"] for b in view["bars"] if b["session"] < final_session] != [
+                    day for day in sessions if day < final_session
+                ]:
                     before_last_reasons.add("incompatible_sessions")
             for bar in view["bars"]:
+                if bar["session"] in equal_source_dates.get(public_id, ()):
+                    continue
                 bar_reasons = _bar_reasons(bar, adjustment)
                 price_reasons.update(bar_reasons)
-                if sessions and bar["session"] < sessions[-1]:
+                if final_session and bar["session"] < final_session:
                     before_last_reasons.update(bar_reasons)
                 work["checked_bars"] += 1
         reasons.update(price_reasons)
@@ -366,24 +462,48 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         source_sessions = set(prior["source_sessions_in_gaps"] if prior else ())
         if prefix and prefix["refresh_gap_sources"]:
             source_sessions = group.source_sessions(start=min(missing), end=max(missing)) & missing
-        first_session = prior["first_session"] if prior else (sessions[0] if sessions else None)
-        last_session = sessions[-1] if sessions else (prior["last_session"] if prior else None)
-        if sessions:
-            end = (date.fromisoformat(sessions[-1]) + timedelta(days=1)).isoformat()
+        first_session = (
+            before[0]["session"]
+            if before
+            else prior["first_session"]
+            if prior
+            else (sessions[0] if sessions else None)
+        )
+        last_session = final_session
+        scopes = []
+        if before:
+            labels = sorted(
+                {
+                    run["ticker"]
+                    for run in prior["ticker_ranges"]
+                    if run["first_session"] == prior["first_session"]
+                }
+            )
+            scopes.append(
+                (
+                    before[0]["session"],
+                    prior["first_session"],
+                    before,
+                    [*before, {"session": prior["first_session"], "tickers": labels}],
+                )
+            )
+        if after:
+            end = (date.fromisoformat(after[-1]["session"]) + timedelta(days=1)).isoformat()
             start = (
                 (date.fromisoformat(prior["last_session"]) + timedelta(days=1)).isoformat()
                 if prior
-                else sessions[0]
+                else after[0]["session"]
             )
+            scopes.append((start, end, after, [*([prior["last_raw_bar"]] if prior else []), *after]))
+        for start, end, fresh, span in scopes:
+            fresh_sessions = [bar["session"] for bar in fresh]
             expected = set(expected_market_session_coverage(start, end).session_dates)
-            new_missing = expected - set(sessions)
+            new_missing = expected - set(fresh_sessions)
             missing.update(new_missing)
             if new_missing:
                 source_sessions.update(
                     group.source_sessions(start=min(new_missing), end=max(new_missing)) & new_missing
                 )
-            seam = [prior["last_raw_bar"]] if prior else []
-            span = [*seam, *raw]
             for left, right in zip(span, span[1:]):
                 if left["session"] < right["session"] and any(
                     left["session"] < day < right["session"] for day in new_missing
@@ -391,10 +511,10 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                     gap_bars.extend(
                         {"session": bar["session"], "tickers": bar["tickers"]} for bar in (left, right)
                     )
-            if set(sessions) - expected:
+            if set(fresh_sessions) - expected:
                 reasons.add("nonmarket_sessions")
                 price_reasons.add("nonmarket_sessions")
-                if set(sessions[:-1]) - expected:
+                if {day for day in fresh_sessions if day < final_session} - expected:
                     before_last_reasons.add("nonmarket_sessions")
         gap_bars = sorted({bar["session"]: bar for bar in gap_bars}.values(), key=lambda bar: bar["session"])
         explained = _rename_exclusions(
@@ -427,7 +547,24 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         dated_bars = [{"session": day, "tickers": sorted(labels)} for day, labels in dated_labels.items()]
         ticker_ranges = _ticker_ranges(dated_bars)
         if prior:
-            ticker_ranges = extend_ticker_ranges(prior, ticker_ranges)
+            if outside:
+                old_ranges = prior["ticker_ranges"]
+                if before:
+                    old_ranges = extend_ticker_ranges(
+                        {
+                            "ticker_ranges": _ticker_ranges(
+                                [bar for bar in dated_bars if bar["session"] < prior["first_session"]]
+                            ),
+                            "last_session": before[-1]["session"],
+                        },
+                        old_ranges,
+                    )
+                ticker_ranges = extend_ticker_ranges(
+                    {**prior, "ticker_ranges": old_ranges},
+                    _ticker_ranges([bar for bar in dated_bars if bar["session"] > prior["last_session"]]),
+                )
+            else:
+                ticker_ranges = extend_ticker_ranges(prior, ticker_ranges)
         history_summary = {
             "public_id": public_id,
             "first_session": first_session,
@@ -442,7 +579,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         # Dates/labels are a separate projection of the accepted history. Range
         # changes consume it without reopening or numerically checking old bars.
         session_dates = (
-            [*prior["session_dates"], *sessions]
+            sorted([*prior["session_dates"], *sessions])
             if prior and "session_dates" in prior
             else sessions
             if prior is None
@@ -465,16 +602,24 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             if cutoff is not None and session_dates is None
             else None
         )
-        if (
-            session_dates is None
-            and rebuild_projection
+        if session_dates is None and (
+            rebuild_projection
             and (
                 cutoff is not None
                 and accepted_range is None
                 or prior
                 and prior.get("session_projection_version") == 1
             )
+            or prior
+            and prior.get("session_projection_version") is None
+            and not reasons
+            and cutoff is not None
+            and accepted_range is None
         ):
+            # An applicable completed numerical prefix already approves the
+            # whole selected history. A new publication range needs only its
+            # dates. Lift an unmarked legacy projection once, retaining all
+            # numerical/calendar outcomes and publishing the dates below.
             session_dates = group.serving_session_dates(public_id)
         validation["prefix_records"].append(
             {
@@ -489,22 +634,24 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                     + [view["bars"][-1]["session"] for view in views.values() if view["bars"]]
                 ),
                 "last_raw_bar": (
-                    {"session": raw[-1]["session"], "tickers": raw[-1]["tickers"]}
-                    if raw
+                    {"session": after[-1]["session"], "tickers": after[-1]["tickers"]}
+                    if after
                     else prior["last_raw_bar"]
                 ),
                 "price_reasons": sorted(price_reasons),
                 "before_last_raw_bar": (
-                    {"session": raw[-2]["session"], "tickers": raw[-2]["tickers"]}
-                    if len(raw) >= 2
+                    {"session": after[-2]["session"], "tickers": after[-2]["tickers"]}
+                    if len(after) >= 2
                     else prior["last_raw_bar"]
-                    if raw and prior
+                    if after and prior
+                    else {"session": before[-1]["session"], "tickers": before[-1]["tickers"]}
+                    if before and prior["coverage"]["session_count"] == 1
                     else prior.get("before_last_raw_bar")
                     if prior
                     else None
                 ),
                 "before_last_price_reasons": sorted(before_last_reasons)
-                if sessions
+                if sessions and not (outside and not after and prior.get("before_last_price_reasons") is None)
                 else prior.get("before_last_price_reasons"),
                 "missing_sessions": sorted(missing),
                 "gap_bars": gap_bars,
@@ -529,8 +676,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 ]
             else:
                 # Legacy partial publications already selected this exact range.
-                # Carry it through metadata changes and suffix extensions. A new
-                # legacy range needs the explicit projection rebuild owner.
+                # Carry it through metadata changes and suffix extensions; new
+                # applicable ranges acquire their bounded date projection above.
                 accepted = accepted_range
                 if accepted is None:
                     raise ValueError(
@@ -573,21 +720,25 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             }
             decisions[-1]["publication_start_after_unresolved"] = cutoff
             ticker_ranges = history_summary["ticker_ranges"]
-            observations = [
-                {
-                    **item,
-                    "effective_from": max(item["effective_from"], history_summary["first_session"]),
-                    "effective_through": min(item["effective_through"], last_session),
-                }
-                if item["effective_from"] is not None
-                else item
-                for item in observations
-                if item["effective_from"] is None
-                or (
-                    item["effective_through"] >= history_summary["first_session"]
-                    and item["effective_from"] <= last_session
-                )
-            ]
+
+        # Metadata can come from a superseded contributing source whose dated
+        # assignments extend beyond the selected numerical history. Project its
+        # known dates onto every publication range, including full histories.
+        observations = [
+            {
+                **item,
+                "effective_from": max(item["effective_from"], history_summary["first_session"]),
+                "effective_through": min(item["effective_through"], last_session),
+            }
+            if item["effective_from"] is not None
+            else item
+            for item in observations
+            if item["effective_from"] is None
+            or (
+                item["effective_through"] >= history_summary["first_session"]
+                and item["effective_from"] <= last_session
+            )
+        ]
 
         def values(field):
             return sorted({o["value"] for o in observations if o["field"] == field})
@@ -616,6 +767,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         "history_validation": validation,
         "validation_work": work,
     }
+    if offline is not None:
+        completed["offline_ownership"] = offline
     from .gaps import complete_presence
 
     complete_presence(group, completed, previous)

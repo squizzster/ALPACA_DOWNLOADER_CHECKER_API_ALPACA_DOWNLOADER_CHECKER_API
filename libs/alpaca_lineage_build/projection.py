@@ -59,6 +59,9 @@ def project_receipt(receipt):
         "history_correction_id": receipt.get("history_correction_id"),
         "assignment_handoffs_complete": assignment_handoffs_complete(receipt),
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),
+        "sourced_fact_applications": receipt["evidence"].get("sourced_fact_applications", {}),
+        "membership_transfers_complete": receipt.get("membership_transfer_handoff_version") == 1,
+        **({"retained_recovery": receipt["retained_recovery"]} if "retained_recovery" in receipt else {}),
     }
 
 

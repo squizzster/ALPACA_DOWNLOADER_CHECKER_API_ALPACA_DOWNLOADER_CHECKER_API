@@ -21,8 +21,9 @@ their producer-owned comparison handoff. Before that comparison, a lagging depen
 acquisition selects whether there is work: empty suffixes leave retained storage untouched, while nonempty suffixes
 cross into the approved acquisition without another request or calculation. They do not check other historical
 views or confirm approved history again.
-After discovery, maintenance checks newly eligible or invalidated members; unchanged completed checks carry
-their summary entry and pricing generation within the operation. Durable corrections carry their selected scope,
+After discovery, maintenance checks newly eligible or invalidated members without an applicable completed
+full-acquisition or approved-append handoff; unchanged completed checks carry
+their summary entry, pricing generation and original request scope within the operation. Durable corrections carry their selected scope,
 cause and observations across restart; an interrupted publication finishes through its existing journal.
 Pricing maintains the comparison tail on every publication. Recognized legacy sources publish it through a
 bounded metadata upgrade before provider work. Local correction and append share partition assembly; lineage
@@ -48,7 +49,8 @@ adjustment stage and carries its completed eight-view handoff into publication; 
 ## Lineage and identity
 
 Dependency membership, dated row ownership and provider-UUID membership are distinct. Dependency links do not
-merge identities. Ambiguous rows remain unassigned; independently supported intervals survive.
+merge identities. The [allocation criterion](lineage.md#ownership-allocation-criterion) compares plausible
+owners with nonallocation; genuine ambiguity remains explicit and independently supported intervals survive.
 
 Ordered authorities: [ownership intervals](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py),
 [row allocation](../libs/alpaca_end_of_day_security_correlation/row_correlation.py),
@@ -86,6 +88,6 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | [alpaca_end_of_day_security_correlation](../libs/alpaca_end_of_day_security_correlation/) | Ownership intervals, row assignments, UUID rules, certified rule factories. |
 | [alpaca_lineage_policy_lab](../libs/alpaca_lineage_policy_lab/) | Read-only selection/comparison/audit using the shared policy core. |
 | [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
-| [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Shared numerical source selection. |
+| [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Numerical source-choice consumption guards. |
 | [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |
 | [common](../libs/common/) | Market calendar, SQLite connections, store operation lock, shared provider HTTP execution. |

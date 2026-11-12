@@ -142,7 +142,7 @@ def _structural_conflict(action, certificate):
     return False
 
 
-def certify_group(evidences, *, complete=True):
+def certify_group(evidences, *, complete=True, relations=None):
     """Bind each selected fact once, with conflicting group observations vetoed."""
     evidences = tuple({id(item): item for item in evidences}.values())
     submitted = {}
@@ -156,7 +156,27 @@ def certify_group(evidences, *, complete=True):
         old, new = match["old_cusip"], match["new_cusip"]
         boundary = fact["exchange_effective_date"]
         endpoints = None
+        endpoint_observations = {old: set(), new: set()}
         valid = complete
+        from .security_relations import acquirer_nonconflicts
+
+        reference_pair = tuple(exact_cusip_lookup_asset(observations[0][0], cusip) for cusip in (old, new))
+        nonconflicts = ()
+        if relations is not None and all(reference_pair):
+            tentative = RenameCertificate(
+                action_id,
+                match["old_symbol"],
+                match["new_symbol"],
+                old,
+                new,
+                reference_pair[0]["id"],
+                reference_pair[1]["id"],
+                boundary,
+                fact["legal_effective_date"],
+                tuple((p["symbol"], p["start_inclusive"], p["end_exclusive"]) for p in fact["prior_labels"]),
+            )
+            nonconflicts = acquirer_nonconflicts(relations, tentative)
+        exempt = {item[1] for item in nonconflicts}
         if any(item != reference for _, item in observations):
             valid = False
         # Metadata has already matched each submitted fact to the raw provider
@@ -176,25 +196,39 @@ def certify_group(evidences, *, complete=True):
             ):
                 valid = False
             if carries_fact or observed:
+                relation_peer = bool(exempt) and any(
+                    action.get("id") in exempt
+                    for action in lineage.get("provider_corporate_actions", lineage.get("corporate_actions", ()))
+                )
+                selected_pair = (
+                    pair
+                    if carries_fact or not relation_peer
+                    else tuple(
+                        pair[index]
+                        for index, cusip in enumerate((old, new))
+                        if any(item["lookup"] == cusip for item in observed)
+                    )
+                )
                 if any(
                     asset is None
                     or asset.get("class") != "us_equity"
                     or asset.get("exchange") in (None, "", "OTC")
-                    for asset in pair
+                    for asset in selected_pair
                 ):
                     valid = False
                     break
-                ids = tuple(asset["id"] for asset in pair)
-                if (
-                    endpoints is not None
-                    and ids != endpoints
-                    or pair[0].get("exchange") != pair[1].get("exchange")
-                ):
+                for index, cusip in enumerate((old, new)):
+                    if pair[index] is not None:
+                        endpoint_observations[cusip].add((pair[index]["id"], pair[index]["exchange"]))
+                if any(len(values) > 1 for values in endpoint_observations.values()):
                     valid = False
                     break
-                endpoints = ids
             if not valid:
                 break
+        if valid and all(endpoint_observations.values()):
+            old_endpoint, new_endpoint = (next(iter(endpoint_observations[cusip])) for cusip in (old, new))
+            valid = old_endpoint[1] == new_endpoint[1]
+            endpoints = old_endpoint[0], new_endpoint[0]
         certificate = None
         if valid and endpoints is not None:
             certificate = RenameCertificate(
@@ -216,7 +250,7 @@ def certify_group(evidences, *, complete=True):
                 ):
                     valid = False
                 if any(
-                    _structural_conflict(action, certificate)
+                    action.get("id") not in exempt and _structural_conflict(action, certificate)
                     for action in lineage.get("provider_corporate_actions", lineage.get("corporate_actions", ()))
                 ):
                     valid = False

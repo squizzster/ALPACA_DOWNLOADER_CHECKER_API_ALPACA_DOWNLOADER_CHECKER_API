@@ -20,6 +20,7 @@ from .metadata import EvidenceClient
 from .pipeline import run_lineage
 from .refresh import refresh_required_history
 from .registration import command_policy
+from .sourced_rules import load_applications
 from .update import update_everything
 from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target
 
@@ -70,9 +71,11 @@ def plan_update(
             "catalogue_records": 0,
             "selection_metadata_http_requests_observed": 0,
         }
+    applications, supplements = load_applications()
     metadata_before = identity_client.request_count
     observation = observe_catalogue(identity_client)
-    evidence = EvidenceClient(identity_client, observation=observation)
+    evidence = EvidenceClient(identity_client, observation=observation, event_supplements=supplements)
+    evidence.rule_applications = applications
     selection = universe_plan.select_work(accepted, observation, evidence, end, retry_blocked=retry_blocked)
     report = universe_plan.preview(
         accepted,
@@ -108,6 +111,9 @@ def run_update(
     metadata_started = identity_client.request_count
     pricing_started = getattr(pricing_client, "request_count", None)
     with universe_state.update_lock(store), ExitStack() as scopes:
+        from .recovery_handoffs import operation as recovery_handoffs
+
+        scopes.enter_context(recovery_handoffs(store))
         # Explicit universe initialization is the outer operation gate. Fail
         # before recovering any owner publication when it is absent; recovery
         # must not silently initialize or otherwise mutate an uninitialized
@@ -141,6 +147,7 @@ def run_update(
             result["failed"] = recovered["failed"]
             return result
         context.accept_correlation_policy()
+        applications, supplements = load_applications()
 
         from .projection import require_complete
 
@@ -149,9 +156,26 @@ def run_update(
         # only after authorizing the policy for all new work.
         context.index = None
         with storage.writer_lock(store, accepted_store=context.accept_store()), storage.publication_lock(root):
-            serving_work.read(store)
+            pending_serving = serving_work.read(store)
             context.index = storage.read_index(root)
             require_complete(context.index)
+        from .closed_source_recovery import recover as recover_closed_sources
+
+        with storage.writer_lock(store, accepted_store=context.accept_store()):
+            repaired = recover_closed_sources(store, root, context.index, pending_serving, applications)
+        if repaired:
+            result["stages"]["closed_source_recovery"] = {"symbols": repaired, "failed": 0}
+        from .membership_transfer_recovery import recover as recover_membership_transfers
+
+        with storage.writer_lock(store, accepted_store=context.accept_store()):
+            repaired_transfers = recover_membership_transfers(
+                store, root, context.index, pending_serving, applications, context.select_serving()
+            )
+        if repaired_transfers:
+            result["stages"]["membership_transfer_recovery"] = {
+                "symbols": repaired_transfers,
+                "failed": 0,
+            }
         if not read_checks(store)["complete"]:
             raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
         pending = pending_symbols(store)
@@ -162,7 +186,17 @@ def run_update(
             # every durable obligation, including ordinary next-session appends.
             # Never plan a universe against a missing/temporarily pending summary.
             recovery_policy = command_policy(store, end, context=context, retry_blocked=retry_blocked)
-            recovery_evidence = EvidenceClient(identity_client)
+            recovery_policy.rule_applications = applications
+            recovery_evidence = EvidenceClient(identity_client, event_supplements=supplements)
+            from .selection import DependencyGraph
+            from .sourced_rules import configure
+
+            configure(
+                recovery_evidence,
+                applications,
+                DependencyGraph(context.index["symbols"]),
+                context.index["symbols"],
+            )
             callback = (lambda stage, values: progress("recovery_" + stage, values)) if progress else None
             recoverable = [symbol for symbol in pending if recovery_policy.allowed({symbol})]
             if recoverable:
@@ -208,7 +242,8 @@ def run_update(
         metadata_before = identity_client.request_count
         if progress:
             progress("catalogue", {"state": "started"})
-        evidence = recovery_evidence or EvidenceClient(identity_client)
+        evidence = recovery_evidence or EvidenceClient(identity_client, event_supplements=supplements)
+        evidence.rule_applications = applications
         # Retain every accepted observation and lookup across recovery. Only the
         # scheduling policy is replaced by the newly accepted work selection.
         evidence.work_policy = None
@@ -288,6 +323,7 @@ def run_update(
             end,
             context=context,
         )
+        policy.rule_applications = applications
         # Reuse the accepted work policy's graph instead of reconstructing the
         # entire membership graph just to enforce its selected storage scope.
         for symbol in seeds:
@@ -391,7 +427,7 @@ def run_update(
                 or item["invalidate_pricing"]
                 or item["refresh_metadata"]
                 or symbol in accepted["checks"]["checks"]
-                or "changed_rules" in item.get("reasons", ())
+                or set(item.get("reasons", ())) & {"changed_rules", "sourced_facts"}
             )
         }
         lineage_results = []

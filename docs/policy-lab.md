@@ -23,7 +23,7 @@ emit deterministic differences. Authorities: [compare](../libs/alpaca_lineage_po
 
 ## Current schema-4 policies
 
-[Canonical production YAML](../resources/alpaca_security_correlation_policy.yaml) binds correlation-79/lineage-34.
+[Canonical production YAML](../resources/alpaca_security_correlation_policy.yaml) binds correlation-91/lineage-37.
 It retains the frozen correlation-59/lineage-33 fixed-point structure and adds the strict exact same-symbol handoff
 certificate, bounded-entry form, bounded shared-UUID histories, complete-current-source early-successor bridge and
 terminal carry-forward exclusion, post-padding bounded alias, vacant-ticker non-observation, pre-entry carry-forward
@@ -51,6 +51,15 @@ unresolved default, different terminal rule and oversized input. Names resolve t
 YAML cannot import Python or traverse arbitrary fields. Reports bind exact file and canonical semantic digests.
 
 Explicit legacy resources remain executable:
+[correlation 90](../resources/alpaca_security_correlation_v90_legacy_policy.yaml),
+[correlation 89](../resources/alpaca_security_correlation_v89_legacy_policy.yaml),
+[correlation 88](../resources/alpaca_security_correlation_v88_legacy_policy.yaml),
+[correlation 87](../resources/alpaca_security_correlation_v87_legacy_policy.yaml),
+[correlation 86](../resources/alpaca_security_correlation_v86_legacy_policy.yaml),
+[correlation 85](../resources/alpaca_security_correlation_v85_legacy_policy.yaml),
+[correlation 84](../resources/alpaca_security_correlation_v84_legacy_policy.yaml),
+[correlation 83](../resources/alpaca_security_correlation_v83_legacy_policy.yaml),
+[correlation 82](../resources/alpaca_security_correlation_v82_legacy_policy.yaml),
 [correlation 77](../resources/alpaca_security_correlation_v77_legacy_policy.yaml),
 [correlation 76](../resources/alpaca_security_correlation_v76_legacy_policy.yaml),
 [correlation 59](../resources/alpaca_security_correlation_v59_legacy_policy.yaml),
@@ -58,7 +67,7 @@ Explicit legacy resources remain executable:
 [experimental schema 3](../resources/alpaca_security_correlation_experimental_v58_legacy_policy.yaml).
 The v58 `correlation_v58_single_phase` profile runs one fixed point with frozen first-three ownership rules and
 v58 row/default/terminal cascade, never v59 reconciliation/fourth-rule fallback. Focused comparison may use a
-completed 33/59, frozen 34/76 or 34/77, or current 34/79 baseline while replaying historical candidates from trusted inputs. This neither
+completed 33/59, frozen 34/76 or 34/77, retained 37/82 through 37/90, or current 37/91 baseline while replaying historical candidates from trusted inputs. This neither
 rolls production back, authorizes publication nor admits v58 to all-lineage audit.
 
 ## Corrected candidate profile
@@ -128,8 +137,9 @@ identity invariants; and mapping correction the candidate would require.
 does not weaken `parity` or exit status. Its sole non-exact allowance remains the historical first-three versus
 first-four rule-order provenance: every group receipt must be uniform, every other diagnostic/decision dimension
 must match, and there may be no reconciliation, selected suffix, applied interval or second phase in the fallback
-trace. This comparison classification does not authorize an earlier receipt for current 34/79 publication;
-current production requires recalculation. Raw differences remain reported.
+trace. This comparison classification does not authorize production publication. The owning pipeline's
+generation-bound reuse and recovery contracts determine selected work; applicable completed decisions are
+consumed without recalculation. Raw differences remain reported.
 
 Audit conclusions: `exact_parity`, `decision_parity_with_migrated_diagnostics`, `differences`.
 Strict parity remains false for the middle case. Develop generic rules with focused `compare` through the

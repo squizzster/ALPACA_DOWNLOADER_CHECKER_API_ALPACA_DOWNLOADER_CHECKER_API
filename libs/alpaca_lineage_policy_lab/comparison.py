@@ -93,18 +93,23 @@ def _included(kind: str, day: str, anchor: str) -> bool:
     raise PolicyLabError(f"unknown assignment boundary {kind!r}")
 
 
-def _normalize_boundaries(symbol, boundaries, view, anchor):
+def _normalize_boundaries(symbol, boundaries, view, anchor, *, row_index=None):
     expected_kinds = {"completed_years", "current_year", "current_month"}
     if set(boundaries) != expected_kinds:
         raise PolicyLabError(f"{symbol}: assignment boundaries are incomplete")
     dimensions = {"semantic": {}, "explanation": {}, "observation": {}}
-    expected_keys = set()
-    rows_by_adjustment = {}
-    for adjustment in ADJUSTMENTS:
-        rows = view.views[adjustment]
-        dates = [timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows]
-        rows_by_adjustment[adjustment] = (rows, dates)
-        expected_keys.update((symbol, adjustment, row[0]) for row in rows)
+    if row_index is None:
+        expected_keys, rows_by_adjustment, dates_by_rows = set(), {}, {}
+        for adjustment in ADJUSTMENTS:
+            rows = view.views[adjustment]
+            if id(rows) not in dates_by_rows:
+                dates_by_rows[id(rows)] = tuple(
+                    timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows
+                )
+            rows_by_adjustment[adjustment] = (rows, dates_by_rows[id(rows)])
+            expected_keys.update((symbol, adjustment, row[0]) for row in rows)
+        row_index = rows_by_adjustment, expected_keys
+    rows_by_adjustment, expected_keys = row_index
 
     for kind in ("completed_years", "current_year", "current_month"):
         document = boundaries[kind]
@@ -158,14 +163,28 @@ def _normalize_boundaries(symbol, boundaries, view, anchor):
     return dimensions
 
 
-def _group_dimensions(boundaries, inputs, receipts):
+def _group_dimensions(boundaries, inputs, receipts, *, row_indexes=None):
     result = {"semantic": {}, "explanation": {}, "observation": {}}
+    row_indexes = {} if row_indexes is None else row_indexes
     for symbol in sorted(inputs):
+        view = inputs[symbol]
+        if symbol not in row_indexes:
+            dates_by_rows, rows_by_adjustment, expected_keys = {}, {}, set()
+            for adjustment in ADJUSTMENTS:
+                rows = view.views[adjustment]
+                if id(rows) not in dates_by_rows:
+                    dates_by_rows[id(rows)] = tuple(
+                        timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in rows
+                    )
+                rows_by_adjustment[adjustment] = rows, dates_by_rows[id(rows)]
+                expected_keys.update((symbol, adjustment, row[0]) for row in rows)
+            row_indexes[symbol] = rows_by_adjustment, expected_keys
         normalized = _normalize_boundaries(
             symbol,
             boundaries[symbol],
             inputs[symbol],
             receipts[symbol]["anchor_month"],
+            row_index=row_indexes[symbol],
         )
         for dimension in result:
             result[dimension].update(normalized[dimension])
@@ -361,7 +380,7 @@ def _load_group(store: Path, seed_symbol: str):
             if source is None or document_digest(source) != expected_generation:
                 raise PolicyLabError(f"{symbol}: selected pricing generation changed")
             sources[symbol] = source
-            inputs[symbol] = load_pricing(store, symbol, source=source)
+            inputs[symbol] = load_pricing(store, symbol, source=source, source_sha256=expected_generation)
 
         boundaries = {symbol: snapshot["boundaries"][symbol] for symbol in sorted(expected_sources)}
         # These are report provenance tokens, not instructions for a consumer to
@@ -380,6 +399,7 @@ def _load_group(store: Path, seed_symbol: str):
             "evidence_generations": evidence_generations,
             "pricing_generations": dict(sorted(expected_sources.items())),
             "unavailable_pricing": sorted(unavailable),
+            "auxiliary_evidence": {name: item["evidence"] for name, item in unavailable.items()},
             "selected_group": sorted(selected_group),
         }
 
@@ -406,7 +426,21 @@ def _compare_loaded_group(
         "corrected_candidate",
         "production",
     }:
-        allowed_baselines = {(33, 59), (34, 76), (34, 77), (LINEAGE_VERSION, CORRELATION_VERSION)}
+        allowed_baselines = {
+            (33, 59),
+            (34, 76),
+            (34, 77),
+            (37, 82),
+            (37, 83),
+            (37, 84),
+            (37, 85),
+            (37, 86),
+            (37, 87),
+            (37, 88),
+            (37, 89),
+            (37, 90),
+            (LINEAGE_VERSION, CORRELATION_VERSION),
+        }
         if any(
             (
                 receipt["versions"].get("lineage"),
@@ -459,6 +493,7 @@ def _compare_loaded_group(
             policy=policy,
             selected_group=selected["selected_group"],
             unavailable_pricing=selected["unavailable_pricing"],
+            auxiliary_evidence=selected.get("auxiliary_evidence", {}),
             evidence_generations=evidence_generations,
             pricing_generations=selected["pricing_generations"],
             execution_trace=fallback_execution,
@@ -482,6 +517,7 @@ def _compare_loaded_group(
             policy=policy,
             selected_group=selected["selected_group"],
             unavailable_pricing=selected["unavailable_pricing"],
+            auxiliary_evidence=selected.get("auxiliary_evidence", {}),
             evidence_generations=evidence_generations,
             pricing_generations=selected["pricing_generations"],
             execution_trace=execution,
@@ -501,8 +537,9 @@ def _compare_loaded_group(
             receipts[symbol]["dependencies"],
         )
 
-    baseline = _group_dimensions(selected["boundaries"], inputs, receipts)
-    candidate = _group_dimensions(candidate_boundaries, inputs, receipts)
+    row_indexes = {}
+    baseline = _group_dimensions(selected["boundaries"], inputs, receipts, row_indexes=row_indexes)
+    candidate = _group_dimensions(candidate_boundaries, inputs, receipts, row_indexes=row_indexes)
     differences = {
         name: _difference(baseline[name], candidate[name], max_differences)
         for name in ("semantic", "observation", "explanation")

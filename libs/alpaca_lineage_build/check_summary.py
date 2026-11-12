@@ -31,7 +31,10 @@ def project(store, receipt, *, source=_UNSELECTED, baseline=None):
     # Lineage owns membership and pricing owns the exact endpoint. An already
     # selected source is the handoff; DO NOT reload it or decode history to build
     # a summary whose endpoint has already been validated by pricing.
-    if not stored_active(receipt):
+    # The completed lineage producer already binds this zero count to its
+    # selected pricing generation. An accepted empty source has no endpoint to
+    # project; reopening its validator cannot establish a new summary fact.
+    if receipt["source_rows"] == 0 or not stored_active(receipt):
         return None
     if baseline is not None:
         return baseline

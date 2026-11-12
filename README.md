@@ -5,6 +5,9 @@ catalogue. Incremental checks reuse completed work; journals recover interrupted
 and CSV/Parquet exports consume published histories and evidence. Research and trading decisions stay outside
 the data boundary.
 
+[Ownership allocation](docs/lineage.md#ownership-allocation-criterion) seeks the most likely lineage from the
+available evidence. Both incorrect allocation and withholding supported history are errors.
+
 **Before continuing boundary or handoff work, read the [Trust-boundary implementation handoff](docs/trust-boundary-handoff.html).**
 It records the audit findings, verified fixes, remaining gaps, owning regressions and live verification limits.
 The review covers trust repairs and evidence-gated lineage extensions. [AGENTS.md](AGENTS.md) remains authoritative.

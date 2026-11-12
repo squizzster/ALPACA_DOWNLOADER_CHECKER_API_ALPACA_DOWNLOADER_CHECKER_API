@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 
 from libs.alpaca_end_of_day_reader.errors import EndOfDayReaderError
-from libs.alpaca_end_of_day_reader.history import _resolve_bar_candidates
+from libs.alpaca_end_of_day_reader.history import require_unique_observation
 from libs.alpaca_lineage_build.acquisition import check_unavailable_pricing, unavailable_pricing
 from libs.alpaca_lineage_build.contract import (
     LineageBusyError,
@@ -206,6 +206,14 @@ def _group_evidence(assignments, sources, receipts, generations, generation):
             "generation": generation,
             "source_symbols": sorted(receipts),
             "securities": securities,
+            "security_relations": next(
+                (
+                    receipt["security_relations"]
+                    for receipt in receipts.values()
+                    if "security_relations" in receipt
+                ),
+                None,
+            ),
             "sources": projected,
         }
     )
@@ -222,32 +230,50 @@ def _selected_path(cache, root, relative):
 def _rows(root, source, kind, adjustment, cache, retained=None):
     # Only the selected physical payload is opened. Alias equality and source
     # validation belong to the downloader, not to this consumer.
-    relative = source["boundaries"][kind]["manifest"]
+    boundary = source["boundaries"][kind]
+    rows_key = "selected_rows", str(root), source["symbol"], kind, boundary["sha256"], adjustment
+    if rows_key in cache:
+        return cache[rows_key]
+    from libs.alpaca_lineage_build.recovery_handoffs import recall
+
+    held = recall(
+        Path(root).parent.parent.parent,
+        "pricing_partition",
+        (source["symbol"], kind, boundary["sha256"]),
+    )
+    if held is not None:
+        cache[rows_key] = held[adjustment]
+        return cache[rows_key]
+    relative = boundary["manifest"]
     manifest_path = _selected_path(cache, root, relative)
-    if manifest_path not in cache:
-        cache[manifest_path] = (
-            retained.document(manifest_path, source["boundaries"][kind]["sha256"])
+    manifest_key = "selected_manifest", manifest_path, source["symbol"], kind, boundary["sha256"]
+    if manifest_key not in cache:
+        manifest = (
+            retained.document(manifest_path, boundary["sha256"])
             if retained is not None
             else read_document(manifest_path)
         )
+        if (
+            manifest.get("schema_version") not in SUPPORTED_VERSIONS
+            or manifest.get("symbol") != source["symbol"]
+            or manifest.get("boundary") != "alpaca_pricing_" + kind
+        ):
+            raise StandaloneReaderError("pricing boundary has a different owner or version")
+        cache[manifest_key] = manifest
     elif retained is not None:
         retained.ledger.record("manifest_reuses")
-    manifest = cache[manifest_path]
-    if (
-        manifest.get("schema_version") not in SUPPORTED_VERSIONS
-        or manifest.get("symbol") != source["symbol"]
-        or manifest.get("boundary") != "alpaca_pricing_" + kind
-    ):
-        raise StandaloneReaderError("pricing boundary has a different owner or version")
+    manifest = cache[manifest_key]
     entry = next(item for item in manifest["adjustments"] if item["adjustment"] == adjustment)
     if entry["storage"] == "empty":
-        return ()
+        cache[rows_key] = ()
+        return cache[rows_key]
     if entry["storage"] not in {"file", "exact_copy"}:
         raise StandaloneReaderError("unsupported pricing storage selection")
     relative = str(PurePosixPath(relative).parent / entry["file"])
     payload = _selected_path(cache, root, relative)
-    if payload not in cache:
-        cache[payload] = (
+    payload_key = "selected_payload", payload, entry["sha256"]
+    if payload_key not in cache:
+        cache[payload_key] = (
             retained.rows(payload, entry["sha256"])
             if retained is not None
             else decode_csv(
@@ -256,7 +282,8 @@ def _rows(root, source, kind, adjustment, cache, retained=None):
         )
     elif retained is not None:
         retained.ledger.record("payload_reuses")
-    return cache[payload]
+    cache[rows_key] = cache[payload_key]
+    return cache[rows_key]
 
 
 def _history(
@@ -272,7 +299,7 @@ def _history(
     coverage_out=None,
     io_cache=None,
 ):
-    from ._history_coverage import SelectedCoverage, extend_coverage, preserves_selection
+    from ._history_coverage import extend_coverage
 
     selected = []
     for symbol, items in assignments.items():
@@ -293,10 +320,19 @@ def _history(
             if prefix is not None:
                 skip = prefix["rows"].get(symbol, {}).get(adjustment, 0)
                 offset = prefix["offsets"][symbol][adjustment][kind]
+                before = prefix.get("first_rows", {}).get(symbol, {}).get(adjustment, 0)
                 segments = [
-                    {**segment, "row_start": max(segment["row_start"], skip - offset + 1)}
+                    {**segment, "row_start": left, "row_end": right}
                     for segment in segments
-                    if offset + segment["row_end"] > skip
+                    for left, right in (
+                        (
+                            (segment["row_start"], min(segment["row_end"], before - offset)),
+                            (max(segment["row_start"], skip - offset + 1), segment["row_end"]),
+                        )
+                        if "accepted_span" in prefix
+                        else ((max(segment["row_start"], skip - offset + 1), segment["row_end"]),)
+                    )
+                    if left <= right
                 ]
                 if not segments:
                     continue
@@ -312,13 +348,12 @@ def _history(
                 # decisions. Preserve every accepted label, including ambiguity.
                 labels = tuple(segment.get("observation_tickers", [segment["historical_symbol"]]))
                 selected.append((symbol, kind, rows, start, end, labels))
-    # Exact physical aliases with identical row selections and overlap policy
-    # need only one assembly. Keep raw's different source policy in the key.
+    # Exact physical aliases with identical accepted row and label selections
+    # need only one assembly. All views consume the same producer decision.
     # Decoded rows remain alive in this call's cache, so their object IDs are stable.
     key = (
         "assembled_history",
         public_id,
-        adjustment != "raw",
         tuple((symbol, kind, id(rows), start, end, label) for symbol, kind, rows, start, end, label in selected),
     )
     if key in cache and prefix is None:
@@ -326,73 +361,39 @@ def _history(
             coverage_out.update(cache[("coverage_order", key)])
         # Public view results remain independently mutable.
         return [{**bar, "tickers": list(bar["tickers"])} for bar in cache[key]]
-    observations, overlaps, coverage = {}, {}, defaultdict(set)
+    observations, coverage = {}, set()
     for symbol, _, rows, start, end, label in selected:
         for row in rows[start - 1 : end]:
             if prefix is not None:
                 session_key = "session", row[0]
                 if session_key not in cache:
                     cache[session_key] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
-                if cache[session_key] <= prefix["last_session"]:
+                span = prefix.get("accepted_span")
+                if (
+                    (span[0] <= cache[session_key] <= span[1])
+                    if span
+                    else cache[session_key] <= prefix["last_session"]
+                ):
                     raise HistoryPrefixChanged("new assigned observations overlap the approved history")
-            coverage[symbol].add(row[0])
-            observation = row, symbol, label
+            if coverage_out is not None:
+                coverage.add(symbol)
             if row[0] in observations:
-                overlaps.setdefault(row[0], [observations[row[0]]]).append(observation)
-            else:
-                observations[row[0]] = observation
-    old_order = prefix["coverage"][adjustment] if prefix is not None else None
-    order = extend_coverage(coverage, old_order)
-    if prefix is not None and adjustment != "raw" and not preserves_selection(old_order, order):
-        raise HistoryPrefixChanged("extended coverage changes historical source selection")
+                # A completed choice identifies one complete source bundle.
+                # Encountering two selected observations selects owning recovery,
+                # never another comparison, coverage rank or label preference.
+                try:
+                    require_unique_observation(row[0], 2)
+                except EndOfDayReaderError as error:
+                    raise UnservableHistoryError(str(error)) from error
+            observations[row[0]] = row, symbol, label
     if coverage_out is not None:
+        old_coverage = prefix["coverage"][adjustment] if prefix is not None else None
+        order = extend_coverage(coverage, old_coverage)
         coverage_out.update(order)
-    cache[("coverage_order", key)] = order
-    # Reuse the established history-source policy, not a new identity rule:
-    # adjusted overlaps prefer strictly broader correlated coverage, then the
-    # historical ticker; raw overlaps use the historical ticker. Unsettled
-    # conflicts fail, and exact aliases collapse to a single observation.
-    if not overlaps:
-        # There is no ownership/price competition to resolve. Preserve exact
-        # approved values and their sole label without building comparison keys
-        # or temporary resolution/provenance records for every observation.
-        chosen = ((row, list(label)) for _, (row, _, label) in sorted(observations.items()))
-    else:
-        candidates = {
-            instant: [
-                {
-                    "values": dict(zip(COLUMNS, row)),
-                    "provenance": {"source_id": symbol, "symbol": symbol, "historical_symbol": label[0]},
-                    "integrity_error_ids": [],
-                }
-                for row, symbol, label in items
-            ]
-            for instant, items in overlaps.items()
-        }
-        try:
-            bars, _ = _resolve_bar_candidates(
-                candidates,
-                {symbol: SelectedCoverage(order, symbol) for symbol in coverage},
-                allow_strict_superset_selection=adjustment != "raw",
-            )
-        except EndOfDayReaderError as error:
-            raise UnservableHistoryError(str(error)) from error
-        resolved = {bar["timestamp"]: bar for bar in bars}
-
-        def selected_rows():
-            for instant, (row, _, label) in sorted(observations.items()):
-                if instant in resolved:
-                    bar = resolved[instant]
-                    yield (
-                        tuple(bar[column] for column in COLUMNS),
-                        sorted({p["historical_symbol"] for p in bar["provenance"]}),
-                    )
-                else:
-                    yield row, list(label)
-
-        chosen = selected_rows()
+        cache[("coverage_order", key)] = order
+    chosen = ((row, list(label)) for _, (row, _, label) in sorted(observations.items()))
     if retained is not None:
-        retained.ledger.record("uncontested_observations", len(observations) - len(overlaps))
+        retained.ledger.record("uncontested_observations", len(observations))
     result, sessions, session_reuses = [], set(), 0
     for row, tickers in chosen:
         session_key = "session", row[0]
@@ -408,11 +409,6 @@ def _history(
         record.update(zip(COLUMNS, row))
         result.append(record)
     cache[key] = result
-    if not overlaps:
-        # Raw/adjusted source policies are equivalent when there is no choice.
-        # Exact payload/range/label aliases can then share this assembly too.
-        cache[(key[0], key[1], not key[2], key[3])] = result
-        cache[("coverage_order", (key[0], key[1], not key[2], key[3]))] = order
     if retained is not None:
         retained.ledger.record("session_reuses", session_reuses)
     return result

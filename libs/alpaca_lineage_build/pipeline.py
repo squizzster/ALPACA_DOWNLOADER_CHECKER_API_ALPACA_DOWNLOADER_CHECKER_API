@@ -18,6 +18,7 @@ from libs.alpaca_pricing_download.update_checks import (
     read_checks,
 )
 from libs.alpaca_security_lineage.event_supplements import RENAME_KIND
+from libs.alpaca_security_lineage.sourced_facts import items as sourced_items
 from libs.common.debug_trace import event, traced
 
 from . import storage
@@ -25,7 +26,7 @@ from .acquisition import check_unavailable_pricing, unavailable_mapping_current,
 from .assignment_handoff import selected as assignment_handoff
 from .certificate_migration import can_promote_group
 from .context import accept_context
-from .continuation import identity_intervals, identity_memberships, retained_report
+from .continuation import identity_intervals, retained_report, scoped_identity_memberships
 from .contract import (
     MAX_ACQUISITION_WAVES,
     MAX_CLOSURE,
@@ -34,6 +35,17 @@ from .contract import (
     current_decision,
     retained_v78_decision,
     retained_v79_decision,
+    retained_v80_decision,
+    retained_v81_decision,
+    retained_v82_decision,
+    retained_v83_decision,
+    retained_v84_decision,
+    retained_v85_decision,
+    retained_v86_decision,
+    retained_v87_decision,
+    retained_v88_decision,
+    retained_v89_decision,
+    retained_v90_decision,
     reusable_computation,
     reusable_decision,
     reusable_metadata_versions,
@@ -50,16 +62,17 @@ from .metadata import (
     full_metadata,
 )
 from .migration import can_promote_observation_decision
+from .observation_carry import project_choices
 from .observations import select_observations
-from .pricing import load_pricing
+from .pricing import load_pricing, metadata_source_control
 from .resume import (
     append_history_invalidation,
     complete_append,
     requires_lineage,
-    reusable_prefix,
-    unchanged_source,
+    source_reuse,
 )
 from .selection import DependencyGraph
+from .source_work import execute_source_work, prepare_group_evidence_and_source_work, retained_ownership_report
 from .transform import correlate, make_publication, retained_decision_report
 from .work_contract import acquisition_fingerprint, auxiliary_work, pricing_target
 
@@ -385,6 +398,174 @@ def _catch_up_published_dependencies(
     return result
 
 
+@traced("lineage_finish_correlated_group")
+def finish_correlated_group(
+    *,
+    reports,
+    acquisition_waves,
+    affected,
+    assignment_boundaries,
+    checks,
+    choice_prefix_sources,
+    components,
+    deps,
+    evidence,
+    graph,
+    index,
+    inputs,
+    no_new_rows,
+    notices,
+    observer,
+    old_boundaries,
+    original_choice_inputs,
+    previous,
+    pricing_replacements,
+    progress,
+    read_boundaries,
+    receipt_cache,
+    required,
+    resume,
+    retained_recovery,
+    root,
+    seed,
+    sources,
+    store,
+    unavailable,
+    work_policy,
+):
+    """Consume completed correlation and retained choices under the owning locks.
+
+    Callers retain the exact selected inputs and metadata, and establish current
+    selector applicability under the normal writer/pricing locks. No upstream
+    acquisition, materialization or correlation belongs in this consumer.
+    """
+    # DO NOT REMOVE WITHOUT USER AUTH!#
+    # The complete group establishes one numerical source choice
+    # for all views. A required mapping correction must publish
+    # through pricing first; never stamp the old input as done.
+    if not no_new_rows:
+        retained_choices = {}
+        for name, prior in choice_prefix_sources.items():
+
+            def choice_boundary(kind, *, prior=prior):
+                key = prior["symbol"], kind, prior["boundaries"][kind]["sha256"]
+                if key not in assignment_boundaries:
+                    handoff = prior.get("assignment_handoffs", {}).get(kind)
+                    if handoff is None:
+                        read_boundaries(prior, kinds={kind})
+                    else:
+                        assignment_boundaries[key] = storage.read_assignment_projection(
+                            root, prior, kind, handoff
+                        )
+                return assignment_boundaries[key]
+
+            retained_choices[name] = project_choices(
+                prior,
+                inputs[name],
+                receipt_generation=index["symbols"][name]["sha256"],
+                legacy_boundary=choice_boundary,
+                invalidated=affected,
+                original_view=original_choice_inputs[name],
+            )
+            reports[name]["retained_observation_routes"] = prior.get("observation_routes", {})
+        reports, mapping_corrections = select_observations(
+            inputs, reports, retained_choices=retained_choices, invalidated_scopes=affected
+        )
+        required.update(mapping_corrections)
+    if not required:
+        receipts, boundaries = {}, {}
+        for symbol, view in inputs.items():
+            prior = previous[symbol]
+            old = old_boundaries[symbol]
+            receipts[symbol], boundaries[symbol] = make_publication(
+                view,
+                evidence[symbol],
+                reports[symbol],
+                sorted(set(deps[symbol]) | unavailable.keys()),
+                prior,
+                old,
+                resume_closed=resume,
+            )
+            receipts[symbol]["input_sources"] = {
+                name: inputs[name].source_sha256 for name in sorted(components[symbol] & inputs.keys())
+            }
+            if unavailable:
+                receipts[symbol]["unavailable_pricing"] = unavailable
+            if retained_recovery is not None:
+                if (
+                    receipts[symbol]["input_sources"] != retained_recovery.pricing
+                    or tuple(sorted(components[symbol])) != retained_recovery.members
+                ):
+                    raise LineageError("retained recovery changed its selected group")
+                receipts[symbol]["retained_recovery"] = retained_recovery.completion()
+        if work_policy is not None:
+            completed = work_policy.stamp(receipts, sources)
+        if progress:
+            progress(
+                "lineage_publication",
+                {"symbols": sorted(receipts), "reused_decision": no_new_rows},
+            )
+        storage.publish(
+            store,
+            root,
+            index,
+            receipts,
+            boundaries,
+            notices,
+            checks=checks,
+            previous=previous,
+            sources=sources,
+        )
+        receipt_cache.published(receipts)
+        if work_policy is not None:
+            work_policy.update_index({symbol: index["symbols"][symbol] for symbol in receipts})
+            work_policy.accept_completion(receipts, index["symbols"], completed)
+        else:
+            graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
+        # Inspection observes the actual publication while the same
+        # locks still protect its inputs. It never runs another resolver.
+        if observer is not None:
+            observed_boundaries = {
+                symbol: {
+                    **storage.read_boundaries(
+                        root,
+                        receipt,
+                        kinds=receipt["boundaries"].keys() - boundaries[symbol].keys(),
+                    ),
+                    **boundaries[symbol],
+                }
+                for symbol, receipt in receipts.items()
+            }
+            observer(
+                store=store,
+                receipts=receipts,
+                boundaries=observed_boundaries,
+                inputs=inputs,
+                reports=None if no_new_rows else reports,
+                notices=notices,
+                resumed=resume,
+            )
+        return {
+            "symbol": seed,
+            "status": "processed",
+            "processed": sorted(sources),
+            "acknowledged": sorted(notices),
+            "unresolved_rows": sum(item["unresolved_rows"] for item in receipts.values()),
+            "pricing_acquisition_waves": acquisition_waves,
+            "reused_decision": no_new_rows,
+            "reused_closed_boundaries": resume,
+            "historical_rows_reused": sum(
+                item["rows"]
+                for name, view in inputs.items()
+                if resume
+                for item in view.previous_assignment_summary.values()
+            ),
+            "pricing_rows_processed": sum(len(rows) for view in inputs.values() for rows in view.views.values()),
+            "unavailable_pricing": sorted(unavailable),
+            "pricing_replacements": pricing_replacements,
+        }
+
+
 @traced("lineage_group")
 def process_group(
     store,
@@ -406,6 +587,7 @@ def process_group(
     progress=None,
     empty_suffixes=(),
     retained_rebuild=False,
+    retained_recovery=None,
 ):
     context = accept_context(store, context, work_policy)
     correlation_policy = context.accept_correlation_policy()
@@ -421,10 +603,14 @@ def process_group(
         seed = min(group.intersection(index["symbols"]), default=seed)
     acquisition_waves = 0
     pricing_replacements = {}
-    metadata_cache = {}
+    evidence_client = evidence_client or EvidenceClient(identity_client)
+    sourced_operation = context.sourced_operations.setdefault(evidence_client, {})
+    metadata_cache = sourced_operation.setdefault("metadata", {})
     pricing_inputs = {}
     partitions = {}
     assignment_boundaries = {}
+    source_work_cache = sourced_operation.setdefault("source_work", {})
+    prefix_reuse_cache = sourced_operation.setdefault("pricing_prefix", {})
 
     def read_boundaries(prior, kinds=None):
         selected_kinds = prior["boundaries"] if kinds is None else kinds
@@ -442,8 +628,8 @@ def process_group(
         }
 
     unavailable = {}
-    evidence_client = evidence_client or EvidenceClient(identity_client)
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
+        evidence_client.expand_rule_scope(group)
         required = None
         if work_policy is not None:
             work_policy.current_group = set(group)
@@ -451,6 +637,9 @@ def process_group(
         with storage.pricing_locks(store, group, known=index["symbols"]) as locked:
             checks = read_checks(store, locked)
             sources = _current_sources(store, locked, known=index["symbols"])
+            selected = {name: storage.document_digest(source) for name, source in sources.items()}
+            if retained_recovery is not None:
+                retained_recovery.accept_sources(group, selected)
             # A missing seed is missing pricing, just like a related label. With
             # no published range, None delegates defaults to the downloader.
             starts = [source.get("history_start", HISTORY_START)[:10] for source in sources.values()]
@@ -489,7 +678,6 @@ def process_group(
                 for symbol in sorted(sources)
                 if (notice := read_update(store / "end_of_day/pricing" / symbol, published=True)) is not None
             }
-            selected = {name: storage.document_digest(source) for name, source in sources.items()}
             prior_unavailable = unavailable_pricing(previous.get(seed))
             if retained_rebuild:
                 if (
@@ -520,6 +708,7 @@ def process_group(
                 evidence_client.supplements_for(facts) != facts.get("event_supplements", [])
                 or evidence_client.successions_for(facts)
                 != facts.get("sourced_successions", {}).get("facts", [])
+                or evidence_client.sourced_for(facts) != list(sourced_items(facts))
                 for facts in retained_evidence
             )
             from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
@@ -537,7 +726,9 @@ def process_group(
                 retained_rebuild
                 or all(evidence_client.evidence_current(prior["evidence"]) for prior in previous.values())
             )
-            computation_current = all(reusable_computation(prior) for prior in previous.values())
+            computation_current = retained_recovery is None and all(
+                reusable_computation(prior) for prior in previous.values()
+            )
             # Select completed-decision compatibility once for this coherent
             # receipt view; acknowledgement consumes the selected mode below.
             decision_modes = {
@@ -545,6 +736,28 @@ def process_group(
                 if retained_v78_decision(prior)
                 else "v79"
                 if retained_v79_decision(prior)
+                else "v80"
+                if retained_v80_decision(prior)
+                else "v81"
+                if retained_v81_decision(prior)
+                else "v82"
+                if retained_v82_decision(prior)
+                else "v83"
+                if retained_v83_decision(prior)
+                else "v84"
+                if retained_v84_decision(prior)
+                else "v85"
+                if retained_v85_decision(prior)
+                else "v86"
+                if retained_v86_decision(prior)
+                else "v87"
+                if retained_v87_decision(prior)
+                else "v88"
+                if retained_v88_decision(prior)
+                else "v89"
+                if retained_v89_decision(prior)
+                else "v90"
+                if retained_v90_decision(prior)
                 else "current"
                 if current_decision(prior)
                 else None
@@ -610,7 +823,22 @@ def process_group(
                         # it is not a new calculation or header migration.
                         **(
                             {}
-                            if decision_modes[symbol] in {"v78", "v79"}
+                            if decision_modes[symbol]
+                            in {
+                                "v78",
+                                "v79",
+                                "v80",
+                                "v81",
+                                "v82",
+                                "v83",
+                                "v84",
+                                "v85",
+                                "v86",
+                                "v87",
+                                "v88",
+                                "v89",
+                                "v90",
+                            }
                             else {
                                 "schema_version": VERSION,
                                 "versions": versions(),
@@ -696,31 +924,40 @@ def process_group(
             if not required:
                 # One decision for this selected source/receipt under these locks.
                 # None is a completed negative result too; consumers retain it.
-                corrections = {
-                    symbol: correction_from(source, previous[symbol]) for symbol, source in sources.items()
-                }
-                unchanged = (
-                    not refresh
+                prefix_decisions = {}
+                for symbol, source in sources.items():
+                    if retained_rebuild:
+                        prefix_decisions[symbol] = None, (False, False)
+                        continue
+                    key = selected[symbol], index["symbols"].get(symbol, {}).get("sha256")
+                    if key not in prefix_reuse_cache:
+                        correction = correction_from(source, previous[symbol])
+                        prefix_reuse_cache[key] = (
+                            correction,
+                            source_reuse(
+                                source,
+                                previous[symbol],
+                                selected=selected[symbol],
+                                selected_correction=correction,
+                            ),
+                        )
+                    prefix_decisions[symbol] = prefix_reuse_cache[key]
+                corrections = {name: decision[0] for name, decision in prefix_decisions.items()}
+                choice_corrections = dict(corrections)
+                prefix_scope = (
+                    retained_recovery is None
                     and not changed_event_supplements
                     and group == sources.keys() | unavailable.keys()
-                    and all(
-                        unchanged_source(source, previous[symbol], selected=selected[symbol])
-                        for symbol, source in sources.items()
-                    )
                 )
-                resume = unchanged or (
-                    not changed_event_supplements
-                    and group == sources.keys() | unavailable.keys()
-                    and all(
-                        reusable_prefix(
-                            source,
-                            previous[symbol],
-                            selected=selected[symbol],
-                            refresh=refresh,
-                            selected_correction=corrections[symbol],
-                        )
-                        for symbol, source in sources.items()
-                    )
+                unchanged = (
+                    prefix_scope
+                    and not refresh
+                    and all(decision[1][0] for decision in prefix_decisions.values())
+                )
+                resume = (
+                    prefix_scope
+                    and not refresh
+                    and all(decision[1][1] for decision in prefix_decisions.values())
                 )
                 event(
                     "lineage_reuse_gate",
@@ -733,16 +970,321 @@ def process_group(
                     if resume
                     else "changed_or_unproven_inputs",
                 )
+                source_work_requested = not retained_rebuild and (
+                    any(
+                        item["kind"]
+                        in {
+                            "public_common_continuation",
+                            "distinct_security_conversion",
+                            "dated_market_occupancy",
+                            "issuer_capital_repayment",
+                        }
+                        for symbol in group
+                        for item in evidence_client.all_event_supplements(symbol)
+                    )
+                    and (changed_event_supplements or any(prior is None for prior in previous.values()))
+                )
+                if source_work_requested:
+                    controls = {
+                        name: metadata_source_control(
+                            store,
+                            name,
+                            source,
+                            selected[name],
+                            previous[name],
+                            accepted_reuse=prefix_decisions[name][1],
+                        )
+                        for name, source in sources.items()
+                    }
+                    for name, control in controls.items():
+                        control.previous_receipt_generation = index["symbols"].get(name, {}).get("sha256")
+                    if progress:
+                        progress("lineage_evidence", {"symbols": sorted(group), "reused": reuse_metadata})
+                    for _metadata_round in range(MAX_CLOSURE + 1):
+                        evidence, deps, assets = {}, {}, set()
+                        for symbol, view in controls.items():
+                            prior = previous[symbol]
+                            full = full_metadata(
+                                prior, None if corrections[symbol] else notices.get(symbol), history_refresh
+                            )
+                            key = (symbol, view.source_sha256, full)
+                            if retained_rebuild:
+                                evidence[symbol] = prior["evidence"]
+                            elif key in metadata_cache and evidence_client.evidence_current(metadata_cache[key]):
+                                # A receipt reader can return another accepted copy.
+                                # Keep the completed metadata producer object and
+                                # its downstream operation binding instead.
+                                evidence[symbol] = metadata_cache[key]
+                            elif (
+                                prior is not None
+                                and (reuse_metadata or not full and view.source_sha256 == prior["source_sha256"])
+                                and evidence_client.evidence_current(prior["evidence"])
+                            ):
+                                # Applicable peer metadata remains the same completed
+                                # object even when another source selects new work.
+                                # Rebuilding an equal copy loses its producer binding
+                                # and repeats downstream work after interruption.
+                                metadata_cache[key] = evidence[symbol] = prior["evidence"]
+                            else:
+                                if key not in metadata_cache or not evidence_client.evidence_current(
+                                    metadata_cache[key]
+                                ):
+                                    can_continue = (
+                                        not full
+                                        and prior is not None
+                                        and evidence_client.catalogue_attempted
+                                        and evidence_client.catalogue is not None
+                                    )
+                                    metadata_cache[key] = acquire(
+                                        view,
+                                        RetainedReportClient(evidence_client, prior["evidence"])
+                                        if reuse_metadata or can_continue
+                                        else evidence_client,
+                                        prior,
+                                        refresh=full,
+                                    )
+                                evidence[symbol] = metadata_cache[key]
+                            deps[symbol] = (
+                                prior["dependencies"]
+                                if retained_rebuild
+                                else dependencies(evidence[symbol], symbol)
+                            )
+                            assets.update(
+                                item["id"] for item in evidence[symbol]["identities"] if item.get("id")
+                            )
+                        for symbol, missing in sorted(unavailable.items()):
+                            # Prices and metadata have different provider endpoints. Keep
+                            # discovering real relationships even when bars reject a label.
+                            if not retained_rebuild and (
+                                "evidence" not in missing
+                                or not evidence_client.evidence_current(missing["evidence"])
+                            ):
+                                missing["evidence"] = acquire_unpriced(
+                                    symbol,
+                                    missing["request"],
+                                    evidence_client,
+                                    previous=missing.get("evidence") if reuse_metadata else None,
+                                )
+                            auxiliary = missing["evidence"]
+                            deps[symbol] = dependencies(auxiliary, symbol)
+                            assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
+                        # A later member may acquire an exact mapping that supersedes
+                        # an earlier retained observation. Reassemble only stale new
+                        # reports from the in-memory producer cache, under these locks.
+                        if retained_rebuild or all(
+                            evidence_client.evidence_current(facts)
+                            for facts in [
+                                *evidence.values(),
+                                *(item["evidence"] for item in unavailable.values()),
+                            ]
+                        ):
+                            break
+                    else:
+                        raise LineageError("selected metadata observations did not become coherent")
+                    expanded = closure(
+                        index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
+                    )
+                    if expanded != group:
+                        if retained_rebuild:
+                            raise LineageError(
+                                "retained lineage rebuild evidence exceeds its accepted complete group"
+                            )
+                        from libs.common.work_scope import accept_expansion
+
+                        accept_expansion(store, expanded, anchors=group, authority="metadata_dependencies")
+                        if progress:
+                            progress(
+                                "dependency_expansion",
+                                {"symbols": sorted(expanded), "added": sorted(expanded - group)},
+                            )
+                        if work_policy is not None:
+                            work_policy.require_dependencies(
+                                expanded, end, expanded - sources.keys() - unavailable.keys(), start=start
+                            )
+                            work_policy.reconcile_evidence(
+                                evidence, sources, previous, group=expanded, target=end, partial=True
+                            )
+                        group = expanded
+                        continue  # Release every pricing lock before taking an enlarged, sorted set.
+                    replacements = (
+                        work_policy.reconcile_evidence(
+                            evidence | {s: value["evidence"] for s, value in unavailable.items()},
+                            sources,
+                            previous,
+                            group=group,
+                            target=end,
+                        )
+                        if work_policy is not None
+                        else set()
+                    )
+                    for symbol in replacements:
+                        required[symbol] = {
+                            "from": start,
+                            "end_exclusive": max(end, pricing_target(work_policy.work[symbol])),
+                            "refresh_all": True,
+                            "selected_source_sha256": selected[symbol],
+                            "acquisition_evidence_sha256": acquisition_fingerprint(work_policy.work[symbol]),
+                        }
+                    # A related input may exist but not cover the selected acquisition range.
+                    # Empty published responses count as acquired, not as missing history.
+                    for symbol, source in () if retained_rebuild else sources.items():
+                        if source.get("history_start", HISTORY_START)[:10] > start:
+                            required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                        elif source["latest_request"]["end_exclusive"][:10] < end:
+                            accepted_empty = (symbol, selected[symbol], end) in empty_suffixes
+                            event(
+                                "dependency_suffix_selection",
+                                symbol=symbol,
+                                required=not accepted_empty,
+                                reason="completed_empty_suffix" if accepted_empty else "selection_unavailable",
+                                end_exclusive=end,
+                            )
+                            if not accepted_empty:
+                                required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                    if required:
+                        # Metadata closure selected acquisition, never historical
+                        # payload assembly, before releasing the owning locks.
+                        pass
+                    else:
+                        auxiliary = {name: value["evidence"] for name, value in unavailable.items()}
+                        source_plan = prepare_group_evidence_and_source_work(
+                            controls, evidence, auxiliary, cache=source_work_cache
+                        )
+                        if source_plan.common_membership["certificates"] and any(
+                            source_plan.memberships.get(member, identity)["security_id"]
+                            != identity["security_id"]
+                            for control in controls.values()
+                            if control.previous is not None
+                            for identity in control.previous.get("identity_memberships", ())
+                            for member in identity["member_alpaca_asset_ids"]
+                        ):
+                            from libs.alpaca_serving_catalogue import storage as serving_storage
+
+                            from .recovery_handoffs import remember
+
+                            if serving_storage.path(store).exists():
+                                catalogue = context.select_serving()
+                                donors = source_work_cache.setdefault("donor_checkpoints", {})
+                                keys = {
+                                    catalogue["members"][name]
+                                    for name in controls
+                                    if name in catalogue["members"]
+                                }
+                                missing = {
+                                    key
+                                    for key in keys
+                                    if key not in donors
+                                    or donors[key]["decision_generation"]
+                                    != catalogue["groups"][key]["decision_generation"]
+                                }
+                                if missing:
+                                    selected_donors = serving_storage.read_groups(
+                                        store, missing, generation=catalogue["state"]["generation"]
+                                    )
+                                    donors.update(selected_donors)
+                                    for key, donor in selected_donors.items():
+                                        remember(
+                                            store,
+                                            "serving_group",
+                                            (catalogue["state"]["generation"], key),
+                                            donor,
+                                        )
+                        event(
+                            "lineage_source_work_plan",
+                            symbol=seed,
+                            dispositions=source_plan.dispositions,
+                            rows_to_evaluate=sorted(
+                                name
+                                for name, disposition in source_plan.dispositions.items()
+                                if disposition in {"B", "C"}
+                            ),
+                            membership_projection_required=source_plan.projection_required,
+                        )
+                        receipts, boundaries, planned_inputs, reports = execute_source_work(
+                            store,
+                            root,
+                            controls,
+                            evidence,
+                            auxiliary,
+                            source_plan,
+                            correlation_policy,
+                            source_work_cache,
+                            loader=load_pricing,
+                        )
+                        for name, receipt in receipts.items():
+                            receipt["dependencies"] = sorted(set(deps[name]) | unavailable.keys())
+                            receipt["input_sources"] = dict(selected)
+                            if unavailable:
+                                receipt["unavailable_pricing"] = unavailable
+                        if work_policy is not None:
+                            completed = work_policy.stamp(receipts, sources)
+                        storage.publish(
+                            store,
+                            root,
+                            index,
+                            receipts,
+                            boundaries,
+                            notices,
+                            checks=checks,
+                            previous=previous,
+                            sources=sources,
+                        )
+                        receipt_cache.published(receipts)
+                        if work_policy is not None:
+                            work_policy.update_index({name: index["symbols"][name] for name in receipts})
+                            work_policy.accept_completion(receipts, index["symbols"], completed)
+                        else:
+                            graph.update({name: index["symbols"][name] for name in receipts})
+                        return {
+                            "symbol": seed,
+                            "status": "processed",
+                            "processed": sorted(sources),
+                            "acknowledged": sorted(notices),
+                            "unresolved_rows": sum(item["unresolved_rows"] for item in receipts.values()),
+                            "pricing_acquisition_waves": acquisition_waves,
+                            "reused_decision": not reports,
+                            "reused_closed_boundaries": not reports,
+                            "historical_rows_reused": sum(
+                                previous[name]["source_rows"]
+                                for name, view in planned_inputs.items()
+                                if not getattr(view, "materialized", True)
+                            )
+                            if not reports
+                            else sum(
+                                previous[name]["source_rows"]
+                                for name in sources
+                                if source_plan.dispositions[name] in {"A", "retained"}
+                            ),
+                            "pricing_rows_processed": sum(
+                                len(rows)
+                                for view in planned_inputs.values()
+                                if getattr(view, "materialized", True)
+                                for rows in view.views.values()
+                            ),
+                            "unavailable_pricing": sorted(unavailable),
+                            "pricing_replacements": pricing_replacements,
+                        }
+                    raise LineageError(
+                        "sourced metadata closure requires explicitly selected missing pricing before evaluation"
+                    )
                 retained_kinds = {}
                 if not resume:
                     corrections = dict.fromkeys(sources)
                 projections = {}
-                if resume and any(corrections.values()):
+                affected = {}
+                if any(choice_corrections.values()):
+                    affected_identities = {}
 
                     def identities_at(symbol, day):
                         prior = previous[symbol]
+                        if prior is None:
+                            return set()
+                        key = symbol, day
+                        if key in affected_identities:
+                            return affected_identities[key]
                         summary = prior.get("assignment_summary", {}).get("raw", {})
                         if not summary.get("last_session") or summary["last_session"] < day:
+                            affected_identities[key] = set()
                             return set()
                         documents = {}
                         if "identity_intervals" not in prior:
@@ -755,17 +1297,17 @@ def process_group(
                                 else "completed_years"
                             )
                             documents = read_boundaries(prior, kinds={kind})
-                        return {
+                        affected_identities[key] = {
                             item["security_id"]
                             for item in identity_intervals(prior, documents)
                             if item["from"] <= day <= item["to"]
                         }
+                        return affected_identities[key]
 
-                    affected = {}
-                    for name, day in corrections.items():
+                    for name, day in choice_corrections.items():
                         if day:
                             affected.setdefault(day, set()).update(identities_at(name, day))
-                    for name in sources:
+                    for name in sources if resume else ():
                         days = [
                             day for day, identities in affected.items() if identities_at(name, day) & identities
                         ]
@@ -1024,7 +1566,24 @@ def process_group(
                             for item in facts.get("event_supplements", ())
                         )
                     )
-                    membership_deltas = {} if membership_scope_applies and not membership_is_empty else None
+                    new_fact_handoffs = any(
+                        prior
+                        and (
+                            (prior.get("public_common_continuation_membership") or {}).get("certificates")
+                            or (prior.get("public_common_continuation_membership") or {}).get("issues")
+                            or prior.get("security_relations", {}).get("relations")
+                            or prior.get("security_relations", {}).get("issues")
+                        )
+                        for prior in previous.values()
+                    )
+                    membership_deltas = (
+                        {}
+                        if resume
+                        or any(decision[1][1] for decision in prefix_decisions.values())
+                        or membership_scope_applies
+                        and (not membership_is_empty or new_fact_handoffs)
+                        else None
+                    )
                     historical_lineage = requires_lineage(
                         previous,
                         evidence,
@@ -1042,6 +1601,11 @@ def process_group(
                         auxiliary_current={name: item["evidence"] for name, item in unavailable.items()}
                         if membership_deltas is not None
                         else None,
+                        classification_sources={
+                            name for name, decision in prefix_decisions.items() if decision[1][1]
+                        }
+                        if not resume and membership_is_empty and not new_fact_handoffs
+                        else None,
                     )
                     accepted_membership = (
                         retained_membership
@@ -1051,16 +1615,6 @@ def process_group(
                         and all(delta["scope"] != "complete_group" for delta in membership_deltas.values())
                         else None
                     )
-                    # This source's completed proof survives a peer's unresolved
-                    # fallback. The existing owners have already accepted pricing
-                    # ancestry, effective mappings, added grids and group evidence.
-                    accepted_current_sources = {
-                        name: prior
-                        for name, prior in previous.items()
-                        if resume
-                        and not historical_lineage
-                        and (prior.get("current_source_ownership") or prior.get("sourced_rename_ownership"))
-                    }
                     append_invalidation = (
                         append_history_invalidation(previous, inputs)
                         if resume and not historical_lineage
@@ -1074,6 +1628,31 @@ def process_group(
                             **append_invalidation,
                         )
                         historical_lineage = True
+                    # Prefix-only certificates are applicable only after the
+                    # final work scope stays incremental. Complete-group work
+                    # materializes every selected history and establishes new
+                    # authority through that producer boundary.
+                    accepted_prefix_sources = {
+                        name: prior
+                        for name, prior in previous.items()
+                        if not historical_lineage
+                        and resume
+                        and prior is not None
+                        and prior.get("row_partition_complete") is True
+                        and prior.get("unresolved_rows") == 0
+                        and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
+                    }
+                    choice_prefix_sources = {
+                        name: prior
+                        for name, prior in previous.items()
+                        if not retained_rebuild
+                        and retained_recovery is None
+                        and prior is not None
+                        and prefix_decisions[name][1][1]
+                        and membership_deltas is not None
+                        and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
+                    }
+                    original_choice_inputs = dict(inputs)
                     no_new_rows = not historical_lineage and not any(
                         rows for view in inputs.values() for rows in view.views.values()
                     )
@@ -1094,7 +1673,15 @@ def process_group(
                         if no_new_rows
                         else "accepted_prefix_new_sessions",
                     )
-                    if historical_lineage and resume:
+                    if historical_lineage:
+                        partial_inputs = {
+                            name
+                            for name, view in inputs.items()
+                            if view.materialization_scope != "complete_history"
+                        }
+                    else:
+                        partial_inputs = set()
+                    if partial_inputs:
                         # Evidence changed after pricing alone proved reusable.
                         # Announce selected owner work before reading its bodies.
                         event(
@@ -1108,9 +1695,7 @@ def process_group(
                             }
                             old_boundaries[name].update(read_boundaries(prior, kinds=missing))
                         inputs = {
-                            name: inputs[name]
-                            if name in accepted_current_sources
-                            else load_pricing(
+                            name: load_pricing(
                                 store,
                                 name,
                                 source=source,
@@ -1118,25 +1703,73 @@ def process_group(
                                 source_sha256=selected[name],
                                 selected_correction=None,
                             )
+                            if name in partial_inputs
+                            else inputs[name]
                             for name, source in sources.items()
                         }
+                    if historical_lineage:
+                        incomplete = sorted(
+                            name
+                            for name, view in inputs.items()
+                            if view.materialization_scope != "complete_history"
+                        )
+                        if incomplete:
+                            raise LineageError(
+                                "complete-group lineage requires complete pricing history for "
+                                + ", ".join(incomplete)
+                            )
                     resume = not historical_lineage
                     if accepted_membership is not None:
-                        for view in inputs.values():
+                        metadata_applies = not changed_event_supplements and (
+                            not new_fact_handoffs
+                            or membership_deltas is not None
+                            and all(delta["scope"] != "complete_group" for delta in membership_deltas.values())
+                        )
+                        for name, view in inputs.items():
                             view.accepted_sourced_rename_membership = accepted_membership
-                    for name, certificate in accepted_current_sources.items():
+                            if metadata_applies:
+                                view.accepted_public_common_membership = previous[name].get(
+                                    "public_common_continuation_membership"
+                                )
+                                view.accepted_security_relations = previous[name].get("security_relations")
+                                if not historical_lineage:
+                                    view.accepted_public_common_ownership = previous[name].get(
+                                        "public_common_continuation_ownership"
+                                    )
+                    for name, certificate in accepted_prefix_sources.items():
+                        inputs[name].accepted_documented_membership = certificate.get(
+                            "documented_identity_membership"
+                        )
                         inputs[name].accepted_current_source_ownership = certificate.get(
                             "current_source_ownership"
                         )
                         inputs[name].accepted_sourced_rename_ownership = certificate.get(
                             "sourced_rename_ownership"
                         )
-                    if (resume or accepted_current_sources) and not no_new_rows:
-                        resumed_previous = {
-                            name: prior
-                            for name, prior in previous.items()
-                            if resume or name in accepted_current_sources
-                        }
+                        inputs[name].accepted_public_common_ownership = certificate.get(
+                            "public_common_continuation_ownership"
+                        )
+                    scoped_memberships = scoped_identity_memberships(choice_prefix_sources, old_boundaries)
+                    for name, memberships in scoped_memberships.items():
+                        view = inputs[name]
+                        view.accepted_identity_memberships = memberships
+                        if historical_lineage and corrections[name] is None and name not in projections:
+                            # A peer selected complete-group work, but this
+                            # source's pricing prefix and owner metadata remain
+                            # accepted. Carry its old row decisions in their
+                            # actual full-source positions. New and unresolved
+                            # rows alone enter the owning cascade.
+                            view.accepted_report = {
+                                **retained_decision_report(previous[name], policy=correlation_policy),
+                                **retained_ownership_report(
+                                    previous[name], view.local, memberships, root, assignment_boundaries
+                                ),
+                            }
+                            view.accepted_report["source_row_count"] = sum(
+                                len(rows) for rows in view.views.values()
+                            )
+                    if resume and not no_new_rows:
+                        resumed_previous = dict(previous)
                         for name, prior in resumed_previous.items():
                             last = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
                             if "identity_memberships" not in prior and last:
@@ -1150,14 +1783,11 @@ def process_group(
                                 )
                                 if kind not in old_boundaries[name]:
                                     old_boundaries[name].update(read_boundaries(prior, kinds={kind}))
-                        membership = identity_memberships(resumed_previous, old_boundaries)
+                        memberships = scoped_identity_memberships(resumed_previous, old_boundaries)
                         for name, view in inputs.items():
                             if name not in resumed_previous:
                                 continue
-                            view.accepted_identity_memberships = {
-                                **membership,
-                                **identity_memberships({name: previous[name]}, {name: old_boundaries[name]}),
-                            }
+                            view.accepted_identity_memberships = memberships[name]
                             if name in projections:
                                 view.accepted_report = retained_report(
                                     previous[name],
@@ -1192,6 +1822,15 @@ def process_group(
                             component = current_graph.closure({name})
                             members = component & selected_inputs.keys()
                             selected_components.update(dict.fromkeys(members, component))
+                            if not retain:
+                                for member in sorted(members):
+                                    view = selected_inputs[member]
+                                    event(
+                                        "lineage_correlation_inputs",
+                                        symbol=member,
+                                        selected_generation=view.source_sha256,
+                                        materialization_scope=view.materialization_scope,
+                                    )
                             selected_reports.update(
                                 {
                                     member: retained_decision_report(previous[member], policy=correlation_policy)
@@ -1220,101 +1859,41 @@ def process_group(
                         return selected_components, selected_reports
 
                     components, reports = correlate_components(inputs, retain=no_new_rows)
-                    # DO NOT REMOVE WITHOUT USER AUTH!#
-                    # The complete group establishes one numerical source choice
-                    # for all views. A required mapping correction must publish
-                    # through pricing first; never stamp the old input as done.
-                    if not no_new_rows:
-                        reports, mapping_corrections = select_observations(inputs, reports)
-                        required.update(mapping_corrections)
-                    if not required:
-                        receipts, boundaries = {}, {}
-                        for symbol, view in inputs.items():
-                            prior = previous[symbol]
-                            old = old_boundaries[symbol]
-                            receipts[symbol], boundaries[symbol] = make_publication(
-                                view,
-                                evidence[symbol],
-                                reports[symbol],
-                                sorted(set(deps[symbol]) | unavailable.keys()),
-                                prior,
-                                old,
-                                resume_closed=resume or symbol in accepted_current_sources,
-                            )
-                            receipts[symbol]["input_sources"] = {
-                                name: inputs[name].source_sha256
-                                for name in sorted(components[symbol] & inputs.keys())
-                            }
-                            if unavailable:
-                                receipts[symbol]["unavailable_pricing"] = unavailable
-                        if work_policy is not None:
-                            completed = work_policy.stamp(receipts, sources)
-                        if progress:
-                            progress(
-                                "lineage_publication",
-                                {"symbols": sorted(receipts), "reused_decision": no_new_rows},
-                            )
-                        storage.publish(
-                            store,
-                            root,
-                            index,
-                            receipts,
-                            boundaries,
-                            notices,
-                            checks=checks,
-                            previous=previous,
-                            sources=sources,
-                        )
-                        receipt_cache.published(receipts)
-                        if work_policy is not None:
-                            work_policy.update_index({symbol: index["symbols"][symbol] for symbol in receipts})
-                            work_policy.accept_completion(receipts, index["symbols"], completed)
-                        else:
-                            graph.update({symbol: index["symbols"][symbol] for symbol in receipts})
-                        # Inspection observes the actual publication while the same
-                        # locks still protect its inputs. It never runs another resolver.
-                        if observer is not None:
-                            observed_boundaries = {
-                                symbol: {
-                                    **storage.read_boundaries(
-                                        root,
-                                        receipt,
-                                        kinds=receipt["boundaries"].keys() - boundaries[symbol].keys(),
-                                    ),
-                                    **boundaries[symbol],
-                                }
-                                for symbol, receipt in receipts.items()
-                            }
-                            observer(
-                                store=store,
-                                receipts=receipts,
-                                boundaries=observed_boundaries,
-                                inputs=inputs,
-                                reports=None if no_new_rows else reports,
-                                notices=notices,
-                                resumed=True if resume else frozenset(accepted_current_sources),
-                            )
-                        return {
-                            "symbol": seed,
-                            "status": "processed",
-                            "processed": sorted(sources),
-                            "acknowledged": sorted(notices),
-                            "unresolved_rows": sum(item["unresolved_rows"] for item in receipts.values()),
-                            "pricing_acquisition_waves": acquisition_waves,
-                            "reused_decision": no_new_rows,
-                            "reused_closed_boundaries": resume,
-                            "historical_rows_reused": sum(
-                                item["rows"]
-                                for name, view in inputs.items()
-                                if resume or name in accepted_current_sources
-                                for item in view.previous_assignment_summary.values()
-                            ),
-                            "pricing_rows_processed": sum(
-                                len(rows) for view in inputs.values() for rows in view.views.values()
-                            ),
-                            "unavailable_pricing": sorted(unavailable),
-                            "pricing_replacements": pricing_replacements,
-                        }
+                    completed_group = finish_correlated_group(
+                        reports=reports,
+                        acquisition_waves=acquisition_waves,
+                        affected=affected,
+                        assignment_boundaries=assignment_boundaries,
+                        checks=checks,
+                        choice_prefix_sources=choice_prefix_sources,
+                        components=components,
+                        deps=deps,
+                        evidence=evidence,
+                        graph=graph,
+                        index=index,
+                        inputs=inputs,
+                        no_new_rows=no_new_rows,
+                        notices=notices,
+                        observer=observer,
+                        old_boundaries=old_boundaries,
+                        original_choice_inputs=original_choice_inputs,
+                        previous=previous,
+                        pricing_replacements=pricing_replacements,
+                        progress=progress,
+                        read_boundaries=read_boundaries,
+                        receipt_cache=receipt_cache,
+                        required=required,
+                        resume=resume,
+                        retained_recovery=retained_recovery,
+                        root=root,
+                        seed=seed,
+                        sources=sources,
+                        store=store,
+                        unavailable=unavailable,
+                        work_policy=work_policy,
+                    )
+                    if completed_group is not None:
+                        return completed_group
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
         if required:
@@ -1453,7 +2032,14 @@ def run_lineage(
     pricing_handoff=None,
     event_supplements=(),
     retained_rebuild=False,
+    retained_recovery=None,
 ):
+    if retained_recovery is not None and (
+        not retained_rebuild
+        or retained_recovery.store != Path(store).absolute()
+        or symbols != [group.seed for group in retained_recovery.groups]
+    ):
+        raise LineageError("retained recovery requires its exact selected store and groups")
     if retained_rebuild and (symbols is None or refresh or pricing_client is not None or event_supplements):
         raise LineageError(
             "retained lineage rebuild requires explicit symbols and no provider acquisition or refresh"
@@ -1476,6 +2062,14 @@ def run_lineage(
         context.accept_correlation_policy()
         with storage.publication_lock(root):
             index = context.select_index(root)
+        recovery_groups = {}
+        recovered_groups = []
+        if retained_recovery is not None:
+            if context.accept_correlation_policy().semantic_sha256 != retained_recovery.policy_sha256:
+                raise LineageError("retained recovery policy changed from accepted comparison")
+            pending_groups, recovered_groups = retained_recovery.select(index)
+            recovery_groups = {group.seed: group for group in pending_groups}
+            symbols = list(recovery_groups)
         checks = read_checks(store)
         if checks["epoch"] is None:
             checks = begin_checks(store)
@@ -1674,6 +2268,7 @@ def run_lineage(
                             progress=progress,
                             empty_suffixes=empty_suffixes,
                             retained_rebuild=retained_rebuild,
+                            retained_recovery=recovery_groups.get(symbol),
                         )
                         processed.update(result["processed"])
                         processed.update(result.get("unavailable_pricing", ()))
@@ -1752,6 +2347,9 @@ def run_lineage(
         "results": results,
         "failed": sum(item["status"] in {"failed", "waiting_for_pricing"} for item in results),
     }
+    if retained_recovery is not None:
+        result["previously_completed_groups"] = len(recovered_groups)
+        result["recomputed_groups"] = sum(item["status"] == "processed" for item in results)
     if event_supplements:
         unmatched = sorted(evidence_client.event_supplements.keys() - evidence_client.applied_event_supplements)
         result["unmatched_event_supplements"] = unmatched

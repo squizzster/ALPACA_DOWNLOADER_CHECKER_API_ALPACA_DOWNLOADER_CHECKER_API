@@ -413,6 +413,7 @@ def publish_acquired(
     adjustment_acquisition=None,
     adjustment_acquisitions=None,
     observation_conflict=None,
+    observation_conflict_resolver=None,
     session_correction=None,
     preserve_correction=True,
     previous_source_sha256=None,
@@ -446,14 +447,21 @@ def publish_acquired(
             update = None
             if not repair_payloads:
                 changed_views = {}
+    observation_resolution = None
     if observation_conflict is not None:
         evidence = observation_conflict.evidence
-        if not (equal_replacement and getattr(observation_conflict, "confirmed_observations", None) is not None):
+        if not equal_replacement and observation_conflict_resolver is not None:
+            observation_resolution = observation_conflict_resolver(observation_conflict)
+        elif not (
+            equal_replacement and getattr(observation_conflict, "confirmed_observations", None) is not None
+        ):
             raise observation_conflict
         event(
             "pricing_observation_resolved",
             symbol=symbol,
-            disposition="exact_full_range_matches_retained_generation",
+            disposition="newer_exact_session_observation_supports_replacement"
+            if observation_resolution
+            else "exact_full_range_matches_retained_generation",
             source_generation=previous_source_sha256,
             session=evidence["session"],
             conflicting_observations=len(observation_conflict.context_conflicts),
@@ -488,6 +496,12 @@ def publish_acquired(
         # new history can establish it for otherwise unvalidated retained data.
         "activity_consistent": bool((previous or {}).get("activity_consistent")) or full_activity,
     }
+    if observation_resolution is not None:
+        source["history_correction_observation_resolution"] = observation_resolution
+    elif preserve_correction and (previous or {}).get("history_correction_observation_resolution"):
+        source["history_correction_observation_resolution"] = previous[
+            "history_correction_observation_resolution"
+        ]
     if adjustment_acquisitions is not None:
         source["latest_adjustment_acquisition"] = {
             "policy": "exact_selected_sessions_v1",
@@ -1228,6 +1242,8 @@ def download_pricing(
             if full_history
             else merge_ranges(acquired_extent, correction.extent if correction else None)
         )
+        from .observation_recovery import resolve as resolve_observation_conflict
+
         written = publish_acquired(
             root,
             previous,
@@ -1246,6 +1262,15 @@ def download_pricing(
             old_documents=old_documents,
             adjustment_acquisition=acquired,
             observation_conflict=observation_conflict,
+            observation_conflict_resolver=lambda conflict: resolve_observation_conflict(
+                root,
+                conflict,
+                symbol=symbol,
+                generation=current_sha256,
+                correction_id=history_correction_id,
+                request=request,
+                client=client,
+            ),
             session_correction={
                 "session": comparison.correction_session,
                 "previous_session": previous_session,
@@ -1267,6 +1292,9 @@ def download_pricing(
             replacement=full_history,
         )
         if full_history:
+            from .full_publication import accept_full_publication
+
+            accept_full_publication(context, written["source"], written["source_sha256"], selected_endpoints)
             event(
                 "pricing_replacement_outcome",
                 symbol=symbol,
@@ -1277,6 +1305,17 @@ def download_pricing(
                 files_written=written["files_written"],
                 updated_boundaries=written["updated_boundaries"],
                 first_all=selected_endpoints["all"][0] if selected_endpoints["all"] else None,
+            )
+        elif correction is None and comparison is not None and comparison.matched:
+            from .full_publication import accept_approved_append
+
+            accept_approved_append(
+                context,
+                written["source"],
+                written["source_sha256"],
+                selected_endpoints,
+                predecessor_generation=current_sha256,
+                comparison=comparison,
             )
         return {
             "symbol": symbol,

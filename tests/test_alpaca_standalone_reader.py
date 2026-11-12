@@ -714,7 +714,7 @@ class StandaloneReaderTests(unittest.TestCase):
         self.assertEqual(result["bars"][-1]["tickers"], ["NEW"])
         self.assertEqual(result["bars"], self.reader.get_history("OLD")["bars"])
 
-    def test_established_overlap_policy_and_window_independent_selection(self):
+    def test_completed_bundle_choice_is_identical_across_views_and_windows(self):
         self.renamed_pair(differing=True)
         raw = self.reader.get_history("NEW", "raw")
         adjusted = self.reader.get_history("NEW", "all")
@@ -725,6 +725,39 @@ class StandaloneReaderTests(unittest.TestCase):
         both = self.reader.get_histories("NEW", ["raw", "all"], start="2023-12-01", end="2023-12-01")
         self.assertEqual(both["views"]["raw"]["bars"], raw["bars"][:1])
         self.assertEqual(both["views"]["all"]["bars"], adjusted["bars"][:1])
+
+    def test_competing_retained_selections_fail_for_every_view_and_window(self):
+        for differing in (False, True):
+            with self.subTest(differing=differing):
+                self.renamed_pair(differing=differing)
+                receipt, boundaries = self.publication("OLD")
+                for boundary in boundaries.values():
+                    for entry in boundary["adjustments"]:
+                        for segment in entry["segments"]:
+                            if segment["branch"] == "correlated":
+                                segment["observation_selection"] = "selected"
+                for kind, boundary in boundaries.items():
+                    receipt["boundaries"][kind]["sha256"] = storage.document_digest(boundary)
+                storage.publish(
+                    self.store,
+                    self.root,
+                    storage.read_index(self.root),
+                    {"OLD": receipt},
+                    {"OLD": boundaries},
+                    {},
+                )
+                # Equal prices do not complete a missing source decision. No
+                # consumer may rank coverage, compare views or choose a ticker.
+                with patch(
+                    "alpaca_end_of_day._history_coverage.extend_coverage",
+                    side_effect=AssertionError("consumer replayed source selection"),
+                ):
+                    for adjustment in ADJUSTMENTS:
+                        with self.subTest(adjustment=adjustment):
+                            with self.assertRaisesRegex(StandaloneReaderError, "lineage recover"):
+                                self.reader.get_history("NEW", adjustment)
+                    with self.assertRaisesRegex(StandaloneReaderError, "lineage recover"):
+                        self.reader.get_histories("NEW", ADJUSTMENTS, start="2023-12-01", end="2023-12-01")
 
     def test_reader_trusts_explicit_producer_conflict_without_selecting_a_winner(self):
         self.renamed_pair(differing=True)

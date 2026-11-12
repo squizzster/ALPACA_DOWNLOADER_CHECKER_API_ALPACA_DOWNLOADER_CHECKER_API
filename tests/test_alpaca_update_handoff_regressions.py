@@ -23,7 +23,7 @@ from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.refresh import refresh_existing
 from libs.alpaca_lineage_build.universe_update import rebuild_universe, run_update
 from libs.alpaca_lineage_build.work_contract import WorkPolicy
-from libs.alpaca_pricing_download import acquire, append, download
+from libs.alpaca_pricing_download import acquire, append, download, full_publication
 from libs.alpaca_pricing_download import refresh as pricing_refresh
 from libs.alpaca_pricing_download import storage as pricing_storage
 from libs.alpaca_pricing_download.acquire import acquire_selected
@@ -36,6 +36,389 @@ from libs.common.debug_trace import DebugTrace
 
 
 class UpdateHandoffRegressions(unittest.TestCase):
+    def test_completed_full_acquisition_is_not_checked_again_by_daily_maintenance(self):
+        from alpaca_end_of_day import DataLibrary, StandaloneReader
+
+        for scenario in ("initial", "mapping_only", "replacement"):
+            with self.subTest(scenario=scenario), fixture() as case:
+                if scenario == "initial":
+                    case.records[:] = [asset("AAA"), asset("NEW")]
+                    case.live["NEW"] = valid_bars("2026-10-15", "2026-10-16")
+                    expected_symbol, expected_changed = "NEW", True
+                else:
+                    case.records[:] = [{**asset("AAA"), "id": "changed-AAA-provider-id"}]
+                    expected_symbol = "AAA"
+                    expected_changed = scenario == "replacement"
+                    if expected_changed:
+                        case.live["AAA"] = [bar("2016-01-04", "50"), case.old[-1]]
+                case.identity = CatalogueClient(case.records)
+                accepted = {}
+                record = full_publication.accept_full_publication
+
+                def completed(context, source, generation, endpoints):
+                    proof = record(context, source, generation, endpoints)
+                    accepted[proof.symbol] = proof
+                    return proof
+
+                def request(params):
+                    repeated = accepted.keys() & set(params["symbols"].split(","))
+                    self.assertFalse(repeated, f"completed full acquisition checked again: {repeated}")
+                    return case.page(params)
+
+                with (
+                    patch.object(full_publication, "accept_full_publication", side_effect=completed),
+                    patch.object(case.pricing, "_get", side_effect=request),
+                ):
+                    result = case.update()
+                self.assertTrue(result["complete"], result)
+                self.assertIn(expected_symbol, accepted)
+                publication = next(
+                    item
+                    for item in result["stages"]["acquisition"]["results"]
+                    if item["symbol"] == expected_symbol
+                )
+                self.assertEqual(publication["changed"], expected_changed)
+                self.assertEqual(
+                    result["stages"]["maintenance_after_discovery"]["stages"]["refresh"]["check"]["stats"].get(
+                        "checked", 0
+                    ),
+                    0,
+                )
+                self.assertTrue(result["stages"]["serving_catalogue"]["complete"])
+                self.assertEqual(
+                    StandaloneReader(case.store).get_history(expected_symbol, "all")["bar_count"],
+                    len(case.live[expected_symbol]) if scenario == "initial" else 1,
+                )
+                if scenario == "initial":
+                    self.assertTrue(DataLibrary(store=case.store).resolve_ticker(expected_symbol))
+
+    def test_full_publication_acceptance_is_bound_to_every_actual_selector_and_requirement(self):
+        from copy import deepcopy
+
+        with fixture() as case:
+            context = accept_context(case.store)
+            download.download_pricing(
+                case.store,
+                "AAA",
+                "2026-10-17",
+                client=FakeClient(case.old),
+                refresh_all=True,
+                context=context.pricing(),
+                acquisition_evidence_sha256="a" * 64,
+            )
+            proof = context.pricing().full_publications["AAA"]
+            self.assertEqual(
+                run_lineage(
+                    case.store, ["AAA"], identity_client=IdentityClient({"AAA": asset("AAA")}), context=context
+                )["failed"],
+                0,
+            )
+            entry = next(e for e in context.select_summary()["entries"] if e["symbol"] == "AAA")
+            index = context.select_index(context.accept_store().root)["symbols"]["AAA"]
+            arguments = {
+                "store": context.store,
+                "entry": entry,
+                "lineage_entry": index,
+                "target": "2026-10-17",
+                "invalidate_mapping": True,
+                "acquisition_fingerprint": "a" * 64,
+            }
+            self.assertTrue(proof.applies(**arguments))
+            changed_generation = {**index, "source_sha256": "changed"}
+            changed_summary = {**entry, "source_sha256": "changed"}
+            changed_first = deepcopy(entry)
+            changed_first["first_all"][1] = "50"
+            changed_last = deepcopy(entry)
+            changed_last["last_all"][1] = "50"
+            changed_tail = deepcopy(entry)
+            changed_tail["tail_all"][-1][1] = "50"
+            for change in (
+                {"store": case.directory / "other"},
+                {"target": "2026-10-20"},
+                {"lineage_entry": changed_generation},
+                {"entry": changed_summary},
+                {"entry": {**entry, "asof": "2026-10-16"}},
+                {"entry": changed_first},
+                {"entry": changed_last},
+                {"entry": changed_tail},
+                {"acquisition_fingerprint": "another-UUID-proof"},
+                {"correction_id": "new-correction"},
+            ):
+                with self.subTest(change=change):
+                    self.assertFalse(proof.applies(**{**arguments, **change}))
+            self.assertTrue(proof.applies(**arguments))
+
+    def test_full_publication_survives_peer_interruption_without_reopening_accepted_inputs(self):
+        with fixture() as case:
+            context = accept_context(case.store)
+            publication = download.download_pricing(
+                case.store,
+                "GOOD",
+                "2026-10-17",
+                client=FakeClient(valid_bars("2026-10-15", "2026-10-16")),
+                context=context.pricing(),
+            )
+            proof = context.pricing().full_publications["GOOD"]
+            publication["request"]["asof"] = "caller mutation"
+            self.assertEqual(proof.asof, "2026-10-17")
+            with (
+                patch.object(download, "publish", side_effect=InterruptedError("publication incomplete")),
+                self.assertRaisesRegex(InterruptedError, "publication incomplete"),
+            ):
+                download.download_pricing(
+                    case.store,
+                    "FAILED",
+                    "2026-10-17",
+                    client=FakeClient(case.old),
+                    context=context.pricing(),
+                )
+            self.assertEqual(set(context.pricing().full_publications), {"GOOD"})
+            self.assertEqual(
+                run_lineage(
+                    case.store,
+                    ["GOOD"],
+                    identity_client=IdentityClient({"GOOD": asset("GOOD")}),
+                    context=context,
+                )["failed"],
+                0,
+            )
+            original = Path.read_bytes
+
+            def no_accepted_price_read(path):
+                if "GOOD" in path.parts and (path.suffix == ".gz" or path.name.startswith("validator_")):
+                    raise AssertionError("accepted publication payload or validator reopened")
+                return original(path)
+
+            with (
+                patch.object(refresh, "verify", side_effect=AssertionError("completed history checked again")),
+                patch.object(Path, "read_bytes", no_accepted_price_read),
+            ):
+                result = refresh_existing(
+                    case.store,
+                    pricing_client=case.pricing,
+                    identity_client=IdentityClient({"GOOD": asset("GOOD")}),
+                    end_date="2026-10-17",
+                    symbols={"GOOD"},
+                    context=context,
+                )
+            self.assertTrue(result["complete"], result)
+            self.assertEqual(result["check"]["stats"].get("checked", 0), 0)
+
+    def test_consumed_publication_cache_cannot_bypass_changed_mapping_or_target(self):
+        for invalidation in ("mapping", "target"):
+            with self.subTest(invalidation=invalidation), fixture() as case:
+                context = accept_context(case.store)
+                download.download_pricing(
+                    case.store,
+                    "AAA",
+                    "2026-10-17",
+                    client=FakeClient(case.old),
+                    refresh_all=True,
+                    acquisition_evidence_sha256="a" * 64,
+                    context=context.pricing(),
+                )
+                self.assertEqual(
+                    run_lineage(
+                        case.store,
+                        ["AAA"],
+                        identity_client=IdentityClient({"AAA": asset("AAA")}),
+                        context=context,
+                    )["failed"],
+                    0,
+                )
+                index = context.select_index(context.accept_store().root)
+                requirement = {
+                    "status": "pending",
+                    "end_exclusive": "2026-10-17",
+                    "required_group": ["AAA"],
+                    "invalidate_pricing": True,
+                    "acquisition_evidence_fingerprint": "a" * 64,
+                }
+                policy = WorkPolicy(
+                    case.store,
+                    index,
+                    {"AAA": requirement},
+                    [],
+                    "2026-10-17",
+                    context=context,
+                )
+                first = refresh_existing(
+                    case.store,
+                    pricing_client=case.pricing,
+                    identity_client=case.identity,
+                    end_date="2026-10-17",
+                    symbols={"AAA"},
+                    work_policy=policy,
+                    context=context,
+                )
+                self.assertTrue(first["complete"], first)
+                self.assertIn("AAA", context.history_checks)
+                target = "2026-10-17"
+                if invalidation == "mapping":
+                    policy.work["AAA"]["acquisition_evidence_fingerprint"] = "b" * 64
+                else:
+                    target = "2026-10-20"
+                with (
+                    patch.object(
+                        refresh, "verify", side_effect=AssertionError("new scope requires owning check")
+                    ),
+                    self.assertRaisesRegex(AssertionError, "new scope requires owning check"),
+                ):
+                    refresh_existing(
+                        case.store,
+                        pricing_client=case.pricing,
+                        identity_client=case.identity,
+                        end_date=target,
+                        symbols={"AAA"},
+                        work_policy=policy,
+                        context=context,
+                    )
+
+    def test_missing_required_mapping_handoff_selects_recovery_without_provider_work(self):
+        for cached in (False, True):
+            with self.subTest(cached=cached), fixture() as case:
+                context = accept_context(case.store)
+                download.download_pricing(
+                    case.store,
+                    "AAA",
+                    "2026-10-17",
+                    client=FakeClient(case.old),
+                    refresh_all=True,
+                    acquisition_evidence_sha256="a" * 64,
+                    context=context.pricing(),
+                )
+                self.assertEqual(
+                    run_lineage(
+                        case.store,
+                        ["AAA"],
+                        identity_client=IdentityClient({"AAA": asset("AAA")}),
+                        context=context,
+                    )["failed"],
+                    0,
+                )
+                policy = WorkPolicy(
+                    case.store,
+                    context.select_index(context.accept_store().root),
+                    {
+                        "AAA": {
+                            "status": "pending",
+                            "end_exclusive": "2026-10-17",
+                            "required_group": ["AAA"],
+                            "invalidate_pricing": True,
+                            "acquisition_evidence_fingerprint": "a" * 64,
+                        }
+                    },
+                    [],
+                    "2026-10-17",
+                    context=context,
+                )
+                if cached:
+                    result = refresh_existing(
+                        case.store,
+                        pricing_client=case.pricing,
+                        identity_client=case.identity,
+                        end_date="2026-10-17",
+                        symbols={"AAA"},
+                        work_policy=policy,
+                        context=context,
+                    )
+                    self.assertTrue(result["complete"], result)
+                    self.assertIn("AAA", context.history_checks)
+                policy.work["AAA"].pop("acquisition_evidence_fingerprint")
+                request_count = len(case.pages)
+                with (
+                    patch.object(refresh, "verify", side_effect=AssertionError("unbound comparison")),
+                    patch.object(case.pricing, "_get", side_effect=AssertionError("unbound provider request")),
+                    patch.object(refresh, "prepare_refresh", side_effect=AssertionError("unbound replacement")),
+                    self.assertRaisesRegex(DownloadError, "missing accepted mapping-evidence handoff.*recovery"),
+                ):
+                    refresh_existing(
+                        case.store,
+                        pricing_client=case.pricing,
+                        identity_client=case.identity,
+                        end_date="2026-10-17",
+                        symbols={"AAA"},
+                        work_policy=policy,
+                        context=context,
+                    )
+                self.assertEqual(len(case.pages), request_count)
+
+    def test_index_only_generation_change_revokes_consumed_producer_approval(self):
+        with fixture() as case:
+            context = accept_context(case.store)
+            download.download_pricing(
+                case.store,
+                "AAA",
+                "2026-10-17",
+                client=FakeClient(case.old),
+                refresh_all=True,
+                context=context.pricing(),
+            )
+            self.assertEqual(
+                run_lineage(
+                    case.store,
+                    ["AAA"],
+                    identity_client=IdentityClient({"AAA": asset("AAA")}),
+                    context=context,
+                )["failed"],
+                0,
+            )
+            index = context.select_index(context.accept_store().root)
+            changed_index = {
+                **index,
+                "symbols": {
+                    **index["symbols"],
+                    "AAA": {**index["symbols"]["AAA"], "source_sha256": "new-lineage-generation"},
+                },
+            }
+            ready = []
+            with (
+                patch.object(context, "select_index", side_effect=[index, changed_index]),
+                patch.object(refresh, "verify", side_effect=AssertionError("accepted history checked again")),
+            ):
+                refresh_existing(
+                    case.store,
+                    pricing_client=case.pricing,
+                    identity_client=case.identity,
+                    end_date="2026-10-17",
+                    symbols={"AAA"},
+                    context=context,
+                    on_ready=ready.append,
+                )
+            self.assertEqual(len(ready), 1)
+            self.assertEqual(ready[0]["entries"], [])
+            self.assertEqual(ready[0]["approved_scopes"], {})
+            self.assertNotIn("AAA", context.history_checks)
+
+    def test_new_peer_failure_comparison_cannot_rebind_an_older_successful_approval(self):
+        with fixture() as case:
+            store, assets = self.seed_independent_pair(case)
+            context = accept_context(store)
+            first = refresh_existing(
+                store,
+                pricing_client=case.pricing,
+                identity_client=IdentityClient(assets),
+                end_date="2026-10-17",
+                symbols={"AAA"},
+                context=context,
+            )
+            self.assertTrue(first["complete"], first)
+            approved = context.history_checks["AAA"]
+            case.live = {"AAA": [bar("2016-01-04", "50"), case.old[-1]], "BBB": [case.old[-1]]}
+            with self.assertRaisesRegex(DownloadError, "live check incomplete"):
+                refresh_existing(
+                    store,
+                    pricing_client=case.pricing,
+                    identity_client=IdentityClient(assets),
+                    end_date="2026-10-20",
+                    context=context,
+                )
+            self.assertIs(context.history_checks["AAA"], approved)
+            self.assertEqual(context.history_scope("check", "AAA", approved).target, "2026-10-17")
+            compared = context.history_comparisons["AAA"]
+            self.assertEqual(context.history_scope("comparison", "AAA", compared).target, "2026-10-20")
+            self.assertEqual(compared[2].decision, "full_history")
+
     def test_last_maintenance_completes_successful_peers_and_legacy_handoff(self):
         self.check_last_maintenance_peers()
 
@@ -187,21 +570,46 @@ class UpdateHandoffRegressions(unittest.TestCase):
                 identity = IdentityClient(
                     {**assets, "111111111": assets["BBB"]}, [{**rename(), "process_date": "2026-01-06"}]
                 )
-                result = refresh_existing(
-                    store,
-                    pricing_client=case.pricing,
-                    identity_client=identity,
-                    end_date="2026-01-08",
-                    context=context,
-                    late_bar_repairs=selected,
-                    symbols={"AAA", "BBB"},
-                )
+                completed = set()
+                full = full_publication.accept_full_publication
+                appended = full_publication.accept_approved_append
+
+                def record_full(*args, **kwargs):
+                    accepted = full(*args, **kwargs)
+                    completed.add(accepted.symbol)
+                    return accepted
+
+                def record_append(*args, **kwargs):
+                    accepted = appended(*args, **kwargs)
+                    completed.add(accepted.symbol)
+                    return accepted
+
+                def request(params):
+                    if "BBB" in completed and "BBB" in params["symbols"].split(","):
+                        raise AssertionError("completed dependency publication checked again")
+                    return case.page(params)
+
+                with (
+                    patch.object(full_publication, "accept_full_publication", side_effect=record_full),
+                    patch.object(full_publication, "accept_approved_append", side_effect=record_append),
+                    patch.object(case.pricing, "_get", side_effect=request),
+                ):
+                    result = refresh_existing(
+                        store,
+                        pricing_client=case.pricing,
+                        identity_client=identity,
+                        end_date="2026-01-08",
+                        context=context,
+                        late_bar_repairs=selected,
+                        symbols={"AAA", "BBB"},
+                    )
                 self.assertTrue(result["complete"], result)
                 self.assertEqual([r["symbol"] for r in result["pricing"]["results"]], ["AAA"])
                 self.assertEqual(result["lineage"]["results"][0]["pricing_acquisition_waves"], 1)
                 self.assertEqual(result["lineage"]["results"][0]["pricing_replacements"], {})
-                self.assertEqual(result["check"]["stats"]["tickers"], 1)
-                self.assertEqual(result["check"]["stats"]["matched"], 1)
+                self.assertIn("BBB", completed)
+                self.assertEqual(result["check"]["stats"].get("tickers", 0), 0)
+                self.assertEqual(result["check"]["stats"].get("matched", 0), 0)
                 rows = read_pricing_views(store, "BBB")["all"]
                 self.assertEqual(len(rows), 3)
                 self.assertEqual(rows[0][1], str(first["o"]))

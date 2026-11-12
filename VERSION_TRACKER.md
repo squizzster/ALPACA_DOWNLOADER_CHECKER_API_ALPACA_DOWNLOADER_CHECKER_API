@@ -35,6 +35,12 @@ An exact retained-policy applicability proof can preserve an earlier completed d
 it authorizes neither executing the earlier policy as current nor promoting potentially affected decisions.
 Metadata membership and mapped-source ownership have separate completion handoffs in the selecting lineage
 receipt; a pricing change alone does not invalidate an unchanged metadata decision.
+Pricing installation journals declare [INSTALLATION_HANDOFF_VERSION](libs/alpaca_pricing_download/storage.py)
+independently of readable source schemas; [recovery](docs/technical-contracts.md#locks-and-publication) consumes
+their accepted staging and summary values.
+Public-common continuity and distinct-security conversions have independent version-1 fact schemas;
+their completed membership, source and relation handoffs belong to the lineage receipt. Serving numerical
+checkpoint reuse across accepted membership changes does not change eligibility policy or catalogue schema.
 Lineage computation revisions independently select owning reconstruction of earlier derived decisions while preserving accepted pricing and metadata; the lineage owner records the revision on receipts and compact index entries. Readable schemas need not be reusable. Owner compatibility gates decide reuse; do not relabel stored artifacts
 to make numbers agree.
 

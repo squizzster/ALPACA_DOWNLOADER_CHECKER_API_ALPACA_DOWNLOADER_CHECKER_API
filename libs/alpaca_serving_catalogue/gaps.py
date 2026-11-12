@@ -1,5 +1,7 @@
 """Producer-owned raw presence for exact scheduled source/session gaps."""
 
+from alpaca_end_of_day._history_coverage import coverage_sources
+
 from .contract import CatalogueError
 
 PROJECTION_VERSION = 2
@@ -15,7 +17,7 @@ def gap_queries(group):
         public_id = decision["public_id"]
         days = set(records[public_id]["missing_sessions"]) - set(decision["explained_missing_sessions"])
         for order in coverage[public_id].values():
-            for source in order["subsets"]:
+            for source in coverage_sources(order):
                 queries.setdefault(source, set()).update(days)
     return {source: days for source, days in queries.items() if days}
 

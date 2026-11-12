@@ -341,11 +341,12 @@ class ClosedDeparturePipelineTests(unittest.TestCase):
     def receipt(self, symbol="REUS"):
         return storage.read_receipt(self.root, symbol, storage.read_index(self.root))
 
-    def test_actual_pipeline_keeps_proof_when_unresolved_peer_reopens_group(self):
+    def test_actual_pipeline_keeps_proof_and_disjoint_unresolved_peer_history(self):
         self.run_lineage()
         prior = self.receipt()
         self.assertEqual(0, prior["unresolved_rows"])
         self.assertGreater(self.receipt("KEEP")["unresolved_rows"], 0)
+        retained_rows = prior["source_rows"] + self.receipt("KEEP")["source_rows"]
         for symbol, rows in self.rows.items():
             added = informative_bars("2024-06-20", "2024-06-21")
             download_pricing(self.store, symbol, "2024-06-21", client=FakeClient([*rows, *added]))
@@ -374,7 +375,7 @@ class ClosedDeparturePipelineTests(unittest.TestCase):
             patch.object(correlation, "has_informative_trading", side_effect=reject_old_activity),
         ):
             result = self.run_lineage()
-        self.assertEqual(40, result["results"][0]["historical_rows_reused"])
+        self.assertEqual(retained_rows, result["results"][0]["historical_rows_reused"])
         after = self.receipt()
         self.assertEqual(0, after["unresolved_rows"])
         self.assertEqual("2024-06-20", after["current_source_ownership"]["last"])
@@ -451,8 +452,9 @@ class ClosedDeparturePipelineTests(unittest.TestCase):
         current, old = capture.sources["REUS"], capture.sources["KEEP"]
         self.assertEqual("added_sessions", current["actual_calculation_scope"])
         self.assertEqual("calculated_with_closed_reuse", current["status"])
-        self.assertEqual("full_history", old["actual_calculation_scope"])
-        self.assertEqual("calculated", old["status"])
+        self.assertEqual("added_sessions", old["actual_calculation_scope"])
+        self.assertEqual("calculated_with_closed_reuse", old["status"])
+        self.assertTrue(any(item["decision_origin"] == "reused_publication" for item in old["assignments"]))
         self.assertTrue(any(item["decision_origin"] == "reused_publication" for item in current["assignments"]))
         self.assertEqual(6, len(current["pricing"]["session_grids"][0]["session_dates"]))
 

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.alpaca_data_api_solver import build_plan, split_action
-from libs.alpaca_pricing_download.contract import DownloadError, symbol_label
+from libs.alpaca_pricing_download.contract import NEW_YORK, DownloadError, symbol_label, timestamp
 from libs.alpaca_security_lineage.event_supplements import SCHEMA_VERSION as EVENT_SUPPLEMENT_SCHEMA_VERSION
 from libs.alpaca_security_lineage.event_supplements import (
     SUCCESSION_KIND,
@@ -24,6 +24,9 @@ from libs.alpaca_security_lineage.lineage import (
     extract_cusips,
 )
 from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, MAX_NAME_CHANGE_SYMBOLS
+from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS, canonical_extension
+from libs.alpaca_security_lineage.sourced_facts import items as sourced_items
+from libs.alpaca_security_lineage.sourced_facts import selected as selected_facts
 from libs.common.debug_trace import event
 
 from .contract import LineageError
@@ -154,6 +157,8 @@ class EvidenceClient:
         self.event_projection = EventProjection()
         self._retained_supplement_evidence = {}
         self.applied_event_supplements = set()
+        self.rule_applications = ()
+        self.rule_fact_scopes = None
         if observation is not None:
             self._load_catalogue(observation["records"])
             self.catalogue_attempted = True
@@ -259,6 +264,8 @@ class EvidenceClient:
         """New producer reports must use this operation's acquired observations."""
         if self.supplements_for(evidence) != evidence.get("event_supplements", []):
             return False
+        if self.sourced_for(evidence) != list(sourced_items(evidence)):
+            return False
         if self.successions_for(evidence) != list(succession_items(evidence)):
             return False
         for lookup in evidence["asset_lookups"]:
@@ -280,14 +287,22 @@ class EvidenceClient:
                 return False
         self.applied_event_supplements.update(
             supplement_key(item)
-            for item in (*evidence.get("event_supplements", ()), *succession_items(evidence))
+            for item in (
+                *evidence.get("event_supplements", ()),
+                *succession_items(evidence),
+                *sourced_items(evidence),
+            )
         )
         return True
 
     def retain_event_supplements(self, evidences):
         """Share completed event facts across the selected dependency group."""
         for evidence in evidences:
-            if not evidence.get("event_supplements") and evidence.get("sourced_successions") is None:
+            if (
+                not evidence.get("event_supplements")
+                and evidence.get("sourced_successions") is None
+                and not any(evidence.get(extension) is not None for extension in EXTENSIONS.values())
+            ):
                 continue
             if id(evidence) in self._retained_supplement_evidence:
                 continue
@@ -304,6 +319,16 @@ class EvidenceClient:
                 or not isinstance(successions.get("facts"), list)
             ):
                 raise LineageError("unsupported retained sourced succession schema")
+            for extension in EXTENSIONS.values():
+                value = canonical_extension(evidence.get(extension))
+                if value is not None and (
+                    not isinstance(value, dict)
+                    or set(value) != {"schema_version", "facts"}
+                    or type(value["schema_version"]) is not int
+                    or value["schema_version"] != 1
+                    or not isinstance(value["facts"], list)
+                ):
+                    raise LineageError("unsupported retained sourced security fact extension")
             originals = (
                 {action.get("id"): action for action in provider_actions(evidence)}
                 if evidence.get("event_supplements")
@@ -314,7 +339,11 @@ class EvidenceClient:
                 if evidence.get("event_supplements")
                 else {}
             )
-            for item in (*evidence.get("event_supplements", ()), *succession_items(evidence)):
+            for item in (
+                *evidence.get("event_supplements", ()),
+                *succession_items(evidence),
+                *sourced_items(evidence),
+            ):
                 key = supplement_key(item)
                 prior = self.retained_event_supplements.setdefault(key, item)
                 retained_matches = prior is item or prior == item
@@ -325,7 +354,7 @@ class EvidenceClient:
                 if chosen_matches:
                     if key in self.event_supplements:
                         self.applied_event_supplements.add(key)
-                    if item["kind"] != SUCCESSION_KIND:
+                    if item["kind"] not in {SUCCESSION_KIND, *EXTENSIONS}:
                         self.event_projection.retain(originals[key], chosen, projected.get(key))
             self._retained_supplement_evidence[id(evidence)] = evidence
 
@@ -335,7 +364,7 @@ class EvidenceClient:
         return [
             available[key]
             for key in sorted(keys & available.keys())
-            if available[key]["kind"] != SUCCESSION_KIND
+            if available[key]["kind"] not in {SUCCESSION_KIND, *EXTENSIONS}
         ]
 
     def successions_for(self, evidence):
@@ -347,8 +376,47 @@ class EvidenceClient:
             if item["kind"] == SUCCESSION_KIND and item["match"]["symbol"] == symbol
         ]
 
-    def all_event_supplements(self):
-        return list((self.retained_event_supplements | self.event_supplements).values())
+    def sourced_for(self, evidence):
+        available = {
+            supplement_key(item): item
+            for item in self.all_event_supplements(evidence.get("query", {}).get("input_symbol"))
+        }
+        chosen = selected_facts(
+            [item for _, item in sorted(available.items())],
+            symbols=evidence.get("queried_symbols", ()) or (evidence.get("query", {}).get("input_symbol"),),
+            # Match the metadata producer's actual fact selection. Endpoint
+            # lookups introduced by a conversion are outputs of that selection,
+            # not authority to expand it again through unrelated peer facts.
+            cusips=set(extract_cusips(evidence.get("corporate_actions", ()))),
+        )
+        chosen = {supplement_key(item): item for item in chosen}
+        # A completed group producer can attach broader evidence than a new
+        # per-source discovery would select. That selected scope is accepted;
+        # changing consumers cannot delete it and then call the deletion a
+        # changed fact. An explicitly newer value for its key still applies.
+        chosen.update(
+            (key, available.get(key, item))
+            for item in sourced_items(evidence)
+            for key in (supplement_key(item),)
+        )
+        return [item for kind in EXTENSIONS for _, item in sorted(chosen.items()) if item["kind"] == kind]
+
+    def all_event_supplements(self, symbol=None):
+        available = self.retained_event_supplements | self.event_supplements
+        return [
+            item
+            for key, item in sorted(available.items())
+            if symbol is None
+            or self.rule_fact_scopes is None
+            or key not in self.rule_fact_scopes
+            or symbol in self.rule_fact_scopes[key]
+        ]
+
+    def expand_rule_scope(self, group):
+        """Carry facts into newly selected members at dependency closure."""
+        for selected in (self.rule_fact_scopes or {}).values():
+            if selected.intersection(group):
+                selected.update(group)
 
     def dependency_observation(self, symbol):
         observed = self.observed_symbol_lookup(symbol)
@@ -818,7 +886,38 @@ class WindowClient:
         return historical + current
 
 
-def acquire(view, client, previous=None, *, refresh=False):
+def retained_metadata(view, client, previous, *, refresh=False):
+    """Select accepted metadata for bounded retained-input recovery.
+
+    The pricing request bounds all possible observations. Its exclusive UTC
+    endpoint can advance beyond the last inclusive action-query date without
+    admitting a later market date. Keep the actual completed query unchanged;
+    never manufacture fresh action coverage or ask for it again on recovery.
+    """
+    if refresh or previous is None:
+        return None
+    evidence = previous["evidence"]
+    query = evidence["query"]
+    if (
+        query.get("corporate_actions_data_quality") != "complete"
+        or view.source["history_start"][:10] < query["corporate_actions_start"]
+        or timestamp(view.source["latest_request"]["end_exclusive"]).astimezone(NEW_YORK).date().isoformat()
+        > query["corporate_actions_end"]
+    ):
+        return None
+    if client.evidence_current(evidence):
+        return evidence
+    # Changed descriptions or operator facts need their new metadata projection,
+    # while the already completed provider action union keeps its exact scope.
+    return acquire(
+        view,
+        RetainedReportClient(client, evidence),
+        previous,
+        query_dates=(query["corporate_actions_start"], query["corporate_actions_end"]),
+    )
+
+
+def acquire(view, client, previous=None, *, refresh=False, query_dates=None):
     if previous:
         client.retain_event_supplements([previous["evidence"]])
     for _ in range(MAX_NAME_CHANGE_SYMBOLS + 1):
@@ -832,11 +931,12 @@ def acquire(view, client, previous=None, *, refresh=False):
                 view.symbol,
                 view.local,
                 window,
-                query_dates=(
+                query_dates=query_dates
+                or (
                     view.source["history_start"][:10],
                     view.source["latest_request"]["end_exclusive"][:10],
                 ),
-                event_supplements=client.all_event_supplements(),
+                event_supplements=client.all_event_supplements(view.symbol),
             )
         except _CompletedLookupChanged:
             continue  # The fresh lookup is now authoritative in this operation's cache.
@@ -853,6 +953,10 @@ def acquire(view, client, previous=None, *, refresh=False):
 
 
 def _finish_evidence(evidence, window):
+    from .sourced_rules import incorporated
+
+    if window.client.rule_applications:
+        evidence["sourced_fact_applications"] = incorporated(window.client, evidence)
     evidence.pop("api_request_count", None)
     observation = getattr(window.client, "observation", None)
     if observation is not None:
@@ -912,7 +1016,7 @@ def acquire_unpriced(symbol, request, client, *, previous=None):
                 local,
                 window,
                 query_dates=(request["start"][:10], request["asof"]),
-                event_supplements=client.all_event_supplements(),
+                event_supplements=client.all_event_supplements(symbol),
             )
         except _CompletedLookupChanged:
             continue

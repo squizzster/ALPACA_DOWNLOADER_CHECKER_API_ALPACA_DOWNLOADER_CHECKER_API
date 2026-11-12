@@ -154,6 +154,9 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     catalogue = by_symbol(observation)
     discovered = discovery_labels(observation)
     graph = work_graph(entries, state["work"])
+    from .sourced_rules import configure
+
+    fact_requirements = configure(evidence_client, evidence_client.rule_applications, graph, entries)
     satisfied_labels = {
         s
         for s, item in state["work"].items()
@@ -225,6 +228,8 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         add(symbol, "changed_identity_mapping")
     for symbol in failures:
         add(symbol, "selection_metadata_failed")
+    for symbol in fact_requirements:
+        add(symbol, "sourced_facts")
     for symbol, prior in state["work"].items():
         if prior["status"] != "complete" and symbol not in satisfied_labels:
             add(symbol, "unfinished_work")
@@ -298,6 +303,10 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         # through live check -> approved append. Carrying prior.acquire forward
         # would make a temporary recovery detour survive every later restart.
         item = {
+            "required_sourced_facts": {
+                **(prior.get("required_sourced_facts", {}) if unfinished else {}),
+                **fact_requirements.get(symbol, {}),
+            },
             "reasons": sorted(why | (set(prior.get("reasons", [])) if unfinished else set())),
             "end_exclusive": end_date,
             "pricing_start": required_start,

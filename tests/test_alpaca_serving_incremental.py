@@ -11,7 +11,7 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient
 
 from alpaca_end_of_day import DataLibrary, StandaloneReader, standalone
-from alpaca_end_of_day._history_coverage import extend_coverage
+from alpaca_end_of_day._history_coverage import coverage_sources, extend_coverage
 from libs.alpaca_lineage_build import storage as lineage_storage
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download import storage as pricing
@@ -46,7 +46,16 @@ class ChangeHandoffTests(unittest.TestCase):
         self.assertEqual(len(current["history_changes"]), MAX_ANCESTORS)
         self.assertNotIn(oldest, {item["source_sha256"] for item in current["history_changes"]})
 
-    def test_incremental_coverage_order_matches_full_coverage_for_disjoint_appends(self):
+    def test_legacy_membership_conversion_never_reads_coverage_relationships(self):
+        class UnreadRelationships(dict):
+            def __getitem__(self, key):
+                raise AssertionError("replayed accepted coverage relationship")
+
+        previous = {"subsets": UnreadRelationships(A=None, B=None), "overlaps": object()}
+        self.assertEqual(coverage_sources(previous), {"A", "B"})
+        self.assertEqual(extend_coverage({"C"}, previous), {"version": 2, "sources": ["A", "B", "C"]})
+
+    def test_incremental_source_membership_matches_full_disjoint_appends(self):
         subsets = [set(), {0}, {1}, {0, 1}]
         for parts in product(subsets, repeat=6):
             old = {name: values for name, values in zip(("A", "B", "C"), parts[:3]) if values}
@@ -237,18 +246,12 @@ class IncrementalServingTests(NativeCase):
                         segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(relabel)
-        rows = standalone._rows
-
-        def selected_rows(root, *args, **kwargs):
-            self.assertEqual(root.name, "TEST", "unaffected identity prices reopened")
-            return rows(root, *args, **kwargs)
-
-        with patch.object(standalone, "_rows", side_effect=selected_rows):
+        with patch.object(standalone, "_rows", side_effect=AssertionError("label projection reopened prices")):
             result = maintain(self.store, symbols={"TEST"})
         self.assertTrue(result["complete"], result)
-        self.assertEqual(result["reused_history_prefixes"], 1)
-        self.assertEqual(result["full_history_evaluations"], 1)
-        self.assertEqual(result["checked_bars"], 8 * len(self.bars))
+        self.assertEqual(result["reused_history_prefixes"], 2)
+        self.assertEqual(result["full_history_evaluations"], 0)
+        self.assertEqual(result["checked_bars"], 0)
         self.assert_full_agreement("OTHER")
 
     def test_one_source_replacement_preserves_independent_identity_checks(self):
@@ -297,12 +300,13 @@ class IncrementalServingTests(NativeCase):
                     segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(relabel, "REUSED")
-        with patch.object(policy, "_bar_reasons", wraps=policy._bar_reasons) as checks:
+        with patch.object(
+            policy, "_bar_reasons", side_effect=AssertionError("label projection repeated numeric checks")
+        ):
             result = maintain(self.store)
         self.assertTrue(result["complete"], result)
-        self.assertEqual(result["reused_history_prefixes"], 1)
-        self.assertEqual(result["full_history_evaluations"], 1)
-        self.assertEqual({call.args[0]["session"][:7] for call in checks.call_args_list}, {"2026-09"})
+        self.assertEqual(result["reused_history_prefixes"], 2)
+        self.assertEqual(result["full_history_evaluations"], 0)
         self.assert_full_agreement("REUSED")
 
     def test_membership_merge_and_split_reuse_independent_completed_checks(self):
@@ -479,7 +483,7 @@ class IncrementalServingTests(NativeCase):
             self.assertIn(reason, decision["reasons"])
             self.assert_full_agreement(symbol)
 
-    def test_published_ownership_change_prevents_prefix_reuse(self):
+    def test_published_label_change_preserves_numerical_prefix(self):
         self.bootstrap()
 
         def relabel(receipt, boundaries):
@@ -490,9 +494,12 @@ class IncrementalServingTests(NativeCase):
                         segment["observation_tickers"] = [segment["historical_symbol"]]
 
         self.publish_change(relabel)
-        result = maintain(self.store)
+        with patch.object(
+            policy, "_bar_reasons", side_effect=AssertionError("label change repeated numeric checks")
+        ):
+            result = maintain(self.store)
         self.assertTrue(result["complete"], result)
-        self.assertEqual(result["reused_history_prefixes"], 0)
+        self.assertEqual(result["reused_history_prefixes"], 1)
         self.assert_full_agreement("TEST")
 
     def test_overlapping_sources_reuse_only_when_historical_selection_is_preserved(self):

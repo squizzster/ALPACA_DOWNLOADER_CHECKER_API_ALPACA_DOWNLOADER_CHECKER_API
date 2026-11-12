@@ -36,6 +36,7 @@ class PublishedPricingDispositionTests(unittest.TestCase):
                 before = fixtures.snapshot(self.root)
                 view = self.view()
                 self.assertEqual(view.source["schema_version"], 32)
+                self.assertEqual(view.materialization_scope, "complete_history")
                 expected = "historical_market_data_only" if populated else "unsupported_empty_symbol"
                 self.assertNotIn("pipeline_receipt_matches", view.local["downloads"][0])
                 with (
@@ -79,12 +80,16 @@ class PublishedPricingDispositionTests(unittest.TestCase):
         index = lineage_storage.read_index(root, "GOOG")
         receipt = lineage_storage.read_receipt(root, "GOOG", index)
         boundaries = lineage_storage.read_boundaries(root, receipt)
-        for options in (
-            {"active_only": True, "previous_boundaries": boundaries},
-            {"resume_from": "2026-10-14", "previous": receipt, "previous_boundaries": boundaries},
+        for expected_scope, options in (
+            ("active_partition", {"active_only": True, "previous_boundaries": boundaries}),
+            (
+                "retained_suffix",
+                {"resume_from": "2026-10-14", "previous": receipt, "previous_boundaries": boundaries},
+            ),
         ):
             with self.subTest(options=tuple(options)):
                 view = self.view(**options)
+                self.assertEqual(view.materialization_scope, expected_scope)
                 self.assertLess(len(view.views["raw"]), len(self.bars))
                 self.assertEqual(
                     view.local["published_pricing"]["row_counts"], dict.fromkeys(ADJUSTMENTS, len(self.bars))

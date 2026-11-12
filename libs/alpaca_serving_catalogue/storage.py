@@ -7,6 +7,7 @@ from contextlib import closing
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
+from alpaca_end_of_day._history_coverage import coverage_sources
 from libs.common.debug_trace import traced
 from libs.common.sqlite_connections import connect_sqlite
 
@@ -130,6 +131,14 @@ def controls(store, *, incomplete=False, recover=False, old_policy=False):
 
 def read_groups(store, keys, *, generation):
     """Read only selected decision bodies from an already accepted catalogue."""
+    from libs.alpaca_lineage_build.recovery_handoffs import recall
+
+    keys = set(keys)
+    carried = {
+        key: value for key in keys if (value := recall(store, "serving_group", (generation, key))) is not None
+    }
+    if carried.keys() == keys:
+        return carried
     try:
         with closing(connect_sqlite(path(store), readonly=True)) as connection:
             connection.execute("BEGIN")
@@ -138,8 +147,8 @@ def read_groups(store, keys, *, generation):
             # rather than authorizing mixed old/new decisions or upstream audits.
             if _state(connection, incomplete=True)["generation"] != generation:
                 raise CatalogueError("selected serving catalogue changed")
-            groups = {}
-            for key in sorted(keys):
+            groups = dict(carried)
+            for key in sorted(keys - carried.keys()):
                 row = connection.execute("SELECT body FROM groups WHERE group_key=?", (key,)).fetchone()
                 if row is None:
                     raise CatalogueError("selected serving group unavailable")
@@ -161,7 +170,7 @@ def _late_bar_projection(groups):
             if "unexplained_missing_sessions" not in decision["reasons"]:
                 continue
             record = records[public_id]
-            sources = {source for order in coverage[public_id].values() for source in order["subsets"]}
+            sources = {source for order in coverage[public_id].values() for source in coverage_sources(order)}
             sessions = set(record["missing_sessions"]) - set(decision["explained_missing_sessions"])
             identity_selected = False
             for source in sources:
@@ -213,7 +222,11 @@ def publish_projection(store, key, selection, group, accepted_state):
                 "UPDATE groups SET selection=?, body=? WHERE group_key=?",
                 (encoded(revised), encoded(group), key),
             )
-        return _write_state(connection, complete=state["complete"])
+        published = _write_state(connection, complete=state["complete"])
+    from libs.alpaca_lineage_build.recovery_handoffs import serving_published
+
+    serving_published(store, state["generation"], published["generation"], {key})
+    return published
 
 
 def retarget_decision(store, key, handoff, accepted_state):
@@ -231,7 +244,11 @@ def retarget_decision(store, key, handoff, accepted_state):
         from . import export_inputs
 
         export_inputs.accept(connection, {"lineage": handoff["lineage_after"], "pricing": handoff["pricing"]})
-        return _write_state(connection, complete=state["complete"])
+        published = _write_state(connection, complete=state["complete"])
+    from libs.alpaca_lineage_build.recovery_handoffs import serving_published
+
+    serving_published(store, state["generation"], published["generation"], {key})
+    return published
 
 
 @traced("serving_late_bar_selection")
@@ -364,6 +381,11 @@ def commit(store, previous, groups):
                     "ineligible_identities": sum(not d["eligible"] for d in group["decisions"]),
                     "late_bar_repairs": _late_bar_projection((group,)),
                 }
+                from .offline import projection as offline_projection
+
+                offline = offline_projection(group)
+                if offline is not None:
+                    selection["offline_ownership"] = offline
                 connection.execute(
                     "INSERT INTO groups VALUES(?, ?, ?, ?)",
                     (key, group["decision_generation"], encoded(selection), encoded(group)),
@@ -387,7 +409,13 @@ def commit(store, previous, groups):
             raise CatalogueError(
                 "conflicting public identity or group membership; no catalogue published"
             ) from error
-        return _write_state(connection, complete=state["complete"])
+        published = _write_state(connection, complete=state["complete"])
+    from libs.alpaca_lineage_build.recovery_handoffs import serving_published
+
+    serving_published(
+        store, state["generation"], published["generation"], set(previous) | {g["locator"] for g in groups}
+    )
+    return published
 
 
 def validate_group(group):
@@ -478,6 +506,9 @@ def validate_group(group):
                 ):
                     raise ValueError("invalid historical metadata interval")
         validate_history_validation(group)
+        from .offline import validate as validate_offline
+
+        validate_offline(group)
         encoded(group)
     except (KeyError, TypeError, ValueError) as error:
         raise CatalogueError(f"invalid new serving decision: {error}") from error

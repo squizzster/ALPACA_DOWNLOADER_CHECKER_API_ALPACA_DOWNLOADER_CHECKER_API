@@ -141,6 +141,7 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
         "checked_bars": 0,
         "published_components": 0,
         "failures": [],
+        "offline_reviews": [],
         "provider_requests": 0,
         "identity_rule_executions": 0,
         "pricing_writes": 0,
@@ -167,7 +168,8 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             # The worker opened the index for native transaction recovery before
             # this read. An empty queue needs no membership reload or payloads.
             pending = work.read(store)
-            if not pending or scope == set():
+            intentions = export_inputs.pending_lineage(store)
+            if (not pending and not intentions) or scope == set():
                 return {
                     **result,
                     "complete": True,
@@ -190,6 +192,19 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             )
         index = writer_view.index()
         entries = index["symbols"]
+        if not (bootstrap or rebuild) and intentions:
+            # The owner journal is absent under this worker lock. A compact
+            # completed serving selection matching the index is authoritative:
+            # finish stale intentions without replaying its upstream work.
+            acknowledged = {}
+            applicable = intentions.keys() if scope is None else intentions.keys() & scope
+            for symbol in applicable:
+                key = controls["members"].get(symbol)
+                prior = controls["groups"].get(key)
+                if prior is not None and _matches(prior, entries):
+                    acknowledged[symbol] = intentions[symbol]
+            export_inputs.reconcile_lineage(store, acknowledged, controls["state"]["generation"])
+            result["reconciled_export_inputs"] = len(acknowledged)
         # A legacy catalogue predates producer invalidation. Only explicit
         # bootstrap/rebuild may establish its applicability, by opening each
         # selected group through the normal generation-bound reader. Numerical
@@ -337,6 +352,12 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
                         for counter, count in evaluated["validation_work"].items():
                             result[counter] += count
                         groups.append(evaluated)
+                        if evaluated.get("offline_ownership"):
+                            from .offline import projection as offline_projection
+
+                            result["offline_reviews"].append(
+                                {"group": evaluated["locator"], **offline_projection(evaluated)}
+                            )
                         covered.update(group.references["lineage"])
                         result["evaluated_groups"] += 1
                     if component & entries.keys() - covered:
@@ -355,7 +376,13 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             except (RuntimeError, OSError, ValueError) as error:
                 details.update(status="error", error_type=type(error).__name__)
                 result["failed"] += 1
-                result["failures"].append({"symbols": sorted(component), "error": str(error)})
+                result["failures"].append(
+                    {
+                        "symbols": sorted(component),
+                        "error": str(error),
+                        **({"outcome": error.outcome} if hasattr(error, "outcome") else {}),
+                    }
+                )
             except BaseException as error:
                 details.update(status="aborted", error_type=type(error).__name__)
                 raise
@@ -386,4 +413,9 @@ def status(store, *, controls=None):
         "online_identities": sum(g["online_identities"] for g in groups.values()),
         "ineligible_identities": sum(g["ineligible_identities"] for g in groups.values()),
         "pending_symbols": sorted(pending),
+        "offline_reviews": [
+            {"group": key, **group["offline_ownership"]}
+            for key, group in sorted(groups.items())
+            if group.get("offline_ownership")
+        ],
     }

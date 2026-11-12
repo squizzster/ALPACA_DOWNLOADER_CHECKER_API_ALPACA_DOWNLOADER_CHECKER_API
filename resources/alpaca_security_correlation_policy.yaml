@@ -4,8 +4,8 @@ policy_version: 1.0.0
 policy_role: production
 
 implementation:
-  correlation_version: 81
-  lineage_version: 36
+  correlation_version: 91
+  lineage_version: 37
 
 execution:
   established_fixed_point:
@@ -47,4 +47,4 @@ execution:
     dependency: legacy_frozen_reconciliation_projection_may_enable_suffix
   observation_selection:
     type: fixed_python_postprocessor
-    implementation: lineage_v36
+    implementation: lineage_v37_documented_public_continuity_v1

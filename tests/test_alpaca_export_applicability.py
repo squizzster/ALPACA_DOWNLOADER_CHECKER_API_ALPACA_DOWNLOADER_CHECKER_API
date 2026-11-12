@@ -206,6 +206,28 @@ class ExportApplicabilityTests(NativeCase):
             export_inputs.accept(connection, refs)
         self.assert_export_blocked_before_bodies(data, "newer-input")
 
+    def test_completed_lineage_intention_is_reconciled_without_upstream_work(self):
+        data = self.bootstrap()
+        export_inputs.invalidate(self.store, "lineage", {"TEST": "f" * 64})
+        with (
+            patch.object(lineage, "read_receipt", side_effect=AssertionError("receipt reread")),
+            patch.object(producer, "evaluate", side_effect=AssertionError("decision repeated")),
+            patch.object(storage, "read_groups", side_effect=AssertionError("checkpoint reread")),
+        ):
+            result = producer.maintain(self.store)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["reconciled_export_inputs"], 1)
+        exported = data.write_csv_export(self.directory / "reconciled")
+        self.assertTrue(Path(exported["manifest"]).exists())
+
+    def test_pending_lineage_journal_prevents_intention_reconciliation(self):
+        self.bootstrap()
+        export_inputs.invalidate(self.store, "lineage", {"TEST": "f" * 64})
+        (self.root / ".pending.json").write_text("{}")
+        with self.assertRaisesRegex(CatalogueError, "publication pending"):
+            producer.maintain(self.store)
+        self.assertEqual(export_inputs.pending_lineage(self.store), {"TEST": "f" * 64})
+
     def test_equal_pricing_outcome_does_not_invalidate_exports(self):
         data = self.bootstrap()
         result = download_pricing(

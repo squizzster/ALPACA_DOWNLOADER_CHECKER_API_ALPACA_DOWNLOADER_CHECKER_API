@@ -224,7 +224,9 @@ class ProductionPolicyAuthorizationTests(TestCase):
 
         current = load_authorized_policy()
         frozen = load_policy(V59_POLICY)
-        self.assertEqual(frozen.semantic_sha256, current.semantic_sha256)
+        # The dated-market stage has a new semantic identity, but inputs with
+        # no such sourced fact retain exactly the established core decisions.
+        self.assertNotEqual(frozen.semantic_sha256, current.semantic_sha256)
         self.assertEqual(evaluate(frozen), evaluate(current))
 
 

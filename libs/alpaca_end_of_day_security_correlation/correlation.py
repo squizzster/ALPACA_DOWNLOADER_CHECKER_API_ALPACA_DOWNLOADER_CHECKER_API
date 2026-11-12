@@ -242,7 +242,9 @@ def build_security_correlation_report(
 
     authenticated_work_items = cache.prepared_source(authenticated_work_items)
     accepted_current_source = (
-        symbol in cache.accepted_current_source_ownership or symbol in cache.accepted_rename_sources
+        symbol in cache.accepted_current_source_ownership
+        or symbol in cache.accepted_rename_sources
+        or symbol in cache.accepted_common_sources
     )
     # The continuation owner already accepted the unchanged complete prefix and
     # the new grid/seam. Re-hashing that historical session set is not a new fact.
@@ -412,6 +414,14 @@ def build_security_correlation_report(
         complete=complete_source,
         informative=closed_history_evidence,
     )
+    common_ownership, common_histories = cache.common_source(
+        symbol,
+        supplied_lineage,
+        authenticated_work_items,
+        session_consensus,
+        complete=complete_source,
+        informative=closed_history_evidence,
+    )
     retired_lower_bound = (
         None
         if accepted_current_source
@@ -442,6 +452,11 @@ def build_security_correlation_report(
                 continue
             for _, source, sessions in authenticated_work_items:
                 for segment in established_by_adjustment.get(source["adjustment"], ()):
+                    if segment.get("accepted_row_ownership") is True:
+                        # This source's input binding still applies. A newly
+                        # constructed fallback can claim only unreserved rows;
+                        # it cannot audit completed historical ownership again.
+                        continue
                     owner = segment["canonical_security"]["alpaca_asset_id"]
                     if owner == interval.asset_id:
                         continue
@@ -501,7 +516,7 @@ def build_security_correlation_report(
                 row_rules=row_correlation_rules,
                 established_segments=established,
                 current_source_ownership=current_source_ownership,
-                sourced_rename_histories=cache._rename_histories.get(symbol, ()),
+                sourced_rename_histories=(*cache._rename_histories.get(symbol, ()), *common_histories),
                 sourced_rename_mapping=cache._rename_mappings.get(symbol),
             )
         )
@@ -560,6 +575,9 @@ def build_security_correlation_report(
         "current_source_ownership": current_source_ownership.to_report() if current_source_ownership else None,
         "sourced_rename_ownership": sourced_rename_ownership,
         "sourced_rename_membership": cache.rename_membership_report(supplied_lineage),
+        "public_common_continuation_membership": cache.common_membership(supplied_lineage),
+        "public_common_continuation_ownership": common_ownership,
+        "security_relations": cache.relation_certificate(supplied_lineage),
         "symbol": symbol,
         "boundary": {
             "owner": "alpaca_end_of_day_security_correlation",

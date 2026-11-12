@@ -59,7 +59,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
                 "cusip": "333333333",
                 "ex_date": "2024-06-20",
                 "record_date": "2024-06-20",
-                "payable_date": "2024-06-21",
+                "payable_date": "2024-06-20",
                 "process_date": "2024-06-20",
                 "rate": 1,
             },
@@ -110,8 +110,9 @@ class SourcedRenamePipelineTests(unittest.TestCase):
             "NEXT": informative_bars("2024-06-10", "2024-06-21"),
             "PRIOR": informative_bars("2024-06-18", "2024-06-21"),
         }
-        # The peer has an uninformative row before its first dated action. New
-        # peer rows may reconsider that ambiguity; NEXT's accepted rows stay shut.
+        # The peer has an uninformative row before its first dated action. That
+        # unresolved peer alone cannot reopen a strictly later suffix when no
+        # observation overlaps and no future action date is reached.
         self.rows["PRIOR"][0].update(o=10, h=10, l=10, c=10, v=0, n=0, vw=0)
         for row in self.rows["NEXT"]:
             for field in ("o", "h", "l", "c", "vw"):

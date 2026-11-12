@@ -13,6 +13,8 @@ from .settings import (
     SYMBOL_FIELD_PATTERN,
     SYMBOL_PATTERN,
 )
+from .sourced_facts import EXTENSIONS, PUBLIC_COMMON_KIND
+from .sourced_facts import selected as selected_facts
 from .symbol_disposition import classify_symbol_disposition
 
 
@@ -188,6 +190,7 @@ def build_identity_report(
         ),
         key=supplement_key,
     )
+    sourced = []
     succession_cusips = {
         item["facts"][key] for item in sourced_successions for key in ("old_cusip", "new_cusip")
     }
@@ -231,7 +234,13 @@ def build_identity_report(
             key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
         )
         actions, applied_supplements = project_actions(provider_corporate_actions)
-        cusips = sorted(set(extract_cusips(actions)) | succession_cusips)
+        sourced = selected_facts(event_supplements, symbols=queued_symbols, cusips=extract_cusips(actions))
+        for item in sourced:
+            if item["kind"] == PUBLIC_COMMON_KIND:
+                for role in ("predecessor", "successor"):
+                    queue_symbol(item["facts"][role]["symbol"])
+        fact_cusips = {item["facts"][role]["cusip"] for item in sourced for role in ("predecessor", "successor")}
+        cusips = sorted(set(extract_cusips(actions)) | succession_cusips | fact_cusips)
         for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
             for identifier in identifiers:
                 lookup_key = (lookup_kind, identifier)
@@ -269,7 +278,7 @@ def build_identity_report(
         key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
     )
     actions, applied_supplements = project_actions(provider_corporate_actions)
-    cusips = sorted(set(extract_cusips(actions)) | succession_cusips)
+    cusips = sorted(set(extract_cusips(actions)) | succession_cusips | fact_cusips)
     asset_lookups = [
         asset_lookups_by_key[(lookup_kind, identifier)]
         for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips))
@@ -353,7 +362,11 @@ def build_identity_report(
     warnings = [
         "Alpaca bar rows remain symbol-keyed; this report does not bind individual rows to an asset UUID."
     ]
-    if local_report["downloads"] and "published_pricing" not in local_report:
+    if (
+        local_report["downloads"]
+        and "published_pricing" not in local_report
+        and local_report.get("counts_known") is not False
+    ):
         warnings.append(
             "Local gzip SHA-256 authentication was not performed; stat_matches_sidecar is only a metadata check."
         )
@@ -363,8 +376,10 @@ def build_identity_report(
         )
     if not local_report["present"]:
         warnings.append(f"No local end-of-day directory exists for {symbol}.")
-    if "published_pricing" not in local_report and any(
-        not item["stat_matches_sidecar"] for item in local_report["downloads"]
+    if (
+        "published_pricing" not in local_report
+        and local_report.get("counts_known") is not False
+        and any(not item["stat_matches_sidecar"] for item in local_report["downloads"])
     ):
         warnings.append("At least one local gzip/sidecar pair is missing, unreadable, or stat-inconsistent.")
 
@@ -408,4 +423,9 @@ def build_identity_report(
             "facts": sourced_successions,
         }
         result["provider_corporate_actions"] = provider_corporate_actions
+    for kind, extension in EXTENSIONS.items():
+        facts = [item for item in sourced if item["kind"] == kind]
+        if facts:
+            result[extension] = {"schema_version": 1, "facts": facts}
+            result["provider_corporate_actions"] = provider_corporate_actions
     return result

@@ -26,6 +26,7 @@ def obligation(item, previous=None):
         "correction_id",
         "pricing_correction",
         "required_group",
+        "required_sourced_facts",
     )
     if previous.get("obligation_id") and all(item.get(k) == previous.get(k) for k in keys):
         return {**item, "obligation_id": previous["obligation_id"]}
@@ -120,6 +121,10 @@ def satisfied(item, entry, pending, *, approved=False):
     projection = entry.get("projection") or {}
     return (
         not pending
+        and all(
+            projection.get("sourced_fact_applications", {}).get(key) == value
+            for key, value in item.get("required_sourced_facts", {}).items()
+        )
         and covers_pricing_start(item, projection.get("pricing_request"))
         and projection.get("processed_through", "")[:10] >= pricing_target(item)
         and (approved or projection.get("update_obligation_id") == item["obligation_id"])
@@ -205,6 +210,7 @@ class WorkPolicy:
             for identifier in work.get(symbol, {}).get("outcome", {}).get("request_identifiers", [])
         }
         self.current_group = set()
+        self.rule_applications = ()
 
     def update_index(self, entries):
         self.index["symbols"].update(entries)
@@ -604,6 +610,28 @@ class WorkPolicy:
             item = self.work.get(symbol)
             if item is None:
                 continue
+            required_facts = item.get("required_sourced_facts", {})
+            if required_facts and any(
+                receipt["evidence"].get("sourced_fact_applications", {}).get(key) != value
+                for key, value in required_facts.items()
+            ):
+                from .sourced_rules import incorporated
+
+                # A new application scope may reference already accepted facts.
+                # Project its incorporation without repeating ownership proof.
+                applied = incorporated(self, receipt["evidence"])
+                receipt["evidence"] = {
+                    **receipt["evidence"],
+                    "sourced_fact_applications": {
+                        **receipt["evidence"].get("sourced_fact_applications", {}),
+                        **applied,
+                    },
+                }
+            if any(
+                receipt["evidence"].get("sourced_fact_applications", {}).get(key) != value
+                for key, value in item.get("required_sourced_facts", {}).items()
+            ):
+                raise WorkDeferred(f"{symbol}: required sourced facts were not incorporated")
             if set(item.get("required_group", [])) - group:
                 continue
             source = sources[symbol]
@@ -797,6 +825,48 @@ class WorkPolicy:
                 correction_id=completed["correction_id"],
                 source_generation=completed["source_sha256"],
             )
+
+    def correction_completion_for(self, symbol, generation, source):
+        """Carry a completed correction across certified unchanged retained history.
+
+        The pricing producer's ancestry is authoritative. A later append cannot
+        revoke a completed correction of the earlier span. This also recovers an
+        interruption after append publication but before workflow acknowledgement;
+        no receipt, payload or provider observation is opened again here.
+        """
+        item = self.work.get(symbol, {})
+        completed = item.get("correction_completion") or {}
+        if completed.get("correction_id") != item.get("correction_id") or not completed:
+            return None
+        if completed.get("source_sha256") == generation:
+            return completed
+        contract = item.get("pricing_correction") or {}
+        end = contract.get("end_exclusive")
+        request = source.get("latest_request") or {}
+        if not generation or not end or item.get("invalidate_pricing") or request.get("start", "") < end:
+            return None
+        for ancestor in source.get("history_changes", ()):
+            if ancestor.get("source_sha256") != completed.get("source_sha256"):
+                continue
+            changed = ancestor.get("changed_from")
+            if changed is None or changed >= end[:10]:
+                return {**completed, "source_sha256": generation}
+        return None
+
+    def carry_correction_completions(self, results):
+        """Accept already-published append ancestry before lineage consumes it."""
+        carried = []
+        for result in results:
+            if result.get("mode") != "append" or not result.get("source_sha256"):
+                continue
+            completed = self.correction_completion_for(
+                result["symbol"],
+                result["source_sha256"],
+                {"latest_request": result.get("request"), "history_changes": result.get("history_changes", ())},
+            )
+            if completed and completed != self.work[result["symbol"]].get("correction_completion"):
+                carried.append({**result, "correction_completion": completed})
+        self.accept_correction_completions(carried)
 
     def fail(self, symbols, outcome, *, stage):
         """Include maintenance and newly discovered dependencies in durable retries."""

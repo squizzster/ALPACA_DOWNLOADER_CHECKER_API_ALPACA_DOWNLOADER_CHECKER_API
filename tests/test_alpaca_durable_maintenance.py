@@ -1,6 +1,7 @@
 """Interrupted obligations, restricted groups and retained-history maintenance."""
 
 import copy
+import json
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from libs.alpaca_lineage_build import storage, universe_state
 from libs.alpaca_lineage_build.check_summary import rebuild
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.universe_update import rebuild_universe, run_update
+from libs.alpaca_pricing_download import full_publication
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
 from libs.alpaca_pricing_download.http import BarsClient
@@ -168,12 +170,40 @@ def newly_eligible_history_appended_without_check():
         corrected = [bar("2016-01-04", "50"), bar("2026-10-16", "50"), bar("2026-10-19", "50")]
         case.live = {"AAA": corrected, "BBB": corrected}
         case.pages.clear()
-        result = run_update(
-            store, "2026-10-20", pricing_client=case.pricing, identity_client=identity, registry=case.registry
-        )
+        publications = {}
+        record = full_publication.accept_full_publication
+
+        def completed(context, source, generation, endpoints):
+            accepted = record(context, source, generation, endpoints)
+            publications[accepted.symbol] = accepted
+            return accepted
+
+        def request(params):
+            repeated = publications.keys() & set(params["symbols"].split(","))
+            historical = {
+                symbol
+                for symbol in repeated
+                if timestamp(params["start"]) < timestamp(publications[symbol].end_exclusive)
+            }
+            if historical:
+                raise AssertionError(f"completed newly eligible publication checked again: {historical}")
+            return case.page(params)
+
+        with (
+            patch.object(full_publication, "accept_full_publication", side_effect=completed),
+            patch.object(case.pricing, "_get", side_effect=request),
+        ):
+            result = run_update(
+                store,
+                "2026-10-20",
+                pricing_client=case.pricing,
+                identity_client=identity,
+                registry=case.registry,
+            )
         return {
             "complete": result["complete"],
             "initial_work": result["plan"]["work"],
+            "completed_publications": sorted(publications),
             "checked_tickers": sum(
                 stage["check"]["stats"].get("tickers", 0)
                 for name in ("maintenance", "maintenance_after_discovery")
@@ -425,15 +455,12 @@ class DurableMaintenanceTests(unittest.TestCase):
             self.assertTrue(universe_state.read_state(case.store)["work"]["AAA"]["correction_id"])
             case.live["AAA"][-1] = case.old[-1]
             result = case.update()
-            self.assertFalse(result["complete"], result)
-            self.assertTrue(
-                any(
-                    f.get("outcome", {}).get("outcome") == "provider_observation_conflict"
-                    for f in result["failures"]
-                )
+            self.assertTrue(result["complete"], result)
+            resolution = json.loads(
+                (case.store / "end_of_day/pricing/AAA/correction.observations.json").read_bytes()
             )
-            case.live["AAA"][-1] = bar("2026-10-16", "50")
-            self.assertTrue(case.update(retry_blocked=True)["complete"])
+            self.assertEqual("50", resolution["resolutions"][0]["previous_observation"][4])
+            self.assertEqual(str(case.old[-1]["c"]), resolution["resolutions"][0]["current_observation"][4])
             self.assertEqual(read_pricing_views(case.store, "AAA")["all"][0][4], "50")
 
     def test_completed_correction_is_reused_after_interruption_before_lineage(self):
@@ -630,10 +657,11 @@ class DurableMaintenanceTests(unittest.TestCase):
         self.assertEqual(result["second_already_published"], [])
         self.assertEqual(result["full_aaa_requests_second"], 0)
 
-    def test_newly_eligible_member_gets_its_own_check_and_correction(self):
+    def test_newly_eligible_member_retains_completed_producer_acceptance(self):
         result = newly_eligible_history_appended_without_check()
         self.assertTrue(result["complete"], result)
-        self.assertEqual(result["checked_tickers"], 2)
+        self.assertEqual(result["checked_tickers"], 1)
+        self.assertIn("BBB", result["completed_publications"])
         self.assertEqual(result["bbb_stored_closes"], ["50"] * 3)
 
     def test_missing_all_baseline_fails_closed_without_redownloading_other_views(self):

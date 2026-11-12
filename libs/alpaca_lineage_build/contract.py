@@ -15,9 +15,28 @@ from .correlation_policy_contract import (
     PRODUCTION_POLICY_SEMANTIC_SHA256,
     RETAINED_V78_SEMANTIC_SHA256,
     RETAINED_V79_SEMANTIC_SHA256,
+    RETAINED_V82_SEMANTIC_SHA256,
+    RETAINED_V83_SEMANTIC_SHA256,
+    RETAINED_V84_SEMANTIC_SHA256,
+    RETAINED_V85_SEMANTIC_SHA256,
+    RETAINED_V86_SEMANTIC_SHA256,
+    RETAINED_V87_SEMANTIC_SHA256,
+    RETAINED_V88_SEMANTIC_SHA256,
+    RETAINED_V89_SEMANTIC_SHA256,
+    RETAINED_V90_SEMANTIC_SHA256,
     retained_v78_policy,
     retained_v79_policy,
     retained_v80_policy,
+    retained_v81_policy,
+    retained_v82_policy,
+    retained_v83_policy,
+    retained_v84_policy,
+    retained_v85_policy,
+    retained_v86_policy,
+    retained_v87_policy,
+    retained_v88_policy,
+    retained_v89_policy,
+    retained_v90_policy,
     reusable_policy,
     valid_sha256,
 )
@@ -25,11 +44,11 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 67
+RUNTIME_VERSION = 90
 COMPUTATION_REVISION = 2
 # A runtime repair is not a new data policy. DO NOT force completed stores through
 # reconstruction merely to align runtime and persisted publication version numbers.
-VERSION = 36  # Persisted publication and policy contract, independent of runtime releases.
+VERSION = 37  # Persisted publication and policy contract, independent of runtime releases.
 SUPPORTED_VERSIONS = tuple(range(1, VERSION + 1))
 MAX_CLOSURE = 100
 MAX_ACQUISITION_WAVES = 3
@@ -134,7 +153,21 @@ def retained_v79_decision(document: dict) -> bool:
     """
     if not (
         isinstance(document, dict)
-        and (VERSION, PRODUCTION_CORRELATION_VERSION) in {(35, 80), (36, 81)}
+        and (VERSION, PRODUCTION_CORRELATION_VERSION)
+        in {
+            (35, 80),
+            (36, 81),
+            (37, 82),
+            (37, 83),
+            (37, 84),
+            (37, 85),
+            (37, 86),
+            (37, 87),
+            (37, 88),
+            (37, 89),
+            (37, 90),
+            (37, 91),
+        }
         and COMPUTATION_REVISION == 2
         and reusable_computation(document)
         and document.get("versions")
@@ -174,7 +207,7 @@ def retained_v80_decision(document):
     """
     return (
         isinstance(document, dict)
-        and VERSION == 36
+        and VERSION in (36, 37)
         and COMPUTATION_REVISION == 2
         and REPORT_VERSION == 4
         and reusable_computation(document)
@@ -183,21 +216,232 @@ def retained_v80_decision(document):
             "lineage": 35,
             "identity_report": 4,
             "correlation": 80,
-            "correlation_policy_sha256": PRODUCTION_POLICY_SEMANTIC_SHA256,
+            "correlation_policy_sha256": RETAINED_V82_SEMANTIC_SHA256,
             "calendar_sha256": us_market_hours_sha256(),
         }
         and retained_v80_policy(document.get("correlation_policy"))
     )
 
 
+def retained_v81_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {
+            **versions(),
+            "lineage": 36,
+            "correlation": 81,
+            "correlation_policy_sha256": RETAINED_V82_SEMANTIC_SHA256,
+        }
+        and retained_v81_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v82_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 82, "correlation_policy_sha256": RETAINED_V82_SEMANTIC_SHA256}
+        and retained_v82_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v83_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 83, "correlation_policy_sha256": RETAINED_V83_SEMANTIC_SHA256}
+        and retained_v83_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v84_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 84, "correlation_policy_sha256": RETAINED_V84_SEMANTIC_SHA256}
+        and retained_v84_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v85_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 85, "correlation_policy_sha256": RETAINED_V85_SEMANTIC_SHA256}
+        and retained_v85_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v86_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 86, "correlation_policy_sha256": RETAINED_V86_SEMANTIC_SHA256}
+        and retained_v86_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v87_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 87, "correlation_policy_sha256": RETAINED_V87_SEMANTIC_SHA256}
+        and retained_v87_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v88_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 88, "correlation_policy_sha256": RETAINED_V88_SEMANTIC_SHA256}
+        and retained_v88_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v89_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 89, "correlation_policy_sha256": RETAINED_V89_SEMANTIC_SHA256}
+        and retained_v89_policy(document.get("correlation_policy"))
+    )
+
+
+def retained_v90_decision(document):
+    return (
+        isinstance(document, dict)
+        and VERSION == 37
+        and reusable_computation(document)
+        and document.get("versions")
+        == {**versions(), "correlation": 90, "correlation_policy_sha256": RETAINED_V90_SEMANTIC_SHA256}
+        and retained_v90_policy(document.get("correlation_policy"))
+    )
+
+
 def reusable_decision(document: dict) -> bool:
     """Accept current outputs and exactly applicable retained-policy handoffs."""
     if isinstance(document, dict) and isinstance(document.get("versions"), dict):
+        if document["versions"].get("correlation") == 90 and PRODUCTION_CORRELATION_VERSION == 91:
+            return retained_v90_decision(document)
+        if document["versions"].get("correlation") == 89 and PRODUCTION_CORRELATION_VERSION in (90, 91):
+            return retained_v89_decision(document)
+        if document["versions"].get("correlation") == 88 and PRODUCTION_CORRELATION_VERSION in (89, 90, 91):
+            return retained_v88_decision(document)
+        if document["versions"].get("correlation") == 87 and PRODUCTION_CORRELATION_VERSION in (88, 89, 90, 91):
+            return retained_v87_decision(document)
+        if document["versions"].get("correlation") == 86 and PRODUCTION_CORRELATION_VERSION in (
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
+            return retained_v86_decision(document)
+        if document["versions"].get("correlation") == 85 and PRODUCTION_CORRELATION_VERSION in (
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
+            return retained_v85_decision(document)
+        if document["versions"].get("correlation") == 84 and PRODUCTION_CORRELATION_VERSION in (
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
+            return retained_v84_decision(document)
+        if document["versions"].get("correlation") == 83 and PRODUCTION_CORRELATION_VERSION in (
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
+            return retained_v83_decision(document)
+        if document["versions"].get("correlation") == 82 and PRODUCTION_CORRELATION_VERSION in (
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
+            return retained_v82_decision(document)
+        if document["versions"].get("correlation") == 81 and PRODUCTION_CORRELATION_VERSION in (
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
+            return retained_v81_decision(document)
         if document["versions"].get("correlation") == 78:
             return retained_v78_decision(document)
-        if document["versions"].get("correlation") == 80 and PRODUCTION_CORRELATION_VERSION == 81:
+        if document["versions"].get("correlation") == 80 and PRODUCTION_CORRELATION_VERSION in (
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
             return retained_v80_decision(document)
-        if document["versions"].get("correlation") == 79 and PRODUCTION_CORRELATION_VERSION in (80, 81):
+        if document["versions"].get("correlation") == 79 and PRODUCTION_CORRELATION_VERSION in (
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+        ):
             return retained_v79_decision(document)
     return current_decision(document)
 

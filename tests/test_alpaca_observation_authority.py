@@ -325,6 +325,58 @@ class ObservationSelectionTests(TestCase):
             {s["observation_selection"] for s in chosen["OLD"]["correlated"]["segments"]}, {"selected"}
         )
 
+    def test_sole_partial_bundle_retains_explicit_incomplete_capability(self):
+        inputs, reports = self.fixture()
+        reports["NEW"]["correlated"]["segments"] = [
+            segment for segment in reports["NEW"]["correlated"]["segments"] if segment["adjustment"] != "all"
+        ]
+        with patch(
+            "libs.alpaca_lineage_build.observations._own_interval",
+            side_effect=AssertionError("sole source built unused authority rankings"),
+        ):
+            selected, corrections = select_observations({"NEW": inputs["NEW"]}, {"NEW": reports["NEW"]})
+        self.assertEqual(corrections, {})
+        self.assertEqual(
+            {segment["observation_selection"] for segment in selected["NEW"]["correlated"]["segments"]},
+            {"incomplete"},
+        )
+
+    def test_sole_source_missing_one_adjusted_session_preserves_complete_sessions(self):
+        inputs, reports = self.fixture()
+        inputs["NEW"].views["all"] = inputs["NEW"].views["all"][:-1]
+        reports["NEW"]["correlated"]["segments"][-1]["row_end"] -= 1
+        selected, corrections = select_observations({"NEW": inputs["NEW"]}, {"NEW": reports["NEW"]})
+        self.assertEqual(corrections, {})
+        raw = [s for s in selected["NEW"]["correlated"]["segments"] if s["adjustment"] == "raw"]
+        self.assertEqual(raw[-1]["row_start"], len(inputs["NEW"].views["raw"]))
+        self.assertEqual(raw[-1]["observation_selection"], "incomplete")
+        self.assertTrue(all(s["observation_selection"] == "selected" for s in raw[:-1]))
+
+    def test_complementary_partial_sources_cannot_manufacture_a_complete_bundle(self):
+        inputs, reports = self.fixture()
+        reports["OLD"]["correlated"]["segments"] = [
+            segment
+            for segment in reports["OLD"]["correlated"]["segments"]
+            if segment["adjustment"] in ADJUSTMENTS[:4]
+        ]
+        reports["NEW"]["correlated"]["segments"] = [
+            segment
+            for segment in reports["NEW"]["correlated"]["segments"]
+            if segment["adjustment"] in ADJUSTMENTS[4:]
+        ]
+        selected, corrections = select_observations(inputs, reports)
+        self.assertEqual(corrections, {})
+        self.assertEqual(
+            {s["observation_selection"] for s in selected["OLD"]["correlated"]["segments"]}, {"conflict"}
+        )
+        self.assertFalse(
+            any(
+                segment["observation_selection"] == "selected"
+                for report in selected.values()
+                for segment in report["correlated"]["segments"]
+            )
+        )
+
     def test_no_own_label_authority_keeps_real_disagreement_explicit(self):
         inputs, reports = self.fixture()
         for report in reports.values():

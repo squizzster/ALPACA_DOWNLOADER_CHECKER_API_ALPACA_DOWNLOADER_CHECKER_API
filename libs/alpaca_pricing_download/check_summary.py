@@ -364,8 +364,28 @@ def refresh_prices(root, *, source=None, endpoints=None, source_sha256=None):
     if not summary_path(store).exists():
         return
     with _connection(store, readonly=True, allow_legacy=True) as db:
-        present = db.execute("SELECT 1 FROM entries WHERE symbol=?", (symbol,)).fetchone()
+        cursor = db.execute("SELECT * FROM entries WHERE symbol=?", (symbol,))
+        present = cursor.fetchone()
+        columns = [item[0] for item in cursor.description]
     if present:
+        if (
+            source_sha256 is not None
+            and "source_sha256" in columns
+            and present[columns.index("source_sha256")] == source_sha256
+        ):
+            # This exact published generation already completed its summary.
+            # A journal/acknowledgement retry may clear the pricing obligation,
+            # but cannot reconstruct or validate those accepted rows again.
+            with _connection(store, allow_legacy=True) as db:
+                before = db.total_changes
+                db.execute(
+                    "DELETE FROM pending WHERE symbol=? AND owner='pricing' AND NOT EXISTS "
+                    "(SELECT 1 FROM pending WHERE symbol=? AND owner='lineage')",
+                    (symbol, symbol),
+                )
+                if db.total_changes != before:
+                    db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
+            return
         if source is None:
             source = load_source(root, symbol)
         replace_entries(

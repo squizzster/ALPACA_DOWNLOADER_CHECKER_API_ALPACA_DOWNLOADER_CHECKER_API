@@ -44,7 +44,11 @@ all eight) from one snapshot, all succeeding or failing. `include_evidence=True`
 
 `resolve_ticker`/`get_generation` need no price reads. `list_published_sources` returns possibly stale/unresolved
 locators, not an online catalogue. `get_evidence` exposes published identities, assignments and normalized
-evidence. Share one [GroupSnapshot](../alpaca_end_of_day/_standalone_group.py) across IDs:
+evidence. Its `security_relations` field carries the completed distinct-security conversion projection,
+including external endpoints with null provider/public IDs and separate legal/trading labels. A relation does
+not merge identities or imply online availability. Legacy receipts expose null, meaning no assertion was
+published. The same projection appears in group evidence, included history evidence and published evidence.
+Share one [GroupSnapshot](../alpaca_end_of_day/_standalone_group.py) across IDs:
 
 ```python
 with reader.open_group("DELL") as group:
@@ -60,7 +64,8 @@ with `wait=True`; stale/incomplete/incompatible publications raise `StandaloneRe
 `cache_bytes` defaults to zero. `cache_info()` reports bounded RAM retention; group `set_cache_limit` stays
 within that cap, not a total-process limit. Caching retains locks, current-selection/pending checks and trust in
 published digests. Readers consume [producer-selected observations](lineage.md#observation-selection), preserving
-accepted dated labels; unsettled source authority fails explicitly. Assembly precedes filtering, so narrow
+accepted dated labels. Competing producer-selected observations require generation-bound owning lineage recovery;
+readers never choose between them by numerical equality, ticker preference or source coverage. Assembly precedes filtering, so narrow
 queries may read older payloads. Authority: [standalone.py](../alpaca_end_of_day/standalone.py), `_history`.
 
 Reader CLI defaults to `raw`; `--all-adjustments` selects eight. Ambiguity needs symbol plus `--public-id`.

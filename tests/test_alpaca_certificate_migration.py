@@ -54,6 +54,8 @@ def install_v76(case, *, serving=True, correlation=76):
             case.store, controls["groups"], generation=controls["state"]["generation"]
         )
         for group in groups.values():
+            # The historical producer predates the explicit choice capability.
+            group["history_validation"].pop("observation_choice_handoffs", None)
             group["references"]["lineage"] = {
                 name: entries[name]["sha256"] if name in entries else None
                 for name in group["references"]["lineage"]

@@ -510,5 +510,62 @@
     "modifications": [
       "Certify sourced unchanged-common-equity renames and bounded earlier labels with exact CUSIP mappings, preserving one public identity and source-scoped historical ownership without merging unrelated reused labels."
     ]
+  },
+  {
+    "modifications": [
+      "Certify sourced non-redeemed public common continuation and distinct security conversion independently; retain exact continuing-acquirer exemptions and source-scoped ownership without changing row order."
+    ]
+  },
+  {
+    "modifications": [
+      "Authorize correlation-83 dated-market occupancy as a separately named postprocessor, binding sourced marketplace dates to existing public identities and actual complete temporary-market observations while preserving distinct securities and unchanged accepted v82 core decisions."
+    ]
+  },
+  {
+    "modifications": [
+      "Distinguish dated market labels from adjustment continuity: explicit same-security and CUSIP facts, matching non-dividend observations and accepted post-market dividends may retain a continuing complete bundle when a temporary route omits those adjustments. Preserve exact v83 decisions outside newly submitted scope."
+    ]
+  },
+  {
+    "modifications": [
+      "Add explicit new-public-parent common-share continuity, separate from legal registrant identity: documented unique listed succession of eligible public common one-for-one may join observed public endpoints while private target, founder, right and unit consideration remain separate. Earlier policies cannot execute this route.",
+      "Version-2 distinct conversions retain separately identified unit components and holder-level fractional-entitlement rounding; those relations never union historical right or unit identities."
+    ]
+  },
+  {
+    "modifications": [
+      "Allocate documented own-common recapitalization history to its continuing public identity when a predecessor provider UUID is unavailable, preserving the dated CUSIP and the explicit missing UUID rather than inventing an identifier or withholding the supported history. Current mapping, exact interpreted provider facts and absence of a competing public owner bind this scoped producer."
+    ]
+  },
+  {
+    "modifications": [
+      "Reserve source-bound accepted row ownership before applying new fallback intervals, without comparing those candidates against already completed historical allocations; preserve contradiction checks for newly calculated phase allocations.",
+      "Carry accepted public membership into a dated market whose selected sources all have zero new rows, without reopening historical assignments; fresh unallocated rows and conflicting memberships still require owning resolution."
+    ]
+  },
+  {
+    "modifications": [
+      "Add a bounded documented public-security identity producer that compares dated ownership with nonallocation, preserves accepted owners, and keeps unavailable dated provider UUIDs explicit."
+    ]
+  },
+  {
+    "modifications": [
+      "Resolve a documented public-security binding through one already completed containing UUID component while retaining incomparable scoped components for owning recovery; existing row owners and numerical states remain separate."
+    ]
+  },
+  {
+    "modifications": [
+      "Represent explicit automatic one-for-one public-common reclassification under continued legal existence, separately from claims that the prior legal share class remained outstanding. Bind the dated retained provider identifier separately from the legal effective instant; keep common-holder continuity separate from private targets, subsidiaries and distinct instruments."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind explicitly documented automatic one-for-one public holding-company exchange without merging private targets or separate rights. Refine dated labels and provider identifiers only within the documented continuing public component, retaining source positions and explicit numerical states."
+    ]
+  },
+  {
+    "modifications": [
+      "Compose an explicitly evidenced public-common exchange into a new public parent with dated security episodes. Refine positive dated metadata within the resulting public component without asserting unchanged legal identity or proportional rights across a business combination; preserve exact completed correlation90 provenance."
+    ]
   }
 ]

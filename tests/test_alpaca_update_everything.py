@@ -327,7 +327,21 @@ class UpdateEverythingTests(unittest.TestCase):
         accepted = decisions()
         reference = run_lineage(self.store, ["AAA", "BBB"], identity_client=self.identity, refresh=True)
         self.assertEqual(reference["failed"], 0, reference)
-        self.assertEqual(decisions(), accepted)
+        # A full refresh may use later source coverage to select a more
+        # descriptive rule for the same owner. An ordinary append must keep
+        # the already accepted provenance rather than replaying those rows.
+        provenance = {"correlation_rule", "correlation_method", "identity_confidence", "warnings"}
+
+        def ownership(value):
+            return {
+                symbol: {
+                    mode: [{key: item for key, item in row.items() if key not in provenance} for row in rows]
+                    for mode, rows in modes.items()
+                }
+                for symbol, modes in value.items()
+            }
+
+        self.assertEqual(ownership(decisions()), ownership(accepted))
 
     def test_complete_empty_hints_still_catch_up_changed_rules_without_metadata_requests(self):
         checks = read_checks(self.store)

@@ -135,6 +135,37 @@ def complete_unchanged_pricing(store, symbol, generation):
         accept(connection, {"pricing": {symbol: generation}})
 
 
+def pending_lineage(store):
+    """Select compact intentions once; only the lineage owner can resolve them."""
+    from .storage import path
+
+    with closing(connect_sqlite(path(store), readonly=True)) as connection:
+        if not complete(connection):
+            raise CatalogueError("export input applicability incomplete; run catalogue rebuild")
+        return dict(connection.execute("SELECT symbol, generation FROM export_inputs WHERE kind='lineage'"))
+
+
+def reconcile_lineage(store, selected, generation):
+    """Finish abandoned/completed lineage intentions under its owning worker lock.
+
+    Caller has accepted no pending lineage journal and matching compact current
+    index/serving generations. These are owner completion facts, not permission
+    to reopen receipts, calculate ownership or authenticate historical prices.
+    Conditional deletion cannot consume a subsequently renewed intention.
+    """
+    from .storage import WRITE_TIMEOUT_SECONDS, _state, path
+
+    if not selected:
+        return
+    with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
+        if _state(connection, incomplete=True)["generation"] != generation:
+            raise CatalogueError("serving selector changed before lineage acknowledgement")
+        connection.executemany(
+            "DELETE FROM export_inputs WHERE symbol=? AND kind='lineage' AND generation=?",
+            sorted(selected.items()),
+        )
+
+
 def finish(connection):
     initialize(connection)
     connection.execute("UPDATE export_input_state SET complete=1 WHERE id=1 AND version=?", (VERSION,))

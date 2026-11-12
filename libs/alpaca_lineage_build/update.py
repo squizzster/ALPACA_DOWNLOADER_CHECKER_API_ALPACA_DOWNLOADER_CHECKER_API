@@ -154,6 +154,7 @@ def update_everything(
         if recovered["failed"]:
             return result
         remaining, maintained_symbols, completed_generations = symbols, set(), {}
+        completed_scopes = {}
         for round_number in range(100):
             ready = []
             checked = stage(
@@ -184,6 +185,7 @@ def update_everything(
             # generations. DO NOT add another live check or reselect membership
             # before append; newly admitted sources need their own later approval.
             snapshot = ready.pop()
+            completed_scopes.update(snapshot["approved_scopes"])
             maintained_symbols.update(e["symbol"] for e in snapshot["entries"])
             appended = stage(
                 "append" if round_number == 0 else f"append_new_members_{round_number}",
@@ -198,6 +200,7 @@ def update_everything(
             )
             if work_policy is not None:
                 work_policy.record_results(appended, stage="append")
+                work_policy.carry_correction_completions(appended["results"])
                 work_policy.history_approved.update(
                     {
                         item["symbol"]: item["source_sha256"]
@@ -276,7 +279,9 @@ def update_everything(
                     and index["symbols"].get(symbol, {}).get("source_sha256") == generation
                 ):
                     correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
-                    context.history_checks[symbol] = (dict(entry), generation, correction)
+                    context.cache_history(
+                        "check", symbol, (dict(entry), generation, correction), completed_scopes[symbol]
+                    )
         return result
     except (RuntimeError, OSError, ValueError) as error:
         if work_policy is not None and not getattr(error, "work_failure_recorded", False):

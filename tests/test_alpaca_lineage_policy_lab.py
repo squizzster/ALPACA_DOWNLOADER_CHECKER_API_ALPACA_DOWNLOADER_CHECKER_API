@@ -2927,7 +2927,7 @@ class PolicyComparisonTests(TestCase):
         self.assertEqual([{"AAA": entry}], calls)
         unavailable.assert_called_once_with(store, {}, {"AAA"})
         load_source.assert_called_once()
-        load_pricing.assert_called_once_with(store, "AAA", source=policy_input)
+        load_pricing.assert_called_once_with(store, "AAA", source=policy_input, source_sha256=generation)
 
         changed_snapshot = copy.deepcopy(snapshot)
         changed_snapshot["receipts"]["AAA"]["input_sources"] = {"AAA": "f" * 64}

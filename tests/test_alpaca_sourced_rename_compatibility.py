@@ -6,19 +6,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 from libs.alpaca_lineage_build import contract
-from libs.alpaca_lineage_build.correlation_policy_contract import PRODUCTION_POLICY_SEMANTIC_SHA256
+from libs.alpaca_lineage_build.correlation_policy_contract import RETAINED_V82_SEMANTIC_SHA256
 from tests.test_alpaca_closed_departure_compatibility import prior_decision
 
 
 def v80_decision():
     document = prior_decision(unresolved=80)
     document["versions"].update(
-        lineage=35, correlation=80, correlation_policy_sha256=PRODUCTION_POLICY_SEMANTIC_SHA256
+        lineage=35, correlation=80, correlation_policy_sha256=RETAINED_V82_SEMANTIC_SHA256
     )
     document["correlation_policy"].update(
         execution_profile="correlation_v80_policy_engine",
         implementation={"correlation_version": 80, "lineage_version": 35},
-        semantic_sha256=PRODUCTION_POLICY_SEMANTIC_SHA256,
+        semantic_sha256=RETAINED_V82_SEMANTIC_SHA256,
     )
     return document
 
@@ -48,7 +48,7 @@ class SourcedRenameCompatibilityTests(unittest.TestCase):
             document = v80_decision()
             document[field] = value
             self.assertFalse(contract.reusable_decision(document))
-        with patch.object(contract, "VERSION", 37):
+        with patch.object(contract, "VERSION", 38):
             self.assertFalse(contract.reusable_decision(v80_decision()))
 
     def test_v79_complete_group_scope_excludes_exact_two_label_exception(self):

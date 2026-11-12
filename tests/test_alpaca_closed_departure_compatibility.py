@@ -102,7 +102,10 @@ class ClosedDepartureCompatibilityTests(unittest.TestCase):
                 self.assertFalse(contract.reusable_decision(document))
 
     def test_prior_policy_exception_does_not_follow_future_production_versions(self):
-        with patch("libs.alpaca_lineage_build.correlation_policy_contract.PRODUCTION_CORRELATION_VERSION", 82):
+        with patch(
+            "libs.alpaca_lineage_build.correlation_policy_contract.PRODUCTION_CORRELATION_VERSION",
+            contract.PRODUCTION_CORRELATION_VERSION + 1,
+        ):
             self.assertFalse(retained_v79_policy(prior_policy()))
 
     def test_compact_planning_selects_only_affected_prior_group(self):

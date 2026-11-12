@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 37
+VERSION = 38
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -183,6 +183,7 @@ def build_parser():
         "update",
         "refresh",
         "rebuild",
+        "recover",
         "inspect",
         "migrate-index",
         "migrate-policy",
@@ -190,7 +191,11 @@ def build_parser():
     ):
         p = lineage.add_parser(name)
         _store(p)
-        if name == "rebuild":
+        if name == "recover":
+            p.add_argument("--selection", type=Path, required=True)
+            p.add_argument("--plan", action="store_true")
+            p.add_argument("--debug", type=Path, metavar="FILE.jsonl")
+        elif name == "rebuild":
             p.add_argument("--all-published", action="store_true", required=True)
             p.add_argument("--plan", action="store_true")
             p.add_argument("--debug", type=Path, metavar="FILE.jsonl")
@@ -320,7 +325,15 @@ def _store_operation_mode(args):
         or (
             command == "lineage"
             and operation
-            in {"update", "refresh", "rebuild", "migrate-index", "migrate-policy", "migrate-assignments"}
+            in {
+                "update",
+                "refresh",
+                "rebuild",
+                "recover",
+                "migrate-index",
+                "migrate-policy",
+                "migrate-assignments",
+            }
             and not getattr(args, "plan", False)
         )
         or (command == "universe" and operation in {"reconcile", "rebuild"})
@@ -417,6 +430,10 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "recover":
+            from libs.alpaca_lineage_build.retained_recovery import recover
+
+            return recover(args.store, args.selection, plan=args.plan, progress=progress)
         if operation == "rebuild":
             from libs.alpaca_lineage_build.rebuild import rebuild
 

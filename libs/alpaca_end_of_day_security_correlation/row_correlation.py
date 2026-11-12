@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY
 
-from . import sourced_rename
+from . import public_common_continuation, security_relations, sourced_rename
 from .closed_departure import METHOD as CURRENT_SOURCE_METHOD
 from .closed_departure import CurrentSourceOwnership, assess_current_source, continue_current_source
 from .current_symbol_reuse import (
@@ -263,6 +263,8 @@ class CorrelationCache:
         stable_phase_handoffs=True,
         sourced_succession_certificates=True,
         sourced_rename_certificates=True,
+        public_common_certificates=True,
+        new_public_parent_continuations=True,
         closed_departure_current_sources=True,
     ):
         self.ownership_interval_rules = ownership_interval_rules
@@ -290,6 +292,16 @@ class CorrelationCache:
         self.stable_phase_handoffs = stable_phase_handoffs
         self.sourced_succession_certificates = sourced_succession_certificates
         self.sourced_rename_certificates = sourced_rename_certificates
+        self.public_common_certificates = public_common_certificates
+        self.new_public_parent_continuations = new_public_parent_continuations
+        self.accepted_public_common_membership = None
+        self.accepted_security_relations = None
+        self._public_common_membership = None
+        self._security_relations = None
+        self._public_common_sources = {}
+        self.accepted_common_bounds = {}
+        self.accepted_common_routes = ()
+        self.accepted_common_sources = {}
         self._rename_group = None
         self._rename_sources = {}
         self._rename_mappings = {}
@@ -315,6 +327,57 @@ class CorrelationCache:
         self._current_source_ownership = {}
         self._session_consensus = {}
 
+    def common_membership(self, lineage):
+        if self._public_common_membership is None:
+            self._public_common_membership = self.accepted_public_common_membership or (
+                public_common_continuation.certify_group(
+                    (self.selected_evidence or {"selected": lineage}).values(),
+                    complete=self.rename_scope_complete,
+                    new_public_parent=self.new_public_parent_continuations,
+                )
+                if self.public_common_certificates
+                else {"version": 1, "certificates": [], "issues": []}
+            )
+        return self._public_common_membership
+
+    def relation_certificate(self, lineage):
+        if self._security_relations is None:
+            self._security_relations = self.accepted_security_relations or (
+                security_relations.certify_group(
+                    (self.selected_evidence or {"selected": lineage}).values(),
+                    complete=self.rename_scope_complete,
+                    extended_terms=self.new_public_parent_continuations,
+                )
+                if self.public_common_certificates
+                else {"version": 1, "relations": [], "issues": []}
+            )
+        return self._security_relations
+
+    def common_source(self, symbol, lineage, *args, **kwargs):
+        if symbol in self.accepted_common_sources:
+            if symbol not in self._public_common_sources:
+                handoff = self.accepted_common_sources[symbol]
+                self._public_common_sources[symbol] = (
+                    handoff,
+                    public_common_continuation.histories(handoff, self.common_membership(lineage)),
+                )
+            return self._public_common_sources[symbol]
+        if symbol not in self._public_common_sources:
+            self._public_common_sources[symbol] = (
+                public_common_continuation.source_history(
+                    symbol,
+                    lineage,
+                    self.common_membership(lineage),
+                    *args,
+                    accepted_bounds=self.accepted_common_bounds,
+                    accepted_routes=self.accepted_common_routes,
+                    **kwargs,
+                )
+                if self.public_common_certificates and self.common_membership(lineage)["certificates"]
+                else (None, ())
+            )
+        return self._public_common_sources[symbol]
+
     def rename_certificates(self, lineage):
         if not self.sourced_rename_certificates:
             return (), ()
@@ -331,6 +394,7 @@ class CorrelationCache:
                 self._rename_group = sourced_rename.certify_group(
                     (self.selected_evidence or {"selected": lineage}).values(),
                     complete=self.rename_scope_complete,
+                    relations=self.relation_certificate(lineage) if self.public_common_certificates else None,
                 )
         return self._rename_group
 
@@ -410,6 +474,11 @@ class CorrelationCache:
     def inherit_continuity(self, established):
         # Same selected inputs and established rules; only the certified fourth
         # rule changes. Reuse the completed chronology and continuity authorities.
+        self._public_common_membership = established._public_common_membership
+        self._security_relations = established._security_relations
+        self._public_common_sources = dict(established._public_common_sources)
+        self.accepted_common_bounds = established.accepted_common_bounds
+        self.accepted_common_routes = established.accepted_common_routes
         self._rename_group = established._rename_group
         self._rename_membership_report = established._rename_membership_report
         self._rename_sources = dict(established._rename_sources)
@@ -471,6 +540,12 @@ class CorrelationCache:
                     candidates.extend(certificate.identity_edge() for certificate in renames)
                 candidates.extend(edge for c in renames for edge in c.label_edges())
                 edge_issues.extend(rename_issues)
+                common = self.common_membership(lineage)
+                candidates.extend(
+                    public_common_continuation.CommonCertificate(**item).identity_edge()
+                    for item in common["certificates"]
+                )
+                edge_issues.extend(common["issues"])
                 candidates.extend(successions)
                 edge_issues.extend(succession_issues)
             else:

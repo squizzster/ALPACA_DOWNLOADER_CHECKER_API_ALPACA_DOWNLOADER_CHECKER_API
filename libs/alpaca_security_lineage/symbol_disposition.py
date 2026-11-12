@@ -218,7 +218,9 @@ def _local_market_data_evidence(local_report: dict[str, Any], symbol: str) -> di
             and len(adjustments) == len(_COMPLETE_ADJUSTMENT_SET)
             and set(adjustments) == _COMPLETE_ADJUSTMENT_SET
         ),
-        "nonempty_download_count": sum(row_count > 0 for row_count in row_counts),
+        "nonempty_download_count": None
+        if local_report.get("counts_known") is False
+        else sum(row_count > 0 for row_count in row_counts),
         "maximum_rows": max(row_counts, default=None),
         "feeds": sorted(set(feeds)),
         "timeframes": sorted(set(timeframes)),

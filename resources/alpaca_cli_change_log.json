@@ -186,5 +186,10 @@
     "modifications": [
       "Wait for the exclusive store gate in canonical writer commands, reporting a cancellable WAIT phase before provider or store work; preserve nonblocking CSV exports and library defaults."
     ]
+  },
+  {
+    "modifications": [
+      "Expose lineage recover with an explicit generation-bound selection, offline plan and debug capture; preserve owning journal recovery, selected serving maintenance and provider-free retained reconstruction."
+    ]
   }
 ]

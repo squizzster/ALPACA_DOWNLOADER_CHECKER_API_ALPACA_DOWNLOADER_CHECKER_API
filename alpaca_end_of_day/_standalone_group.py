@@ -120,6 +120,8 @@ class GroupSnapshot:
         self._assignments = self._sources = self._cache = None
         self._all_assignments = self._receipts = None
         self._evidence = None
+        if hasattr(self, "_transfer_date_rows"):
+            self._transfer_date_rows.clear()
 
     @property
     def references(self):
@@ -146,6 +148,93 @@ class GroupSnapshot:
         if self._all_assignments is None:
             raise StandaloneReaderError("full assignments were not selected")
         return self._all_assignments
+
+    def membership_rebinds(self):
+        """Completed lineage transfers; serving owns only numerical composition."""
+        return {
+            name: receipt["membership_only_rebind"]
+            for name, receipt in self._receipts.items()
+            if receipt.get("membership_only_rebind") is not None
+        }
+
+    def dated_market_projections(self):
+        """Completed label projections, independently of numerical validation."""
+        return {
+            name: receipt["dated_market_projection"]
+            for name, receipt in self._receipts.items()
+            if receipt.get("dated_market_projection") is not None
+        }
+
+    def numerical_source_revisions(self):
+        return {
+            name: receipt["numerical_source_revision"]
+            for name, receipt in self._receipts.items()
+            if receipt.get("numerical_source_revision") is not None
+        }
+
+    def numerical_source_equivalences(self):
+        """Borrow completed equality projections from the selected receipts."""
+        return {
+            name: receipt["numerical_source_equivalence"]
+            for name, receipt in self._receipts.items()
+            if receipt.get("numerical_source_equivalence") is not None
+        }
+
+    def revised_observations(self, public_id, revision, *, days=None):
+        """Consume held selected bundles, or assemble only an unfinished scope."""
+        from libs.alpaca_lineage_build.recovery_handoffs import recall
+
+        held = recall(self._reader.store, "source_choice_bundles", revision["id"])
+        days = set(revision["sessions"][public_id]) if days is None else set(days)
+        if held is not None and public_id in held:
+            return {day: values for day, values in held[public_id].items() if day in days}
+        from bisect import bisect_left
+
+        from libs.alpaca_pricing_download.contract import COLUMNS, NEW_YORK, timestamp
+
+        selected, cache, dates, frames = {day: {} for day in days}, {}, {}, {}
+
+        def session(row):
+            if row[0] not in dates:
+                dates[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+            return dates[row[0]]
+
+        for name, assignments in self.assignments.items():
+            for adjustment, kind, segment in assignments:
+                if (segment.get("security_identity") or {}).get("security_id") != public_id or segment.get(
+                    "observation_selection"
+                ) != "selected":
+                    continue
+                required = days & {day for day in days if segment["from"] <= day <= segment["to"]}
+                if not required:
+                    continue
+                rows = _rows(
+                    self._reader.store / "end_of_day/pricing" / name,
+                    self._sources[name],
+                    kind,
+                    adjustment,
+                    cache,
+                    self._cache,
+                )
+                for day in sorted(required):
+                    index = bisect_left(
+                        rows, day, lo=segment["row_start"] - 1, hi=segment["row_end"], key=session
+                    )
+                    if index == segment["row_end"] or session(rows[index]) != day:
+                        continue
+                    if adjustment in selected[day]:
+                        raise StandaloneReaderError("revised observation has multiple selected sources")
+                    frame_key = id(rows), index, tuple(segment["observation_tickers"])
+                    if frame_key not in frames:
+                        frames[frame_key] = {
+                            **dict(zip(COLUMNS, rows[index])),
+                            "session": day,
+                            "tickers": segment["observation_tickers"],
+                        }
+                    selected[day][adjustment] = {"bar": frames[frame_key]}
+        if any(set(values) != set(ADJUSTMENTS) for values in selected.values()):
+            raise StandaloneReaderError("revised observations lack their selected complete bundle")
+        return selected
 
     def serving_inputs(self):
         """Compact published ownership runs, independent of physical rollover.
@@ -200,7 +289,24 @@ class GroupSnapshot:
             offsets[symbol] = view_offsets
         return inputs, offsets
 
+    def observation_choice_handoffs(self):
+        """Borrow explicit lineage choices independently of serving ownership."""
+        from libs.alpaca_lineage_build.checkpoint_choices import copied, project
+
+        return copied(project(self._receipts, self._generations))
+
     def preserves_pricing_prefix(self, symbol, previous, *, through=None):
+        if not hasattr(self, "_accepted_pricing_prefixes"):
+            self._accepted_pricing_prefixes = {}
+        key = symbol, id(previous), through
+        if key not in self._accepted_pricing_prefixes:
+            self._accepted_pricing_prefixes[key] = (
+                previous,
+                self._preserves_pricing_prefix(symbol, previous, through=through),
+            )
+        return self._accepted_pricing_prefixes[key][1]
+
+    def _preserves_pricing_prefix(self, symbol, previous, *, through=None):
         # The pricing producer owns this change ancestry. Consume its compact
         # changed-from guarantee; DO NOT compare old payload bytes or rebuild the
         # history to prove it again. Missing ancestry cannot authorize reuse.
@@ -242,14 +348,14 @@ class GroupSnapshot:
         return views, coverage
 
     def serving_session_dates(self, public_id):
-        """Explicit legacy projection rebuild: assemble dates from accepted raw positions.
+        """Owning legacy projection: assemble dates from accepted raw positions.
 
         Numerical outcomes, ownership and overlap compatibility remain accepted.
         This does not compare prices, calculate coverage order or select owners.
         """
         from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
 
-        dates, cache = set(), {}
+        dates, cache, selected_rows = set(), {}, {}
         for symbol, assignments in self._assignments.items():
             for adjustment, kind, segment in assignments:
                 if (
@@ -258,18 +364,52 @@ class GroupSnapshot:
                     or segment.get("observation_selection") == "superseded"
                 ):
                     continue
-                rows = _rows(
-                    self._reader.store / "end_of_day/pricing" / symbol,
-                    self._sources[symbol],
-                    kind,
-                    "raw",
-                    cache,
-                    self._cache,
-                )
+                key = symbol, kind
+                if key not in selected_rows:
+                    selected_rows[key] = _rows(
+                        self._reader.store / "end_of_day/pricing" / symbol,
+                        self._sources[symbol],
+                        kind,
+                        "raw",
+                        cache,
+                        self._cache,
+                    )
+                rows = selected_rows[key]
                 dates.update(
                     timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
                     for row in rows[segment["row_start"] - 1 : segment["row_end"]]
                 )
+        return sorted(dates)
+
+    def _serving_transferred_session_dates(self, runs, offsets):
+        """Assemble an accepted whole donor's raw dates after transfer selection.
+
+        The serving owner has accepted generation, positions and labels. Read
+        only the named raw partitions and never repeat their numerical checks.
+        Keep partition assembly for the lifetime of this locked group snapshot.
+        """
+        from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
+
+        if self._assignments is None:
+            raise StandaloneReaderError("group snapshot is closed")
+        if not hasattr(self, "_transfer_date_rows"):
+            self._transfer_date_rows = {}
+        dates = set()
+        for run in runs:
+            symbol, kind = run["source"], run["boundary"]
+            rows = _rows(
+                self._reader.store / "end_of_day/pricing" / symbol,
+                self._sources[symbol],
+                kind,
+                "raw",
+                self._transfer_date_rows,
+                self._cache,
+            )
+            offset = offsets[symbol]["raw"][kind]
+            dates.update(
+                timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                for row in rows[run["row_start"] - offset - 1 : run["row_end"] - offset]
+            )
         return sorted(dates)
 
     def latest_pricing_revision(self, symbol, previous):

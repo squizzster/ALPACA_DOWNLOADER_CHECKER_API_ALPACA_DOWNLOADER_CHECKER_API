@@ -188,6 +188,22 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
     accepted = {}
     for symbol, view in inputs.items():
         accepted[symbol] = getattr(view, "accepted_identity_memberships", None) or {}
+        graph = getattr(view, "accepted_uuid_lineage_candidates", None)
+        if graph is not None:
+            cache._uuid_candidates[id(graph[0])] = graph
+        common = getattr(view, "accepted_public_common_membership", None)
+        if common is not None:
+            cache.accepted_public_common_membership = common
+        relations = getattr(view, "accepted_security_relations", None)
+        if relations is not None:
+            cache.accepted_security_relations = relations
+        cache.accepted_common_bounds.update(getattr(view, "accepted_common_bounds", None) or {})
+        cache.accepted_common_routes = getattr(view, "accepted_common_routes", ())
+        ownership = getattr(view, "accepted_public_common_ownership", None)
+        if ownership is not None:
+            cache.accepted_common_sources[symbol] = ownership
+        if getattr(view, "materialized", True) is False:
+            continue
         cache.register_name_change_source(
             symbol,
             view.downloads.values(),
@@ -222,6 +238,8 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
 def _correlation_cache(policy) -> CorrelationCache:
     return CorrelationCache(
         sourced_rename_certificates=policy.implementation_correlation_version >= 81,
+        public_common_certificates=policy.implementation_correlation_version >= 82,
+        new_public_parent_continuations=policy.implementation_correlation_version >= 85,
         closed_departure_current_sources=policy.implementation_correlation_version >= 80,
         sourced_succession_certificates=policy.implementation_correlation_version >= 79,
         completed_event_scope=(
@@ -293,7 +311,16 @@ def _correlation_cache(policy) -> CorrelationCache:
 
 
 def _selected_group_cache(
-    store, policy, inputs, evidence, *, selected_group, unavailable_pricing, auxiliary_evidence=None
+    store,
+    policy,
+    inputs,
+    evidence,
+    *,
+    selected_group,
+    unavailable_pricing,
+    auxiliary_evidence=None,
+    closed_sources=None,
+    closed_evidence=None,
 ):
     """Keep completed producers when a peer interrupts this immutable group.
 
@@ -331,6 +358,10 @@ def _selected_group_cache(
         tuple(sorted(unavailable_pricing)),
         tuple((name, view.source_sha256, id(view), id(evidence[name])) for name, view in sorted(inputs.items())),
         tuple((name, id(item)) for name, item in sorted((auxiliary_evidence or {}).items())),
+        tuple(
+            (name, view.source_sha256, id(view.previous), id((closed_evidence or {})[name]))
+            for name, view in sorted((closed_sources or {}).items())
+        ),
     )
     held = getattr(owner, "_completed_correlation_producers", None)
     if held is not None and held[0] is policy and held[1] == binding:
@@ -339,7 +370,12 @@ def _selected_group_cache(
     owner._completed_correlation_producers = (
         policy,
         binding,
-        (tuple(view for view in inputs.values() if view is not owner), tuple(evidence.values())),
+        (
+            tuple(view for view in inputs.values() if view is not owner),
+            tuple(evidence.values()),
+            tuple((closed_evidence or {}).values()),
+            tuple((closed_sources or {}).values()),
+        ),
         cache,
     )
     return cache
@@ -660,6 +696,9 @@ def correlate_schema_four(
     pricing_generations: dict[str, str],
     include_trace: bool = True,
     auxiliary_evidence=None,
+    closed_sources=None,
+    closed_evidence=None,
+    closed_report_loader=None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Execute the schema-v4 frozen-baseline/two-phase contract in memory."""
     cache = _selected_group_cache(
@@ -670,7 +709,17 @@ def correlate_schema_four(
         selected_group=selected_group,
         unavailable_pricing=unavailable_pricing,
         auxiliary_evidence=auxiliary_evidence,
+        closed_sources=closed_sources,
+        closed_evidence=closed_evidence,
     )
+    cache.closed_sources = closed_sources or {}
+    cache.closed_report_loader = closed_report_loader
+    cache.selected_evidence.update(closed_evidence or {})
+    if closed_sources:
+        cache.rename_scope_complete = set(selected_group) == inputs.keys() | closed_sources.keys() | set(
+            unavailable_pricing
+        )
+        cache.closed_departure_current_sources = False
     _register_sources(cache, inputs)
     phase_one_passes = [] if include_trace else None
     baseline = _correlate_until_stable(
@@ -869,6 +918,9 @@ def evaluate_policy(
     execution_trace: dict[str, Any] | None = None,
     evidence_projection: dict[str, dict[str, Any]] | None = None,
     auxiliary_evidence=None,
+    closed_sources=None,
+    closed_evidence=None,
+    closed_report_loader=None,
 ) -> dict[str, dict[str, Any]]:
     """Execute one compiled policy; there is no implicit Python-rule fallback."""
     # Mandatory phase/certificate checks establish this NEW decision at its owner.
@@ -953,6 +1005,9 @@ def evaluate_policy(
             pricing_generations=pricing_generations or {},
             include_trace=execution_trace is not None,
             auxiliary_evidence=auxiliary_evidence,
+            closed_sources=closed_sources,
+            closed_evidence=closed_evidence,
+            closed_report_loader=closed_report_loader,
         )
         projected = evidence
 

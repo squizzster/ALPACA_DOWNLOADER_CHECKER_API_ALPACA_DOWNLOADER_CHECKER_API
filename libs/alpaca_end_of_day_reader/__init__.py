@@ -1,4 +1,4 @@
-"""Shared source-selection helpers for the standalone reader."""
+"""Shared source-choice consumption guards for the standalone reader."""
 
 from .errors import EndOfDayReaderError
 

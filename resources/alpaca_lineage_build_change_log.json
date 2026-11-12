@@ -401,5 +401,135 @@
       "Select ordinary append payloads from the pricing producer's already accepted first changed session, avoiding closed-period reads when a calendar-only request gap crosses a month.",
       "Carry completed event/fact projections across metadata traversal, peer reports and retries, seeding canonical retained positive and negative projections without rematching accepted provider events; validate each genuinely new action/fact observation once."
     ]
+  },
+  {
+    "modifications": [
+      "Publish format-37 public-common membership, source ownership, non-union relations and exact membership-only transfers; select metadata closure and accepted closed sources before payload work, preserving frozen compatibility and journal recovery.",
+      "Retain accepted source owners across added foreign dependency evidence and public-component joins; scope actual ownership invalidation to source-bound facts while preserving prior observations and completed peer work."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume scoped sourced-event rule applications during ordinary daily updates; select unapplied named groups from compact publication facts and require exact journaled incorporation before workflow completion, preserving pricing acceptance and unrelated groups."
+    ]
+  },
+  {
+    "modifications": [
+      "Emit complete source-ownership envelopes when lifting accepted legacy sources into format 37, and recover the selected runtime-69 lift omission through a metadata-only lineage journal without repeating assignments, certificates or pricing work."
+    ]
+  },
+  {
+    "modifications": [
+      "Generate membership transfers from final retained numerical contributions across all source-work paths, exclude empty aliases, and recover selected already-published transfers from accepted serving checkpoints through a metadata-only journal with original generation bindings."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve completed disjoint numerical-source selections during public-membership joins before observation contests; restore selected legacy checkpoint contributions through the lineage journal by changing only observation-choice metadata, retaining ownership, dates, prices and applicable approvals. Enforce selected path guards before recovery-cache consumption."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry completed correction outcomes across producer-certified retained-history appends and recover interrupted acknowledgement from selected ancestry without repeated correction acquisition. Preserve applicable accepted lineage decisions under unrelated append bookkeeping."
+    ]
+  },
+  {
+    "modifications": [
+      "Declare each in-memory pricing input's materialization scope and fully materialize every selected priced member before ordinary complete-group correlation; reject mixed retained-suffix/full publication while preserving valid prefix-only and journal handoffs without repeated provider or boundary work."
+    ]
+  },
+  {
+    "modifications": [
+      "Add explicitly selected retained-only recovery bound to accepted receipt, pricing, membership and policy generations; journal a version-1 compact completion handoff so current-revision defective decisions can be reconstructed once without provider access, pricing writes or a universe-wide invalidation.",
+      "Consume a completed zero-row lineage handoff before summary membership or endpoint work, avoiding repeated validator reads for accepted empty sources during retained recovery and ordinary publication."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume contributing-source membership from accepted legacy or version-2 serving checkpoints during selected membership-transfer recovery, without reconstructing obsolete numerical coverage rankings.",
+      "Consume completed full-acquisition publications before post-discovery live-check selection and after dependency publication, bound to both compact lineage/summary generations, mapping, cutoff, first/tail facts and current workflow requirements; do not fabricate comparisons or repeat producer checks.",
+      "Retain resulting-generation acceptance for approved dependency appends as well as complete acquisitions; actual mapping changes select one new comparison whose completed result survives subsequent publication.",
+      "Bind cached comparisons and approvals to their original target, mapping-evidence requirement and correction ID; preserve each record's scope through append and lineage, reject changed actual index generations for producer-derived approvals, and route missing required mapping evidence to owning recovery before provider work.",
+      "Publish independently versioned explicit observation-choice runs alongside new assignment handoffs, preserving recorded states, owners, labels and exact boundary-local bounds. Share alias projections, accept declared run schemas once at receipt ingress and carry immutable generation-bound capabilities without repeated validation; retain legacy absence and frozen journal recovery.",
+      "Require a complete eight-view source bundle for each newly selected session; preserve sole-source incomplete histories and their partial capabilities, keep complementary partial rivals conflicted, and retain the exact-alias fast path."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume explicitly reviewed generation-bound retained candidate handoffs through owning recovery; retain completed correlation, numerical selection and assignment construction, check only current applicability under locks, and publish through the existing interruption journal without upstream reads or calculation replay.",
+      "Limit metadata applicability classification to sources whose accepted numerical choices or nonempty membership results actually consume it; selected price replacement does not repeat an unused classification for an already completed empty membership result."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry explicit accepted numerical choice states through sourced membership work independently of serving ownership; unknown legacy flags enter owning selection and negative or partial choices cannot become selected donors merely from a non-null owner.",
+      "Add independently versioned sourced dated market occupancy for existing public identities: preserve actual trading labels separately from provider aliases, recover observed rows supported by exact dated market evidence, and prefer complete dedicated when-issued bundles only inside their documented market without remapping accepted pricing.",
+      "Project scoped regular-way market labels from accepted assignment metadata before historical payload loading or identity/numerical evaluation. Carry an explicit generation-bound label-only result into serving, preserving unrelated owners and exact numerical states, and retain already-read unchanged assignment bodies during prepared publication."
+    ]
+  },
+  {
+    "modifications": [
+      "Restrict newly documented temporary-market numerical contests to exact observed sessions, preserving accepted ownership and every outside choice. Carry source membership, selected sources and the unchanged session grid in a generation-bound revision; transport held bundles with explicit alias slots into prepared recovery without replay."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept version-2 dated-market adjustment continuity evidence; refine affected numerical choices from a completed unpublished label projection without repeating identity correlation or label construction, while retaining original serving and receipt bindings."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry explicit numerical-choice capabilities into selected membership-transfer recovery independently of serving ownership; unknown legacy state requires owning selection. Admit separately versioned new-public-parent common-listing evidence while retaining previous accepted decisions outside submitted scope."
+    ]
+  },
+  {
+    "modifications": [
+      "Interpret explicitly documented own-common-share capital repayments and consolidations at metadata ingress, preserving exact raw provider actions and sourced endpoint discrepancies; carry the resulting interpretation without repeating accepted provider observations."
+    ]
+  },
+  {
+    "modifications": [
+      "Consume retained prepared fact envelopes under their known version spelling without replaying facts; preserve source-scoped accepted UUID memberships and row ownership during peer reconstruction; use completed empty coverage as the append boundary rather than auditing the span after the last observed bar; recover a selected persisted catalogue observation by its accepted ID and timestamp without repeating catalogue acceptance. Keep retained recovery metadata under its completed action-query scope when that scope covers the admitted observation dates, and match consumer fact selection to the producer rather than expanding it through conversion-recipient lookup outputs.",
+      "Preserve the broader per-source fact scope selected by a completed group producer; expose the existing post-correlation publication consumer so interrupted work can finish from held inputs and completed reports without acquiring metadata, rereading prices or repeating correlation."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept version-3 dated public-security assertions with explicit continuing-share treatment and primary dated names, exchanges and registrant identifiers, independently of current provider descriptions.",
+      "Plan documented first-ownership recovery before payload access, retain existing positive owners and explicit numerical choices, and carry completed identity bindings and projections through publication and ordinary append. Canonicalize new fact order at metadata production so applicability cannot retry an identical fact set merely because input order differed."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry completed owner reports through a selected public-component extension by projecting only component references; preserve dated assets, labels, positions and explicit numerical states, and select actual newly joined overlap for numerical reconciliation.",
+      "Retain completed numerical stages, per-source publication parts and finalized handoffs across interrupted construction and publication, keyed by actual receipt/pricing generations, accepted metadata and policy. Producer completion of technical row counts keeps the same operation scope."
+    ]
+  },
+  {
+    "modifications": [
+      "Retain completed cross-source eight-view equality with explicit accepted donor choices and exact previous receipt/pricing bindings; preserve disjoint decisions through later source work without comparing prices again.",
+      "Lend producer-decoded immutable pricing partitions within the operation under their selected boundary generations, including counterpart assembly and serving consumption."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept version-4 documented public-share reclassification facts with exact unit treatment and legal instant, carry their completed scoped membership and ownership through ordinary source work, and preserve exact completed correlation-88 decisions until actual selected evidence changes."
+    ]
+  },
+  {
+    "modifications": [
+      "Accept version5 public holding-company exchange facts and source-scoped dated metadata refinement. Carry corrected labels independently of unchanged numerical selections with version3 membership transfers, preserving exact completed correlation89 decisions. Keep accepted later bundles beside newly allocated peers using exact timestamps and explicit complete eight-view source choices, without price comparison or downstream serving gates. Retain completed receipt ingress and metadata producer objects across retry."
+    ]
+  },
+  {
+    "modifications": [
+      "Bind only newly submitted public-continuity certificates, carry accepted earlier proofs and compose their completed membership with primary dated metadata. Keep fully superseded histories closed to price access when episode boundaries need no timestamp subdivision; publish their completed metadata projection once, retaining numerical states and canonical public references.",
+      "Compose accepted source components as undirected membership only when a new evidenced edge selects them; reuse an already completed containing public ID. Bind unchanged peer metadata and completed closed-source projections across interruption; a different accepted copy cannot revoke their original operation handoff."
+    ]
+  },
+  {
+    "modifications": [
+      "Carry selected logical download digests and request context on retained peer descriptors and ownership segments, allowing fresh correlation to consume held donor rows without reopening or authenticating accepted pricing. Source work supplies the materialized pricing handoff after metadata planning. Preserve generation mismatch rejection and the completed retained report across peer interruption."
+    ]
   }
 ]

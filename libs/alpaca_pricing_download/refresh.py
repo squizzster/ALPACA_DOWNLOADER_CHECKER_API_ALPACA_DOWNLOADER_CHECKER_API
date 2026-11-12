@@ -595,6 +595,28 @@ class PlannedClient:
         fetch = getattr(self.client, "fetch_acquired", self.client.fetch)
         return fetch(symbol, adjustment, start, end, asof=asof)
 
+    def fetch_current_observation(self, symbol, adjustment, start, end, *, asof):
+        """A new conflict response cannot consume an earlier buffered witness."""
+        key = (True, symbol, adjustment, start, end, asof)
+        cached, _ = _prefetch(
+            [
+                {
+                    "kind": "bars",
+                    "why": "acquisition_check",
+                    "symbols": [symbol],
+                    "adjustments": [adjustment],
+                    "asof": asof,
+                    "ranges": [{"start": start.isoformat(), "end_exclusive": end.isoformat()}],
+                }
+            ],
+            self.client,
+            check=True,
+            metrics=self.metrics,
+            progress=self.progress,
+            merge_ranges=False,
+        )
+        return cached[key]
+
 
 def _endpoint_needs(symbol, endpoints, asof, why, *, cutoff=None):
     return [

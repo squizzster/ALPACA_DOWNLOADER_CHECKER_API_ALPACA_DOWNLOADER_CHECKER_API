@@ -37,6 +37,7 @@ class PricingInput:
     views: dict
     downloads: dict
     local: dict
+    materialization_scope: str
     previous_assignment_summary: dict | None = None
     correction_from: str | None = None
     prefix_boundaries: dict | None = None
@@ -47,6 +48,7 @@ class PricingInput:
     accepted_current_source_ownership: dict | None = None
     accepted_sourced_rename_ownership: dict | None = None
     accepted_sourced_rename_membership: dict | None = None
+    accepted_documented_membership: dict | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
         # Ignored paths satisfy the injected interface; they must not trigger filesystem access.
@@ -74,6 +76,13 @@ def load_pricing(
     # map. Read the data needed for this correlation scope; DO NOT authenticate
     # gzip hashes or enumerate unselected boundaries before accepting its facts.
     selected = source is not None
+    materialization_scope = (
+        "retained_suffix"
+        if resume_from is not None
+        else "active_partition"
+        if active_only
+        else "complete_history"
+    )
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
     source = load_source(root, symbol) if source is None else source
     if source is None:
@@ -86,6 +95,8 @@ def load_pricing(
     partitions = {} if partitions is None else partitions
 
     def read(root, source, kind, *, selected=True):
+        from .recovery_handoffs import remember_partition
+
         key = (str(root), kind, source["boundaries"][kind]["sha256"])
         if key not in partitions:
             partitions[key] = load_published_boundary(root, source, kind, selected=selected)
@@ -97,6 +108,7 @@ def load_pricing(
                 boundary_sha256=key[-1],
                 source_sha256=generation,
             )
+        remember_partition(store, symbol, kind, key[-1], partitions[key])
         return dict(partitions[key])
 
     corrected = projection_from or (
@@ -228,17 +240,18 @@ def load_pricing(
         "manifest_errors": [],
     }
     return PricingInput(
-        symbol,
-        source,
-        generation,
-        views,
-        downloads,
-        local,
-        prior_summary,
-        corrected,
-        clipped,
-        previous["processed_through"] if corrected else None,
-        reprojected_sessions=removed if projection_from else None,
+        symbol=symbol,
+        source=source,
+        source_sha256=generation,
+        views=views,
+        downloads=downloads,
+        local=local,
+        materialization_scope=materialization_scope,
+        previous_assignment_summary=prior_summary,
+        correction_from=corrected,
+        prefix_boundaries=clipped,
+        previous_coverage_end=previous["processed_through"] if resume_from is not None and previous else None,
+        reprojected_sessions=removed,
     )
 
 
@@ -303,6 +316,12 @@ def rule_loaders(inputs: dict, preliminary: dict, cache: CorrelationCache):
         )
 
     def correlation(symbol):
+        if symbol in getattr(cache, "closed_sources", {}):
+            report = cache.closed_report_loader(symbol)
+            return SimpleNamespace(
+                correlated=report["correlated"],
+                sources_by_filename={item["data_file"]: item for item in report["source_downloads"]},
+            )
         if symbol not in preliminary:
             raise SecurityCorrelationError(f"no current correlation for {symbol}")
         report = preliminary[symbol]
@@ -318,3 +337,96 @@ def rule_loaders(inputs: dict, preliminary: dict, cache: CorrelationCache):
         return item.rows, item.manifest["sha256"]
 
     return sessions, correlation, rows
+
+
+@dataclass
+class MetadataSourceControl:
+    """Selected pricing control without a price reader or materialized rows."""
+
+    store: str
+    symbol: str
+    source: dict
+    source_sha256: str
+    local: dict
+    previous: dict | None
+    materialized: bool = False
+    kind: str = "metadata_source_control"
+    previous_receipt_generation: str | None = None
+    accepted_reuse: tuple | None = None
+
+
+@dataclass
+class ClosedAcceptedSource(MetadataSourceControl):
+    """A real nonempty accepted source, closed to historical price work."""
+
+    kind: str = "closed_accepted_source"
+    accepted_report: dict | None = None
+    accepted_identity_memberships: dict | None = None
+    accepted_public_common_membership: dict | None = None
+    accepted_security_relations: dict | None = None
+    accepted_sourced_rename_membership: dict | None = None
+    accepted_documented_membership: dict | None = None
+    accepted_common_bounds: dict | None = None
+
+
+def metadata_source_control(store, symbol, source, generation, previous, *, accepted_reuse=None):
+    """Use accepted counts only where their source equality binding applies.
+
+    A new/changed source explicitly has unknown counts until its selected data
+    producer supplies them. It is not represented as an accepted empty source.
+    Metadata acquisition needs only this narrow symbol/local/source interface.
+    """
+    summary = (
+        previous.get("assignment_summary")
+        if previous
+        and (
+            accepted_reuse[0]
+            if accepted_reuse is not None
+            else unchanged_rows(source, previous, selected=generation)
+        )
+        else None
+    )
+    request = source["latest_request"]
+    context = {
+        "request_from": source.get("history_start", HISTORY_START),
+        "request_to": request["end_exclusive"],
+        "asof": request["asof"],
+        "feed": request["feed"],
+        "timeframe": request["timeframe"],
+    }
+    descriptors = []
+    for adjustment in ADJUSTMENTS:
+        count = summary[adjustment]["rows"] if summary else None
+        descriptors.append(
+            {
+                "file": adjustment.replace(",", "_") + ".csv.gz",
+                "symbol": symbol,
+                "adjustment": adjustment,
+                **context,
+                "rows": count,
+                "sessions": count,
+                "from": summary[adjustment]["first_timestamp"] if summary else None,
+                "to": summary[adjustment]["last_timestamp"] if summary else None,
+                "integrity_failure": None,
+            }
+        )
+    local = {
+        "directory": f"end_of_day/pricing/{symbol}",
+        "present": True,
+        "download_count": len(ADJUSTMENTS),
+        "counts_known": summary is not None,
+        "downloads": descriptors,
+        "manifest_errors": [],
+        "published_source_trusted": True,
+        "download_sha256_authentication_performed": False,
+    }
+    if summary:
+        local["published_pricing"] = PublishedPricingEvidence(
+            symbol=symbol,
+            generation=generation,
+            **context,
+            row_counts=tuple((name, summary[name]["rows"]) for name in ADJUSTMENTS),
+        ).to_report()
+    return MetadataSourceControl(
+        str(store), symbol, source, generation, local, previous, accepted_reuse=accepted_reuse
+    )

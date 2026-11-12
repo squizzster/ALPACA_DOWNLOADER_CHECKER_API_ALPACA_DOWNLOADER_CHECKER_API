@@ -27,12 +27,35 @@ def correlate(
     execution_trace=None,
     evidence_projection=None,
     auxiliary_evidence=None,
+    closed_sources=None,
+    closed_evidence=None,
+    closed_report_loader=None,
 ):
     """Run the shared compiled policy against one already-loaded complete group."""
+    from libs.alpaca_security_lineage.sourced_facts import MARKET_KIND, items
+
+    if policy.implementation_correlation_version < 87 and any(
+        fact["facts"]["schema_version"] in (3, 4, 5)
+        for facts in (*evidence.values(), *(auxiliary_evidence or {}).values())
+        for fact in items(facts, MARKET_KIND)
+    ):
+        raise LineageError("documented public-security ownership requires correlation policy 87")
+    if policy.implementation_correlation_version < 90 and any(
+        fact["facts"]["schema_version"] == 5
+        for facts in (*evidence.values(), *(auxiliary_evidence or {}).values())
+        for fact in items(facts, MARKET_KIND)
+    ):
+        raise LineageError("documented public holding exchange requires correlation policy 90")
+    if policy.implementation_correlation_version < 89 and any(
+        fact["facts"]["schema_version"] == 4
+        for facts in (*evidence.values(), *(auxiliary_evidence or {}).values())
+        for fact in items(facts, MARKET_KIND)
+    ):
+        raise LineageError("documented public reclassification requires correlation policy 89")
     # Correlation owns NEW identity decisions. Inputs/evidence already crossed
     # their producer boundaries; this adapter must not reopen paths to authenticate
     # them, and readers must consume its published assignments instead of rerunning it.
-    return evaluate_policy(
+    reports = evaluate_policy(
         store,
         inputs,
         evidence,
@@ -44,7 +67,49 @@ def correlate(
         execution_trace=execution_trace,
         evidence_projection=evidence_projection,
         auxiliary_evidence=auxiliary_evidence,
+        closed_sources=closed_sources,
+        closed_evidence=closed_evidence,
+        closed_report_loader=closed_report_loader,
     )
+    if policy.implementation_correlation_version >= 83:
+        from libs.alpaca_end_of_day_security_correlation.market_occupancy import project
+
+        reports = project(
+            inputs,
+            reports,
+            evidence,
+            auxiliary_evidence,
+            allow_adjustment_continuity=policy.implementation_correlation_version >= 84,
+            inactive_memberships={
+                name: getattr(inputs[name], "accepted_identity_memberships", None) or {}
+                for name, report in reports.items()
+                if report["source_row_count"] == 0
+            },
+        )
+    if policy.implementation_correlation_version >= 86:
+        from libs.alpaca_end_of_day_security_correlation.recapitalizations import project as recapitalizations
+
+        reports = recapitalizations(inputs, reports, evidence)
+    if policy.implementation_correlation_version >= 87:
+        from libs.alpaca_end_of_day_security_correlation.documented_markets import project as documented
+
+        reports = documented(
+            inputs,
+            reports,
+            evidence,
+            allow_containing_membership=policy.implementation_correlation_version >= 88,
+            allow_reclassification=policy.implementation_correlation_version >= 89,
+            allow_holding_exchange=policy.implementation_correlation_version >= 90,
+            refine_accepted_dates=policy.implementation_correlation_version >= 91
+            or policy.implementation_correlation_version >= 90
+            and any(
+                fact["facts"]["schema_version"] == 5
+                for report in evidence.values()
+                for fact in items(report, MARKET_KIND)
+            ),
+            allow_report_memberships=policy.implementation_correlation_version >= 91,
+        )
+    return reports
 
 
 def retained_decision_report(previous, *, policy):
@@ -66,6 +131,10 @@ def retained_decision_report(previous, *, policy):
         "current_source_ownership": previous.get("current_source_ownership"),
         "sourced_rename_ownership": previous.get("sourced_rename_ownership"),
         "sourced_rename_membership": previous.get("sourced_rename_membership"),
+        "public_common_continuation_membership": previous.get("public_common_continuation_membership"),
+        "public_common_continuation_ownership": previous.get("public_common_continuation_ownership"),
+        "documented_identity_membership": previous.get("documented_identity_membership"),
+        "security_relations": previous.get("security_relations", {"version": 1, "relations": [], "issues": []}),
         "correlated": {"row_count": 0, "segments": []},
         "uncorrelated": {"row_count": 0, "segments": []},
     }
@@ -87,6 +156,8 @@ ASSIGNMENT_FIELDS = {
     "market_data_series_identity",
     "observation_selection",
     "observation_tickers",
+    "observation_authority",
+    "dated_identity_refinement",
 }
 
 
@@ -331,6 +402,11 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
         "current_source_ownership": report.get("current_source_ownership"),
         "sourced_rename_ownership": report.get("sourced_rename_ownership"),
         "sourced_rename_membership": report.get("sourced_rename_membership"),
+        "public_common_continuation_membership": report.get("public_common_continuation_membership"),
+        "public_common_continuation_ownership": report.get("public_common_continuation_ownership"),
+        "documented_identity_membership": report.get("documented_identity_membership"),
+        "security_relations": report.get("security_relations", {"version": 1, "relations": [], "issues": []}),
+        "membership_only_rebind": None,
         "evidence_issues": report["evidence_issues"],
         "ownership_interval_rule_order": report["ownership_interval_rule_order"],
         "row_correlation_rule_order": report["row_correlation_rule_order"],
@@ -363,6 +439,32 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for kind, relative in boundary_paths(anchor).items()
         },
     }
+    if resume_closed and (
+        "numerical_source_equivalence" in previous or "numerical_source_equivalence_version" in previous
+    ):
+        from .source_equivalence import carry_prefix
+
+        through = [item["last_session"] for item in view.previous_assignment_summary.values()]
+        equality = carry_prefix(previous, min(through) if through and all(through) else None)
+        if equality is not None:
+            receipt["numerical_source_equivalence_version"] = 1
+            receipt["numerical_source_equivalence"] = equality
+    from libs.alpaca_end_of_day_security_correlation.security_relations import project
+
+    relation = receipt["security_relations"]
+    if any(
+        "security_id" not in item[role]
+        for item in relation["relations"]
+        for role in ("predecessor", "successor")
+    ):
+        receipt["security_relations"] = project(
+            relation,
+            {
+                identifier: identity
+                for identity in memberships.values()
+                for identifier in identity["member_alpaca_asset_ids"]
+            },
+        )
     if resume_closed and "identity_memberships" not in previous:
         receipt.pop("identity_memberships")
     if resume_closed and "identity_intervals" not in previous:
@@ -381,4 +483,11 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
     if handoffs:
         receipt["assignment_handoffs"] = handoffs
         receipt["assignment_handoff_kinds"] = sorted(handoffs)
+    if resume_closed and previous.get("membership_only_rebind") is not None:
+        from .membership_transfer import carry_prefix as carry_membership_prefix
+
+        receipt["membership_only_rebind"] = carry_membership_prefix(
+            previous, receipt, view.previous_assignment_summary, unchanged_selection=True
+        )
+        receipt["membership_transfer_handoff_version"] = 1
     return receipt, documents

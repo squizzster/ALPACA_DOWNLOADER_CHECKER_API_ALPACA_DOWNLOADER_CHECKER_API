@@ -1,5 +1,6 @@
 """Accepted package contracts and coherent selectors for one operation."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from libs.alpaca_pricing_download.check_summary import refresh_snapshot
@@ -8,6 +9,23 @@ from libs.common.debug_trace import traced
 
 from . import storage
 from .contract import LineageError, validate_version
+
+
+@dataclass(frozen=True)
+class HistoryScope:
+    """The actual request requirements under which an owner completed work."""
+
+    target: str | None
+    acquisition_fingerprint: str | None
+    correction_id: str | None
+    producer: object = None
+
+    def applies(self, target, acquisition_fingerprint=None, correction_id=None):
+        return (
+            self.target == target
+            and (acquisition_fingerprint is None or self.acquisition_fingerprint == acquisition_fingerprint)
+            and (correction_id is None or self.correction_id == correction_id)
+        )
 
 
 class OperationContext:
@@ -30,6 +48,19 @@ class OperationContext:
         # a comparison is not an append approval or a durable completion.
         self.history_comparisons = {}
         self.history_checks = {}
+        self._history_scopes = {}
+        self.sourced_operations = {}
+
+    def cache_history(self, kind, symbol, record, scope):
+        cache = self.history_checks if kind == "check" else self.history_comparisons
+        cache[symbol] = record
+        self._history_scopes[kind, symbol] = record, scope
+
+    def history_scope(self, kind, symbol, record):
+        selected = self._history_scopes.get((kind, symbol))
+        if selected is None or selected[0] is not record:
+            raise LineageError("completed history acceptance lacks its required request-scope handoff")
+        return selected[1]
 
     @traced("accept_store")
     def accept_store(self):

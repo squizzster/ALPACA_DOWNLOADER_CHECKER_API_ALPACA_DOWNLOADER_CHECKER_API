@@ -33,6 +33,10 @@ OTC/NYSE/NASDAQ/AMEX/TXSE labels regardless of tradability; other-exchange histo
 Omission proves neither inactivity nor removable history. Known active empty/partial histories also advance
 outside the live-check summary. SIP acquisition does not promise a separate OTC feed.
 
+The update also consumes the scoped accepted facts in
+[the sourced-event registry](../resources/alpaca_sourced_event_facts.json). Unapplied named groups enter
+lineage through this same update even when their prices are unchanged; no separate repair command is needed.
+
 Every invocation checks live; saved experiments are not inputs. Failed history checks block append;
 independent successes remain recoverable. Published unresolved identity is completed processing, distinct
 from acquisition failure or public eligibility. [Execution ownership](ARCHITECTURE.md#daily-update).
@@ -116,6 +120,32 @@ Recheck `status` after owner maintenance; success at one boundary does not estab
 
 The current computation revision is 2. This explicitly selected universe operation recomputes obsolete lineage computation revisions from each complete group's retained prices and accepted metadata, at their actual individual ranges and mappings. It requires no credentials and makes no provider requests or pricing writes. Missing, pending or incompatible retained inputs remain explicit blockers; the rebuild does not widen acquisition or silently refresh evidence. The computation revision publishes through the owning journal after full evaluation. Retry skips completed current-revision groups before receipt or payload reads. The command then performs an explicit serving rebuild, retaining applicable numerical checkpoints and establishing legacy export applicability. This repair run is separate from daily live-price freshness and normal-update performance acceptance.
 
+## Recover selected current-revision lineage
+
+For defective decisions that still carry the current computation revision, prepare an explicit
+[generation-bound recovery selection](technical-contracts.md#targeted-retained-lineage-recovery) from the
+accepted comparison. Review disputed membership changes separately and omit those groups from the selection.
+
+```bash
+./alpaca-cli-eod lineage recover --store data_pricing --selection /tmp/lineage-recovery.selection.json --plan
+./alpaca-cli-eod lineage recover --store data_pricing --selection /tmp/lineage-recovery.selection.json --debug /tmp/lineage-recovery.debug.jsonl
+```
+
+The plan selects from compact local controls without receipt or pricing payload reads. Execution reconstructs exactly the selected complete groups
+from their accepted retained prices and metadata, then maintains their serving output. It makes no provider
+requests or pricing writes. Changed pricing, receipt generations, group membership or policy block recovery;
+do not replace the frozen selection with a fresh snapshot merely to bypass a rejection. Completed groups carry
+a journaled completion marker and are skipped before receipt or pricing reads on retry. Ordinary update does
+not select this recovery implicitly, and the all-published computation rebuild does not select current decisions.
+
+When the comparison already produced complete candidate artifacts, pass its reviewed
+`alpaca_retained_candidate_handoff` as `--selection` using the same commands. Recovery consumes that completed
+decision directly, finalizes bookkeeping and publishes it through the existing journal; it does not reconstruct
+prices, rerun correlation or numerical selection, or rebuild assignment projections. The handoff's required
+`review` records an approved conclusion after all semantic differences have been classified. Missing review or
+prepared outputs block publication. The same generation and mapping checks apply. Selected serving maintenance
+follows publication; generate a new selected [CSV export](exports.md#per-identity-csv-export) to consume it.
+
 ## Serving catalogue maintenance
 
 ```bash
@@ -126,7 +156,10 @@ The current computation revision is 2. This explicitly selected universe operati
 
 Bootstrap follows lineage; rerun after interruption. Offline preview reports compact selection, legacy
 membership-projection reads, receipt/payload bounds and derived publications. Ordinary maintenance skips matching
-groups and reuses completed history prefixes. Bootstrap, rebuild or invalidated history may require full selected
+groups and reuses completed history prefixes. It also finishes stale lineage export acknowledgements from
+matching compact producer selections. Ownership uncertainty publishes affected identities offline with a
+review reason; `catalogue status` lists these under `offline_reviews`. Supported independent identities remain
+online. An offline review is separate from unfinished publication work. Bootstrap, rebuild or invalidated history may require full selected
 histories, possibly reread per identity within bounded cache; narrow date filters cannot establish full-history eligibility.
 No provider requests, identity-rule replay, redownloads, pricing copies or rewrites.
 

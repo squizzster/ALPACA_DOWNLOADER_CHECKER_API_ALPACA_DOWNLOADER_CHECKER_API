@@ -137,6 +137,30 @@ def read_state(store, *, symbols=None, pending_only=False):
     }
 
 
+def read_observation(store, reference):
+    """Consume one selected completed catalogue without repeating its acceptance."""
+    if (
+        not isinstance(reference, dict)
+        or type(reference.get("id")) is not int
+        or reference["id"] < 1
+        or not isinstance(reference.get("observed_at_utc"), str)
+    ):
+        raise LineageError("a selected catalogue observation is required")
+    try:
+        with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+            _check(connection)
+            row = connection.execute(
+                "SELECT observed_at, body FROM observations WHERE id=?", (reference["id"],)
+            ).fetchone()
+    except sqlite3.Error as error:
+        raise LineageError("selected catalogue observation unavailable") from error
+    if row is None or row[0] != reference["observed_at_utc"]:
+        raise LineageError("selected catalogue observation changed or is missing")
+    # accept() stored this producer output only after catalogue acceptance. Its
+    # rows and digest are authoritative; recovery must not calculate them again.
+    return json.loads(row[1])
+
+
 def initialize(store):
     """Explicit reconstruction preserves existing intentions and retry outcomes."""
     path = Path(store) / STATE_FILE

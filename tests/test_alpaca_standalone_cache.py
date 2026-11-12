@@ -190,23 +190,30 @@ class StandaloneCacheTests(unittest.TestCase):
         payload.symlink_to(moved)
         self.assertEqual(cached.get_histories("TEST"), expected)
 
-    def test_cached_reader_preserves_overlap_source_policy(self):
+    def test_cached_reader_preserves_completed_source_choice(self):
         self.renamed_pair(differing=True)
         cached = self.cached()
         expected = self.reader.get_histories("NEW", include_evidence=True)
         self.assertEqual(cached.get_histories("NEW", include_evidence=True), expected)
         self.assertEqual(cached.get_histories("NEW", include_evidence=True), expected)
 
-    def test_exact_view_aliases_reuse_assembly_without_mutable_results_or_raw_policy_leak(self):
+    def test_exact_view_aliases_share_assembly_without_mutable_results_or_source_reselection(self):
         from alpaca_end_of_day import standalone
 
         self.renamed_pair()
-        with patch.object(
-            standalone, "_resolve_bar_candidates", wraps=standalone._resolve_bar_candidates
-        ) as resolve:
+        with (
+            patch.object(
+                standalone,
+                "require_unique_observation",
+                side_effect=AssertionError("consumer encountered an unselected source contest"),
+            ),
+            patch(
+                "alpaca_end_of_day._history_coverage.extend_coverage",
+                side_effect=AssertionError("ordinary reader calculated obsolete source coverage"),
+            ),
+        ):
             result = self.cached().get_histories("NEW")
         # The completed producer selected all eight views; no consumer contest.
-        self.assertEqual(resolve.call_count, 0)
         expected_tickers = list(result["views"]["all"]["bars"][0]["tickers"])
         result["views"]["split"]["bars"][0]["close"] = "caller mutation"
         result["views"]["split"]["bars"][0]["tickers"].append("caller mutation")

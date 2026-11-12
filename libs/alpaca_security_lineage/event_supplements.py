@@ -12,11 +12,15 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .sourced_facts import EXTENSIONS, MARKET_KIND
+from .sourced_facts import validate as validate_sourced_fact
+
 SCHEMA_VERSION = 1
 SUCCESSION_SCHEMA_VERSION = 1
 SUCCESSION_KIND = "holding_company_succession"
 RENAME_KIND = "identity_preserving_rename"
 RENAME_SCHEMA_VERSION = 1
+RECAPITALIZATION_KIND = "issuer_capital_repayment"
 MAX_DOCUMENT_BYTES = 1_048_576
 MAX_SUPPLEMENTS = 1000
 
@@ -78,7 +82,7 @@ def accept_supplements(items):
 
 def supplement_key(item):
     """Keep independent sourced facts separate from provider event identifiers."""
-    if item["kind"] == SUCCESSION_KIND:
+    if item["kind"] in {SUCCESSION_KIND, *EXTENSIONS}:
         return "sourced:" + item["match"]["source_id"]
     return item["match"]["id"]
 
@@ -124,7 +128,7 @@ def validate_supplements(items):
         match, facts, sources = item["match"], item["facts"], item["sources"]
         if not isinstance(match, dict) or not isinstance(facts, dict):
             raise ValueError("event supplement match/facts must be objects")
-        identifier_field = "source_id" if item["kind"] == SUCCESSION_KIND else "id"
+        identifier_field = "source_id" if item["kind"] in {SUCCESSION_KIND, *EXTENSIONS} else "id"
         _text(match.get(identifier_field), "match." + identifier_field)
         action_id = supplement_key(item)
         if action_id in seen:
@@ -139,10 +143,13 @@ def validate_supplements(items):
             if url.scheme != "https" or not url.netloc or url.username or url.password:
                 raise ValueError("event source must be an HTTPS document URL")
             _text(source["title"], "source.title")
-            _date(source["document_date"], "source.document_date")
+            if source["document_date"] is not None or item["kind"] != MARKET_KIND:
+                _date(source["document_date"], "source.document_date")
             if source["authority"] not in {"issuer", "exchange", "clearinghouse", "regulator"}:
                 raise ValueError("unsupported event source authority")
-        if item["kind"] == SUCCESSION_KIND:
+        if item["kind"] in EXTENSIONS:
+            validate_sourced_fact(item)
+        elif item["kind"] == SUCCESSION_KIND:
             if set(match) != {"source_id", "symbol"}:
                 raise ValueError("succession must name its independent source_id and unchanged symbol")
             _text(match["symbol"], "match.symbol")
@@ -179,6 +186,8 @@ def validate_supplements(items):
             exchange = _date(facts["exchange_effective_date"], "facts.exchange_effective_date")
             if legal > exchange:
                 raise ValueError("succession exchange date cannot precede legal effectiveness")
+        elif item["kind"] == RECAPITALIZATION_KIND:
+            _validate_recapitalization(match, facts)
         elif item["kind"] == RENAME_KIND:
             required = {
                 "id",
@@ -371,6 +380,95 @@ def provider_actions(evidence):
     return evidence.get("provider_corporate_actions", evidence.get("corporate_actions", ()))
 
 
+def _validate_recapitalization(match, facts):
+    required = {
+        "schema_version",
+        "issuer_cik",
+        "symbol",
+        "share_class",
+        "same_issuer",
+        "same_public_common",
+        "cash_purpose",
+        "old_cusip",
+        "new_cusip",
+        "old_units",
+        "new_units",
+        "capital_repayment_usd",
+        "legal_effective_date",
+        "exchange_effective_date",
+        "predecessor_history_start",
+    }
+    if set(facts) != required or type(facts["schema_version"]) is not int or facts["schema_version"] != 1:
+        raise ValueError("capital repayment requires its complete common-security fact schema")
+    if (
+        facts["share_class"] != "common_stock"
+        or facts["cash_purpose"] != "capital_repayment"
+        or facts["same_issuer"] is not True
+        or facts["same_public_common"] is not True
+    ):
+        raise ValueError("capital repayment must preserve the issuer's own public common security")
+    cik = _text(facts["issuer_cik"], "issuer_cik")
+    if not cik.isascii() or not cik.isdecimal() or str(int(cik)) != cik or int(cik) <= 0:
+        raise ValueError("capital repayment requires the exact continuing registrant CIK")
+    symbol = _text(facts["symbol"], "symbol")
+    for field in ("old_cusip", "new_cusip"):
+        value = _text(facts[field], field)
+        if len(value) != 9 or not value.isascii() or not value.isalnum():
+            raise ValueError("capital repayment requires exact dated CUSIPs")
+    if (
+        facts["old_cusip"] == facts["new_cusip"]
+        or not all(isinstance(facts[key], str) for key in ("old_units", "new_units", "capital_repayment_usd"))
+        or _positive(facts["old_units"]) <= _positive(facts["new_units"])
+    ):
+        raise ValueError("capital repayment requires a documented common-share consolidation")
+    cash = _positive(facts["capital_repayment_usd"])
+    legal, market = (_date(facts[key], key) for key in ("legal_effective_date", "exchange_effective_date"))
+    if (
+        legal > market
+        or facts["predecessor_history_start"] is not None
+        and _date(facts["predecessor_history_start"], "predecessor_history_start") >= market
+    ):
+        raise ValueError("capital repayment chronology is inconsistent")
+    kind = match.get("action_type")
+    if kind == "cash_dividend":
+        required_match = {"id", "action_type", "symbol", "ex_date", "rate"}
+        if (
+            not required_match <= match.keys()
+            or not match.keys() <= required_match | {"cusip"}
+            or match["symbol"] != symbol
+            or match["ex_date"] != market
+            or _positive(match["rate"]) != cash
+        ):
+            raise ValueError("capital repayment must bind its exact recorded cash observation")
+    elif kind == "stock_and_cash_merger":
+        required_match = {
+            "id",
+            "action_type",
+            "acquiree_symbol",
+            "acquirer_symbol",
+            "acquiree_cusip",
+            "acquirer_cusip",
+            "acquiree_rate",
+            "acquirer_rate",
+            "cash_rate",
+            "effective_date",
+        }
+        if (
+            not required_match <= match.keys()
+            or not match.keys() <= required_match | {"payable_date", "process_date"}
+            or match["acquiree_symbol"] != match["acquirer_symbol"]
+            or match["acquirer_symbol"] != symbol
+            or match["acquirer_cusip"] != facts["new_cusip"]
+            or match["effective_date"] != market
+            or _positive(match["cash_rate"]) != cash
+            or _positive(match["acquirer_rate"]) * _positive(facts["old_units"])
+            != _positive(match["acquiree_rate"]) * _positive(facts["new_units"])
+        ):
+            raise ValueError("capital repayment must bind the recorded same-symbol stock/cash terms")
+    else:
+        raise ValueError("unsupported provider classification for a common-share capital repayment")
+
+
 def _project_action(action, supplement):
     """Validate one newly observed provider-action/fact pair at its producer."""
     if any(key not in action or action[key] != value for key, value in supplement["match"].items()):
@@ -383,6 +481,35 @@ def _project_action(action, supplement):
         ):
             raise ValueError(f"provider rename dates conflict with supplement {action['id']}")
         return action
+    if supplement["kind"] == RECAPITALIZATION_KIND:
+        facts = supplement["facts"]
+        # This is an explicit identity interpretation of an observed action.
+        # Its original class, cash and endpoint discrepancy remain in the raw
+        # provider union and the sourced fact; no price factor is constructed.
+        return {
+            "id": action["id"],
+            "action_type": "reverse_split",
+            "symbol": facts["symbol"],
+            "ex_date": facts["exchange_effective_date"],
+            "process_date": facts["exchange_effective_date"],
+            "old_cusip": facts["old_cusip"],
+            "new_cusip": facts["new_cusip"],
+            "old_rate": facts["old_units"],
+            "new_rate": facts["new_units"],
+            "identity_interpretation": RECAPITALIZATION_KIND,
+            "provider_action_type": action["action_type"],
+            **(
+                {
+                    "provider_endpoint_discrepancy": {
+                        "field": "acquiree_cusip",
+                        "observed": action["acquiree_cusip"],
+                        "documented": facts["old_cusip"],
+                    }
+                }
+                if action.get("acquiree_cusip") not in (None, facts["old_cusip"])
+                else {}
+            ),
+        }
     if supplement["kind"] == "split_endpoints":
         endpoints = {key: supplement["facts"][key] for key in ("old_cusip", "new_cusip")}
         if any(key in action and action[key] != value for key, value in endpoints.items()):
@@ -407,7 +534,11 @@ class EventProjection:
         self.accepted[id(action), id(supplement)] = (action, supplement, projected)
 
     def bind(self, supplements):
-        by_id = {item["match"]["id"]: item for item in supplements if item["kind"] != SUCCESSION_KIND}
+        by_id = {
+            item["match"]["id"]: item
+            for item in supplements
+            if item["kind"] not in {SUCCESSION_KIND, *EXTENSIONS}
+        }
 
         def project(actions):
             projected, applied = [], {}

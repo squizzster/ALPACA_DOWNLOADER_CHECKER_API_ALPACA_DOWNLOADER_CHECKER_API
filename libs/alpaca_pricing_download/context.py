@@ -11,6 +11,8 @@ from .storage import initialize_store
 class PricingContext:
     store: Path
     endpoint_selections: dict = field(default_factory=dict, compare=False)
+    full_publications: dict = field(default_factory=dict, compare=False)
+    approved_appends: dict = field(default_factory=dict, compare=False)
     correction_acquisitions: dict = field(default_factory=dict, compare=False)
     suffix_acquisitions: dict = field(default_factory=dict, compare=False)
     late_bar_observations: dict = field(default_factory=dict, compare=False)

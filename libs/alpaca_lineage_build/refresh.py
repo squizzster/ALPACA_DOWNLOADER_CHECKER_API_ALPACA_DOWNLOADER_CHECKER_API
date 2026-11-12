@@ -19,8 +19,9 @@ from libs.alpaca_pricing_download.storage import regular_path
 from libs.common.debug_trace import event, span, traced
 
 from . import storage
-from .context import accept_context, recover_and_accept_correlation_policy
+from .context import HistoryScope, accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
+from .work_contract import acquisition_fingerprint
 
 
 @traced("required_history")
@@ -102,6 +103,7 @@ def refresh_existing(
     pricing_context = context.pricing()
     verified, generations, checks, completed_replacements = {}, {}, [], {}
     accepted_insertions = {}
+    verified_scopes, compared_scopes, replacement_scopes = {}, {}, {}
     pricing = {"results": [], "failed": 0, "requests": {}}
     lineage = {"results": [], "failed": 0}
     beyond, restricted = set(), set()
@@ -120,6 +122,38 @@ def refresh_existing(
             and (work_policy is None or work_policy.allowed({entry["symbol"]}))
         )
 
+    def requested_scope(symbol, *, producer=None):
+        if producer is not None:
+            return HistoryScope(
+                producer.end_exclusive[:10],
+                producer.acquisition_fingerprint,
+                producer.correction_id,
+                producer,
+            )
+        requirement = work_policy.work.get(symbol, {}) if work_policy else {}
+        fingerprint = acquisition_fingerprint(requirement) if requirement.get("invalidate_pricing") else None
+        if requirement.get("invalidate_pricing") and fingerprint is None:
+            raise DownloadError(
+                f"{symbol}: missing accepted mapping-evidence handoff; owning metadata/lineage recovery required"
+            )
+        return HistoryScope(
+            end_date,
+            fingerprint,
+            requirement.get("correction_id"),
+            producer,
+        )
+
+    def scope_applies(scope, symbol):
+        requirement = work_policy.work.get(symbol, {}) if work_policy else {}
+        fingerprint = acquisition_fingerprint(requirement) if requirement.get("invalidate_pricing") else None
+        if requirement.get("invalidate_pricing") and fingerprint is None:
+            return False
+        return scope.applies(
+            end_date,
+            fingerprint,
+            requirement.get("correction_id"),
+        )
+
     upgraded = {}
     legacy = [entry for entry in snapshot["entries"] if in_scope(entry) and entry.get("tail_all") is None]
     if legacy:
@@ -131,6 +165,41 @@ def refresh_existing(
         # historical lineage merely to install a comparison tail.
         accepted_generations.update((symbol, value["source_sha256"]) for symbol, value in upgraded.items())
 
+    def accept_completed_publications(ready, index):
+        for entry in ready["entries"]:
+            symbol = entry["symbol"]
+            if not in_scope(entry) or verified.get(symbol) == entry:
+                continue
+            requirement = work_policy.work.get(symbol, {}) if work_policy else {}
+            for origin, publications in (
+                ("full_history", pricing_context.full_publications),
+                ("approved_append", pricing_context.approved_appends),
+            ):
+                accepted = publications.get(symbol)
+                if accepted is None or not accepted.applies(
+                    context.store,
+                    entry,
+                    index["symbols"].get(symbol),
+                    end_date,
+                    invalidate_mapping=requirement.get("invalidate_pricing", False),
+                    acquisition_fingerprint=acquisition_fingerprint(requirement),
+                    correction_id=requirement.get("correction_id"),
+                ):
+                    continue
+                verified[symbol] = dict(entry)
+                verified_scopes[symbol] = requested_scope(symbol, producer=accepted)
+                generations[symbol] = accepted.generation
+                event(
+                    "history_completed_publication_reused",
+                    origin=origin,
+                    symbol=symbol,
+                    source_generation=accepted.generation,
+                    asof=accepted.asof,
+                    end_exclusive=accepted.end_exclusive,
+                )
+                break
+
+    accept_completed_publications(snapshot, selected_index)
     compared = {}
     if context.history_checks or context.history_comparisons:
         for entry in snapshot["entries"]:
@@ -142,10 +211,19 @@ def refresh_existing(
             correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
             comparison = context.history_comparisons.get(symbol)
             if prior is not None and prior == (entry, generation, correction):
-                verified[symbol] = dict(entry)
-                generations[symbol] = generation
-            elif comparison is not None and comparison[:2] == (entry, generation):
-                compared[symbol] = comparison[2]
+                scope = context.history_scope("check", symbol, prior)
+                if scope_applies(scope, symbol) and (
+                    scope.producer is None
+                    or selected_index["symbols"].get(symbol, {}).get("source_sha256") == generation
+                ):
+                    verified[symbol] = dict(entry)
+                    verified_scopes[symbol] = scope
+                    generations[symbol] = generation
+            if comparison is not None and comparison[:2] == (entry, generation):
+                scope = context.history_scope("comparison", symbol, comparison)
+                if scope_applies(scope, symbol):
+                    compared[symbol] = comparison[2]
+                    compared_scopes[symbol] = scope
 
     def reconcile_publications(publications):
         value = run_lineage(
@@ -179,6 +257,7 @@ def refresh_existing(
                 if selector_state(store)["generation"] != serving_generation:
                     raise DownloadError("selected serving catalogue changed before late-bar repair")
 
+        selected_scopes = {request["symbol"]: requested_scope(request["symbol"]) for request in prepared}
         replaced = replace_prepared(
             store,
             prepared,
@@ -219,16 +298,22 @@ def refresh_existing(
                 generations[item["symbol"]] = item["source_sha256"]
                 if item.get("completed_scope") == "selected_sessions":
                     prior = context.history_checks.get(item["symbol"])
+                    prior_scope = (
+                        context.history_scope("check", item["symbol"], prior) if prior is not None else None
+                    )
                     if (
                         item.get("retained_history_unchanged")
                         and prior is not None
+                        and scope_applies(prior_scope, item["symbol"])
                         and prior[1] == item.get("previous_source_sha256")
                         and prior[0]["asof"]
                         == next(request["asof"] for request in prepared if request["symbol"] == item["symbol"])
                     ):
                         accepted_insertions[item["symbol"]] = item["source_sha256"]
+                        replacement_scopes[item["symbol"]] = prior_scope
                 else:
                     completed_replacements[item["symbol"]] = item["source_sha256"]
+                    replacement_scopes[item["symbol"]] = selected_scopes[item["symbol"]]
         # Reconciliation may replace pricing again after observing a changed
         # identity. Only its completed producer handoff approves that generation.
         generations.update(lineage_replacements)
@@ -250,15 +335,25 @@ def refresh_existing(
         # not just the producer's list of explicitly replaced members.
         for symbol in list(compared):
             prior = context.history_comparisons.get(symbol)
-            if prior is None or prior[:2] != (current.get(symbol), current_generations.get(symbol)):
+            if (
+                prior is None
+                or prior[:2] != (current.get(symbol), current_generations.get(symbol))
+                or not scope_applies(compared_scopes[symbol], symbol)
+            ):
                 compared.pop(symbol)
+                compared_scopes.pop(symbol, None)
         # A fresh comparison may bind a recovered pricing source ahead of the
         # lineage index. Only an index change invalidates that generation here;
         # append still checks the selected source under its reacquired lock.
         for symbol, entry in list(verified.items()):
             if (
                 not in_scope(entry)
+                or not scope_applies(verified_scopes[symbol], symbol)
                 or current.get(symbol) != entry
+                or (
+                    verified_scopes[symbol].producer is not None
+                    and index["symbols"].get(symbol, {}).get("source_sha256") != generations.get(symbol)
+                )
                 or (
                     accepted_generations.get(symbol) != current_generations.get(symbol)
                     and generations.get(symbol, accepted_generations.get(symbol))
@@ -266,6 +361,7 @@ def refresh_existing(
                 )
             ):
                 verified.pop(symbol)
+                verified_scopes.pop(symbol, None)
         accepted_generations.clear()
         accepted_generations.update(current_generations)
         # A successful producer correction survives an unrelated failure only
@@ -279,8 +375,12 @@ def refresh_existing(
                 and generation is not None
                 and index["symbols"].get(symbol, {}).get("source_sha256") == generation
             ):
-                verified[symbol] = dict(entry)
-                generations[symbol] = generation
+                scope = replacement_scopes.get(symbol)
+                if scope is not None and scope_applies(scope, symbol):
+                    verified[symbol] = dict(entry)
+                    verified_scopes[symbol] = scope
+                    generations[symbol] = generation
+        accept_completed_publications(ready, index)
 
     late_bar_check = {
         "catalogue_generation": None,
@@ -340,6 +440,12 @@ def refresh_existing(
         candidates = []
         for entry in snapshot["entries"]:
             symbol = entry["symbol"]
+            if symbol in verified and not scope_applies(verified_scopes[symbol], symbol):
+                verified.pop(symbol)
+                verified_scopes.pop(symbol, None)
+            if symbol in compared and not scope_applies(compared_scopes[symbol], symbol):
+                compared.pop(symbol)
+                compared_scopes.pop(symbol, None)
             if symbols is not None and symbol not in symbols:
                 continue
             if end_date and entry["end_exclusive"][:10] > end_date:
@@ -386,7 +492,9 @@ def refresh_existing(
                 continue
             generation = selected_sources.get(symbol, accepted_generations.get(symbol))
             if correction_id:
-                completion = work.get("correction_completion")
+                completion = work_policy.correction_completion_for(
+                    symbol, generation, source_selections.get(symbol, {})
+                )
                 if not completion or (completion.get("correction_id"), completion.get("source_sha256")) != (
                     correction_id,
                     generation,
@@ -433,7 +541,11 @@ def refresh_existing(
             ):
                 durable_selections[symbol] = selection
                 compared[symbol] = selection.comparison
-                context.history_comparisons[symbol] = (dict(entry), generation, selection.comparison)
+                scope = requested_scope(symbol)
+                compared_scopes[symbol] = scope
+                context.cache_history(
+                    "comparison", symbol, (dict(entry), generation, selection.comparison), scope
+                )
         selected_snapshot = {
             **snapshot,
             "entries": [
@@ -448,6 +560,7 @@ def refresh_existing(
             progress("checking", {"tickers": len(candidates)})
         # Live check owns remote comparison of this accepted summary snapshot.
         # DO NOT reopen ticker histories to re-prove the stored baseline here.
+        selected_scopes = {entry["symbol"]: requested_scope(entry["symbol"]) for entry in candidates}
         with span("live_history_check", symbols=len(selected_snapshot["entries"])) as check_trace:
             handoff = verify(selected_snapshot, pricing_client._get)
             check_trace.update(complete=handoff["complete"], **handoff["stats"], requests=handoff["requests"])
@@ -487,8 +600,10 @@ def refresh_existing(
                 )
             if symbol in completed and generation is not None:
                 decision = HistoryComparison(**handoff["comparisons"][symbol])
-                context.history_comparisons[symbol] = (dict(entry), generation, decision)
+                scope = selected_scopes[symbol]
+                context.cache_history("comparison", symbol, (dict(entry), generation, decision), scope)
                 compared[symbol] = decision
+                compared_scopes[symbol] = scope
                 if symbol in matched:
                     generations[symbol] = generation
             if (
@@ -501,7 +616,10 @@ def refresh_existing(
             ):
                 verified[symbol] = entry
                 correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
-                context.history_checks[symbol] = (dict(entry), generation, correction)
+                verified_scopes[symbol] = selected_scopes[symbol]
+                context.cache_history(
+                    "check", symbol, (dict(entry), generation, correction), verified_scopes[symbol]
+                )
         checks.append(handoff)
         if progress:
             progress(
@@ -577,10 +695,18 @@ def refresh_existing(
         current = {item["symbol"]: item for item in ready["entries"]}
         for entry in candidates:
             symbol = entry["symbol"]
+            scope = (
+                replacement_scopes.get(symbol)
+                if symbol in selected
+                else verified_scopes.get(symbol) or compared_scopes.get(symbol)
+            )
             compared.pop(symbol, None)
             if current.get(symbol) == entry or symbol in selected:
                 if symbol in current:
+                    if scope is None:
+                        raise DownloadError("completed history publication lacks its request-scope handoff")
                     verified[symbol] = dict(current[symbol])
+                    verified_scopes[symbol] = scope
                     if symbol in selected_sources and symbol not in selected:
                         generations[symbol] = selected_sources[symbol]
         if prepared:
@@ -635,7 +761,9 @@ def refresh_existing(
                 # index generation and checked summary are sufficient here.
                 if generations.get(symbol, accepted_generations.get(symbol)) == generation:
                     correction = work_policy.work.get(symbol, {}).get("correction_id") if work_policy else None
-                    context.history_checks[symbol] = (dict(entry), generation, correction)
+                    context.cache_history(
+                        "check", symbol, (dict(entry), generation, correction), verified_scopes[symbol]
+                    )
     failed = pricing["failed"] + lineage["failed"] + int("error" in summary)
     approved_entries = (
         [e for e in ready["entries"] if in_scope(e) and verified.get(e["symbol"]) == e]
@@ -648,6 +776,9 @@ def refresh_existing(
                 **ready,
                 "entries": approved_entries,
                 "approved_generations": generations,
+                "approved_scopes": {
+                    entry["symbol"]: verified_scopes[entry["symbol"]] for entry in approved_entries
+                },
             }
         )
     if "error" not in summary and work_policy is not None:

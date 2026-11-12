@@ -1,8 +1,8 @@
 """Small, fixed-name boundaries with a roll-forward publication journal.
 
 Only changed files are staged. Cooperating readers hold the ticker lock and
-reject an interrupted transaction. Old partitions are removed only after the
-replacement files and final source receipt have been installed and verified.
+reject an interrupted transaction. The completed staging handoff owns its bytes;
+installation and recovery carry that acceptance with the source selector last.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ STORE_DOCUMENT = {
     "pricing": "end_of_day/pricing",
     "updates": "end_of_day/manifests",
 }
+INSTALLATION_HANDOFF_VERSION = 1
 
 
 def read_artifact(path, *, purpose, selector_sha256=None, output_path=None):
@@ -482,6 +483,12 @@ def _finish_publication(
 ) -> None:
     if journal.get("schema_version") not in SUPPORTED_VERSIONS or not isinstance(journal.get("writes"), list):
         raise DownloadError("invalid pricing publication journal")
+    installation = journal.get("installation_handoff_version")
+    if installation is not None and (
+        type(installation) is not int or installation != INSTALLATION_HANDOFF_VERSION
+    ):
+        raise DownloadError("unsupported pricing installation handoff")
+    completed_staging = installation is not None
     writes = journal["writes"]
     if (
         not writes
@@ -490,10 +497,32 @@ def _finish_publication(
         or writes[-1].get("path") != "source.manifest.json"
     ):
         raise DownloadError("publication must select its source receipt last")
+    if completed_staging and (source is None or endpoints is None):
+        summary = journal.get("summary_handoff")
+        if (
+            not isinstance(summary, dict)
+            or set(summary) != {"version", "source", "source_sha256", "all", "tail_all"}
+            or type(summary["version"]) is not int
+            or summary["version"] != 1
+            or not isinstance(summary["source"], dict)
+            or summary["source"].get("symbol") != root.name
+            or summary["source_sha256"] != writes[-1].get("sha256")
+            or not isinstance(summary["all"], list)
+            or not isinstance(summary["tail_all"], list)
+        ):
+            raise DownloadError("missing or incompatible completed pricing summary handoff")
+        from .endpoints import Endpoints
+
+        # These exact rows crossed acquisition and publication acceptance. The
+        # journal retains their capability; do not parse the installed validator
+        # or replay its endpoint/tail validation merely to finish the summary.
+        source = summary["source"]
+        endpoints = Endpoints({"all": summary["all"]}, tail_all=summary["tail_all"])
     removals = journal.get("remove")
     if not isinstance(removals, dict) or len(removals) > 64:
         raise DownloadError("invalid pricing retirement inventory")
     update = journal.get("update")
+    update_target = None
     if update is not None:
         if (
             not isinstance(update, dict)
@@ -501,17 +530,16 @@ def _finish_publication(
             or not re.fullmatch(r"[0-9a-f]{64}", update.get("sha256", ""))
         ):
             raise DownloadError("invalid update-manifest journal entry")
-        update_path(root)  # Check the destination before changing any pricing files.
-    targets = set()
+        update_target = update_path(root)  # Check destinations before changing pricing files.
+    targets = {}
     for entry in writes:
         if not isinstance(entry, dict):
             raise DownloadError("invalid pricing publication entry")
         relative, checksum = entry.get("path"), entry.get("sha256")
         _check_publication_entry(relative, checksum)
-        regular_path(root, relative)
         if relative in targets:
             raise DownloadError("duplicate pricing publication target")
-        targets.add(relative)
+        targets[relative] = regular_path(root, relative)
     for relative, checksum in removals.items():
         _check_publication_entry(relative, checksum)
         regular_path(root, relative, published=journal["schema_version"] >= 15)
@@ -534,21 +562,39 @@ def _finish_publication(
         event = queue_check(store, root.name)
         if on_check is not None:
             on_check(event)
-    # These are this producer's new or interrupted outputs, not accepted upstream
-    # payloads. Verification belongs here, with the source selector installed
-    # last; downstream consumers must not repeat it after journal completion.
+    # The producer validates new bytes before closing every staging file, then
+    # publishes this journal last. Its versioned handoff survives interruption.
+    # A missing staged file means its atomic rename already completed under the
+    # same stable ticker lock. Neither state permits another digest or read of
+    # those accepted bytes. Unmarked legacy journals need one bounded acceptance
+    # of each selected unfinished output; never recheck a just-renamed target.
+    created_parents = set()
+
+    def install(staged, target):
+        if target.parent not in created_parents:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            created_parents.add(target.parent)
+        try:
+            os.replace(staged, target)
+        except FileNotFoundError:
+            if not completed_staging:
+                raise
+            # This journal already owns the installed output. External removal
+            # or mutation is outside the process-interruption contract.
+
     for index, entry in enumerate(writes):
-        target = regular_path(root, entry["path"])
-        staged = regular_path(root, f".staging/write-{index:03d}")
-        if staged.exists():
+        target = targets[entry["path"]]
+        staged = regular_path(root, f".staging/write-{index:03d}", published=completed_staging)
+        if completed_staging:
+            install(staged, target)
+        elif staged.exists():
             if (
                 digest(read_artifact(staged, purpose="publication_staged_validation", output_path=target))
                 != entry["sha256"]
             ):
                 raise DownloadError("staged pricing output failed verification")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staged, target)
-        if digest(read_artifact(target, purpose="publication_installed_validation")) != entry["sha256"]:
+            install(staged, target)
+        elif digest(read_artifact(target, purpose="publication_installed_validation")) != entry["sha256"]:
             raise DownloadError("installed pricing output failed verification")
     # No prior month/year is retired until the complete replacement is selected.
     parents = set()
@@ -567,24 +613,26 @@ def _finish_publication(
         if parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
     if update is not None:
-        target = update_path(root)
-        staged = regular_path(root, f".staging/write-{len(writes):03d}")
-        if staged.exists():
-            if (
-                digest(read_artifact(staged, purpose="publication_staged_validation", output_path=target))
-                != update["sha256"]
-            ):
+        target = update_target
+        staged = regular_path(root, f".staging/write-{len(writes):03d}", published=completed_staging)
+        if completed_staging:
+            install(staged, target)
+        elif staged.exists():
+            data = read_artifact(staged, purpose="publication_staged_validation", output_path=target)
+            if digest(data) != update["sha256"]:
                 raise DownloadError("staged update manifest failed verification")
-            validate_update(read_document(staged))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staged, target)
-        if digest(read_artifact(target, purpose="publication_installed_validation")) != update["sha256"]:
-            raise DownloadError("installed update manifest failed verification")
+            validate_update(read_document(staged, data=data))
+            install(staged, target)
+        else:
+            data = read_artifact(target, purpose="publication_installed_validation")
+            if digest(data) != update["sha256"]:
+                raise DownloadError("installed update manifest failed verification")
+            validate_update(read_document(target, data=data))
     from .check_summary import refresh_prices
 
-    # Live publication lends accepted in-memory outputs; recovery may reconstruct
-    # them from its now-installed selector. Summary completion precedes removal
-    # of the owning journal, so interrupted work cannot look fully published.
+    # Live publication lends accepted outputs; new journals retain that same
+    # capability durably. Only unmarked legacy recovery reconstructs its inputs.
+    # Summary completion precedes journal removal.
     refresh_prices(
         root,
         source=source,
@@ -593,7 +641,13 @@ def _finish_publication(
             (entry["sha256"] for entry in writes if entry["path"] == "source.manifest.json"), None
         ),
     )
-    _discard_staging(root)
+    if completed_staging:
+        try:
+            regular_path(root, ".staging", published=True).rmdir()
+        except FileNotFoundError:
+            pass
+    else:
+        _discard_staging(root)
     if journal.get("source_generation_unchanged") is True:
         from libs.alpaca_serving_catalogue.export_inputs import complete_unchanged_pricing
 
@@ -678,7 +732,8 @@ def publish(
     if previous is not None:
         old_files["source.manifest.json"] = previous_source_sha256 or digest(json_bytes(previous))
     retained = {VALIDATOR_FILE: source["validator"]["sha256"]} if "validator" in source else {}
-    retained["source.manifest.json"] = source_sha256 or digest(json_bytes(source))
+    source_bytes = json_bytes(source)
+    retained["source.manifest.json"] = source_sha256 or digest(source_bytes)
     for kind, reference in source["boundaries"].items():
         relative = reference["manifest"]
         document = documents.get(relative)
@@ -693,12 +748,14 @@ def publish(
                 retained[str(directory / entry["file"])] = entry["sha256"]
     outputs = dict(payloads)
     outputs.update((path, json_bytes(document)) for path, document in documents.items())
-    outputs["source.manifest.json"] = json_bytes(source)
+    outputs["source.manifest.json"] = source_bytes
     changed = []
     for relative, content in outputs.items():
         # Compare the new output with the recorded digest, never with old bytes.
         # Explicit repair replaces every supplied payload, including equal hashes.
-        content_sha256 = retained[relative] if relative == "source.manifest.json" else digest(content)
+        # Boundary construction already validated and digested these exact new
+        # bytes. Carry that producer result, including aliases and validators.
+        content_sha256 = retained[relative]
         if old_files.get(relative) != content_sha256 or (repair_payloads and relative in payloads):
             changed.append((relative, content))
     notice = None
@@ -716,19 +773,29 @@ def publish(
     # downstream generations and work without changing data or its notice.
     if not changed and notice is None:
         return 0
+    if endpoints is None or getattr(endpoints, "tail_all", None) is None:
+        raise DownloadError("pricing publication requires its completed endpoint and comparison-tail handoff")
     # Source receipt is also staged for an otherwise byte-identical selection.
     if not changed or changed[-1][0] != "source.manifest.json":
-        changed.append(("source.manifest.json", json_bytes(source)))
+        changed.append(("source.manifest.json", source_bytes))
     staging = regular_path(root, ".staging")
     staging.mkdir()
     pending = regular_path(root, ".pending.json")
     removals = {path: sha for path, sha in old_files.items() if path not in retained}
     journal = {
         "schema_version": VERSION,
+        "installation_handoff_version": INSTALLATION_HANDOFF_VERSION,
+        "summary_handoff": {
+            "version": 1,
+            "source": source,
+            "source_sha256": retained["source.manifest.json"],
+            "all": list(endpoints["all"]),
+            "tail_all": list(endpoints.tail_all),
+        },
         "writes": [
             {
                 "path": path,
-                "sha256": retained[path] if path == "source.manifest.json" else digest(data),
+                "sha256": retained[path],
             }
             for path, data in changed
         ],

@@ -607,17 +607,27 @@ class EmptyMembershipPipelineTests(unittest.TestCase):
         for field in ("o", "h", "l", "c", "vw"):
             changed[0][field] += 1
         download_pricing(fixture.store, "NEXT", "2024-06-21", client=FakeClient(changed), refresh_all=True)
+        classify = resume.evidence_delta
+
+        def retained_peer_only(before, after, **kwargs):
+            # The unchanged peer needs one metadata applicability decision for
+            # its numerical carry. The replaced source and completed empty
+            # membership result need no additional classification.
+            self.assertEqual(before["query"]["input_symbol"], "PRIOR")
+            return classify(before, after, **kwargs)
+
         with (
             patch.object(
                 resume,
                 "evidence_delta",
-                side_effect=AssertionError("empty fact result caused extra metadata comparison"),
-            ),
+                side_effect=retained_peer_only,
+            ) as classify_peer,
             patch.object(
                 sourced_rename, "certify_group", side_effect=AssertionError("completed empty result repeated")
             ),
         ):
             fixture.build()
+        self.assertEqual(classify_peer.call_count, 1)
         after = fixture.receipt()
         self.assertNotEqual(before["source_sha256"], after["source_sha256"])
         self.assertEqual(before["sourced_rename_membership"], after["sourced_rename_membership"])

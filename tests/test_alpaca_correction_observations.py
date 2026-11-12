@@ -451,7 +451,16 @@ class CorrectionObservationTests(unittest.TestCase):
         work.require_correction(prepared)
         self.live = [bar("2026-01-05", "600"), self.old[-1]]
         before = (self.store / "end_of_day/pricing/AAA/source.manifest.json").read_bytes()
-        with patch.object(self.client, "_get", side_effect=self.page):
+
+        def differing_context(params):
+            from test_alpaca_pricing_download import single_session_request
+
+            response = self.page(params)
+            if params["adjustment"] == "all" and single_session_request(params):
+                response["bars"]["AAA"] = [bar("2026-01-05", "500")]
+            return response
+
+        with patch.object(self.client, "_get", side_effect=differing_context):
             result = refresh.replace_prepared(self.store, prepared, client=self.client)
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["results"][0]["outcome"]["outcome"], "provider_observation_conflict")

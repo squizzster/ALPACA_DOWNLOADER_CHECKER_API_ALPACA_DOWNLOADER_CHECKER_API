@@ -1,7 +1,6 @@
 """A yes/no boundary over accepted lineage inputs, without identity rules."""
 
 from copy import deepcopy
-from datetime import date, timedelta
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.common.debug_trace import event
@@ -26,6 +25,36 @@ def unchanged_source(source, previous, *, selected=None):
     ):
         return False
     return continuing_request(source, previous)
+
+
+def source_reuse(source, previous, *, selected, selected_correction):
+    """Complete both intrinsic pricing-reuse outcomes from one held binding."""
+    if not previous or not reusable_decision(previous):
+        return False, False
+    if not continuing_request(source, previous):
+        event(
+            "retained_prefix",
+            symbol=source["symbol"],
+            accepted=False,
+            reason="effective_pricing_context_changed",
+        )
+        return False, False
+    if selected == previous["source_sha256"]:
+        return True, True
+    prefix = selected_correction is not None
+    for change in source.get("history_changes", ()):
+        if change["source_sha256"] != previous["source_sha256"]:
+            continue
+        if change["changed_from"] is None:
+            return True, True
+        prefix |= change["changed_from"] >= previous["processed_through"][:10]
+    event(
+        "retained_prefix",
+        symbol=source["symbol"],
+        accepted=prefix,
+        reason="accepted_pricing_ancestry" if prefix else "changed_or_unproven_prefix",
+    )
+    return False, prefix
 
 
 def continuing_request(source, previous):
@@ -113,11 +142,13 @@ def complete_append(view):
             if tuple(timestamp(row[0]).astimezone(NEW_YORK).date().isoformat() for row in added) != expected:
                 return False
             continue
-        first = (
-            view.previous_coverage_end
-            if view.correction_from
-            else (date.fromisoformat(last) + timedelta(days=1)).isoformat()
-        )
+        # Completed empty coverage is authority too. A thin or retired source
+        # can have a last bar far before its accepted request boundary. Only
+        # the newly selected interval needs a grid; reopening the earlier empty
+        # span would falsely select complete historical reconstruction.
+        first = view.previous_coverage_end
+        if first is None:
+            return False  # Missing coverage needs owning recovery, never a historical grid audit.
         end = view.source["latest_request"]["end_exclusive"]
         # A corrected last row is work even when coverage has not advanced.
         # Its producer certificate supplies that session; only a nonempty
@@ -163,12 +194,18 @@ def assignment_summary(previous, boundaries):
 
 def _evidence_facts(value, *, append=False, historical=False):
     result = deepcopy(value)
+    from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS, canonical_extension
+
+    for extension in EXTENSIONS.values():
+        if extension in result:
+            result[extension] = canonical_extension(result[extension])
     result.pop("api_request_count", None)
     result.pop("catalogue_observed_at_utc", None)
     # Metadata owns these lookup-invalidation baselines and completes any
     # required acquisition before this handoff. Adding/changing its bookkeeping
     # alone is not new lineage evidence; actual lookup/action facts stay below.
     result.pop("mapping_endpoint_observations", None)
+    result.pop("sourced_fact_applications", None)
     for lookup in result.get("asset_lookups", ()):
         lookup.pop("source", None)
     if append:
@@ -181,6 +218,10 @@ def _evidence_facts(value, *, append=False, historical=False):
         local = result.get("symbol_disposition", {}).get("local_market_data")
         if isinstance(local, dict):
             local.pop("maximum_rows", None)
+        # The metadata owner has already completed dependency closure. Its
+        # query labels record where it looked, not another ownership fact.
+        # Returned actions, lookups and unresolved endpoints remain compared.
+        result.pop("queried_symbols", None)
     if historical:
         # Names and current active/tradable presentation describe a fresh asset
         # observation. With the same provider UUID, symbol, class and exchange,
@@ -222,10 +263,10 @@ def stable_evidence(previous, current, *, append=False):
 def append_history_invalidation(previous, inputs):
     """Name accepted prior decisions that new rows can actually reconsider.
 
-    Resolved assignments are closed. An unresolved decision is deliberately
-    conditional on later facts from its complete dependency group, so new rows in
-    that group select the existing complete-group owner until a finer producer
-    certificate can bound the unresolved interval.
+    A later suffix cannot establish an observation on an earlier unresolved
+    session. Only overlapping new group observations may reconsider that prior
+    scope. Changed mapping/evidence and incomplete partitions retain their
+    separate owning reconciliation paths.
     """
     added = sorted(symbol for symbol, view in inputs.items() if any(rows for rows in view.views.values()))
     if not added:
@@ -242,6 +283,38 @@ def append_history_invalidation(previous, inputs):
             or prior.get("source_rows") != prior.get("correlated_rows", 0) + prior.get("unresolved_rows", 0)
         )
     )
+    if unresolved and not incomplete:
+        # The producer's all-view assignment bounds cover every accepted row,
+        # including unresolved ones. Consume those bounds without reading old
+        # assignment bodies or deriving historical session grids again.
+        summaries = [previous[symbol].get("assignment_summary") for symbol in unresolved]
+        ends = [
+            view.get("last_session") for summary in summaries if summary is not None for view in summary.values()
+        ]
+        if all(summaries) and ends and all(ends):
+            last = max(ends)
+            added_bounds = [
+                (
+                    timestamp(rows[0][0]).astimezone(NEW_YORK).date().isoformat(),
+                    timestamp(rows[-1][0]).astimezone(NEW_YORK).date().isoformat(),
+                )
+                for view in inputs.values()
+                for rows in view.views.values()
+                if rows
+            ]
+            # Previously observed future-dated actions may need new donor rows
+            # before their occupancy evidence can resolve an earlier ambiguity.
+            # Reaching such a date is a real changed observation dependency,
+            # unlike an ordinary disjoint suffix with no dated event to supply.
+            reached_action = any(
+                isinstance(day, str) and last < day and any(first <= day <= end for first, end in added_bounds)
+                for symbol in unresolved
+                for action in previous[symbol]["evidence"].get("corporate_actions", ())
+                for key in ("effective_date", "ex_date", "process_date", "payable_date")
+                for day in (action.get(key),)
+            )
+            if not reached_action and all(first > last for first, _ in added_bounds):
+                unresolved = []
     if not unresolved and not incomplete:
         return None
     return {"added_symbols": added, "unresolved_symbols": unresolved, "incomplete_symbols": incomplete}
@@ -257,6 +330,7 @@ def requires_lineage(
     completed_deltas=None,
     auxiliary_previous=None,
     auxiliary_current=None,
+    classification_sources=None,
 ):
     """Unknown or changed inputs select the existing complete lineage pipeline."""
     if previous.keys() != evidence.keys() or (refresh or not pricing_unchanged) and completed_deltas is None:
@@ -266,6 +340,11 @@ def requires_lineage(
     for symbol, prior in previous.items():
         if prior is None or not reusable_decision(prior):
             required = True
+            continue
+        if classification_sources is not None and symbol not in classification_sources:
+            # Pricing already selected owning reconstruction for this source.
+            # No retained choice or nonempty membership decision consumes a
+            # metadata classification for it in this operation.
             continue
         delta = evidence_delta(
             prior["evidence"], evidence[symbol], append=append or completed_deltas is not None
@@ -279,9 +358,12 @@ def requires_lineage(
     if completed_deltas is not None:
         before, after = auxiliary_previous or {}, auxiliary_current or {}
         if before.keys() != after.keys():
-            completed_deltas.clear()
-            return True
+            required = True
+            for symbol in before.keys() ^ after.keys():
+                completed_deltas[symbol] = {"scope": "complete_group", "reason": "auxiliary_membership_changed"}
         for symbol, current in after.items():
+            if symbol not in before:
+                continue
             delta = evidence_delta(before[symbol], current, append=True)
             completed_deltas[symbol] = delta
             required |= delta["scope"] == "complete_group"

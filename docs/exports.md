@@ -20,7 +20,9 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 ./alpaca-cli-eod export csv --output exports/csv --workers 2
 ```
 
-Default: all online public IDs, output `exports/csv/`. Repeat `--public-id ID` for selected online identities;
+Default: all online public IDs, output `exports/csv/`. Identities published offline are excluded; operator
+`catalogue status` retains their review markers. [Serving contracts](technical-contracts.md#serving-catalogue)
+define that publication boundary. Repeat `--public-id ID` for selected online identities;
 `--from`/`--through` are inclusive date filters. `--plan` reads only the opened catalogue, reports selected work
 and configured concurrency, and opens no payloads or output files. Automatic memory sizing reads the operating
 system's available-memory counter once. Library equivalents:

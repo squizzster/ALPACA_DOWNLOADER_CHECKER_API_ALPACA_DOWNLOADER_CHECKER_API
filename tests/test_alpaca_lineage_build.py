@@ -272,7 +272,7 @@ class LineageBuildTests(unittest.TestCase):
             self.assertEqual(0, edges.call_count)
             self.download(end="2026-10-15", bars=self.bars + [bar("2026-10-14")])
             self.run_build()
-            self.assertEqual(len(self.bars) + 1, decide.call_count)
+            self.assertEqual(1, decide.call_count)
             self.assertEqual(1, build.call_count)
             self.assertEqual(1, intervals.call_count)
             self.assertEqual(1, edges.call_count)

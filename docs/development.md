@@ -29,9 +29,14 @@ Use generic evidence rules; the main agent owns implementation/acceptance.
 2. Use a fresh research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`. Supply the question,
    evidence/current rules and no preferred verdict. Request primary-source facts, uncertainty, counterexamples
    and a generic rule concept. Researchers never edit/publish; report unavailable configurations.
-3. Map facts to deterministic internal evidence. External research cannot establish unseen row ownership or
-   opaque provider UUIDs. Prefer existing-rule corrections; new rules need ordered gates/vetoes.
-4. Test the positive case, nearest counterexample, dates and adjacent rules across complete affected groups.
+3. Map facts to deterministic internal evidence. Bind researched ownership evidence to retained source
+   observations; do not invent unobserved bars or opaque provider UUIDs. Prefer existing-rule corrections;
+   new rules need ordered gates/vetoes.
+4. Compare plausible owners with leaving the history unallocated under the
+   [allocation criterion](lineage.md#ownership-allocation-criterion). A missing certificate is one weakness
+   to weigh, not automatic rejection of converging evidence. Test the positive case, nearest counterexample,
+   dates and adjacent rules across complete affected groups. Include credible allocation without the
+   particular certificate, a case where nonallocation is most likely, and genuinely tied alternatives.
    Reuse confirmed facts; close each case before the next.
 5. Compare the final cascade on identical approved inputs for every affected identity: gains/losses,
    reassignment and membership. Run full checks; publish only within authorization. Distinguish evidence

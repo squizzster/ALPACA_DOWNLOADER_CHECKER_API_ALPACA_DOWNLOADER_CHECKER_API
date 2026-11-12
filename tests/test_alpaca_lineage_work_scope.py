@@ -392,7 +392,8 @@ class AuxiliaryWorkScopeTests(unittest.TestCase):
 
 
 class PartialServingWorkScopeTests(unittest.TestCase):
-    def test_legacy_range_change_requires_explicit_date_assembly_without_numeric_replay(self):
+    def test_legacy_range_change_assembles_selected_dates_once_without_numeric_replay(self):
+        from alpaca_end_of_day import _standalone_group, standalone
         from libs.alpaca_serving_catalogue import storage as serving_storage
 
         case = serving_fixture.ServingSuffixTests()
@@ -406,22 +407,34 @@ class PartialServingWorkScopeTests(unittest.TestCase):
             record.pop("session_projection_version")
         serving_storage.commit(case.store, previous, list(previous.values()))
         case.publish_change(lambda receipt, _: receipt["evidence"].update(warnings=["new metadata"]), "TEST")
-        read = Path.read_bytes
+        read = _standalone_group._rows
+        reads = []
 
-        def closed(path):
-            if path.suffix == ".gz":
-                self.fail("ordinary maintenance reconstructed a missing legacy projection")
-            return read(path)
+        def selected_raw(root, source, kind, adjustment, *args):
+            self.assertEqual((root.name, kind, adjustment), ("TEST", "current_month", "raw"))
+            reads.append((root.name, kind, adjustment))
+            return read(root, source, kind, adjustment, *args)
 
         with (
             patch.object(policy, "_unresolved_ends", return_value=["2026-10-06"]),
             patch.object(policy, "_bar_reasons", side_effect=AssertionError("completed numbers rechecked")),
+            patch.object(
+                policy,
+                "expected_market_session_coverage",
+                side_effect=AssertionError("completed calendar rechecked"),
+            ),
+            patch.object(standalone, "_rows", side_effect=AssertionError("completed history reopened")),
         ):
-            with patch.object(Path, "read_bytes", closed):
-                deferred = maintain(case.store)
-            self.assertFalse(deferred["complete"])
-            self.assertIn("explicit catalogue rebuild", repr(deferred["failures"]))
-            rebuilt = maintain(case.store, rebuild=True)
+            with patch.object(_standalone_group, "_rows", side_effect=selected_raw):
+                rebuilt = maintain(case.store)
+            self.assertEqual([("TEST", "current_month", "raw")], reads)
+            case.publish_change(
+                lambda receipt, _: receipt["evidence"].update(warnings=["later metadata"]), "TEST"
+            )
+            with patch.object(
+                _standalone_group, "_rows", side_effect=AssertionError("completed dates reconstructed")
+            ):
+                self.assertTrue(maintain(case.store)["complete"])
         self.assertTrue(rebuilt["complete"], rebuilt)
         self.assertEqual(rebuilt["checked_bars"], 0)
         current = case.catalogue_groups("ALIAS")["ALIAS"]
