@@ -66,6 +66,37 @@ not reconstruct them. A prepared numerical source revision may additionally carr
 exact sessions and chosen sources. Ingress accepts that transport once and retains its immutable aliases.
 Publication carries those selected values into serving rather than opening their pricing payloads again.
 
+Completed accepted-publication research can enter a separate explicit admission through
+[research_admission.py](../libs/alpaca_lineage_build/research_admission.py). Preparation consumes separately
+selected baseline receipts, the completed candidate, and the accepted canonical ruleset. It establishes
+equivalent executable rules, exact scoped facts and date intent, complete assignments and no outstanding
+mapping correction once. Approval consumes that exact review scope; it does not rerun preparation. The
+original research remains unpublishable and unchanged. Newly admitted receipts record its origin and the
+separate approval, while the normal prepared publisher and journal install the selected result. Only changed
+assignment selectors are written; unchanged legacy bodies and omitted optional equality remain as supplied.
+The operation token binds this specific approved candidate. A changed selected application, producer,
+receipt or pricing generation stops publication; unrelated factual scopes do not invalidate the admission.
+
+The [application-inventory owner](../libs/alpaca_lineage_build/application_inventory.py) separately repairs
+missing application bookkeeping from an already accepted peer marker in the exact selected input component.
+It cannot bind new facts or select owners or prices. Its journal mode permits changes only to
+`evidence.sourced_fact_applications`, preserves summary/notices/checks, and carries unchanged serving decisions.
+Its explicit metadata-completion handoff admits only sourced-fact or lineage-evidence jobs without pricing,
+history-check or correction requirements. That job can complete without advancing a retired source's pricing
+coverage. Exact obligations, required lookups and group/generation bindings still apply. Actual pricing work
+remains outstanding and cannot inherit this metadata-only completion.
+
+The [correction-binding owner](../libs/alpaca_lineage_build/correction_binding.py) can carry completed
+ownership and numerical source choices through a narrowly supported latest-session count correction.
+It consumes the durable comparison selection, published correction and producer-held corrected rows,
+generation-bound current-month assignments and the complete component's accepted choices. Only positive
+volume/trade-count revisions with identical timestamps, OHLC and VWAP qualify. The recorded as-of UUID or
+terminal-continuity decision must retain its applicable predicates, and no same-identity contributor may
+compete on that date. Missing handoffs, changed mapping/coverage, unsupported rules and value-bound numerical
+capabilities fail into their owning work. Preparation performs no storage I/O or ownership/numerical replay.
+Its completed plan preserves assignment bodies and retargets only pricing bindings; publication checks the
+named generations under group locks. Changed values remain new serving inputs on the corrected date.
+
 ## Standalone artifacts
 
 Paths are relative to the standalone store:

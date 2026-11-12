@@ -186,6 +186,7 @@ Operations: `init`; `rules` (`policy` optional); `explain` (`store`, `symbol`, o
 `adjustment`, `max_segments`, `include_metadata_handoff`); `run` (`store`, optional `policy`, either `symbols` or `all: true`, optional
 `max_differences`, `timeout_seconds`, `control_policy`, `screen_report`, `reuse_report`, `metadata_handoff`);
 `screen` (`store`, `policy`, `control_policy`); `export` (`manifest`, optional `symbols`, `multiple_only`);
-`handoff` (`input`, optional `symbols`). Paths are strings; symbol collections are JSON lists.
+`handoff` (`input`, optional `symbols`); `coverage` (`store`, optional `unresolved_details`, `reuse_report`).
+Paths are strings; symbol collections are JSON lists.
 The guide owns their semantics, limits and CLI examples. An explicit research replay returns independent
 failures and completed peer reports; inspect `execution_complete` separately from comparison `parity`.

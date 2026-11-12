@@ -247,5 +247,10 @@
     "modifications": [
       "Expose the consolidated lineage implementation and combined YAML diagnostics through existing public JSON APIs; preserve three-stage execution and production reader/storage contracts."
     ]
+  },
+  {
+    "modifications": [
+      "Expose published lineage coverage and selected unresolved explanations through the existing public diagnostic JSON API."
+    ]
   }
 ]

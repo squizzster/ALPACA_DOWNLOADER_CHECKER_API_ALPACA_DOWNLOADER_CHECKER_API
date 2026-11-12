@@ -37,6 +37,7 @@ FIELDS = {
     "screen": {"store", "policy", "control_policy"},
     "export": {"manifest", "symbols", "multiple_only"},
     "handoff": {"input", "symbols"},
+    "coverage": {"store", "unresolved_details", "reuse_report"},
 }
 
 
@@ -124,6 +125,17 @@ def execute(data):
 
 
 def dispatch(command, request):
+    if command == "coverage":
+        from .coverage import coverage
+
+        details = request.get("unresolved_details", False)
+        if type(details) is not bool:
+            raise ValueError("unresolved_details must be boolean")
+        return coverage(
+            path(request.get("store"), "store"),
+            details=details,
+            previous=report_file(request["reuse_report"], "reuse_report") if "reuse_report" in request else None,
+        )
     if command == "screen":
         from .screen import screen
 

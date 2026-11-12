@@ -85,7 +85,7 @@ Production and documented research share the storage-free
 retain accepted owner plans, apply per-fact positive-date refinement intent, and identify genuinely new
 numerical contests. Metadata-only changes preserve completed numerical choices. The correlation-owned
 [component refinement](../libs/alpaca_end_of_day_security_correlation/component_refinement.py) is an optional
-named producer, disabled by default in the canonical YAML. Its evidence conditions and selected overlap
+named producer, explicitly selected in the canonical YAML. Its evidence conditions and selected overlap
 scope remain separate from dated ownership and serving eligibility.
 
 ## Serving and consumption

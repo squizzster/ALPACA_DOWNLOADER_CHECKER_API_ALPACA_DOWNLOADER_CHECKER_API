@@ -29,6 +29,7 @@ def build_parser():
         ("screen", "Plan the membership experiment using only completed metadata."),
         ("export", "Report dated ticker instances in a completed CSV export."),
         ("handoff", "Inspect a saved stage document without running the pipeline."),
+        ("coverage", "Count published allocation and pending work without replaying rules."),
     ):
         sub = commands.add_parser(name, help=help_text, description=help_text, allow_abbrev=False)
         sub.add_argument("--format", choices=("text", "json"), default="text")
@@ -36,8 +37,17 @@ def build_parser():
             sub.add_argument("--output", type=Path, help="New YAML file; existing files are never overwritten.")
         if name in ("rules", "run", "screen"):
             sub.add_argument("--policy", default=str(DEFAULT_POLICY))
-        if name in ("run", "explain", "screen"):
+        if name in ("run", "explain", "screen", "coverage"):
             sub.add_argument("--store", default=str(REPOSITORY / "data_pricing"))
+        if name == "coverage":
+            sub.add_argument(
+                "--reuse-report", help="Carry completed details for unchanged selected generations."
+            )
+            sub.add_argument(
+                "--unresolved-details",
+                action="store_true",
+                help="Read assignment metadata only for indexed sources with unresolved rows.",
+            )
         if name == "run":
             sub.add_argument(
                 "--metadata-handoff", help="Consume selected metadata already captured for this case."
@@ -96,6 +106,11 @@ def render(report):
             lines.append(f"Fixed step: {step['name']}  {code['file']}:{code['line']}")
         lines.append("Research YAML can reorder/remove registered established ownership and row rules.")
         lines.append("New predicates and the fixed steps require an implementation change; see --format json.")
+    elif operation == "coverage":
+        lines.append(json.dumps(report["summary"], sort_keys=True))
+        lines.append(f"Selected metadata I/O: {report['expected_io']}; reads: {report['reads']}")
+        for failure in report["failures"]:
+            lines.append(f"  {failure['symbol']}: ERROR {failure['error']}")
     elif operation == "run":
         lines.append(json.dumps(report["summary"], sort_keys=True))
         for group in report["groups"]:

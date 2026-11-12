@@ -803,10 +803,51 @@ def publish(
     projection_only=False,
     source_envelope_recovery=False,
     membership_transfer_recovery=False,
+    application_inventory_recovery=False,
     selection_inputs=None,
 ) -> None:
     if not receipts:
         raise LineageError("lineage publication requires at least one receipt")
+    if application_inventory_recovery:
+        if (
+            not unchanged_decision
+            or previous is None
+            or notices
+            or checks is not None
+            or any(boundaries.values())
+            or projection_only
+            or source_envelope_recovery
+            or membership_transfer_recovery
+        ):
+            raise LineageError(
+                "application inventory recovery requires unchanged inputs and no upstream acknowledgement"
+            )
+        for symbol, receipt in receipts.items():
+            old = previous[symbol]
+            new_inventory = receipt["evidence"].get("sourced_fact_applications", {})
+            old_inventory = old["evidence"].get("sourced_fact_applications", {})
+            if (
+                not isinstance(new_inventory, dict)
+                or old_inventory.keys() - new_inventory.keys()
+                or any(
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(value, str)
+                    or len(value) != 64
+                    or any(char not in "0123456789abcdef" for char in value)
+                    for name, value in new_inventory.items()
+                    if old_inventory.get(name) != value
+                )
+                or {key: value for key, value in receipt.items() if key != "evidence"}
+                != {key: value for key, value in old.items() if key != "evidence"}
+                or {
+                    key: value
+                    for key, value in receipt["evidence"].items()
+                    if key != "sourced_fact_applications"
+                }
+                != {key: value for key, value in old["evidence"].items() if key != "sourced_fact_applications"}
+            ):
+                raise LineageError("application inventory recovery changed accepted lineage inputs")
     envelope_fields = {"current_source_ownership", "sourced_rename_ownership", "closed_source_handoff_version"}
     transfer_fields = {"membership_only_rebind", "membership_transfer_handoff_version"}
     if membership_transfer_recovery and any(boundaries.values()):
@@ -937,6 +978,22 @@ def publish(
 
     for symbol, receipt in receipts.items():
         old = read_receipt(root, symbol, index) if previous is None else previous[symbol]
+        if application_inventory_recovery:
+            # The inventory-only producer established the sole changed field.
+            # Carry the completed compact projection/assignments unchanged;
+            # do not derive them or hash an unchanged peer again.
+            entry = index["symbols"][symbol]
+            inventory = receipt["evidence"].get("sourced_fact_applications", {})
+            if inventory == old["evidence"].get("sourced_fact_applications", {}):
+                updated[symbol] = entry
+            else:
+                updated[symbol] = {
+                    **entry,
+                    "sha256": document_digest(receipt),
+                    "projection": {**entry["projection"], "sourced_fact_applications": inventory},
+                }
+                documents[f"{symbol}/lineage.manifest.json"] = receipt
+            continue
         if projection_only and not boundaries[symbol]:
             entry = index["symbols"][symbol]
             # Older compact indexes predate this marker even when the selected
@@ -1018,7 +1075,12 @@ def publish(
         "notices": notices,
         "export_input_changes": export_input_changes,
     }
-    if projection_only or source_envelope_recovery or membership_transfer_recovery:
+    if (
+        projection_only
+        or source_envelope_recovery
+        or membership_transfer_recovery
+        or application_inventory_recovery
+    ):
         journal["projection_only"] = True
     if unchanged_decision:
         # The migration owner has established rule applicability once. This
@@ -1037,10 +1099,14 @@ def publish(
         }
         if source_envelope_recovery:
             ignored.update(envelope_fields)
-        if previous is None or any(
-            {k: v for k, v in receipt.items() if k not in ignored}
-            != {k: v for k, v in previous[symbol].items() if k not in ignored}
-            for symbol, receipt in receipts.items()
+        if (
+            previous is None
+            or not application_inventory_recovery
+            and any(
+                {k: v for k, v in receipt.items() if k not in ignored}
+                != {k: v for k, v in previous[symbol].items() if k not in ignored}
+                for symbol, receipt in receipts.items()
+            )
         ):
             raise LineageError("unchanged decision handoff changed serving inputs")
         members = sorted(set(receipts) | set(journal["unavailable_pricing"]))
@@ -1065,7 +1131,12 @@ def publish(
     with publication_lock(root, exclusive=True):
         from libs.alpaca_pricing_download.check_summary import invalidate
 
-        if not (projection_only or source_envelope_recovery or membership_transfer_recovery):
+        if not (
+            projection_only
+            or source_envelope_recovery
+            or membership_transfer_recovery
+            or application_inventory_recovery
+        ):
             invalidate(store, receipts, owner="lineage")
         atomic_json(path_at(root, ".pending.json"), journal)
         state = finish_publication(store, root, journal, receipts=receipts, sources=sources)

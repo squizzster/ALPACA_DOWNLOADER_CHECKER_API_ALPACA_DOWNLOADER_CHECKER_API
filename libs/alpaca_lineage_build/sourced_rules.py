@@ -124,6 +124,52 @@ def incorporated(client, evidence, *, applications=None):
     }
 
 
+def incorporated_group(client, evidence, *, applications):
+    """Consume incorporation from one generation-bound selected input component.
+
+    A completed current application marker is already authoritative. Otherwise
+    its facts may be distributed across source-local metadata bodies; their
+    incorporation does not require copying common ownership into a unit source.
+    Callers select these held bodies from the receipt's actual input bindings.
+    """
+    accepted, pending = {}, []
+    for application in applications:
+        if any(
+            report.get("sourced_fact_applications", {}).get(application["id"]) == application["fingerprint"]
+            for report in evidence.values()
+        ):
+            accepted[application["id"]] = application["fingerprint"]
+        else:
+            pending.append(application)
+    if not pending:
+        return accepted
+    needed = {supplement_key(fact) for application in pending for fact in application["facts"]}
+    observed, intents = {}, {}
+    for report in evidence.values():
+        for fact in (*report.get("event_supplements", ()), *items(report)):
+            key = supplement_key(fact)
+            if key not in needed:
+                continue
+            if key in observed and observed[key] != fact:
+                raise LineageError("conflicting sourced facts in selected input component")
+            observed[key] = fact
+            if fact["kind"] == "dated_market_occupancy":
+                intents.setdefault(key, set()).add(
+                    report.get("sourced_fact_intents", {}).get(fact["match"]["source_id"], True)
+                )
+    for application in pending:
+        if all(
+            observed.get(supplement_key(fact)) == fact
+            and (
+                fact["kind"] != "dated_market_occupancy"
+                or intents.get(supplement_key(fact)) == {application.get("refine_accepted_dates", True)}
+            )
+            for fact in application["facts"]
+        ):
+            accepted[application["id"]] = application["fingerprint"]
+    return accepted
+
+
 def project_application_intents(client, evidence):
     """Project newly accepted instruction metadata without reacquiring evidence.
 

@@ -63,6 +63,35 @@ bounds are reported separately from exact shared first timestamps; bounds alone 
 duplicate interior sessions or different prices. Several ticker labels, several public identities,
 and several selected numerical observations are different facts.
 
+## Published lineage coverage
+
+```bash
+./alpaca-lineage-debug coverage --store data_pricing --format json > /tmp/lineage-coverage.json
+./alpaca-lineage-debug coverage --store data_pricing --unresolved-details \
+  --format json > /tmp/lineage-coverage-details.json
+./alpaca-lineage-debug coverage --store data_pricing --unresolved-details \
+  --reuse-report /tmp/lineage-coverage-details.json --format json > /tmp/lineage-coverage-next.json
+```
+
+The compact report reads the completed index once and projects pending workflow outcomes without validating
+pricing evidence again. It separates nonempty assigned histories, unresolved histories and empty sources.
+Pending work is independent: a published resolved source may still owe a new application or publication.
+This is a census of recorded decisions, not independent evidence that every assigned owner is correct.
+
+`--unresolved-details` explicitly selects only indexed sources with unresolved rows. It reads their receipts
+and assignment metadata, never prices, provider observations or rule execution. Expected I/O reports that
+selection and its maximum three assignment boundaries per source. An unresolved reason naming ambiguity,
+conflict or dispute is reported as ambiguous; another recorded reason withholding allocation is unsupported.
+Excluded exchange test symbols and missing recorded reasons remain separate. These are explanation classes,
+not a new assessment of the evidence. A source can contain multiple classes; row counts include adjustment
+views, and overlapping reason counts must not be added as unique rows. Required unreadable metadata leaves
+the detail report incomplete while preserving independent completed details.
+
+The operation and publication gates keep the selected metadata coherent. No per-source pricing lock,
+directory inventory, historical authentication or repair occurs. A supplied coverage report carries completed
+details for the same store, implementation and receipt/pricing generations. Changed workflow status alone
+does not repeat them; a genuinely changed selected generation reads only its affected metadata.
+
 ## Run a candidate
 
 ```bash
@@ -136,7 +165,8 @@ producers:
 
 Flat legacy research YAML retains its `research.membership_refinement` compatibility setting.
 
-The canonical default is null; `init` carries the current producer selection into the research copy.
+Omitted producer selection means null. The canonical YAML explicitly enables this producer;
+`init` carries that selection into the research copy.
 The control must leave the candidate producer disabled. Combined YAML can use its canonical default
 control; a flat legacy research file requires explicit `--control-policy`.
 The producer consumes an already completed containing identity, the exact retained same-CUSIP rename
@@ -153,7 +183,7 @@ reconstructed. The applicability plan reports affected positions, source/receipt
 extension edges. A genuinely changed binding requires a new experiment rather than replaying a consumer.
 
 The diagnostic remains read-only. Authorized production can select this same named producer in the canonical
-YAML; its default is null. A successful research comparison does not authorize publication or by itself prove
+YAML; omitting its selection disables it. A successful research comparison does not authorize publication or by itself prove
 ordinary append, interruption recovery or complete production preservation. Production consumes its completed
 plan under the selected group and generation bindings, preserving accepted ownership and opening only the
 new numerical overlap.

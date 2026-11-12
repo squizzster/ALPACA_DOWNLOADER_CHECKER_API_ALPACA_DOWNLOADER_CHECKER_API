@@ -143,7 +143,13 @@ def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
             )
             for owner in documented["owners"]
         )
-        selected = control.previous["unresolved_rows"] or not _binding_applies(control) or needs_refinement
+        # Unresolved rows are completed outcomes too. New common chronology
+        # selects those rows only on a source to which its bound owner applies;
+        # an unchanged unrelated peer keeps its accepted unresolved partition.
+        # A changed pricing binding still requires its own reconciliation.
+        selected = (
+            applies and control.previous["unresolved_rows"] or not _binding_applies(control) or needs_refinement
+        )
         changed_membership = any(
             members[identity["member_alpaca_asset_ids"][0]]["security_id"] != identity["security_id"]
             for identity in control.previous["identity_memberships"]

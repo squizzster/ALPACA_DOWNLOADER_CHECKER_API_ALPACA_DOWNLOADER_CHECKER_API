@@ -154,6 +154,10 @@ def publish_prepared(selection, context, *, progress=None):
             k: v for k, v in prepared.policy.items() if k != "file_sha256"
         }:
             raise LineageError("prepared recovery policy changed from accepted comparison")
+        if any(receipt.get("research_admission") is not None for receipt in prepared.receipts.values()):
+            from .research_admission import require_canonical_applicability
+
+            require_canonical_applicability(prepared, context.accept_ruleset())
         with storage.publication_lock(root):
             index = context.select_index(root)
         pending, completed = selection.select(index)

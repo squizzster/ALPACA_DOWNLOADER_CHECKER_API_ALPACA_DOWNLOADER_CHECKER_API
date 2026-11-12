@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 4
+VERSION = 5
 SCHEMA_VERSION = 1
 
 
@@ -26,7 +26,7 @@ def accept_report(value, operation, *, allow_previous=False):
     # Known completed comparisons remain applicable under the separate policy,
     # store, selector and generation checks. Future producer versions must make
     # their own explicit compatibility decision instead of inheriting this one.
-    if allow_previous and current in {(3, 22, 95, 98), (4, 22, 96, 99)}:
+    if allow_previous and current in {(3, 22, 95, 98), (4, 22, 96, 99), (5, 22, 96, 100)}:
         bindings.extend(
             {
                 "debug": version,
@@ -36,7 +36,7 @@ def accept_report(value, operation, *, allow_previous=False):
             }
             for version in (2, 3)
         )
-        if current == (4, 22, 96, 99):
+        if current in {(4, 22, 96, 99), (5, 22, 96, 100)}:
             bindings.append(
                 {
                     "debug": 3,
@@ -46,6 +46,8 @@ def accept_report(value, operation, *, allow_previous=False):
                     "membership_refinement": binding["membership_refinement"],
                 }
             )
+        if current == (5, 22, 96, 100):
+            bindings.append({**binding, "debug": 4, "lineage_runtime": 99})
     if (
         not isinstance(value, dict)
         or value.get("schema") != "alpaca.lineage.debug.report"

@@ -612,28 +612,65 @@ class WorkPolicy:
                 for label, expected in item.get("required_lookups", {}).items()
             ):
                 raise WorkDeferred(f"{symbol}: lineage evidence differs from its accepted obligation")
+        # Application incorporation is a complete-input-component result.
+        # Source-local metadata deliberately need not repeat a common/right fact
+        # on each unit or later unrelated market label. Project only inventory,
+        # using the receipt's selected generation bindings, before a later peer
+        # or pricing obligation can fail. Those completed markers survive retry.
+        pending_applications = {
+            symbol: {
+                name: fingerprint
+                for name, fingerprint in self.work.get(symbol, {}).get("required_sourced_facts", {}).items()
+                if receipt["evidence"].get("sourced_fact_applications", {}).get(name) != fingerprint
+            }
+            for symbol, receipt in receipts.items()
+        }
+        pending_applications = {symbol: needed for symbol, needed in pending_applications.items() if needed}
+        if pending_applications:
+            from .sourced_rules import incorporated_group
+
+            components = {}
+            for symbol, needed in pending_applications.items():
+                receipt = receipts[symbol]
+                selected = receipt.get("input_sources") or {symbol: receipt["source_sha256"]}
+                auxiliaries = receipt.get("unavailable_pricing", {})
+                key = tuple(sorted(selected.items())), tuple(sorted(auxiliaries))
+                component = components.setdefault(key, {"evidence": {}, "required": {}, "symbols": []})
+                component["evidence"].update(
+                    (name, receipts[name]["evidence"])
+                    for name, generation in selected.items()
+                    if name in receipts and receipts[name]["source_sha256"] == generation
+                )
+                component["evidence"].update((name, value["evidence"]) for name, value in auxiliaries.items())
+                component["required"].update(needed)
+                component["symbols"].append(symbol)
+            for component in components.values():
+                applications = [
+                    application
+                    for application in self.rule_applications
+                    if component["required"].get(application["id"]) == application["fingerprint"]
+                ]
+                applied = incorporated_group(self, component["evidence"], applications=applications)
+                for symbol in component["symbols"]:
+                    carried = {
+                        name: fingerprint
+                        for name, fingerprint in pending_applications[symbol].items()
+                        if applied.get(name) == fingerprint
+                    }
+                    if carried:
+                        receipt = receipts[symbol]
+                        receipt["evidence"] = {
+                            **receipt["evidence"],
+                            "sourced_fact_applications": {
+                                **receipt["evidence"].get("sourced_fact_applications", {}),
+                                **carried,
+                            },
+                        }
         accepted = {}
         for symbol, receipt in receipts.items():
             item = self.work.get(symbol)
             if item is None:
                 continue
-            required_facts = item.get("required_sourced_facts", {})
-            if required_facts and any(
-                receipt["evidence"].get("sourced_fact_applications", {}).get(key) != value
-                for key, value in required_facts.items()
-            ):
-                from .sourced_rules import incorporated
-
-                # A new application scope may reference already accepted facts.
-                # Project its incorporation without repeating ownership proof.
-                applied = incorporated(self, receipt["evidence"])
-                receipt["evidence"] = {
-                    **receipt["evidence"],
-                    "sourced_fact_applications": {
-                        **receipt["evidence"].get("sourced_fact_applications", {}),
-                        **applied,
-                    },
-                }
             if any(
                 receipt["evidence"].get("sourced_fact_applications", {}).get(key) != value
                 for key, value in item.get("required_sourced_facts", {}).items()

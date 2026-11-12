@@ -75,6 +75,21 @@ def count_pending(store):
         ).fetchone()[0]
 
 
+def pending_status(store):
+    """Project workflow outcomes without reopening completed pricing evidence."""
+    with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+        connection.execute("BEGIN")
+        _check(connection)
+        revision = connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
+        work = {}
+        for symbol, body in connection.execute(
+            "SELECT symbol, body FROM work WHERE json_extract(body, '$.status') IS NOT 'complete'"
+        ):
+            value = json.loads(body)
+            work[symbol] = {key: value.get(key) for key in ("status", "reasons", "outcome", "obligation_id")}
+        return {"revision": revision, "work": work}
+
+
 @traced("universe_state_read")
 def read_state(store, *, symbols=None, pending_only=False):
     """Read global compact controls and only the explicitly selected work bodies.

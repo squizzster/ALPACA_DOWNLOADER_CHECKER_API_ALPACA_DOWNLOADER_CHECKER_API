@@ -36,6 +36,13 @@ def historical_bindings():
             {"debug": version, "policy_lab": 21, "correlation_runtime": 95, "membership_refinement": producer}
             for version in (2, 3)
         ),
+        {
+            "debug": 4,
+            "policy_lab": 22,
+            "correlation_runtime": 96,
+            "lineage_runtime": 99,
+            "membership_refinement": producer,
+        },
     ]
 
 
@@ -72,7 +79,8 @@ class ReportBindingCompatibilityTests(TestCase):
             accept_report(mismatched, "run", allow_previous=True)
         # Compatibility is a deliberate claim by this integration, not blanket
         # permission for a future implementation to inherit old calculations.
-        future = {**implementation_binding(), "lineage_runtime": 100}
+        future = implementation_binding()
+        future["lineage_runtime"] += 1
         with patch("libs.alpaca_lineage_debug.implementation_binding", return_value=future):
             with self.assertRaisesRegex(ValueError, "incompatible contract"):
                 accept_report(report_for(historical_bindings()[0]), "run", allow_previous=True)
