@@ -34,6 +34,7 @@ from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_pricing_download.storage import load_source
 from libs.alpaca_recovery_registry import load_labels, publish_union
 from libs.common.sqlite_connections import connect_sqlite
+from libs.common.store_lock import operation_lock
 
 
 class CatalogueClient(IdentityClient):
@@ -81,6 +82,10 @@ class UniverseUpdateTests(unittest.TestCase):
         )
         rebuild(self.store)
         rebuild_universe(self.store)
+        # Create the stable infrastructure pathname before mutation snapshots.
+        # Its existence grants no ownership; each update still takes flock.
+        with operation_lock(self.store, exclusive=True):
+            pass
         from libs.alpaca_serving_catalogue.producer import maintain
 
         self.assertTrue(maintain(self.store, bootstrap=True)["complete"])

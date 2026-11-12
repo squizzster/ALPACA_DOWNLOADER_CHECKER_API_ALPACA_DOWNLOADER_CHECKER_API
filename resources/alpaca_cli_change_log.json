@@ -191,5 +191,10 @@
     "modifications": [
       "Expose lineage recover with an explicit generation-bound selection, offline plan and debug capture; preserve owning journal recovery, selected serving maintenance and provider-free retained reconstruction."
     ]
+  },
+  {
+    "modifications": [
+      "Run ordinary update through Prepare, Histories and Serve JSON boundaries under its existing continuous gate; capture exact handoffs alongside the optional DEBUG trace."
+    ]
   }
 ]

@@ -152,8 +152,7 @@ its output under those locks, releases them, then delivers bytes. The internal
 `consume_prepared` feasibility adapter composes the history JSON stage and its
 actual serving consumer. They check only the required selector applicability
 across lock gaps; changed implementation versions or bindings fail rather than
-selecting preparation again. The ordinary `update` command uses the extracted
-owners directly; its full orchestration has not switched to the JSON runner.
+selecting preparation again. The ordinary `update` command uses the [three-stage JSON controller](#pipeline-phase-3-complete-pipeline).
 
 Acceptance requires actual-consumer fresh-process tests, not just parsing a schema.
 The [Prepare regressions](../tests/test_alpaca_pipeline_prepare.py),
@@ -189,8 +188,8 @@ These commands emit the handoff to stdout without saving intermediate files.
 Progress/errors belong on stderr. The root adapters contain no domain decisions.
 The [history transport owner](../libs/alpaca_pipeline/histories.py) invokes the
 [history domain owner](../libs/alpaca_lineage_build/universe_update.py),
-`histories_locked`, independently of `serve_locked`. Existing `continue_locked`
-composes those owners for the ordinary update command, preserving its behavior.
+`histories_locked`, independently of `serve_locked`. Ordinary update sequences
+the JSON stages through the [controller](#pipeline-phase-3-complete-pipeline).
 
 Input is the complete `alpaca.pipeline.prepared`, schema 1. The stage consumes
 carried observations, graph, approvals and recovery results; it does not repeat
@@ -229,8 +228,8 @@ an output delivery failure without turning that failed call into success.
 
 Both executable stages receive complete input before locking, freeze output
 under the existing operation/universe locks, then release locks before delivery.
-The internal `consume_histories` feasibility consumer runs the actual serving
-owner in a fresh process without provider clients. On lock reacquisition it checks
+The public Serve stage runs the actual serving owner in a fresh process without provider clients.
+`consume_histories` remains a compatibility adapter to that same implementation. On lock reacquisition it checks
 workflow, pricing-summary, lineage-index and serving generations. A real change
 stops consumption. Partial-history applicability checks do not require unrelated
 pending peers to be ready, and do not authorize summary membership selection.
@@ -248,6 +247,75 @@ equality, missing inputs and actual binding invalidation. The
 cover API/CLI parity, full input before locking, output exceeding pipe capacity,
 broken delivery, DEBUG equivalence and committed/rolled-back summary-generation
 carry. They reject repeated upstream work and physical reads of carried values.
-The serving consumer remains internal: an independent public serving stage and
-the ordinary runner's JSON orchestration are subsequent work. Synthetic transport
-tests establish neither production-scale memory nor the live runtime target.
+The [Serve stage and ordinary runner](#pipeline-phase-3-complete-pipeline) consume
+that same contract. Synthetic transport tests establish neither full production-scale
+memory nor the live runtime target.
+
+
+## Pipeline Phase 3: Complete pipeline
+
+The Phase 3 goal is ordinary execution of Prepare → Histories → Serve through
+real UTF-8 JSON arguments and results under one continuous operation lock. Each
+owner restores its domain context from its argument; the controller carries no
+domain decisions or caches outside those bytes. All three owners are also
+independently executable for development and focused diagnosis.
+
+[runner.py](../libs/alpaca_pipeline/runner.py) sequences the stages.
+[execution.py](../libs/alpaca_pipeline/execution.py) acquires the gate for a direct
+pipeline call or adopts the CLI's actual exclusive ownership without opening a
+second descriptor. Ownership is bound to the store, process, thread and active
+lock lifetime; it cannot be supplied in JSON. Exceptions and interruption release
+the gate; its persistent pathname is never deleted. Each stage keeps its owner
+locks and a fresh recovery-handoff scope. Normal stages omit lock-gap applicability
+checks because there was no gap. Standalone stages receive/decode complete input,
+acquire their gate, check only applicable generations and release locks before
+output delivery. Producer checks for genuinely new data remain in their owners.
+
+`alpaca_end_of_day.run_pipeline(request_json: bytes) -> bytes` runs the complete
+pipeline. Individual APIs are `prepare_pipeline`, `produce_histories_pipeline`
+and `serve_pipeline`, each consuming and returning bytes. The final Serve result
+is the existing compact update report, including explicit failures and overall
+completion. Serve selects components, prepares and assesses required inputs,
+publishes the existing catalogue and acknowledges completed work. It has no
+provider client and cannot invoke upstream producers. It consumes the carried
+accepted index, controls, receipts, assignments and partitions without rereading
+them solely because execution entered another stage.
+
+```bash
+set -o pipefail
+python3.11 alpaca_pipeline_prepare.py < request.json |
+  python3.11 alpaca_pipeline_histories.py |
+  python3.11 alpaca_pipeline_serve.py
+```
+
+The adapters call the same public APIs; the shell form has actual lock gaps and
+therefore performs their applicability checks. Everyday `update` uses the
+continuous-lock controller. `update --plan` retains its read-only selection path.
+The CLI retains progress, heartbeat, ETA, request counts, reporting, exit codes
+and separate registry Git bookkeeping.
+
+Prepare resolves an inclusive `through` once. A request may instead carry
+`end_exclusive` with `through: null` for an already selected exclusive date.
+This preserves existing legacy/non-session intentions without calendar rounding
+again. Both forms are validated before provider or store work; downstream stages
+consume the frozen operation cutoff unchanged.
+
+Normal execution saves no handoff files, spool or replay store. With ordinary
+`update --debug FILE.jsonl`, exact stage inputs, outputs and producer effect records
+are captured in `FILE.jsonl.handoffs/<operation-id>/`, outside the production store.
+The compact trace retains its own format. Stage APIs retain their explicit DEBUG
+destination contract. DEBUG observes existing values and adds no provider requests,
+historical reads or completed calculations. A missing, malformed or lost return
+value errors and stops dependent stages; it is never reconstructed or automatically
+replayed. Existing journals recover only interrupted production writes.
+
+The [runner regressions](../tests/test_alpaca_pipeline_runner.py) exercise actual
+CLI execution, fresh contexts, competing processes between stages, copied lock
+contexts, exceptions, interruption and missing handoffs. The
+[Serve regressions](../tests/test_alpaca_pipeline_serve.py) exercise public API/CLI
+parity, fresh processes, forbidden upstream work, DEBUG equivalence, slow output
+and broken delivery after publication. Existing append, correction, replacement,
+dependency and peer-failure regressions run through ordinary JSON orchestration.
+Stored pricing, lineage and serving schemas/layout remain unchanged. Synthetic
+transport measurements do not establish live throughput, full lineage-policy
+correctness or the 60-minute target/90-minute maximum.

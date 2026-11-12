@@ -99,9 +99,9 @@ def accept_store(store):
 class WriterIndexView:
     """A selected index whose writer lock remains held by this thread."""
 
-    def __init__(self, accepted, context):
+    def __init__(self, accepted, context, selected_index=None):
         self.store, self.root = accepted.store, accepted.root
-        self._context, self._index = context, None
+        self._context, self._index = context, selected_index
         self._process, self._thread, self._active = os.getpid(), get_ident(), True
 
     def require_active(self, store):
@@ -182,13 +182,19 @@ def writer_lock(store: Path, *, accepted_store=None):
 
 
 @contextmanager
-def writer_snapshot(store, *, accepted_store=None, context=None):
+def writer_snapshot(store, *, accepted_store=None, context=None, selected_index=None):
     """Own the writer lock and lend its coherent index only for that lifetime."""
     accepted = accept_store(store) if accepted_store is None else accepted_store
     if context is not None and context.store != accepted.store:
         raise LineageError("lineage context belongs to another store")
+    if selected_index is not None and (context is None or selected_index is not context.index):
+        raise LineageError("selected lineage index requires its accepted context binding")
     with writer_lock(store, accepted_store=accepted):
-        view = WriterIndexView(accepted, context)
+        # The stage already established applicability (or retained continuous
+        # operation exclusion). Lend that exact accepted index; a consumer's
+        # new writer-view lifetime does not authorize another selector read.
+        # Ordinary callers omit this argument and retain their own selection.
+        view = WriterIndexView(accepted, context, selected_index)
         try:
             yield view
         finally:

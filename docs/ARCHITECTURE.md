@@ -35,6 +35,7 @@ and serving retain applicable completed work before the corrected session. The
 | Accepted boundaries, work selection, estimates | [universe_plan.py](../libs/alpaca_lineage_build/universe_plan.py): `boundaries`, `select_work`, `preview` |
 | Prepare JSON transport and independent consumption | [prepare.py](../libs/alpaca_pipeline/prepare.py); [contract and Phase 1 scope](development.md#pipeline-phase-1-prepare) |
 | History JSON transport and serving handoff | [histories.py](../libs/alpaca_pipeline/histories.py); [contract and Phase 2 scope](development.md#pipeline-phase-2-history-production) |
+| Serving JSON stage and continuous-lock orchestration | [serve.py](../libs/alpaca_pipeline/serve.py), [runner.py](../libs/alpaca_pipeline/runner.py); [Phase 3 contract](development.md#pipeline-phase-3-complete-pipeline) |
 | Recovery, observation, registration, orchestration | [universe_update.py](../libs/alpaca_lineage_build/universe_update.py): `run_update` |
 | Live check → correction → approved append | [update.py](../libs/alpaca_lineage_build/update.py): `update_everything` |
 | Dependency closure and complete-group publication | [pipeline.py](../libs/alpaca_lineage_build/pipeline.py): `run_lineage`, `process_group` |
@@ -79,13 +80,12 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | [IS_ELIGIBLE_LISTED_BUSINESS_EQUITY](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/) | Independent consumer exporting public-reader identity metadata and group evidence without prices or eligibility assessments. |
 | [bloodhound_app](../bloodhound_app/README.md) | Standalone offline CSV-to-Parquet application with its own CLI, dependencies, tests and publication limitations. |
 | [alpaca_end_of_day](../alpaca_end_of_day/) | Public API, shared history assembly, CSV exports, reader adapters. |
-| [alpaca_pipeline](../libs/alpaca_pipeline/) | Transient Prepare JSON contract, acceptance transport and stage adapters. |
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch, progress adapters and post-update recovery-registry Git commits/pushes. |
 | [alpaca_heartbeat](../libs/alpaca_heartbeat/) | Shared opt-in stderr lifecycle timer, protocol encoding and consumption. |
 | [alpaca_recovery_registry](../libs/alpaca_recovery_registry/) | Locked, atomic recovery-label union. |
 | [alpaca_pricing_download](../libs/alpaca_pricing_download/) | Acquisition, pricing publication, endpoint validation, summary storage. |
 | [alpaca_lineage_build](../libs/alpaca_lineage_build/) | Orchestration, lineage, policy compilation/evaluation, summary membership, registration, status. |
-| [alpaca_pipeline](../libs/alpaca_pipeline/) | Transient stage contracts, acceptance transport and independent Prepare/history execution. |
+| [alpaca_pipeline](../libs/alpaca_pipeline/) | Transient stage contracts, acceptance transport, three independent stages and the coordinated JSON runner. |
 | [alpaca_serving_catalogue](../libs/alpaca_serving_catalogue/) | Eligibility, public projections, catalogue publication/recovery. |
 | [alpaca_data_api_solver](../libs/alpaca_data_api_solver/) | Pure request planning. |
 | [alpaca_security_lineage](../libs/alpaca_security_lineage/) | Identity/action acquisition and normalization. |

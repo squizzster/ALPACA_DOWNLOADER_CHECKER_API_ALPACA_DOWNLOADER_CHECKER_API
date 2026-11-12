@@ -39,7 +39,8 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Agent instructions](AGENTS.md): authoritative repository and storage boundaries.
 - [Development](docs/development.md): research loop, tests and documentation verification;
   [Pipeline Phase 1](docs/development.md#pipeline-phase-1-prepare) and
-  [Phase 2](docs/development.md#pipeline-phase-2-history-production) own the executable JSON contracts.
+  [Phase 2](docs/development.md#pipeline-phase-2-history-production) and
+  [Phase 3](docs/development.md#pipeline-phase-3-complete-pipeline) own the executable JSON contracts.
 - [Version tracker](VERSION_TRACKER.md): owning constants, runtime changelogs and publication compatibility.
 
 Start with [store setup](docs/operations.md#adopt-or-reconstruct-an-existing-store); update does not bootstrap

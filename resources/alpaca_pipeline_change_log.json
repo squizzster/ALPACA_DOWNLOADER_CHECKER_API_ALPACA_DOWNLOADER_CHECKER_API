@@ -8,5 +8,10 @@
     "modifications": [
       "Expose independent history production and its complete transient serving handoff, preserving schema-1 requests and DEBUG-only recording."
     ]
+  },
+  {
+    "modifications": [
+      "Complete Serve JSON execution and sequence all three stages under one controller-owned operation lock, carrying exact exclusive cutoffs and retaining DEBUG-only handoffs."
+    ]
   }
 ]

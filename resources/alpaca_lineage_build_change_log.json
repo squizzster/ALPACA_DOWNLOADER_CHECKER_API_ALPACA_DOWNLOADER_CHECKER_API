@@ -541,5 +541,10 @@
     "modifications": [
       "Separate completed pricing/lineage production and acknowledgements from serving while preserving ordinary update composition."
     ]
+  },
+  {
+    "modifications": [
+      "Route daily orchestration through the three serialized pipeline owners, preserving exclusive cutoffs, incomplete reports, accepted decisions and existing production formats."
+    ]
   }
 ]

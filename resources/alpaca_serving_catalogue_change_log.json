@@ -196,5 +196,10 @@
     "modifications": [
       "Compose numerical approvals through version3 membership transfers with independent old/new dated labels, projecting metadata from accepted dates without repeating numerical validation."
     ]
+  },
+  {
+    "modifications": [
+      "Consume explicitly accepted serving controls and lineage index without repeating selector reads in the completed pipeline serving handoff."
+    ]
   }
 ]

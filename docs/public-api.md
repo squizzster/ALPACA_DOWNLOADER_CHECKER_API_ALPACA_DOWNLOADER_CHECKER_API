@@ -154,3 +154,10 @@ serving handoff, including explicit independent failures. It does not assess or
 publish the serving catalogue. Both calls use actual UTF-8 JSON bytes, not privileged
 Python objects. Normal calls retain no intermediate archive; DEBUG records the same
 arguments/results outside the production store.
+
+`serve_pipeline(histories_json: bytes) -> bytes` consumes the complete history
+argument and returns the final compact operation report after catalogue publication
+and acknowledgement. It uses no provider client.
+`run_pipeline(request_json: bytes) -> bytes` sequences all three JSON stages under
+one continuous operation lock. The [Phase 3 contract](development.md#pipeline-phase-3-complete-pipeline)
+owns controller locking, independent execution and failure semantics.

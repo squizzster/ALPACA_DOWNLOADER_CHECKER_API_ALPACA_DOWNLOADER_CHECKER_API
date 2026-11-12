@@ -40,6 +40,11 @@ update work if it is unavailable or already exists. For example:
 ./alpaca-cli-eod lineage update --symbol AAPL --no-pricing-acquisition --debug /tmp/alpaca-AAPL.jsonl
 ```
 
+For ordinary `update`, DEBUG also captures the exact transient stage JSON and producer
+effects in `FILE.jsonl.handoffs/<operation-id>/`, outside the production store.
+See the [pipeline contract](development.md#pipeline-phase-3-complete-pipeline).
+Planning and focused commands retain compact tracing only.
+
 This separate compact JSONL stream records events as they occur, including phases too brief for a heartbeat.
 It uses only arguments, results and decisions already held by the producer. It does not inspect storage to
 improve diagnostics or repeat a completed validation. Implementation: [debug_trace.py](../libs/common/debug_trace.py).

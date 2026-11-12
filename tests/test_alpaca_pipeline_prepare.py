@@ -275,7 +275,7 @@ with patch.object(pricing,'_get',side_effect=page), patch.object(identity,'execu
         value = json.loads(self.prepare())
         del value["prepared"]["state"]["context"]["summary"]
         with patch(
-            "libs.alpaca_pipeline.prepare.operation_lock",
+            "libs.alpaca_pipeline.execution.operation_lock",
             side_effect=AssertionError("lock before complete input"),
         ):
             with self.assertRaises(RuntimeError):
@@ -290,7 +290,7 @@ with patch.object(pricing,'_get',side_effect=page), patch.object(identity,'execu
                 side_effect=AssertionError("repeated store acceptance"),
             ),
             patch(
-                "libs.alpaca_pipeline.prepare.operation_lock",
+                "libs.alpaca_pipeline.execution.operation_lock",
                 side_effect=AssertionError("incomplete input lock"),
             ),
             self.assertRaisesRegex(HandoffError, "missing completed baseline acceptance"),

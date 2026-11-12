@@ -11,15 +11,23 @@ from libs.alpaca_lineage_build import storage, universe_state, universe_update
 from libs.alpaca_lineage_build.context import accept_context
 from libs.alpaca_lineage_build.recovery_handoffs import operation
 from libs.alpaca_pricing_download.check_summary import assert_current
-from libs.alpaca_pricing_download.download import pricing_session_end
-from libs.common.store_lock import operation_lock
+from libs.alpaca_pricing_download.download import pricing_session_end, request_end
 
 from .codec import Decoder, Encoder, HandoffError
 from .evidence import export_evidence, import_evidence
+from .execution import stage_lock
 from .state import export_recovery, export_state, import_state
 
-VERSION = 2
+VERSION = 3
 SCHEMA_VERSION = 1
+
+
+class StageExecutionError(HandoffError):
+    """A failed attempt with a serialized report, never a successful handoff."""
+
+    def __init__(self, message, result):
+        super().__init__(message)
+        self.result_json = encode(result)
 
 
 def _runtime_binding():
@@ -87,7 +95,7 @@ def request(data):
     value = parse(data)
     required = {"schema", "schema_version", "operation", "store", "registry", "through", "options", "debug"}
     if (
-        set(value) != required
+        set(value) - {"end_exclusive"} != required
         or value["schema"] != "alpaca.pipeline.request"
         or type(value["schema_version"]) is not int
         or value["schema_version"] != SCHEMA_VERSION
@@ -99,6 +107,12 @@ def request(data):
             raise HandoffError(name + " must be an absolute path")
     if value["through"] is not None and not isinstance(value["through"], str):
         raise HandoffError("through must be a date or null")
+    if "end_exclusive" in value and (
+        value["through"] is not None
+        or not isinstance(value["end_exclusive"], str)
+        or date.fromisoformat(value["end_exclusive"]).isoformat() != value["end_exclusive"]
+    ):
+        raise HandoffError("end_exclusive requires a canonical date and through null")
     options = value["options"]
     if not isinstance(options, dict) or set(options) - {"workers", "retry_blocked", "coalesce_late_bars"}:
         raise HandoffError("unsupported pipeline options")
@@ -142,7 +156,15 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
     """
     value = request(data)
     operation_id = uuid4().hex
-    end = pricing_session_end(value["through"]).date().isoformat()
+    end = (
+        (
+            request_end(value["end_exclusive"])
+            if "end_exclusive" in value
+            else pricing_session_end(value["through"])
+        )
+        .date()
+        .isoformat()
+    )
     _capture(value["debug"], operation_id, "prepare", "input", data)
     try:
         if pricing_client is None and identity_client is None:
@@ -154,7 +176,7 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
         result = {"complete": False, "end_exclusive": end, "failed": 0, "stages": {}}
         metadata_started = identity_client.request_count
         pricing_started = getattr(pricing_client, "request_count", None)
-        with operation_lock(store, exclusive=True), universe_state.update_lock(store), operation(store):
+        with stage_lock(store), universe_state.update_lock(store), operation(store):
             universe_state.require_initialized(store)
             prepared = universe_update.prepare_locked(
                 store,
@@ -168,7 +190,7 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
                 **value["options"],
             )
             if "policy" not in prepared:
-                raise HandoffError("baseline preparation incomplete: " + str(prepared))
+                raise StageExecutionError("baseline preparation incomplete: " + str(prepared), prepared)
             transport = Encoder()
             body = {
                 key: transport.encode(prepared[key])

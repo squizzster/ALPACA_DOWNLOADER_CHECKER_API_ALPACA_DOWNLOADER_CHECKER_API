@@ -3,7 +3,40 @@
 import fcntl
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
+from threading import get_ident
+
+
+@dataclass
+class _Ownership:
+    store: Path
+    exclusive: bool
+    process: int
+    thread: int
+    active: bool = True
+
+
+_ownership = ContextVar("store_gate_ownership", default=())
+
+
+def exclusive_owned(store):
+    """Whether this execution actually holds the exclusive kernel gate.
+
+    This is execution infrastructure only. Revocation and process/thread binding
+    prevent a copied context from lending ownership after release or after fork.
+    Ordinary operation_lock calls remain non-reentrant.
+    """
+    store = Path(store).resolve()
+    return any(
+        owner.active
+        and owner.exclusive
+        and owner.store == store
+        and owner.process == os.getpid()
+        and owner.thread == get_ident()
+        for owner in _ownership.get()
+    )
 
 
 class StoreBusyError(RuntimeError):
@@ -36,9 +69,13 @@ def operation_lock(store, *, exclusive, wait=False, on_wait=None):
             # probes or pathname checks establish no new scheduling fact.
             # KeyboardInterrupt still crosses the outer descriptor cleanup.
             fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        owner = _Ownership(store, exclusive, os.getpid(), get_ident())
+        token = _ownership.set((*_ownership.get(), owner))
         try:
             yield
         finally:
+            owner.active = False
+            _ownership.reset(token)
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             except OSError:

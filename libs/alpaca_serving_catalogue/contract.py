@@ -6,7 +6,7 @@ from pathlib import Path
 
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
-RUNTIME_VERSION = 39
+RUNTIME_VERSION = 40
 VERSION = 9  # Persisted eligibility policy; runtime-only handoffs preserve its checkpoints.
 SCHEMA_VERSION = 2
 

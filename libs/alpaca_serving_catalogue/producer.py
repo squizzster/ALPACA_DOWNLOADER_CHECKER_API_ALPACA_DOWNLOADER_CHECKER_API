@@ -120,13 +120,27 @@ def _project_group_members(root, index):
 
 
 @traced("serving")
-def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=None, context=None):
+def maintain(
+    store,
+    *,
+    symbols=None,
+    bootstrap=False,
+    rebuild=False,
+    progress=None,
+    context=None,
+    selected_index=None,
+    selected_controls=None,
+):
     from alpaca_end_of_day import StandaloneReader
 
     store = Path(store).absolute()
     scope = None if symbols is None else set(symbols)
     if scope is not None and (bootstrap or rebuild):
         raise ValueError("catalogue bootstrap and rebuild select all indexed groups")
+    if selected_controls is not None and (
+        bootstrap or rebuild or context is None or selected_controls is not context.serving
+    ):
+        raise CatalogueError("selected serving controls require their accepted update context")
     # This is an offline lineage consumer. Holding the worker serializes selection,
     # work seeding and acknowledgement with lineage without a universe file crawl.
     # Shared pricing locks still protect each newly evaluated group through commit.
@@ -146,25 +160,39 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
         "identity_rule_executions": 0,
         "pricing_writes": 0,
     }
-    controls = None
+    # The pipeline explicitly lends its completed selection after preserving
+    # operation exclusion or checking actual lock-gap applicability. Generic
+    # contexts alone do not establish that lifetime; ordinary calls still select
+    # current controls below. Neither path authenticates upstream payloads.
+    controls = selected_controls
     if not (bootstrap or rebuild):
         # Native rollback belongs to this owner. Missing/incompatible boundaries
         # still fail before creating anything or upgrading the lineage protocol.
         validate_version()
         try:
-            selected_state = storage.selector_state(store, recover=True, incomplete=scope is not None)
+            selected_state = (
+                controls["state"]
+                if controls is not None
+                else storage.selector_state(store, recover=True, incomplete=scope is not None)
+            )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as error:
             raise CatalogueError(
                 "cannot read serving catalogue; run alpaca-cli-eod catalogue bootstrap --store PATH"
             ) from error
     elif not (store / "end_of_day/lineage/index.sqlite3").exists():
         raise CatalogueError("lineage index missing; publish lineage before catalogue bootstrap")
-    with lineage.writer_snapshot(store, accepted_store=accepted_store, context=context) as writer_view:
+    with lineage.writer_snapshot(
+        store, accepted_store=accepted_store, context=context, selected_index=selected_index
+    ) as writer_view:
         root = writer_view.root
         if (root / ".pending.json").exists():
             raise CatalogueError("lineage publication pending; resume its owner first")
         if not (bootstrap or rebuild):
-            selected_state = storage.selector_state(store, incomplete=scope is not None)
+            selected_state = (
+                controls["state"]
+                if controls is not None
+                else storage.selector_state(store, incomplete=scope is not None)
+            )
             # The worker opened the index for native transaction recovery before
             # this read. An empty queue needs no membership reload or payloads.
             pending = work.read(store)
@@ -184,11 +212,15 @@ def maintain(store, *, symbols=None, bootstrap=False, rebuild=False, progress=No
             # must not enter the context used by public/daily selectors, nor
             # authorize a global completion or an implicit bootstrap.
             controls = (
-                storage.controls(store, incomplete=True)
-                if not selected_state["complete"]
-                else storage.controls(store)
-                if context is None
-                else context.select_serving()
+                controls
+                if controls is not None
+                else (
+                    storage.controls(store, incomplete=True)
+                    if not selected_state["complete"]
+                    else storage.controls(store)
+                    if context is None
+                    else context.select_serving()
+                )
             )
         index = writer_view.index()
         entries = index["symbols"]

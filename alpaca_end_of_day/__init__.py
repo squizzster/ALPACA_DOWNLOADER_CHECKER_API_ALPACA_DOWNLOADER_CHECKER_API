@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 41
+API_VERSION = 42
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -830,6 +830,8 @@ __all__ = [
     "TickerOwnershipInterval",
     "prepare_pipeline",
     "produce_histories_pipeline",
+    "run_pipeline",
+    "serve_pipeline",
 ]
 
 
@@ -857,5 +859,25 @@ def produce_histories_pipeline(prepared_json: bytes) -> bytes:
 
     try:
         return produce_histories(prepared_json)
+    except (RuntimeError, OSError, ValueError) as error:
+        raise PipelineStageError(str(error)) from error
+
+
+def serve_pipeline(histories_json: bytes) -> bytes:
+    """Assess and publish serving; return the completed data-operation JSON."""
+    from libs.alpaca_pipeline.serve import serve
+
+    try:
+        return serve(histories_json)
+    except (RuntimeError, OSError, ValueError) as error:
+        raise PipelineStageError(str(error)) from error
+
+
+def run_pipeline(request_json: bytes) -> bytes:
+    """Run all three JSON stages under one continuous operation lock."""
+    from libs.alpaca_pipeline.runner import run
+
+    try:
+        return run(request_json)
     except (RuntimeError, OSError, ValueError) as error:
         raise PipelineStageError(str(error)) from error

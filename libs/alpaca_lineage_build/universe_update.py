@@ -1,6 +1,5 @@
 """Discovery, registration and selective reconciliation around pricing/lineage owners."""
 
-from contextlib import ExitStack
 from pathlib import Path
 
 from libs.alpaca_pricing_download import storage as pricing_storage
@@ -10,7 +9,6 @@ from libs.alpaca_pricing_download.download import request_end
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import DEFAULT_REGISTRY
 from libs.common.debug_trace import traced
-from libs.common.work_scope import selected_work
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
@@ -103,51 +101,44 @@ def run_update(
     progress=None,
     retry_blocked=False,
     coalesce_late_bars=True,
+    debug=None,
 ):
-    context = accept_context(store)
-    store = Path(store).absolute()
-    end = request_end(end_date).date().isoformat()
-    result = {"complete": False, "end_exclusive": end, "failed": 0, "stages": {}}
-    metadata_started = identity_client.request_count
-    pricing_started = getattr(pricing_client, "request_count", None)
-    with universe_state.update_lock(store), ExitStack() as scopes:
-        from .recovery_handoffs import operation as recovery_handoffs
+    # Ordinary updates traverse the same serialized owners as isolated stage
+    # execution. The controller adopts the CLI gate or owns it for direct calls.
+    from libs.alpaca_pipeline.prepare import StageExecutionError, encode, parse
+    from libs.alpaca_pipeline.runner import run
 
-        scopes.enter_context(recovery_handoffs(store))
-        # Explicit universe initialization is the outer operation gate. Fail
-        # before recovering any owner publication when it is absent; recovery
-        # must not silently initialize or otherwise mutate an uninitialized
-        # store.
-        universe_state.require_initialized(store)
-
-        prepared = prepare_locked(
-            store,
-            end,
-            pricing_client=pricing_client,
-            identity_client=identity_client,
-            registry=registry,
-            workers=workers,
-            progress=progress,
-            retry_blocked=retry_blocked,
-            coalesce_late_bars=coalesce_late_bars,
-            context=context,
-            result=result,
+    document = {
+        "schema": "alpaca.pipeline.request",
+        "schema_version": 1,
+        "operation": "daily_update",
+        "store": str(Path(store).absolute()),
+        "registry": str(Path(registry).absolute()),
+        "through": None,
+        "options": {
+            "workers": workers,
+            "retry_blocked": retry_blocked,
+            "coalesce_late_bars": coalesce_late_bars,
+        },
+        "debug": debug or {"enabled": False},
+    }
+    if end_date is not None:
+        # This is an already selected exclusive boundary, including legacy
+        # non-session boundaries. Preserve it; do not round it a second time.
+        document["end_exclusive"] = end_date
+    try:
+        return parse(
+            run(
+                encode(document),
+                pricing_client=pricing_client,
+                identity_client=identity_client,
+                progress=progress,
+            )
         )
-        if "policy" not in prepared:
-            return prepared
-        scopes.enter_context(selected_work(store, prepared["storage_symbols"]))
-        return continue_locked(
-            store,
-            end,
-            prepared,
-            pricing_client=pricing_client,
-            identity_client=identity_client,
-            registry=registry,
-            workers=workers,
-            progress=progress,
-            metadata_started=metadata_started,
-            pricing_started=pricing_started,
-        )
+    except StageExecutionError as error:
+        # Preserve the command's incomplete-data report without running any
+        # dependent stage or treating an error report as a completed handoff.
+        return parse(error.result_json)
 
 
 def prepare_locked(
@@ -745,7 +736,13 @@ def serve_locked(store, histories, *, context, progress=None):
 
     result = histories["result"]
     try:
-        serving = maintain(store, progress=progress, context=context)
+        serving = maintain(
+            store,
+            progress=progress,
+            context=context,
+            selected_index=context.index,
+            selected_controls=context.serving,
+        )
     except (RuntimeError, OSError, ValueError) as error:
         serving = {"complete": False, "failed": 1, "error": str(error)}
     result["stages"]["serving_catalogue"] = serving

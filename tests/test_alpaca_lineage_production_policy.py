@@ -397,7 +397,7 @@ class ProductionPolicyOperationTests(TestCase):
             return real_accept()
 
         with (
-            patch("libs.alpaca_lineage_build.universe_update.accept_context", return_value=context),
+            patch("libs.alpaca_pipeline.prepare.accept_context", return_value=context),
             patch(
                 "libs.alpaca_lineage_build.universe_update.universe_state.update_lock",
                 return_value=nullcontext(),

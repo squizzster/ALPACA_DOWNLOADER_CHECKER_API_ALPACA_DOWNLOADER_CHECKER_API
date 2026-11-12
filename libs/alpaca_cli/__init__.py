@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 38
+VERSION = 39
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -89,7 +89,10 @@ def build_parser():
     _dates(update, start=False, pricing=True)
     _workers(update)
     update.add_argument(
-        "--debug", type=Path, metavar="FILE.jsonl", help="write compact execution trace to a new file"
+        "--debug",
+        type=Path,
+        metavar="FILE.jsonl",
+        help="write trace and exact pipeline JSON to FILE.jsonl.handoffs",
     )
     update.add_argument("--plan", action="store_true", help="read-only preview; may fetch current metadata")
     windows = update.add_mutually_exclusive_group()
@@ -537,6 +540,9 @@ def dispatch(args):
             retry_blocked=args.retry_blocked,
             coalesce_late_bars=args.coalesce_late_bars,
             progress=progress,
+            debug={"enabled": True, "directory": str(Path(str(args.debug) + ".handoffs").resolve())}
+            if getattr(args, "debug", None) is not None
+            else {"enabled": False},
         )
     if command == "pricing":
         if operation == "acquire":

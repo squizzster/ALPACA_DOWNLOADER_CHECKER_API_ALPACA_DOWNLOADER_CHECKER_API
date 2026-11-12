@@ -221,5 +221,10 @@
     "modifications": [
       "Expose produce_histories_pipeline as a UTF-8 JSON argument/result API with the matching history-production CLI."
     ]
+  },
+  {
+    "modifications": [
+      "Expose serve_pipeline and run_pipeline as transient JSON APIs with coordinated operation locking and explicit stage errors."
+    ]
   }
 ]

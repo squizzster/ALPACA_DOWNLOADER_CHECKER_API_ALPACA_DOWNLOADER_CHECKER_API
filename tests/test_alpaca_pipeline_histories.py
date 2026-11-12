@@ -276,7 +276,7 @@ with patch('libs.alpaca_pipeline.prepare.clients', side_effect=forbidden), patch
         result["items"] = [pair for pair in result["items"] if pair[0] != "execution_complete"]
         documents.append(encode(value))
         with patch(
-            "libs.alpaca_pipeline.histories.operation_lock", side_effect=AssertionError("incomplete input lock")
+            "libs.alpaca_pipeline.execution.operation_lock", side_effect=AssertionError("incomplete input lock")
         ):
             for document in documents:
                 with self.subTest(document=document[:100]), self.assertRaises((HandoffError, RuntimeError)):
@@ -329,7 +329,7 @@ with patch('libs.alpaca_pipeline.prepare.clients', side_effect=forbidden), patch
             variants.append(("invalid scope member", encode(value)))
         with (
             patch(
-                "libs.alpaca_pipeline.histories.operation_lock",
+                "libs.alpaca_pipeline.execution.operation_lock",
                 side_effect=AssertionError("incomplete result reached store lock"),
             ),
             patch(

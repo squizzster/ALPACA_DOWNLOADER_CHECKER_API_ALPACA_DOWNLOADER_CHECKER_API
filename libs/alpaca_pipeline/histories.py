@@ -2,16 +2,16 @@
 
 from pathlib import Path
 
-from libs.alpaca_lineage_build import storage, universe_state, universe_update
+from libs.alpaca_lineage_build import universe_state, universe_update
 from libs.alpaca_lineage_build.recovery_handoffs import operation
-from libs.alpaca_pricing_download.check_summary import assert_generation, generation_handoff
-from libs.alpaca_serving_catalogue.storage import selector_state
-from libs.common.store_lock import operation_lock
+from libs.alpaca_pricing_download.check_summary import generation_handoff
 from libs.common.work_scope import selected_work
 
 from .codec import Decoder, Encoder, HandoffError
+from .execution import stage_lock
 from .prepare import (
     SCHEMA_VERSION,
+    StageExecutionError,
     _capture,
     assert_prepared_current,
     encode,
@@ -39,8 +39,9 @@ def produce_histories(data, *, pricing_client=None, identity_client=None, progre
     _capture(debug, op["id"], "histories", "input", data)
     del data  # DEBUG already observed the argument; retain no duplicate archive.
     try:
-        with operation_lock(store, exclusive=True), universe_state.update_lock(store), operation(store):
-            assert_prepared_current(store, prepared)
+        with stage_lock(store) as coordinated, universe_state.update_lock(store), operation(store):
+            if not coordinated:
+                assert_prepared_current(store, prepared)
             restore_recovery(store, value["prepared"]["recovery"], decoder.decode)
             with (
                 selected_work(store, prepared["storage_symbols"]) as scope,
@@ -62,8 +63,9 @@ def produce_histories(data, *, pricing_client=None, identity_client=None, progre
                     else pricing_client.request_count - value["requests"]["pricing"],
                 )
                 if histories is None:
-                    raise HandoffError(
-                        prepared["result"].get("error", "history completion boundary unavailable")
+                    raise StageExecutionError(
+                        prepared["result"].get("error", "history completion boundary unavailable"),
+                        prepared["result"],
                     )
                 histories["result"]["execution_complete"] = True
                 # Actual dependency expansion belongs to the active scope. It
@@ -129,28 +131,10 @@ def produce_histories(data, *, pricing_client=None, identity_client=None, progre
 
 
 def consume_histories(data, *, progress=None):
-    """Internal actual-serving consumer proving Phase 2's process independence.
+    """Compatibility name for Phase 2 consumers of the serving implementation."""
+    from .serve import serve
 
-    This is feasibility infrastructure, not the public Phase 3 API. It has no
-    provider client and cannot call upstream stages to repair missing input.
-    """
-    try:
-        value, store, histories, context, decoder, recovery = load_histories(data)
-    except (KeyError, TypeError, AttributeError) as error:
-        raise HandoffError("incomplete histories contract") from error
-    with operation_lock(store, exclusive=True), universe_state.update_lock(store), operation(store):
-        if universe_state.revision(store) != histories["workflow_revision"]:
-            raise HandoffError("stale_handoff: workflow changed")
-        assert_generation(store, histories["summary_token"])
-        with storage.publication_lock(context.accept_store().root):
-            storage.assert_index_current(context.accept_store().root, context.index)
-        if selector_state(store)["generation"] != context.serving["state"]["generation"]:
-            raise HandoffError("stale_handoff: serving generation changed")
-        restore_recovery(store, recovery, decoder.decode)
-        with selected_work(store, histories["storage_symbols"]):
-            result = universe_update.serve_locked(store, histories, context=context, progress=progress)
-            output = encode(result)
-    return output
+    return serve(data, progress=progress)
 
 
 def load_histories(data):
