@@ -288,17 +288,31 @@ using stale rows. These transient values use the existing JSON handoff; producti
 unchanged. This repairs the reproduced correction-to-append and fresh-lineage handoff omissions, not every possible repeated-read path;
 F15 remains partial and operational acceptance requires measured execution.</p>
 <h2>Live verification and limits</h2>
-<p>The completed advancing update took 73m57s with zero reported failures and pending work; it met the
-90-minute maximum but missed the 60-minute target. Its immediate same-cutoff rerun took 34m06.9s.
-The retained DEBUG evidence attributes 19m11s of that rerun to 3,776 late-bar requests for 6,379 selected sessions.
-Offline replay through the repaired planner produces 258 actions with the same source/session/mapping selection;
-this is request-plan evidence, not measured production latency. HTTP spans include limiter waits and response handling.</p>
-<p>The recorded successful replacements did not account for their triggering observations. Bounded diagnostic
+<p>The ordinary three-stage advancing update selected the 2026-11-11 session with no pinned cutoff and
+completed pricing, lineage and serving with zero reported failures, pending universe work or export-input
+invalidations. It published 9,563 serving components covering 14,209 labels. Elapsed time was 2h13m10s and peak
+RSS was 13.1 GiB: performance acceptance failed both the 60-minute target and 90-minute maximum. The data
+process exited zero; the external watchdog was suspended to permit completion, then reported its exceeded
+deadline separately. Serving took 68m34.9s, including 3m06.7s in evaluation; the completed histories JSON was
+1,003,549,295 bytes. DEBUG recorded 9,424 unique completed comparisons with no duplicates and 194 repeated
+payload reads. The two prior-correction sources were skipped by that execution, exposing the advancing-scope
+defect covered above. A subsequent bounded check of FFR and RBC matched both new generations using two
+<code>all</code> requests, zero metadata requests and no gzip/validator reads, historical recalculations or publications.
+The handoff and scope repairs have synthetic regression evidence, not a measured advancing-universe performance
+pass. Successful publication does not establish zero redundant work.</p>
+<p>Bounded public API reads returned the new session's raw and fully adjusted bars for RBC, CTVA and AAPL.
+The AAPL consumer opened a catalogue containing 13,819 online identities. The initial sample's ARAI dated
+lookup had no match: its published eligible history ends on 2026-11-10 and it is absent from the current daily
+pricing summary. That is a coverage-bound lookup outcome, not evidence that every retained label receives a
+new daily bar. The checks neither reopen historical pricing for authentication nor establish all lineage policy
+decisions; F58 and F64 remain open.</p>
+<p>Earlier recorded successful replacements did not account for their triggering observations. Bounded diagnostic
 requests exposed both narrow-range bars omitted by full-range acquisition and different prices under different
 batch composition. The correction producer now retains those observations and rejects conflicting new output.
 Historical success reports therefore do not establish resolution of those discrepancies. A production update exposed unresolved carried observations and a fresh same-run conflict. Bounded exact-context diagnostic responses later agreed with the acquired replacements. Owning recovery requires that newer evidence for each conflicting session; historical success reports and midnight timing alone do not resolve a contradiction.</p>
-<p>The advancing run also read 8.00 GB from 27,630 distinct legacy assignment bodies during serving.
-An explicit bounded projection migration is implemented and tested; it has not been applied to production.
+<p>An earlier advancing run read 8.00 GB from 27,630 distinct legacy assignment bodies during serving.
+An explicit bounded projection migration is implemented and tested; this stabilization performed no explicit
+retained-store migration. Completed projections and carried bodies remain selected authorities.
 The metadata-prefetch defect selected unchanged siblings absent from the catalogue; repaired selection retains
 their accepted evidence. Repeated exact discovery lookups for ambiguous/incomplete catalogue entries remain
 fresh observations. Identical responses alone do not establish that those lookups can be removed.</p>
