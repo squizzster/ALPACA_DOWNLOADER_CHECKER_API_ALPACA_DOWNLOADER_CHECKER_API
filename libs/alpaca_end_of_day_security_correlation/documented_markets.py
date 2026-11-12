@@ -250,6 +250,19 @@ def _allocate(original, owner, episode, basis):
     return piece
 
 
+def refinement_ids(evidence, plan, *, default):
+    """Select explicit per-fact intent without broadening unresolved-only scopes."""
+    intents = {}
+    for report in evidence.values():
+        for identifier, refine in report.get("sourced_fact_intents", {}).items():
+            if identifier in intents and intents[identifier] != refine:
+                raise ValueError("conflicting documented refinement intent")
+            intents[identifier] = refine
+    return frozenset(
+        owner["source_fact_id"] for owner in plan["owners"] if intents.get(owner["source_fact_id"], default)
+    )
+
+
 def project(
     inputs,
     reports,
@@ -296,7 +309,15 @@ def project(
     if refine_accepted_dates:
         from .documented_refinement import refine
 
-        reports = refine(inputs, reports, plan)
+        selected_ids = refinement_ids(evidence, plan, default=True)
+        reports = refine(
+            inputs,
+            reports,
+            {
+                **plan,
+                "owners": [owner for owner in plan["owners"] if owner["source_fact_id"] in selected_ids],
+            },
+        )
     result, decisions, dates = {}, {}, {}
     for name, original in reports.items():
         report = result[name] = {**original, "documented_identity_membership": plan}

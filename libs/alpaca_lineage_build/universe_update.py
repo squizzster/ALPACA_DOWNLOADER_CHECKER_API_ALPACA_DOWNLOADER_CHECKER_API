@@ -18,7 +18,6 @@ from .metadata import EvidenceClient
 from .pipeline import run_lineage
 from .refresh import refresh_required_history
 from .registration import command_policy
-from .sourced_rules import load_applications
 from .update import update_everything
 from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target
 
@@ -69,7 +68,8 @@ def plan_update(
             "catalogue_records": 0,
             "selection_metadata_http_requests_observed": 0,
         }
-    applications, supplements = load_applications()
+    ruleset = context.accept_ruleset()
+    applications, supplements = ruleset.applications, ruleset.supplements
     metadata_before = identity_client.request_count
     observation = observe_catalogue(identity_client)
     evidence = EvidenceClient(identity_client, observation=observation, event_supplements=supplements)
@@ -218,7 +218,8 @@ def _prepare_locked(
         result["failed"] = recovered["failed"]
         return result
     context.accept_correlation_policy()
-    applications, supplements = load_applications()
+    ruleset = context.accept_ruleset()
+    applications, supplements = ruleset.applications, ruleset.supplements
 
     from .projection import require_complete
 

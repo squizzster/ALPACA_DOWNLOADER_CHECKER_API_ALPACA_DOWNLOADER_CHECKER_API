@@ -43,6 +43,16 @@ def _preserved_fields(source, segment, runs, changes, *, offset=0, choices=None)
         if len(accepted) != 1 or first < accepted[0].row_start or last > accepted[0].row_end:
             raise LineageError(f"{source}: accepted numerical choice needs dated assignment subdivision")
         choice = accepted[0]
+        refinement = segment.get("completed_membership_refinement")
+        if refinement is not None:
+            if (
+                refinement["source"] != source
+                or choice.owner != refinement["old_public_id"]
+                or current_id != refinement["new_public_id"]
+                or not refinement["row_start"] <= first <= last <= refinement["row_end"]
+            ):
+                raise LineageError(f"{source}: completed membership scope changed its accepted positions")
+            return None
         if choice.state in (None, "unassigned"):
             return None
         expected = changes.get(choice.owner, {}).get("security_id", choice.owner)

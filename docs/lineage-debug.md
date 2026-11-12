@@ -14,9 +14,11 @@ publishes to the production store. Research does not rerun the daily update.
 ```
 
 `init` creates a single self-contained copy of the
-[production policy](../resources/alpaca_security_correlation_policy.yaml), marked
-`policy_role: research_candidate`. It never overwrites an existing file. Edit the lists under
-`execution.established_fixed_point`: reorder or remove registered ownership rules and row rules.
+[canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml). Its root sections are
+`ruleset_schema_version: 1`, `policy`, `evidence.applications` and `producers`. The generated
+`policy.policy_role` is `research_candidate`; `policy.research.control_mode` is `documented_scopes`.
+It never overwrites an existing file. Edit the lists under
+`policy.execution.established_fixed_point`: reorder or remove registered ownership rules and row rules.
 An empty list disables that list's optional decisions. The unresolved default and terminal rule remain
 mandatory; frozen-baseline reconciliation, optional ownership fallback and second fixed point retain
 their explicit structure. Ownership's fourth fallback is separate from the editable established list.
@@ -25,13 +27,17 @@ YAML selects implemented rules; it is not a language for arbitrary Python predic
 conditions require generic registered Python implementations and their owning tests. The `rules`
 report identifies current function paths/lines, registered order, terminal promotion, fixed identity/
 market/recapitalization/documented-public projections and numerical source selection. Those fixed
-steps are visible but cannot be reordered through these lists. Dated ownership and choosing which
+steps are visible but cannot be reordered through these lists. The index also lists factual application
+IDs, explicit symbol scopes, fingerprints, per-application date-refinement intent, producer selection and
+which fact versions support the diagnostic chronology projection. Dated ownership and choosing which
 source supplies the prices are separate decisions.
 
 Only this diagnostic compiler admits the research role. The production compiler/authorization
-rejects it. Existing production and corrected-candidate schema-4 YAML files are also readable;
-the [policy lab](policy-lab.md) retains older executable profiles. Duplicate/unknown keys, unregistered
-rules, duplicate rule names, unsafe tags, altered mandatory defaults/phases and incompatible
+rejects it. Flat production and corrected-candidate schema-4 YAML files remain readable; the
+[policy lab](policy-lab.md) retains older executable profiles. Combined files keep facts only under
+`evidence.applications` and membership selection only under `producers`; duplicating them in
+`policy.research` is rejected. The combined document is bounded to 1 MiB and its policy to 64 KiB.
+Duplicate/unknown keys, unregistered rules, duplicate rule names, unsafe tags, altered mandatory defaults/phases and incompatible
 implementations are rejected. Reports bind both exact YAML bytes and semantic rule configuration.
 
 ## Explain a recorded decision
@@ -98,7 +104,9 @@ Candidate differences do not authorize publishing the candidate or automatically
 
 ## Paired candidate impact
 
-Use an explicit unchanged control to distinguish existing publication drift from a proposed change:
+Combined YAML uses the current canonical rule configuration as its default control; the report names
+`canonical_ruleset_default` as that selection. An explicit unchanged control can select a different accepted
+baseline and makes the comparison binding visible in the command:
 
 ```bash
 ./alpaca-lineage-debug run --store data_pricing --tickers CISSV \
@@ -119,14 +127,18 @@ digests carry forward. Identical executable cascades reuse the completed control
 explicit preserved control implementation or an opt-in candidate with the unchanged path still present;
 changing Python globally and naming two YAML files does not restore the earlier implementation.
 
-The research YAML supports one experimental membership producer:
+The combined YAML supports one optional membership producer:
 
 ```yaml
-research:
+producers:
   membership_refinement: accepted_same_security_containing_component_v1
 ```
 
-`init` leaves that setting null. Enabling it requires `--control-policy`; the control must leave it disabled.
+Flat legacy research YAML retains its `research.membership_refinement` compatibility setting.
+
+The canonical default is null; `init` carries the current producer selection into the research copy.
+The control must leave the candidate producer disabled. Combined YAML can use its canonical default
+control; a flat legacy research file requires explicit `--control-policy`.
 The producer consumes an already completed containing identity, the exact retained same-CUSIP rename
 observation, the shared dated provider UUID/CUSIP and the donor report's completed directed split edges.
 Every additional member needs that same-security extension path. Mere containment, shared UUIDs, ticker
@@ -140,9 +152,11 @@ joined observation contest through the existing eight-view selector. No UUID edg
 reconstructed. The applicability plan reports affected positions, source/receipt generations and the accepted
 extension edges. A genuinely changed binding requires a new experiment rather than replaying a consumer.
 
-This is an opt-in read-only research producer. It does not change authorized production policy, integrate a
-repair into ordinary append/recovery, or prove that a complete production publication will preserve it.
-Those producer integration, interruption and later-append checks remain separate acceptance work.
+The diagnostic remains read-only. Authorized production can select this same named producer in the canonical
+YAML; its default is null. A successful research comparison does not authorize publication or by itself prove
+ordinary append, interruption recovery or complete production preservation. Production consumes its completed
+plan under the selected group and generation bindings, preserving accepted ownership and opening only the
+new numerical overlap.
 
 ## Screen and carry a membership study
 
@@ -190,20 +204,30 @@ silently reconstructs them. Saved research reports are explicit operator outputs
 
 Research YAML can also supply new primary-source facts through the existing
 [sourced-fact contract](lineage.md#sourced-event-facts). These are evidence assertions, not ticker exceptions
-in the rules. Under `research`, `documented_facts` is a list of entries containing explicit `symbols`, a
-`supplements` list of complete `dated_market_occupancy` facts in schema 3, 4 or 5, and optional
-`refine_accepted_dates` (boolean, default true). Each supplement retains its complete endpoints, episodes,
+in the rules. In the combined YAML, `evidence.applications` contains entries with unique `id`, explicit
+`symbols`, a `supplements` list and optional `refine_accepted_dates` (boolean, default true). The diagnostic
+chronology projection consumes `dated_market_occupancy` facts in schema 3, 4 or 5; other accepted fact kinds
+retain their existing production owners and are marked separately in the rule index. Merely adding them to
+the YAML does not promise a new research replay path. Each supplement retains complete endpoints, episodes,
 actual legal treatment and primary document provenance. No provider UUID or price may be invented.
+Flat legacy research files still accept `research.documented_facts` without application IDs.
 
-Use `control_mode: documented_scopes`. Groups intersecting those fact scopes consume the accepted publication
-as their unchanged control; they do not replay the old cascade. Other groups retain the existing replay control
+Use `policy.research.control_mode: documented_scopes` in the combined file. Groups intersecting those fact
+scopes consume the accepted publication as their unchanged control; they do not replay the old cascade. Other groups retain the existing replay control
 and membership experiment. `control_mode: accepted_publication` selects that control for every evaluated group.
-Both require an explicit unchanged `--control-policy` and the same executable cascade. Accepted-publication
-parity means the published handoff was carried, not that a full control replay matched it. Reports count these
-controls separately from assessed and unassessed replay drift.
+Combined YAML uses its canonical default control unless `--control-policy` overrides it; flat legacy
+research requires an explicit unchanged control. A factual update uses the same executable cascade and
+consumes the accepted publication. A rule-only edit with unchanged application intent uses paired replay.
+Changing both the factual scope and cascade in one group is rejected: test those steps separately.
+Accepted-publication parity means the published handoff was carried, not that a full control replay matched
+it. Reports count these controls separately from assessed and unassessed replay drift.
 
-The producer binds new facts once to retained exact metadata and accepted source-local components. Changed
-accepted fact IDs require explicit owning reconciliation; unchanged facts retain their existing acceptance.
+Production and research use the same storage-free
+[documented-update owner](../libs/alpaca_lineage_build/documented_updates.py). It binds new facts once to
+retained exact metadata and accepted source-local components. Changed accepted fact IDs require explicit
+owning reconciliation; unchanged facts retain their existing acceptance. Explicit true and omitted date
+intent are equivalent. Changing the intent alone selects its affected projection without binding the accepted
+fact again; false does not undo previously published positive decisions.
 Untouched documented owners/routes survive alongside the fresh plan. Competing chronologies and changed source
 contexts remain errors. Positive dated refinement does not authorize filling unknown rows under a foreign
 current symbol context. `refine_accepted_dates: false` keeps earlier positive ownership, explanations and
@@ -214,7 +238,7 @@ The handoff retains completed choices and requested equality outcomes, whose tim
 An empty captured equality list differs from an earlier execution that never requested that optional capture;
 missing results do not authorize recomputation. Candidate receipts, assignments and accurately clipped report
 positions travel in `candidate_handoff`, explicitly marked as research with no publication authorization.
-Production policy, recovery integration and storage formats remain unchanged.
+The comparison changes neither production configuration nor retained storage formats.
 
 The named membership screen also carries its accepted necessary-condition proof when new facts are added.
 Groups intersecting a fresh factual scope cannot inherit its old unaffected classification. Completed results

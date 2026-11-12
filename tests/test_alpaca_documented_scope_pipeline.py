@@ -1,5 +1,6 @@
 """A dated common continuation reconciles nested accepted source scopes."""
 
+import json
 import tempfile
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -68,6 +69,12 @@ class DocumentedScopePipelineTests(TestCase):
 
     def test_interrupted_publication_consumes_completed_outputs_without_reconstruction(self):
         self.exercise("publication")
+
+    def test_returned_source_publication_survives_delivery_failure_without_republication(self):
+        self.exercise("cache_delivery", price_client=EqualClient, expected_checks=0)
+
+    def test_returned_source_publication_crosses_json_after_delivery_failure(self):
+        self.exercise("cache_delivery_json", price_client=EqualClient, expected_checks=0)
 
     def test_equal_bundle_reuses_donor_approval_after_component_extension(self):
         self.exercise(price_client=EqualClient, expected_checks=0)
@@ -276,12 +283,32 @@ class DocumentedScopePipelineTests(TestCase):
                     owner, name = (
                         (transform, "make_publication")
                         if interruption == "construction"
+                        else (storage.ReceiptCache, "published")
+                        if interruption.startswith("cache_delivery")
                         else (storage, "publish")
                     )
                     with patch.object(owner, name, side_effect=Interrupted()), self.assertRaises(Interrupted):
                         repair()
                     from libs.alpaca_end_of_day_security_correlation import documented_markets
 
+                    if interruption.startswith("cache_delivery"):
+                        self.assertTrue(
+                            any(
+                                value.get("effects", {}).get("published")
+                                for value in context.group_completions.values()
+                            )
+                        )
+                    if interruption == "cache_delivery_json":
+                        from libs.alpaca_pipeline.codec import Decoder, Encoder
+                        from libs.alpaca_pipeline.state import export_state, import_state
+
+                        encoder = Encoder()
+                        state = export_state(context, None, encoder.encode, evidence=evidence_client)
+                        document = json.loads(json.dumps({"state": state, "objects": encoder.objects}))
+                        decoder = Decoder(document["objects"])
+                        context, _ = import_state(
+                            store, document["state"], decoder.decode, evidence=evidence_client
+                        )
                     with ExitStack() as guards:
                         for owner, name in (
                             (documented_markets, "bind"),
@@ -296,12 +323,20 @@ class DocumentedScopePipelineTests(TestCase):
                                     side_effect=AssertionError("completed producer repeated: " + name),
                                 )
                             )
-                        if interruption == "publication":
+                        if interruption == "publication" or interruption.startswith("cache_delivery"):
                             guards.enter_context(
                                 patch.object(
                                     transform,
                                     "make_publication",
                                     side_effect=AssertionError("completed publication reconstructed"),
+                                )
+                            )
+                        if interruption.startswith("cache_delivery"):
+                            guards.enter_context(
+                                patch.object(
+                                    storage,
+                                    "publish",
+                                    side_effect=AssertionError("completed source publication repeated"),
                                 )
                             )
                         repaired = repair()

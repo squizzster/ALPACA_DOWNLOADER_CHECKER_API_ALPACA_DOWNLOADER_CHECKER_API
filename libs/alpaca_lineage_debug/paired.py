@@ -207,8 +207,28 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
         from .documented import evaluate as evaluate_accepted
         from .documented import scoped_facts
 
-        if mode == "accepted_publication" or scoped_facts(policy, selected["selected_group"]):
+        entries = scoped_facts(policy, selected["selected_group"])
+        if mode == "accepted_publication" or (same_cascade(policy, control_policy) and entries):
             return evaluate_accepted(store, seed, policy, control_policy, selected, maximum)
+        if not same_cascade(policy, control_policy):
+            bundle = getattr(policy, "ruleset", None)
+            group = set(selected["selected_group"])
+
+            def selected_intents(applications):
+                return {
+                    entry["id"]: entry["fingerprint"]
+                    for entry in applications
+                    if group.intersection(entry["symbols"])
+                }
+
+            if (bundle is None and entries) or (
+                bundle is not None
+                and selected_intents(bundle.applications)
+                != selected_intents(getattr(control_policy, "ruleset_applications", ()))
+            ):
+                raise ValueError(
+                    "change documented facts or the ordered rule cascade in one experiment, not both"
+                )
     control = {}
     control_report = _compare_loaded_group(
         store, seed, control_policy, selected, max_differences=maximum, completed=control

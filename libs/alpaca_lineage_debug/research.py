@@ -8,7 +8,7 @@ from libs.alpaca_lineage_policy_lab.comparison import _compare_loaded_group, _lo
 from libs.alpaca_pricing_download.contract import symbol_label
 
 from . import accept_report
-from .policy import policy_applies, policy_applies_to_group
+from .policy import policy_applies, policy_applies_to_group, require_research_application_support
 
 
 def failure(error):
@@ -229,14 +229,15 @@ def run(
             timed_out = True
             break
         seed = next(name for name in group if name in entries)
-        if group in unaffected:
-            proven.append(unaffected[group])
-            continue
         try:
             if group in reused:
                 assert_reused_applicable(store, index, reused[group], accepted_store)
                 results.append(reused[group])
                 carried.append(list(group))
+                continue
+            require_research_application_support(policy, control_policy, group)
+            if group in unaffected:
+                proven.append(unaffected[group])
                 continue
             report = evaluate_group(
                 store,

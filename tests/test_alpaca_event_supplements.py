@@ -10,6 +10,7 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import snapshot
 
 from libs.alpaca_lineage_build import pipeline
+from libs.alpaca_lineage_build.context import OperationContext, recover_and_accept_correlation_policy
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_security_lineage import event_supplements
@@ -272,11 +273,15 @@ class SupplementPipelineTests(unittest.TestCase):
         assets = {"GOOG": new, "111111111": old, "222222222": new}
         path = self.store.parent / "succession.json"
         path.write_text(json.dumps({"schema_version": 1, "supplements": [item]}))
+        # The separate canonical configuration is new ingress for this operation.
+        # Accept it before guarding the already accepted explicit input handoff.
+        context = OperationContext(self.store)
+        recover_and_accept_correlation_policy(self.store, context)
         with patch.object(
             event_supplements, "validate_supplements", wraps=event_supplements.validate_supplements
         ) as validate:
             accepted = load_supplements(path)
-            self.run_build(["GOOG"], client=IdentityClient(assets), event_supplements=accepted)
+            self.run_build(["GOOG"], client=IdentityClient(assets), event_supplements=accepted, context=context)
         self.assertEqual(1, validate.call_count)
         self.assertEqual([item], self.receipt()["evidence"]["sourced_successions"]["facts"])
 
@@ -319,11 +324,13 @@ class SupplementPipelineTests(unittest.TestCase):
         }
         self.assertEqual({"111111111": "old-id", "222222222": "new-id"}, mappings)
         client = IdentityClient()
+        context = OperationContext(self.store)
+        recover_and_accept_correlation_policy(self.store, context)
         with patch(
             "libs.alpaca_security_lineage.event_supplements.validate_supplements",
             side_effect=AssertionError("accepted fact validation repeated"),
         ):
-            self.run_build(["GOOG"], client=client)
+            self.run_build(["GOOG"], client=client, context=context)
         self.assertEqual(0, client.request_count)
         self.assertEqual(evidence, self.receipt()["evidence"])
         self.assertEqual(pricing, snapshot(self.store / "end_of_day/pricing"))

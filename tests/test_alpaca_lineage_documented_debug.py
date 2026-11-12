@@ -11,17 +11,18 @@ import yaml
 from test_alpaca_documented_markets import documented_fact
 from test_alpaca_lineage_debug import request
 
-from libs.alpaca_lineage_build import storage
+from libs.alpaca_lineage_build import documented_updates, storage
 from libs.alpaca_lineage_debug import documented
-from libs.alpaca_lineage_debug.policy import DEFAULT_POLICY, load_policy
+from libs.alpaca_lineage_debug.policy import DEFAULT_POLICY, load_policy, template
 from libs.alpaca_lineage_policy_lab import comparison
 
 
 class DocumentedDiagnosticTests(TestCase):
     setUp = debug_fixtures.DebugStoreTests.setUp
 
-    def configure(self, *, facts=True):
+    def configure(self, *, facts=True, combined=False):
         value = yaml.safe_load(self.policy.read_text())
+        value = value.get("policy", value)
         fact = documented_fact(
             "researched-market",
             ("GOOG", "111111111"),
@@ -34,6 +35,14 @@ class DocumentedDiagnosticTests(TestCase):
             control_mode="accepted_publication",
             documented_facts=[{"symbols": ["GOOG"], "supplements": [fact]}] if facts else [],
         )
+        if combined:
+            configuration = yaml.safe_load(template(combined=True))
+            configuration["policy"] = value
+            configuration["policy"]["research"] = {"control_mode": "accepted_publication"}
+            configuration["evidence"]["applications"] = (
+                [{"id": "researched-market", "symbols": ["GOOG"], "supplements": [fact]}] if facts else []
+            )
+            value = configuration
         self.policy.write_text(yaml.safe_dump(value))
         return value
 
@@ -47,7 +56,7 @@ class DocumentedDiagnosticTests(TestCase):
         )
 
     def test_metadata_only_chronology_keeps_completed_numerical_choices_closed(self):
-        self.configure()
+        self.configure(combined=True)
         read_receipt = storage.read_receipt
 
         def receipt(*args, **kwargs):
@@ -71,10 +80,11 @@ class DocumentedDiagnosticTests(TestCase):
                 side_effect=AssertionError("metadata change repeated numerical decision"),
             ),
             patch.object(
-                documented.documented_markets, "bind", wraps=documented.documented_markets.bind
+                documented_updates.documented_markets, "bind", wraps=documented_updates.documented_markets.bind
             ) as bind,
         ):
-            report = self.run_pair()
+            report = request("run", store=str(self.store), symbols=["GOOG"], policy=str(self.policy))
+        self.assertEqual("canonical_ruleset_default", report["control_selection"])
         self.assertTrue(report["execution_complete"], report)
         self.assertEqual(reads.call_count, 1)
         self.assertEqual(bind.call_count, 1)
@@ -96,6 +106,44 @@ class DocumentedDiagnosticTests(TestCase):
             report = self.run_pair()
         self.assertFalse(report["execution_complete"])
         self.assertIn("owning exact metadata recovery", str(report["failures"]))
+
+    def test_combined_rule_only_change_uses_paired_replay_and_mixed_change_is_explicit(self):
+        value = self.configure(facts=False, combined=True)
+        value["policy"]["research"]["control_mode"] = "documented_scopes"
+        value["policy"]["execution"]["established_fixed_point"]["row_rules"].pop(0)
+        self.policy.write_text(yaml.safe_dump(value))
+        with patch.object(documented, "evaluate", side_effect=AssertionError("rule edit used accepted control")):
+            report = request("run", store=str(self.store), symbols=["GOOG"], policy=str(self.policy))
+        self.assertTrue(report["execution_complete"], report)
+        self.assertEqual("paired_same_inputs", report["groups"][0]["mode"])
+        self.assertFalse(report["groups"][0]["control_correlation_reused"])
+
+        value = self.configure(facts=True, combined=True)
+        value["policy"]["research"]["control_mode"] = "documented_scopes"
+        value["policy"]["execution"]["established_fixed_point"]["row_rules"].pop(0)
+        self.policy.write_text(yaml.safe_dump(value))
+        report = request("run", store=str(self.store), symbols=["GOOG"], policy=str(self.policy))
+        self.assertFalse(report["execution_complete"], report)
+        self.assertIn("not both", str(report["failures"]))
+
+    def test_new_unsupported_fact_producer_fails_before_price_materialization(self):
+        value = yaml.safe_load(template(combined=True))
+        fact = next(
+            fact
+            for application in value["evidence"]["applications"]
+            for fact in application["supplements"]
+            if fact["kind"] == "identity_preserving_rename"
+        )
+        value["evidence"]["applications"] = [
+            {"id": "unsupported-rename", "symbols": ["GOOG"], "supplements": [fact]}
+        ]
+        self.policy.write_text(yaml.safe_dump(value))
+        with patch.object(
+            comparison, "load_pricing", side_effect=AssertionError("unsupported facts materialized prices")
+        ):
+            report = request("run", store=str(self.store), symbols=["GOOG"], policy=str(self.policy))
+        self.assertFalse(report["execution_complete"], report)
+        self.assertIn("unsupported research-fact producer", str(report["failures"]))
 
     def test_unchanged_publication_control_is_exact_and_has_no_rule_or_numerical_replay(self):
         self.configure(facts=False)

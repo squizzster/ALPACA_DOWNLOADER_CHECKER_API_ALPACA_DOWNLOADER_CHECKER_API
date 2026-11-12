@@ -211,7 +211,7 @@ class AcceptedComponentCompositionTests(unittest.TestCase):
             security_identity_for_alpaca_assets,
         )
         from libs.alpaca_end_of_day_security_correlation.uuid_lineage import UuidLineageEdge
-        from libs.alpaca_lineage_build import source_work
+        from libs.alpaca_lineage_build import source_work_contract as source_work
 
         for names, reverse in ((("a", "a2", "b", "b2"), False), (("z", "x", "c", "d"), True)):
             a, a2, b, b2 = names

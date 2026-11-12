@@ -22,7 +22,7 @@ from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.correlation_policy import authorize_production_policy
 from libs.alpaca_lineage_build.correlation_policy import load_policy as load_production
 from libs.alpaca_lineage_build.pipeline import run_lineage
-from libs.alpaca_lineage_debug import inspection, research
+from libs.alpaca_lineage_debug import inspection, paired, research
 from libs.alpaca_lineage_debug.policy import load_policy, template
 from libs.alpaca_pipeline.codec import Encoder
 from libs.alpaca_pricing_download.download import download_pricing
@@ -273,10 +273,14 @@ class DebugStoreTests(unittest.TestCase):
         )
         built = run_lineage(self.store, ["GOOG", "OLD"], identity_client=client, refresh=True)
         self.assertEqual(built["failed"], 0, built)
-        with patch.object(research, "_compare_loaded_group", wraps=research._compare_loaded_group) as evaluate:
+        with (
+            patch.object(paired, "_compare_loaded_group", wraps=paired._compare_loaded_group) as evaluate,
+            patch("libs.alpaca_lineage_debug.api.load_policy", wraps=load_policy) as configuration,
+        ):
             report = request("run", store=str(self.store), symbols=["GOOG", "OLD"])
         self.assertEqual(report["scope"]["selected_groups"], 1, report)
         self.assertEqual(evaluate.call_count, 1)
+        self.assertEqual(configuration.call_count, 1)
         self.assertEqual(report["groups"][0]["group"], ["GOOG", "OLD"])
 
     def test_standalone_replay_matches_public_api_and_never_changes_store(self):
@@ -327,14 +331,14 @@ class DebugStoreTests(unittest.TestCase):
             self.assertEqual(json.loads(out.getvalue())["summary"]["evaluated_groups"], 1)
 
     def test_peer_error_preserves_completed_results_without_retry(self):
-        real = research._compare_loaded_group
+        real = paired._compare_loaded_group
 
         def evaluate(store, symbol, *args, **kwargs):
             if symbol == "AAA":
                 raise RuntimeError("deliberate peer failure")
             return real(store, symbol, *args, **kwargs)
 
-        with patch.object(research, "_compare_loaded_group", side_effect=evaluate) as calls:
+        with patch.object(paired, "_compare_loaded_group", side_effect=evaluate) as calls:
             report = request("run", store=str(self.store), symbols=["AAA", "GOOG", "MISSING"])
         self.assertEqual(calls.call_count, 2)
         self.assertEqual(report["summary"]["evaluated_groups"], 1)
@@ -345,7 +349,7 @@ class DebugStoreTests(unittest.TestCase):
     def test_failed_peer_releases_materialized_prices_before_the_next_group(self):
         from contextlib import contextmanager
 
-        real_load, real_evaluate = research._load_group, research._compare_loaded_group
+        real_load, real_evaluate = research._load_group, paired._compare_loaded_group
         prior_prices = []
 
         @contextmanager
@@ -363,7 +367,7 @@ class DebugStoreTests(unittest.TestCase):
 
         with (
             patch.object(research, "_load_group", load),
-            patch.object(research, "_compare_loaded_group", evaluate),
+            patch.object(paired, "_compare_loaded_group", evaluate),
         ):
             report = request("run", store=str(self.store), all=True)
         self.assertEqual(report["summary"]["evaluated_groups"], 1)

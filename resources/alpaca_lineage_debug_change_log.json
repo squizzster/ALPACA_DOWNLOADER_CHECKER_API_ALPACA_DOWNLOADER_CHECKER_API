@@ -16,5 +16,11 @@
     "modifications": [
       "Add explicit accepted-publication controls and scoped primary chronology in research YAML; consume completed owners and numerical choices without control replay, retaining complete candidate handoffs."
     ]
+  },
+  {
+    "modifications": [
+      "Use shared production-owned documented decisions and emit one combined research YAML containing registered policy, sourced applications and producer selection; retain legacy research input compatibility and explicit paired control attribution.",
+      "Preserve explicitly compatible prior research reports and semantically empty control options under exact scope and generation bindings, without repeating completed group evaluation."
+    ]
   }
 ]

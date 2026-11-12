@@ -125,7 +125,7 @@ class UniverseUpdateTests(unittest.TestCase):
         before = self.identity.request_count
         with (
             patch(
-                "libs.alpaca_lineage_build.correlation_policy.load_authorized_policy",
+                "libs.alpaca_lineage_build.ruleset.load_ruleset",
                 side_effect=CorrelationPolicyError("invalid policy"),
             ),
             patch(

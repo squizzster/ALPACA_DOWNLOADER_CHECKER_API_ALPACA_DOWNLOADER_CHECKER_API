@@ -82,6 +82,7 @@ from .policy_evidence_quality import (
 )
 
 MAX_POLICY_BYTES = 64 * 1024
+MAX_RULESET_BYTES = 1024 * 1024
 MANDATORY_ROW_DEFAULT = "unresolved_uuid_candidates"
 CANONICAL_POLICY_PATH = (
     Path(__file__).resolve().parents[2] / "resources" / "alpaca_security_correlation_policy.yaml"
@@ -789,19 +790,16 @@ def _compile_schema_four(
     )
 
 
-def load_policy(path: str | Path) -> CompiledPolicy:
-    # Compiler boundary: validate untrusted policy structure and bind executable
-    # rules once. Consumers receive the immutable compiled result; they must not
-    # reread YAML or hash its file on each group to accept that same result.
-    """Load one bounded YAML document and resolve only in-process rule registries."""
+def read_policy_document(path: str | Path) -> tuple[bytes, dict]:
+    """Read one bounded policy or combined ruleset, without accepting it twice."""
     path = Path(path)
     try:
         with path.open("rb") as stream:
-            raw = stream.read(MAX_POLICY_BYTES + 1)
+            raw = stream.read(MAX_RULESET_BYTES + 1)
     except OSError as error:
         raise CorrelationPolicyError(f"could not read policy {path}: {error}") from error
-    if len(raw) > MAX_POLICY_BYTES:
-        raise CorrelationPolicyError(f"policy exceeds {MAX_POLICY_BYTES} bytes")
+    if len(raw) > MAX_RULESET_BYTES:
+        raise CorrelationPolicyError(f"ruleset exceeds {MAX_RULESET_BYTES} bytes")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -812,7 +810,44 @@ def load_policy(path: str | Path) -> CompiledPolicy:
         raise CorrelationPolicyError(f"invalid YAML policy: {error}") from error
 
     if type(document) is not dict:
+        if len(raw) > MAX_POLICY_BYTES:
+            raise CorrelationPolicyError(f"policy exceeds {MAX_POLICY_BYTES} bytes")
         raise CorrelationPolicyError("policy must be a mapping")
+    if "ruleset_schema_version" not in document and len(raw) > MAX_POLICY_BYTES:
+        raise CorrelationPolicyError(f"policy exceeds {MAX_POLICY_BYTES} bytes")
+    return raw, document
+
+
+def policy_document(document: dict) -> dict:
+    """Select the policy section; its executable meaning keeps its own identity."""
+    if "ruleset_schema_version" not in document:
+        return document
+    if (
+        set(document) != {"ruleset_schema_version", "policy", "evidence", "producers"}
+        or type(document["ruleset_schema_version"]) is not int
+        or document["ruleset_schema_version"] != 1
+        or type(document["policy"]) is not dict
+    ):
+        raise CorrelationPolicyError("unsupported lineage ruleset envelope")
+    policy = document["policy"]
+    try:
+        encoded = json.dumps(policy, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise CorrelationPolicyError("policy must contain ordinary JSON values") from error
+    if len(encoded) > MAX_POLICY_BYTES:
+        raise CorrelationPolicyError(f"policy section exceeds {MAX_POLICY_BYTES} bytes")
+    return policy
+
+
+def load_policy(path: str | Path) -> CompiledPolicy:
+    """Compile one policy, retaining support for explicit legacy policy files."""
+    raw, document = read_policy_document(path)
+    return compile_policy_document(policy_document(document), raw=raw, path=Path(path))
+
+
+def compile_policy_document(document: dict, *, raw: bytes, path: Path) -> CompiledPolicy:
+    # The producer already parsed these bytes. Do not reopen the file to compile
+    # its policy after accepting the surrounding evidence application registry.
     schema_version = _integer(document.get("schema_version"), "schema_version")
     if schema_version not in SUPPORTED_POLICY_SCHEMA_VERSIONS:
         raise CorrelationPolicyError(f"unsupported policy schema_version {schema_version}")

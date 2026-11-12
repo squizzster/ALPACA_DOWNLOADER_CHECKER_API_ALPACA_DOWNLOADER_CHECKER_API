@@ -8,7 +8,7 @@ import copy
 import hashlib
 import inspect
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 import yaml
@@ -23,7 +23,9 @@ from libs.alpaca_end_of_day_security_correlation import (
 from libs.alpaca_end_of_day_security_correlation.component_refinement import NAME as REFINEMENT_NAME
 from libs.alpaca_lineage_build import correlation_policy as compiler
 from libs.alpaca_lineage_build import observations, transform
-from libs.alpaca_security_lineage.event_supplements import accept_supplements
+from libs.alpaca_lineage_build.ruleset import accept_components
+from libs.alpaca_lineage_build.ruleset_contract import AcceptedRuleset
+from libs.alpaca_security_lineage.event_supplements import _AcceptedSupplements, accept_supplements
 from libs.alpaca_security_lineage.sourced_facts import MARKET_KIND
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -31,19 +33,77 @@ DEFAULT_POLICY = compiler.CANONICAL_POLICY_PATH
 RESEARCH_ROLE = "research_candidate"
 
 
+def control_view(policy):
+    """Lend the accepted rule cascade without injecting candidate facts/producers."""
+    values = {field.name: getattr(policy, field.name) for field in fields(compiler.CompiledPolicy)}
+    bundle = getattr(policy, "ruleset", None)
+    return ControlPolicy(**values, ruleset_applications=bundle.applications if bundle is not None else ())
+
+
+def require_research_application_support(policy, control, group):
+    """Reject new unsupported factual intent before materializing any prices."""
+    bundle = getattr(policy, "ruleset", None)
+    if bundle is None:
+        return
+    group = set(group)
+
+    def scoped(applications):
+        return {entry["id"]: entry for entry in applications if group.intersection(entry["symbols"])}
+
+    current = scoped(bundle.applications)
+    control_bundle = getattr(control, "ruleset", None)
+    prior = scoped(
+        getattr(
+            control,
+            "ruleset_applications",
+            control_bundle.applications if control_bundle is not None else (),
+        )
+    )
+    for identifier in current.keys() | prior.keys():
+        entry, old = current.get(identifier), prior.get(identifier)
+        if entry is not None and old is not None and entry["fingerprint"] == old["fingerprint"]:
+            continue
+        if entry is None:
+            raise ValueError(
+                f"removing configured fact application {identifier} requires owning evidence reconciliation"
+            )
+        if any(
+            fact["kind"] != MARKET_KIND or fact["facts"]["schema_version"] not in {3, 4, 5}
+            for fact in entry["facts"]
+        ):
+            raise ValueError(
+                f"unsupported research-fact producer for application {identifier}; "
+                "use its owning evidence producer before comparison"
+            )
+
+
+@dataclass(frozen=True)
+class ControlPolicy(compiler.CompiledPolicy):
+    # Inputs identifying unchanged configured facts, never instructions to apply
+    # them to the accepted publication used as control.
+    ruleset_applications: tuple = ()
+
+
 def policy_applies(recorded, current):
     """Formatting and file location are provenance, not executable applicability."""
     actual = current.as_report_object()
+
+    def research(value):
+        options = value.get("research")
+        if (
+            type(options) is dict
+            and not set(options) - {"membership_refinement", "control_mode", "documented_facts"}
+            and options.get("membership_refinement") is None
+            and options.get("control_mode", "replay") == "replay"
+            and options.get("documented_facts", ()) in ((), [])
+        ):
+            return None
+        return options
+
     return all(
         recorded.get(name) == actual.get(name)
-        for name in (
-            "semantic_sha256",
-            "implementation",
-            "execution_profile",
-            "policy_role",
-            "research",
-        )
-    )
+        for name in ("semantic_sha256", "implementation", "execution_profile", "policy_role")
+    ) and research(recorded) == research(actual)
 
 
 def policy_applies_to_group(recorded, current, group):
@@ -75,11 +135,20 @@ class ResearchPolicy(compiler.CompiledPolicy):
     membership_refinement: str | None = None
     control_mode: str = "replay"
     documented_facts: tuple = ()
+    ruleset: AcceptedRuleset | None = None
 
     def research_options(self):
         result = {"membership_refinement": self.membership_refinement}
         if self.control_mode != "replay" or self.documented_facts:
             result.update(control_mode=self.control_mode, documented_facts=list(self.documented_facts))
+        if self.ruleset is not None:
+            result.update(
+                execution_sha256=self.ruleset.execution_sha256,
+                rule_applications=[
+                    {key: entry[key] for key in ("id", "symbols", "fingerprint")}
+                    for entry in self.ruleset.applications
+                ],
+            )
         return result
 
     def provenance(self):
@@ -90,12 +159,54 @@ class ResearchPolicy(compiler.CompiledPolicy):
 
 
 def load_policy(path):
-    path = Path(path)
-    with path.open("rb") as stream:
-        raw = stream.read(compiler.MAX_POLICY_BYTES + 1)
-    if len(raw) > compiler.MAX_POLICY_BYTES:
-        raise ValueError("policy exceeds 65536 bytes")
-    document = yaml.load(raw.decode("utf-8"), Loader=compiler._UniqueSafeLoader)
+    # Lexical normalization performs no filesystem authentication and lets a
+    # relative canonical argument lend its completed configuration to control.
+    path = Path(path).absolute()
+    raw, outer = compiler.read_policy_document(path)
+    document = compiler.policy_document(outer)
+    if "ruleset_schema_version" not in outer:
+        return _compile_research_document(path, raw, document)
+    applications, supplements, refinement, execution_sha256 = accept_components(outer)
+    documented = []
+    for entry in applications:
+        facts = _AcceptedSupplements(
+            fact
+            for fact in entry["facts"]
+            if fact["kind"] == MARKET_KIND and fact["facts"]["schema_version"] in {3, 4, 5}
+        )
+        if facts:
+            documented.append(
+                {
+                    "symbols": list(entry["symbols"]),
+                    "supplements": facts,
+                    "refine_accepted_dates": entry.get("refine_accepted_dates", True),
+                }
+            )
+    role = document.get("policy_role")
+    if role == RESEARCH_ROLE:
+        settings = document.get("research", {})
+        if type(settings) is not dict or set(settings) - {"control_mode"}:
+            raise ValueError("combined YAML keeps facts in evidence and membership selection in producers")
+        candidate = copy.deepcopy(document)
+        candidate["research"] = {
+            "membership_refinement": refinement,
+            "control_mode": settings.get("control_mode", "documented_scopes"),
+            "documented_facts": documented,
+        }
+        policy = _compile_research_document(path, raw, candidate)
+    else:
+        base = compiler.compile_policy_document(document, raw=raw, path=path)
+        policy = ResearchPolicy(
+            **base.__dict__,
+            membership_refinement=refinement,
+            control_mode="documented_scopes",
+            documented_facts=tuple(documented),
+        )
+    accepted = AcceptedRuleset(policy, applications, supplements, refinement, execution_sha256)
+    return replace(policy, ruleset=accepted)
+
+
+def _compile_research_document(path, raw, document):
     if not isinstance(document, dict) or type(document.get("schema_version")) is not int:
         raise ValueError("policy schema_version must be an integer")
     if not isinstance(document, dict) or document.get("policy_role") != RESEARCH_ROLE:
@@ -209,11 +320,14 @@ def load_policy(path):
     )
 
 
-def template():
-    document = yaml.load(DEFAULT_POLICY.read_bytes(), Loader=compiler._UniqueSafeLoader)
-    document["policy_id"] = "lineage_research"
-    document["policy_role"] = RESEARCH_ROLE
-    document["research"] = {"membership_refinement": None}
+def template(*, combined=False):
+    _, document = compiler.read_policy_document(DEFAULT_POLICY)
+    policy = compiler.policy_document(document)
+    policy["policy_id"] = "lineage_research"
+    policy["policy_role"] = RESEARCH_ROLE
+    policy["research"] = {"control_mode": "documented_scopes"} if combined else {"membership_refinement": None}
+    if not combined:
+        document = policy
     return (
         "# Research only: reorder or remove registered rules in the lists below.\n"
         "# The unresolved default, terminal rule and numerical postprocessor remain explicit.\n"
@@ -239,7 +353,7 @@ def rule_index(policy):
             for position, rule in enumerate(rules, 1)
         ]
 
-    return {
+    result = {
         "policy": policy.as_report_object(),
         "ownership_rules": describe(policy.ownership_rules),
         "established_ownership_rules": [rule.name for rule in policy.established_ownership_rules],
@@ -277,3 +391,30 @@ def rule_index(policy):
             "production_publication": False,
         },
     }
+    bundle = getattr(policy, "ruleset", None)
+    if bundle is not None:
+        result["ruleset"] = {
+            "schema_version": 1,
+            "execution_sha256": bundle.execution_sha256,
+            "membership_refinement": bundle.membership_refinement,
+            "applications": [
+                {
+                    "id": entry["id"],
+                    "symbols": entry["symbols"],
+                    "fingerprint": entry["fingerprint"],
+                    "refine_accepted_dates": entry.get("refine_accepted_dates", True),
+                    "facts": [
+                        {
+                            "kind": fact["kind"],
+                            "schema_version": fact["facts"]["schema_version"],
+                            "diagnostic_chronology_projection": fact["kind"] == MARKET_KIND
+                            and fact["facts"]["schema_version"] in {3, 4, 5},
+                        }
+                        for fact in entry["facts"]
+                    ],
+                }
+                for entry in bundle.applications
+            ],
+            "meaning": "Bounded documented-market updates are explicit research work; other facts remain with their existing producer.",
+        }
+    return result

@@ -6,62 +6,25 @@ assembly is explicit output construction and cannot open historical prices.
 """
 
 from copy import deepcopy
-from dataclasses import dataclass
-from dataclasses import field as dataclass_field
+from pathlib import Path
 
 from libs.alpaca_end_of_day_security_correlation import (
     public_common_continuation,
     security_relations,
     sourced_rename,
 )
-from libs.alpaca_end_of_day_security_correlation.security_identity import security_identity_for_alpaca_assets
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_security_lineage.event_supplements import RENAME_KIND
 from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS, MARKET_KIND, items
 
 from . import source_observations, storage
 from .assignment_handoff import produce, selected
-from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_digest, reusable_decision, versions
+from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_digest, versions
 from .observation_carry import membership_choices
 from .pricing import ClosedAcceptedSource
 from .resume import _evidence_facts, continuing_request, unchanged_rows
-
-
-@dataclass(frozen=True)
-class SourceWorkPlan:
-    dispositions: dict
-    memberships: dict
-    rename_membership: dict
-    common_membership: dict
-    relation_certificate: dict
-    relation_projection: dict
-    common_bounds: dict
-    projection_required: bool
-    market_projection: bool = False
-    market_binding: object = None
-    market_labels_complete: bool = False
-    recapitalization_graphs: object = None
-    documented_membership: object = None
-    refine_accepted_dates: bool = False
-    refinement_policy_version: int = 90
-    prepared_reports: dict | None = None
-    closed_report_projections: dict = dataclass_field(default_factory=dict, repr=False, compare=False)
-    stable_numerical_identities: frozenset = dataclass_field(default_factory=frozenset)
-
-
-def _binding_applies(control):
-    if control.accepted_reuse is not None:
-        return control.accepted_reuse[0]
-    if hasattr(control, "_accepted_binding_applies"):
-        return control._accepted_binding_applies
-    prior = control.previous
-    control._accepted_binding_applies = bool(
-        prior
-        and reusable_decision(prior)
-        and unchanged_rows(control.source, prior, selected=control.source_sha256)
-        and continuing_request(control.source, prior)
-    )
-    return control._accepted_binding_applies
+from .source_work_contract import SourceWorkPlan, compose_memberships
+from .source_work_contract import binding_applies as _binding_applies
 
 
 def _regular_market_plan(controls, evidence, unchanged_owners):
@@ -270,60 +233,39 @@ def _accepted_owners_apply(previous, after, *, scope=None):
     return left == right
 
 
-def compose_memberships(prior_members, edges):
-    """Join complete accepted components, retaining all member and label facts."""
-    edges = tuple(edges)
-    if not edges:
-        return dict(prior_members)
-    graph, labels, components, known, descriptions = {}, {}, {}, {}, set()
-    for identity in prior_members.values():
-        if id(identity) in descriptions:
-            continue
-        descriptions.add(id(identity))
-        public_id = identity["security_id"]
-        if public_id not in components:
-            members = components[public_id] = frozenset(identity["member_alpaca_asset_ids"])
-            known.setdefault(members, identity)
-            # A completed component is undirected even when a shared UUID's
-            # local dictionary entry names another accepted source scope.
-            for identifier in members:
-                graph.setdefault(identifier, set()).update(members)
-        for identifier in components[public_id]:
-            labels.setdefault(identifier, set()).update(identity["member_tickers"])
-    touched = set()
-    for edge in edges:
-        left, right = edge.predecessor_asset_id, edge.successor_asset_id
-        graph.setdefault(left, set()).add(right)
-        graph.setdefault(right, set()).add(left)
-        labels.setdefault(left, set()).add(edge.predecessor_symbol)
-        labels.setdefault(right, set()).add(edge.successor_symbol)
-        touched.update((left, right))
-    memberships = dict(prior_members)
-    while touched:
-        pending, members, tickers = [min(touched)], set(), set()
-        while pending:
-            identifier = pending.pop()
-            if identifier in members:
-                continue
-            members.add(identifier)
-            tickers.update(labels.get(identifier, ()))
-            pending.extend(graph.get(identifier, ()) - members)
-        touched.difference_update(members)
-        old = known.get(frozenset(members))
-        if old is not None:
-            completed = (
-                old if set(old["member_tickers"]) == tickers else {**old, "member_tickers": sorted(tickers)}
-            )
-        else:
-            completed = security_identity_for_alpaca_assets(
-                members, [], tickers=tickers, basis="sourced_public_common_or_unchanged_security"
-            ).as_report_object()
-        for identifier in members:
-            memberships[identifier] = completed
-    return memberships
+def prepare_group_evidence_and_source_work(
+    controls, evidence, auxiliary, *, cache, ruleset=None, accepted_membership_plan=None
+):
+    """Select ordinary source work and any explicitly enabled scoped refinement."""
+    plan = _prepare_group_evidence_and_source_work(controls, evidence, auxiliary, cache=cache)
+    if ruleset is None or ruleset.membership_refinement is None:
+        return plan
+    from .membership_updates import prepare
+    from .transform import retained_decision_report
+
+    def report_loader(name):
+        control = controls[name]
+        report = (plan.prepared_reports or {}).get(name)
+        if report is None:
+            report = {
+                **control.previous,
+                **retained_decision_report(control.previous, policy=ruleset.policy),
+                **retained_ownership_report(
+                    control.previous,
+                    control.local,
+                    {},
+                    Path(control.store) / "end_of_day/lineage",
+                    cache.setdefault("assignments", {}),
+                ),
+            }
+        return report
+
+    return prepare(
+        controls, evidence, auxiliary, plan, ruleset, cache, report_loader, completed=accepted_membership_plan
+    )
 
 
-def prepare_group_evidence_and_source_work(controls, evidence, auxiliary, *, cache):
+def _prepare_group_evidence_and_source_work(controls, evidence, auxiliary, *, cache):
     """Certify changed metadata once, then choose A/B/C and retained controls."""
     binding = tuple((name, id(item)) for name, item in sorted({**evidence, **auxiliary}.items()))
     owner_applicability = cache.setdefault("owner_applicability", {})
@@ -515,10 +457,20 @@ def prepare_group_evidence_and_source_work(controls, evidence, auxiliary, *, cac
 
 
 def closed_source(control, plan):
-    report = getattr(control, "accepted_report", None)
+    scoped_membership = bool(plan.membership_refinement and plan.membership_refinement["changes"])
+    memberships = (
+        {
+            identifier: identity
+            for identity in control.previous["identity_memberships"]
+            for identifier in identity["member_alpaca_asset_ids"]
+        }
+        if scoped_membership
+        else plan.memberships
+    )
+    report = None if scoped_membership else getattr(control, "accepted_report", None)
     if report is None:
         report = (plan.prepared_reports or {}).get(control.symbol)
-    if report is not None:
+    if report is not None and not scoped_membership:
         projections = plan.closed_report_projections
         refine_metadata = plan.refine_accepted_dates and plan.dispositions[control.symbol] == "A"
         key = (
@@ -535,7 +487,16 @@ def closed_source(control, plan):
             if refine_metadata:
                 from libs.alpaca_end_of_day_security_correlation.documented_refinement import refine
 
-                projected = refine({}, {control.symbol: projected}, plan.documented_membership)[control.symbol]
+                refinement = {
+                    **plan.documented_membership,
+                    "owners": [
+                        owner
+                        for owner in plan.documented_membership["owners"]
+                        if plan.refinement_fact_ids is None
+                        or owner["source_fact_id"] in plan.refinement_fact_ids
+                    ],
+                }
+                projected = refine({}, {control.symbol: projected}, refinement)[control.symbol]
             projections[key] = projected
         report = projections[key]
     return ClosedAcceptedSource(
@@ -548,7 +509,7 @@ def closed_source(control, plan):
         previous_receipt_generation=control.previous_receipt_generation,
         accepted_reuse=control.accepted_reuse,
         accepted_report=report,
-        accepted_identity_memberships=plan.memberships,
+        accepted_identity_memberships=memberships,
         accepted_public_common_membership=plan.common_membership,
         accepted_security_relations=plan.relation_certificate,
         accepted_sourced_rename_membership=plan.rename_membership,
@@ -636,8 +597,13 @@ def project_closed_source(view, evidence, plan, policy, root, cache):
         "security_relations": plan.relation_projection,
         "membership_only_rebind": None,
     }
+    memberships = (
+        view.accepted_identity_memberships
+        if plan.membership_refinement and plan.membership_refinement["changes"]
+        else plan.memberships
+    )
     id_map = {
-        identity["security_id"]: plan.memberships[identity["member_alpaca_asset_ids"][0]]
+        identity["security_id"]: memberships[identity["member_alpaca_asset_ids"][0]]
         for identity in prior.get("identity_memberships", ())
     }
     changes = {old: identity for old, identity in id_map.items() if old != identity["security_id"]}
@@ -897,9 +863,11 @@ def accepted_choices(control, root, cache):
     return choices[key]
 
 
-def _source_work_scope(controls, evidence, auxiliary, policy):
+def _source_work_scope(controls, evidence, auxiliary, policy, plan=None):
     return (
-        policy.semantic_sha256,
+        policy.semantic_sha256
+        if plan is None or not plan.membership_refinement
+        else policy.semantic_sha256 + ":" + plan.membership_refinement["execution_sha256"],
         tuple(
             (
                 name,
@@ -937,7 +905,7 @@ def execute_source_work(store, root, controls, evidence, auxiliary, plan, policy
             f"documented dated refinement requires correlation policy {plan.refinement_policy_version}"
         )
     completed = cache.setdefault("completed_source_work", {})
-    scope = _source_work_scope(controls, evidence, auxiliary, policy)
+    scope = _source_work_scope(controls, evidence, auxiliary, policy, plan)
     handoff = completed.setdefault(scope, {"controls": tuple(controls.values()), "evidence": {}})
     handoff["evidence"].update((id(value), value) for value in (*evidence.values(), *auxiliary.values()))
     try:
@@ -950,7 +918,7 @@ def execute_source_work(store, root, controls, evidence, auxiliary, plan, policy
         # A selected pricing loader can complete previously unknown technical
         # row counts. This producer-owned metadata projection is the same scope;
         # carry its resulting binding rather than repeating completed decisions.
-        completed[_source_work_scope(controls, evidence, auxiliary, policy)] = handoff
+        completed[_source_work_scope(controls, evidence, auxiliary, policy, plan)] = handoff
         handoff["evidence"].update((id(value), value) for value in evidence.values())
 
 
@@ -1180,6 +1148,10 @@ def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy
             # now available to peer rules, rather than the metadata-only local.
             retained.local = view.local
             view.accepted_report = accepted_report(retained, plan, root, cache.setdefault("assignments", {}))
+            if plan.membership_refinement and plan.membership_refinement["changes"]:
+                from .recapitalization_work import append_unresolved
+
+                view.accepted_report = append_unresolved(view, control.previous, view.accepted_report)
             if plan.recapitalization_graphs:
                 from .recapitalization_work import project as recapitalizations
 
@@ -1193,7 +1165,10 @@ def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy
     completed_recaps = {
         name: view.accepted_report
         for name, view in materialized.items()
-        if plan.documented_membership is not None
+        if plan.membership_refinement
+        and plan.membership_refinement["changes"]
+        and view.accepted_report["uncorrelated"]["row_count"] == 0
+        or plan.documented_membership is not None
         or plan.recapitalization_graphs
         and view.accepted_report["uncorrelated"]["row_count"] == 0
     }
@@ -1217,6 +1192,17 @@ def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy
     intervals = {}
     for name, control in closed.items():
         prior = control.previous
+        if plan.membership_refinement and plan.membership_refinement["changes"]:
+            report = accepted_report(control, plan, root, cache.setdefault("assignments", {}))
+            intervals[name] = [
+                (
+                    segment["security_identity"]["security_id"],
+                    segment["first_timestamp"][:10],
+                    segment["last_timestamp"][:10],
+                )
+                for segment in report["correlated"]["segments"]
+            ]
+            continue
         ids = {
             identity["security_id"]: plan.memberships.get(identity["member_alpaca_asset_ids"][0], identity)[
                 "security_id"
@@ -1263,7 +1249,9 @@ def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy
     retained_selections = {
         name: (
             control.previous["serving_ownership"],
-            identity_changes,
+            {identity["security_id"]: identity for identity in control.previous["identity_memberships"]}
+            if plan.membership_refinement and plan.membership_refinement["changes"]
+            else identity_changes,
             accepted_donor_grids(control, cache),
             accepted_choices(control, root, cache),
         )

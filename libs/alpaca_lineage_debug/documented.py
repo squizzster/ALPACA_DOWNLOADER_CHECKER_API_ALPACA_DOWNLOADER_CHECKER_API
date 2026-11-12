@@ -1,8 +1,10 @@
 """Explicit primary chronology against accepted publications, without rule replay."""
 
-from libs.alpaca_end_of_day_security_correlation import documented_markets, documented_refinement
 from libs.alpaca_end_of_day_security_correlation.component_refinement import refine
 from libs.alpaca_lineage_build import source_work
+from libs.alpaca_lineage_build.documented_updates import apply_updates
+from libs.alpaca_lineage_build.documented_updates import merge_plan as merge_plan
+from libs.alpaca_lineage_build.documented_updates import numeric_changes as numeric_changes
 from libs.alpaca_lineage_build.transform import retained_decision_report
 from libs.alpaca_lineage_policy_lab.comparison import (
     _digest_mapping,
@@ -78,57 +80,6 @@ def materialize_sources(policy, receipts, group, *, membership_pairs_handoff=Non
     return scope
 
 
-def merge_plan(previous, fresh):
-    if not previous:
-        return fresh
-    owners = {owner["source_fact_id"]: owner for owner in previous["owners"]}
-    for owner in fresh["owners"]:
-        old = owners.get(owner["source_fact_id"])
-        if old is not None and old != owner:
-            raise ValueError("changed accepted documented owner requires owning reconciliation")
-        owners[owner["source_fact_id"]] = old if old is not None else owner
-    routes = dict(previous["source_routes"])
-    for name, route in fresh["source_routes"].items():
-        if name in routes and routes[name] != route:
-            raise ValueError("changed accepted documented source context requires owning reconciliation")
-        routes[name] = route
-    return {**fresh, "owners": list(owners.values()), "source_routes": routes}
-
-
-def numeric_changes(before, after):
-    """Only new owners/components reopen a contest; metadata does not prove prices."""
-    changes = []
-    for name, report in after.items():
-        for segment in report["correlated"]["segments"]:
-            first, last = segment["row_start"], segment["row_end"]
-            covered = 0
-            for old in before[name]["correlated"]["segments"]:
-                if old["adjustment"] != segment["adjustment"]:
-                    continue
-                left, right = max(first, old["row_start"]), min(last, old["row_end"])
-                if left > right:
-                    continue
-                covered += right - left + 1
-                if old["security_identity"]["security_id"] != segment["security_identity"]["security_id"]:
-                    changes.append(
-                        {
-                            "source": name,
-                            "adjustment": segment["adjustment"],
-                            "row_start": left,
-                            "row_end": right,
-                        }
-                    )
-            if not covered:
-                changes.append(
-                    {"source": name, "adjustment": segment["adjustment"], "row_start": first, "row_end": last}
-                )
-            elif covered != last - first + 1:
-                # Effective accepted boundaries partition source positions. A new
-                # piece must not partly overlap an accepted positive interval.
-                raise ValueError("documented candidate has an unpartitioned numerical change")
-    return changes
-
-
 def frame(dimensions, reports, *, corrections=None):
     return {
         "dimensions": dimensions,
@@ -150,97 +101,14 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
     before = accepted_reports(selected, control_policy)
     evidence = {name: receipt["evidence"] for name, receipt in selected["receipts"].items()}
     reports, membership = refine(before, evidence, selected) if policy.membership_refinement else (before, None)
-    entries = scoped_facts(policy, selected["selected_group"])
-    plans = []
-    affected = {change["source"] for change in (membership or {}).get("changes", ())}
-    fresh = {}
-    for entry in entries:
-        for name in entry["symbols"]:
-            prior = {
-                fact["match"]["source_id"]: fact
-                for fact in evidence[name].get("sourced_market_occupancy", {}).get("facts", ())
-            }
-            for fact in entry["supplements"]:
-                old = prior.get(fact["match"]["source_id"])
-                if old is not None:
-                    if old != fact:
-                        raise ValueError("changed accepted fact requires owning documented reconciliation")
-                    continue
-                fresh.setdefault(name, []).append(fact)
-    if fresh:
-        refine_ids = {
-            fact["match"]["source_id"]
-            for entry in entries
-            if entry.get("refine_accepted_dates", True)
-            for fact in entry["supplements"]
-        }
-        augmented = {
-            name: {**evidence[name], "sourced_market_occupancy": {"schema_version": 1, "facts": values}}
-            for name, values in fresh.items()
-        }
-        accepted = {
-            name: {
-                uid: identity
-                for identity in receipt["identity_memberships"]
-                for uid in identity["member_alpaca_asset_ids"]
-            }
-            for name, receipt in selected["receipts"].items()
-        }
-        plan = documented_markets.bind(
-            augmented,
-            accepted_memberships=accepted,
-            allow_containing_membership=True,
-            allow_reclassification=True,
-            allow_holding_exchange=True,
-        )
-        plans.append(plan)
-        affected.update(
-            name
-            for name, report in reports.items()
-            if any(
-                set(segment["security_identity"]["member_alpaca_asset_ids"])
-                <= set(owner["identity"]["member_alpaca_asset_ids"])
-                for segment in report["correlated"]["segments"]
-                for owner in plan["owners"]
-            )
-            or any(
-                set(plan["source_routes"].get(name, ())) & set(owner["identity"]["member_alpaca_asset_ids"])
-                for owner in plan["owners"]
-            )
-        )
-        # Existing positives can be refined even where today's symbol lookup
-        # identifies a later unrelated occupant. That does not authorize filling
-        # unresolved observations under that foreign current source context.
-        owned = {uid for owner in plan["owners"] for uid in owner["identity"]["member_alpaca_asset_ids"]}
-        refine_plan = {
-            **plan,
-            "owners": [owner for owner in plan["owners"] if owner["source_fact_id"] in refine_ids],
-        }
-        if refine_plan["owners"]:
-            reports = documented_refinement.refine(selected["inputs"], reports, refine_plan)
-        applicable = {
-            name: report
-            for name, report in reports.items()
-            if owned.intersection(plan["source_routes"].get(name, ()))
-        }
-        reports.update(
-            documented_markets.project(
-                {name: selected["inputs"][name] for name in applicable}, applicable, augmented, plan=plan
-            )
-        )
-        for name, value in augmented.items():
-            prior = evidence[name].get("sourced_market_occupancy", {}).get("facts", ())
-            evidence[name] = {
-                **value,
-                "sourced_market_occupancy": {"schema_version": 1, "facts": [*prior, *fresh[name]]},
-            }
-            reports[name] = {
-                **reports[name],
-                "documented_identity_membership": merge_plan(
-                    before[name].get("documented_identity_membership"), plan
-                ),
-            }
-            affected.add(name)
+    reports, evidence, plans, documented_affected = apply_updates(
+        selected["inputs"],
+        reports,
+        evidence,
+        selected["receipts"],
+        scoped_facts(policy, selected["selected_group"]),
+    )
+    affected = {change["source"] for change in (membership or {}).get("changes", ())} | documented_affected
     changes = numeric_changes(before, reports)
     corrections, equality = {}, {}
     if changes:

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from test_alpaca_durable_maintenance import fixture
 
 from alpaca_end_of_day import StandaloneReader
-from libs.alpaca_lineage_build import assignment_handoff, pipeline, storage, transform
+from libs.alpaca_lineage_build import assignment_handoff, group_engine, pipeline, storage, transform
 from libs.alpaca_lineage_build.contract import COMPUTATION_REVISION
 from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.observations import select_observations
@@ -62,7 +62,7 @@ class PreparedRecoveryTests(unittest.TestCase):
                 (pipeline, "load_pricing"),
                 (pipeline, "correlate"),
                 (pipeline, "select_observations"),
-                (pipeline, "make_publication"),
+                (group_engine, "make_publication"),
                 (pipeline, "download_pricing"),
                 (pipeline, "acquire"),
                 (pipeline, "local_symbols"),

@@ -4,6 +4,7 @@ import copy
 import json
 import unittest
 from contextlib import ExitStack
+from dataclasses import replace
 from unittest.mock import patch
 
 import test_alpaca_public_common_pipeline as common_fixture
@@ -22,6 +23,9 @@ from libs.alpaca_lineage_build import (
     sourced_rules,
     storage,
     universe_update,
+)
+from libs.alpaca_lineage_build import (
+    ruleset as lineage_ruleset,
 )
 from libs.alpaca_lineage_build.check_summary import rebuild
 from libs.alpaca_lineage_build.continuation import validate_handoff
@@ -77,7 +81,13 @@ class ClosedSourceRecoveryTests(unittest.TestCase):
         self.enterContext(patch.object(self.client, "_get", side_effect=response))
         self.enterContext(
             patch.object(
-                universe_update, "load_applications", return_value=(self.applications, self.supplements)
+                lineage_ruleset,
+                "load_ruleset",
+                return_value=replace(
+                    lineage_ruleset.load_ruleset(authorize=True),
+                    applications=tuple(self.applications),
+                    supplements=self.supplements,
+                ),
             )
         )
 

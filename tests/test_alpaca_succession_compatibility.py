@@ -14,11 +14,11 @@ from libs.alpaca_lineage_build import (
     certificate_migration,
     contract,
     pipeline,
+    ruleset,
     storage,
     transform,
     universe_plan,
 )
-from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.correlation_policy_contract import (
     RETAINED_V78_SEMANTIC_SHA256,
     expected_policy_identity,
@@ -30,8 +30,9 @@ from libs.alpaca_lineage_build.metadata import EvidenceClient
 
 def retained_policy_runtime(test, *, computation_revision=1):
     """Freeze the original compatibility target instead of following today's policy."""
+    configured = ruleset.load_ruleset(authorize=True)
     policy = replace(
-        load_authorized_policy(),
+        configured.policy,
         execution_profile="correlation_v79_policy_engine",
         implementation_correlation_version=79,
         implementation_lineage_version=34,
@@ -53,6 +54,9 @@ def retained_policy_runtime(test, *, computation_revision=1):
     test.enterContext(
         patch("libs.alpaca_lineage_build.correlation_policy.load_authorized_policy", return_value=policy)
     )
+    # The operation now accepts policy and fact configuration together. Lend the
+    # same frozen historical producer result through that actual ingress too.
+    test.enterContext(patch.object(ruleset, "load_ruleset", return_value=replace(configured, policy=policy)))
 
 
 def frozen_policy():

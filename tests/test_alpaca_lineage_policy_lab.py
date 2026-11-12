@@ -256,6 +256,7 @@ class PolicyCompilerTests(TestCase):
 
     def test_schema_four_rejects_mixed_or_weakened_execution_contracts(self):
         document = yaml.safe_load(CURRENT_POLICY.read_text(encoding="utf-8"))
+        document = document.get("policy", document)
         variants = []
         for path, value in (
             (("policy_role",), "corrected_candidate"),

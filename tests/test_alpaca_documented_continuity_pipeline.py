@@ -24,6 +24,7 @@ from libs.alpaca_lineage_build import (
     observations,
     pipeline,
     source_work,
+    source_work_contract,
     storage,
     transform,
 )
@@ -344,7 +345,7 @@ class DocumentedContinuityAuthorityTests(TestCase):
             predecessor_asset_id="a", successor_asset_id="b", predecessor_symbol="OLD", successor_symbol="NEW"
         )
         with patch.object(
-            source_work,
+            source_work_contract,
             "security_identity_for_alpaca_assets",
             side_effect=AssertionError("completed public ID recalculated"),
         ):

@@ -23,5 +23,10 @@
     "modifications": [
       "Carry selected pricing partition documents, normally published lineage receipts and assignment bodies through the existing transient recovery transport for downstream reuse without new production storage."
     ]
+  },
+  {
+    "modifications": [
+      "Carry the once-accepted canonical ruleset and explicitly supplied completed membership applicability plans through existing stage JSON, preserving aliases and consuming acceptance without policy reload or historical reconstruction."
+    ]
   }
 ]

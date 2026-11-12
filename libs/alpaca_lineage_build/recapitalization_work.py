@@ -13,11 +13,11 @@ from libs.alpaca_security_lineage.event_supplements import RECAPITALIZATION_KIND
 from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS
 
 from .resume import continuing_request
+from .source_work_contract import SourceWorkPlan, compose_memberships
+from .source_work_contract import binding_applies as _binding_applies
 
 
 def prepare(controls, evidence, auxiliary, cache):
-    from .source_work import SourceWorkPlan, _binding_applies, compose_memberships
-
     if auxiliary:
         return None
     if not any(

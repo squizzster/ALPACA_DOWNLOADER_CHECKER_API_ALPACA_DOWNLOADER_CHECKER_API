@@ -44,7 +44,7 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 98
+RUNTIME_VERSION = 99
 COMPUTATION_REVISION = 2
 # A runtime repair is not a new data policy. DO NOT force completed stores through
 # reconstruction merely to align runtime and persisted publication version numbers.

@@ -36,6 +36,7 @@ class OperationContext:
         validate_version()
         self.store = Path(store).absolute()
         self._accepted_store = None
+        self._ruleset = None
         self._correlation_policy = None
         self._authorized_policy = None
         self._lineage_recovery_complete = False
@@ -50,6 +51,8 @@ class OperationContext:
         self.history_checks = {}
         self._history_scopes = {}
         self.sourced_operations = {}
+        self.completed_membership_plans = {}
+        self.group_completions = {}
 
     def cache_history(self, kind, symbol, record, scope):
         cache = self.history_checks if kind == "check" else self.history_comparisons
@@ -76,19 +79,31 @@ class OperationContext:
         # Import the YAML compiler only after the caller has completed frozen
         # journal recovery. Receipt readers and recovery stay independent of
         # PyYAML and the executable policy engine.
-        from .correlation_policy import authorize_production_policy, load_authorized_policy
+        from .correlation_policy import authorize_production_policy
+        from .ruleset import load_ruleset
 
         if self._authorized_policy is None:
             if self._correlation_policy is None:
-                # This producer returns an already authorized immutable policy.
-                # Trust that completed handoff; do not authorize it a second time.
-                self._correlation_policy = load_authorized_policy()
+                self._ruleset = load_ruleset(authorize=True)
+                self._correlation_policy = self._ruleset.policy
                 self._authorized_policy = self._correlation_policy
             else:
-                # Tests and explicit adapters may inject a compiled candidate.
-                # It crosses the authorization boundary exactly once before use.
                 self._authorized_policy = authorize_production_policy(self._correlation_policy)
         return self._authorized_policy
+
+    def accept_ruleset(self):
+        """Lend the single accepted configuration; restore never reloads it."""
+        self.accept_correlation_policy()
+        if self._ruleset is None:
+            # Explicit compiled-policy injection still needs its selected fact
+            # registry. Accept that configuration once, retaining the authorized
+            # injected policy rather than authorizing or compiling it again.
+            from dataclasses import replace
+
+            from .ruleset import load_ruleset
+
+            self._ruleset = replace(load_ruleset(), policy=self._authorized_policy)
+        return self._ruleset
 
     @traced("lineage_recovery")
     def recover_lineage(self, root):

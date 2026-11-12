@@ -4,6 +4,7 @@ import copy
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from libs.alpaca_end_of_day_security_correlation import (
     security_relations,
 )
 from libs.alpaca_lineage_build import pipeline, pricing, source_work, sourced_rules, storage, universe_update
+from libs.alpaca_lineage_build import ruleset as lineage_ruleset
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.download import download_pricing
@@ -95,10 +97,14 @@ class PublicCommonPipelineTests(unittest.TestCase):
                 }
             }
 
+        applications, supplements = sourced_rules.load_applications(facts)
+        configured = replace(
+            lineage_ruleset.load_ruleset(authorize=True),
+            applications=tuple(applications),
+            supplements=supplements,
+        )
         with (
-            patch.object(
-                universe_update, "load_applications", side_effect=lambda: sourced_rules.load_applications(facts)
-            ),
+            patch.object(lineage_ruleset, "load_ruleset", return_value=configured),
             patch.object(client, "_get", side_effect=response),
             patch.object(pipeline, "load_pricing", side_effect=AssertionError("accepted prices materialized")),
             patch.object(standalone, "_rows", side_effect=AssertionError("accepted serving values replayed")),

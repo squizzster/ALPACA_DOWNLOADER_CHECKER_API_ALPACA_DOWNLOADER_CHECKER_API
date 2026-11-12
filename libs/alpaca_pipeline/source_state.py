@@ -9,7 +9,7 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from types import MappingProxyType
 
 from libs.alpaca_lineage_build.contract import LineageError
-from libs.alpaca_lineage_build.source_work import SourceWorkPlan
+from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
 
 # Mutable adapters attach these completed decisions after construction. Their
 # presence is meaningful and is retained independently of dataclass defaults.
@@ -163,6 +163,7 @@ def export_sourced(value, *, roots):
         "documented_continuities": bindings,
         "donor_grid_ids": lambda k: (k[0], k[1], identity(k[2]), k[3]),
         "completed_source_work": scope,
+        "membership_plans": scope,
     }
     source_work = value.get("source_work", {})
     if not isinstance(source_work, dict) or set(source_work) - stable - keyed.keys():

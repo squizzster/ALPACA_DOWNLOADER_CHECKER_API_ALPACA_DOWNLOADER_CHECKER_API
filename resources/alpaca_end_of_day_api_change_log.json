@@ -242,5 +242,10 @@
     "modifications": [
       "Expose scoped documented-chronology research and accepted-publication controls through the read-only lineage diagnostic JSON API."
     ]
+  },
+  {
+    "modifications": [
+      "Expose the consolidated lineage implementation and combined YAML diagnostics through existing public JSON APIs; preserve three-stage execution and production reader/storage contracts."
+    ]
   }
 ]

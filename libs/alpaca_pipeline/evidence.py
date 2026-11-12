@@ -43,6 +43,9 @@ _FIELDS = (
 def export_evidence(evidence, encode):
     """Carry accepted values and completed projections through an alias codec."""
     state = {field: getattr(evidence, field) for field in _FIELDS}
+    state["accepted_application_projections"] = list(
+        {id(value): value for value in evidence.application_projections.values()}.values()
+    )
     state["accepted_event_projections"] = list(evidence.event_projection.accepted.values())
     state["accepted_supplement_evidence"] = list(evidence._retained_supplement_evidence.values())
     return {"schema": SCHEMA, "schema_version": SCHEMA_VERSION, "state": encode(state)}
@@ -63,6 +66,7 @@ def import_evidence(document, client, decode, *, work_policy=None):
         *_FIELDS,
         "accepted_event_projections",
         "accepted_supplement_evidence",
+        "accepted_application_projections",
     }:
         raise LineageError("incomplete pipeline evidence handoff")
     # Constructor observation/fact parameters would repeat producer acceptance.
@@ -71,6 +75,10 @@ def import_evidence(document, client, decode, *, work_policy=None):
     evidence.work_policy = work_policy
     for field in _FIELDS:
         setattr(evidence, field, state[field])
+    evidence.application_projections = {}
+    for held in state["accepted_application_projections"]:
+        evidence.application_projections[id(held[0])] = held
+        evidence.application_projections[id(held[2])] = held
     evidence.event_projection = EventProjection()
     for action, supplement, projected in state["accepted_event_projections"]:
         evidence.event_projection.accepted[id(action), id(supplement)] = (action, supplement, projected)

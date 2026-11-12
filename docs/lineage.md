@@ -35,13 +35,18 @@ records this remaining policy gap; offline containment alone does not resolve di
 ## Lineage reuse
 
 [contract.py](../libs/alpaca_lineage_build/contract.py), `reusable_decision`, and
-[pipeline.py](../libs/alpaca_lineage_build/pipeline.py), `process_group`, require matching complete-group inputs,
+[group_engine.py](../libs/alpaca_lineage_build/group_engine.py), `process_group`, require matching complete-group inputs,
 dependency/recorded-absence sets, compatible versions, no pending pricing work and no explicit metadata refresh.
 Receipts/index entries bind authorized policy ID, role, implementation tuple and semantic digest. File digest
 records exact YAML bytes; formatting is not reuse identity.
 
 Authorize the canonical policy once after journal recovery, before new selection/evaluation/network work.
 Recovery validates frozen journal provenance without reinterpreting it through newly installed policy.
+The [ruleset loader](../libs/alpaca_lineage_build/ruleset.py) accepts the canonical YAML's executable policy,
+scoped factual applications and optional producers as one operation configuration. Their identities remain
+separate: a container or formatting change does not establish new ownership or invalidate an applicable
+prior policy. Its [completed value contract](../libs/alpaca_lineage_build/ruleset_contract.py) crosses stage
+JSON without reopening YAML, compiling rules or accepting the same facts again.
 Evidence fingerprints are independent of history approval. [Workflow completion](technical-contracts.md#universe-observation-and-work-state)
 consumes fresh source-bound approval without republishing an unchanged decision. A completed producer handoff
 does not need its group reopened merely to acknowledge that approval. Rule-only changes reuse approved evidence.
@@ -351,7 +356,10 @@ chronologies require owning reconciliation. This metadata refinement preserves r
 every explicit numerical state, including superseded, conflicted and incomplete observations. Unknown states
 do not become numerical approval. New ownership
 does not approve a numerical bundle. The owning selector evaluates only the newly owned positions and actual
-new contests. [Source-work planning](../libs/alpaca_lineage_build/documented_work.py) closes unchanged peers
+new contests. Production and explicit documented research use the same
+[documented-update owner](../libs/alpaca_lineage_build/documented_updates.py) for completed-plan merging,
+new-fact binding, positive-date projection and numerical change scope. It performs no storage or provider
+I/O and does not publish. [Source-work planning](../libs/alpaca_lineage_build/documented_work.py) closes unchanged peers
 before payload access. Its completed version-1 identity binding and row projection survive publication and
 ordinary suffix work under their original mappings and evidence. An interior episode boundary selects exact
 timestamp assembly; endpoint ranges alone cannot establish sparse interior membership. Primary descriptions
@@ -367,6 +375,16 @@ overlap reopens its dated source contest. Incomparable components require owning
 a union inferred from a shared UUID. Completed bindings, numerical decisions and per-source publication parts
 remain cached under actual receipt/pricing generations, accepted metadata and policy through construction or
 publication interruption; a new phase or acknowledgement does not repeat them.
+
+The optional `accepted_same_security_containing_component_v1` membership producer consumes completed
+same-security rename evidence, a containing accepted component and certified extension edges. It remains
+disabled when `producers.membership_refinement` is null. Mere UUID containment does not authorize a join;
+missing legacy edge metadata preserves existing assignments without a provider or rebuild fallback.
+[Membership updates](../libs/alpaca_lineage_build/membership_updates.py) can also consume an explicitly supplied
+completed plan under the same store, complete group, pricing generations and changed-source/donor receipt
+generations. It applies the recorded positions without repeating the route or UUID-edge proof. This is an
+internal operation-context handoff, not a CLI plan-import option. Its completed values cross stage JSON;
+only actually changed membership intervals and their new numerical overlap reopen selection.
 
 For a version-5 public holding exchange that preserves rights and proportional ownership, a newly allocated
 peer is superseded where exact retained timestamps already have
@@ -427,14 +445,25 @@ right components retain separate terms rather than a fabricated unit-share price
 execution. Neither the relation nor common consideration unions historical right/unit identities.
 
 Both kinds use `match.source_id` and their own `facts.schema_version`, and require sourced provenance.
-Ordinary updates load [scoped rule applications](../resources/alpaca_sourced_event_facts.json) once.
+Ordinary updates load scoped applications from `evidence.applications` in the
+[canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml) once. Each entry has a unique
+`id`, explicit `symbols`, complete `supplements`, and optional boolean `refine_accepted_dates` (default true).
+`policy` contains the executable cascade; `producers.membership_refinement` is an explicit optional producer
+selection, null by default. These are configuration of generic implementations and sourced assertions,
+not ticker-specific branches in Python. The legacy JSON loader remains an explicit compatibility adapter,
+not a fallback or a second live registry.
+
 Application symbols explicitly select existing source groups; historical ticker spellings do not select
 unrelated current occupants. The compact lineage index records exact incorporated application fingerprints,
 so new facts select their named anchors without reopening every receipt. Workflow completion requires those
-facts in the journaled publication independently of price approval. This inventory records incorporation;
-the published certificates and assignments establish the resulting lineage. The registry is additive:
-removing an entry does not retract already published evidence; a changed or withdrawn accepted fact requires
-its owning reconciliation.
+facts and their applicable refinement intent in the journaled publication independently of price approval.
+Omitted intent and explicit true have the same meaning and fingerprint. False preserves accepted positive
+dates and labels while permitting the documented owner to assess unresolved positions; it does not retract
+already published decisions. Changing only an explicit intent selects its affected owning projection even
+when the fact body is unchanged. Accepted owner bindings remain inputs, not work to repeat.
+This inventory records incorporation; the published certificates and assignments establish the resulting
+lineage. Applications are additive: removing an entry does not retract already published evidence; a changed
+or withdrawn accepted fact requires its owning reconciliation.
 They retain separate metadata extensions and never manufacture provider events. A mapped successor history
 claim is a separate source-bound producer result, restricted to accepted predecessor ownership and accepted
 same-CUSIP label routes. It feeds the existing ordered row cascade; the production rule order is unchanged.

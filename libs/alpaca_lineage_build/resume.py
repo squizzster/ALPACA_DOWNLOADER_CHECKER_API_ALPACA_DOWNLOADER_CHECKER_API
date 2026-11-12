@@ -206,6 +206,7 @@ def _evidence_facts(value, *, append=False, historical=False):
     # alone is not new lineage evidence; actual lookup/action facts stay below.
     result.pop("mapping_endpoint_observations", None)
     result.pop("sourced_fact_applications", None)
+    result.pop("sourced_fact_intents", None)
     for lookup in result.get("asset_lookups", ()):
         lookup.pop("source", None)
     if append:

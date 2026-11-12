@@ -6,6 +6,9 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from test_alpaca_documented_markets import documented_fact
+
+from libs.alpaca_lineage_build import sourced_rules
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_pipeline.codec import Decoder, Encoder
@@ -65,6 +68,48 @@ def transport(evidence, *, extra=None):
 
 
 class PipelineEvidenceTests(unittest.TestCase):
+    def test_application_projection_survives_json_and_only_new_application_is_projected(self):
+        first = documented_fact(
+            "first",
+            ("AAA", "111111111"),
+            ("AAA", "111111111"),
+            [("AAA", "111111111", "2024-01-01", None, "First Common")],
+        )
+        second = documented_fact(
+            "second",
+            ("BBB", "222222222"),
+            ("BBB", "222222222"),
+            [("BBB", "222222222", "2024-01-01", None, "Second Common")],
+        )
+        applications, facts = sourced_rules.accept_applications(
+            [
+                {"id": "first-app", "symbols": ["AAA"], "supplements": [first], "refine_accepted_dates": False},
+                {"id": "second-app", "symbols": ["BBB"], "supplements": [second], "refine_accepted_dates": True},
+            ]
+        )
+        original = observed_client()
+        original.rule_applications = applications[:1]
+        before = {"sourced_market_occupancy": {"schema_version": 1, "facts": facts}}
+        projected = sourced_rules.project_application_intents(original, before)
+        restored, (before, projected, additional) = transport(
+            original, extra=(before, projected, applications[1])
+        )
+        with patch.object(
+            sourced_rules, "incorporated", side_effect=AssertionError("accepted incorporation replay")
+        ):
+            self.assertIs(sourced_rules.project_application_intents(restored, before), projected)
+            self.assertIs(sourced_rules.project_application_intents(restored, projected), projected)
+        restored.rule_applications = [*restored.rule_applications, additional]
+        with patch.object(sourced_rules, "incorporated", wraps=sourced_rules.incorporated) as incorporate:
+            current = sourced_rules.project_application_intents(restored, projected)
+        self.assertEqual(incorporate.call_count, 1)
+        self.assertEqual(incorporate.call_args.kwargs["applications"], [additional])
+        self.assertEqual(
+            current["sourced_fact_applications"],
+            {app["id"]: app["fingerprint"] for app in restored.rule_applications},
+        )
+        self.assertEqual(current["sourced_fact_intents"], {"first": False, "second": True})
+
     def test_positive_negative_unattempted_and_coverage_survive_without_producer_calls(self):
         original = observed_client()
         original.exact_lookup_reasons["DUP"] = "catalogue_ambiguous"

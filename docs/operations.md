@@ -33,9 +33,13 @@ OTC/NYSE/NASDAQ/AMEX/TXSE labels regardless of tradability; other-exchange histo
 Omission proves neither inactivity nor removable history. Known active empty/partial histories also advance
 outside the live-check summary. SIP acquisition does not promise a separate OTC feed.
 
-The update also consumes the scoped accepted facts in
-[the sourced-event registry](../resources/alpaca_sourced_event_facts.json). Unapplied named groups enter
-lineage through this same update even when their prices are unchanged; no separate repair command is needed.
+The update consumes the [canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml):
+`policy` selects implemented rules, `evidence.applications` carries explicitly scoped accepted facts and
+per-application refinement intent, and `producers` selects optional producers. There is no separate live
+JSON fact registry. Unapplied named groups enter lineage through this same update even when their prices
+are unchanged; no separate repair command is needed. Application incorporation is distinct from successful
+ownership and numerical selection. See the [lineage contract](lineage.md#sourced-event-facts) before changing
+facts or their scope; the [rule tool](lineage-debug.md) tests candidates without publication.
 
 Every invocation checks live; saved experiments are not inputs. Failed history checks block append;
 independent successes remain recoverable. Published unresolved identity is completed processing, distinct

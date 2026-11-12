@@ -12,7 +12,10 @@ from libs.alpaca_end_of_day_security_correlation import documented_markets
 from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS, MARKET_KIND, PUBLIC_COMMON_KIND, items
 
 from .contract import CORRELATION_VERSION, LineageError
+from .documented_updates import bind_updates, pending_intent, refinement_ids
 from .resume import continuing_request
+from .source_work_contract import SourceWorkPlan
+from .source_work_contract import binding_applies as _binding_applies
 
 
 def binding(controls, evidence):
@@ -28,12 +31,13 @@ def binding(controls, evidence):
 
 
 def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
-    from .source_work import SourceWorkPlan, _binding_applies
-
-    if auxiliary or not any(
+    new_facts = any(
         fact not in items((controls[name].previous or {}).get("evidence", {}), MARKET_KIND)
         for name, report in evidence.items()
         for fact in documented_markets.facts_for(report)
+    )
+    if auxiliary or not (
+        new_facts or any(pending_intent(controls[name].previous, value) for name, value in evidence.items())
     ):
         return None
     for name, control in controls.items():
@@ -82,8 +86,9 @@ def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
     key = binding(controls, evidence)
     completed = cache.setdefault("documented_memberships", {})
     if key not in completed:
-        completed[key] = documented_markets.bind(
+        completed[key] = bind_updates(
             evidence,
+            {name: control.previous for name, control in controls.items()},
             accepted_memberships=accepted_memberships,
             allow_containing_membership=CORRELATION_VERSION >= 88,
             allow_reclassification=CORRELATION_VERSION >= 89,
@@ -116,6 +121,8 @@ def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
             for fact in documented_markets.facts_for(report)
         )
     )
+    refine_ids = refinement_ids(evidence, documented, default=refine_dates)
+    refine_dates = bool(refine_ids)
     stable_facts = {
         fact["match"]["source_id"]
         for report in evidence.values()
@@ -126,7 +133,16 @@ def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
     prepared_reports = {}
     for name, control in controls.items():
         applies = name in labels or owned_ids.intersection(documented["source_routes"].get(name, ()))
-        needs_refinement = refine_dates and bool(applies)
+        needs_refinement = any(
+            owner["source_fact_id"] in refine_ids
+            and (
+                name in {episode["symbol"] for episode in owner["episodes"]}
+                or set(owner["identity"]["member_alpaca_asset_ids"]).intersection(
+                    documented["source_routes"].get(name, ())
+                )
+            )
+            for owner in documented["owners"]
+        )
         selected = control.previous["unresolved_rows"] or not _binding_applies(control) or needs_refinement
         changed_membership = any(
             members[identity["member_alpaca_asset_ids"][0]]["security_id"] != identity["security_id"]
@@ -184,6 +200,7 @@ def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
         "A" in dispositions.values(),
         documented_membership=documented,
         refine_accepted_dates=refine_dates,
+        refinement_fact_ids=refine_ids,
         refinement_policy_version=91 if CORRELATION_VERSION >= 91 else 90,
         prepared_reports=prepared_reports,
         stable_numerical_identities=frozenset(
@@ -207,12 +224,14 @@ def project(view, control, evidence, plan, policy, cache):
         from .recapitalization_work import append_unresolved
 
         report = append_unresolved(view, control.previous, view.accepted_report)
-        completed[key] = documented_markets.project(
+        from .documented_updates import project_plan
+
+        completed[key] = project_plan(
             {view.symbol: view},
             {view.symbol: report},
             {view.symbol: evidence},
-            plan=plan.documented_membership,
-            refine_accepted_dates=plan.refine_accepted_dates,
+            plan.documented_membership,
+            refine_fact_ids=plan.refinement_fact_ids if plan.refine_accepted_dates else (),
         )[view.symbol]
     report = completed[key]
     report["correlation_policy"] = policy.provenance()

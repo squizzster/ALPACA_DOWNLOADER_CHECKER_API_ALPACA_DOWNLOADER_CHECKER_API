@@ -22,6 +22,7 @@ from test_alpaca_pricing_download import FakeClient, bar, snapshot
 
 from libs.alpaca_lineage_build import context as lineage_context
 from libs.alpaca_lineage_build import pipeline, policy_engine, storage, transform
+from libs.alpaca_lineage_build import ruleset as lineage_ruleset
 from libs.alpaca_lineage_build.contract import (
     SUPPORTED_VERSIONS,
     VERSION,
@@ -292,9 +293,9 @@ class ProductionPolicyOperationTests(TestCase):
 
         with (
             patch.object(
-                sys.modules["libs.alpaca_lineage_build.correlation_policy"],
-                "load_authorized_policy",
-                wraps=load_authorized_policy,
+                lineage_ruleset,
+                "load_ruleset",
+                wraps=lineage_ruleset.load_ruleset,
             ) as load,
             patch.object(
                 sys.modules["libs.alpaca_lineage_build.correlation_policy"],
@@ -311,7 +312,7 @@ class ProductionPolicyOperationTests(TestCase):
             )
 
         self.assertEqual(0, result["failed"], result)
-        load.assert_called_once_with()
+        load.assert_called_once_with(authorize=True)
         authorize.assert_called_once()
         recover.assert_called_once()
         self.assertEqual(2, len(seen))
@@ -448,8 +449,8 @@ class ProductionPolicyOperationTests(TestCase):
                 identity = IdentityClient({"AAA": asset("AAA")})
                 with (
                     patch.object(
-                        sys.modules["libs.alpaca_lineage_build.correlation_policy"],
-                        "load_authorized_policy",
+                        lineage_ruleset,
+                        "load_ruleset",
                         side_effect=CorrelationPolicyError(label),
                     ),
                     patch.object(

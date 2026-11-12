@@ -38,7 +38,8 @@ and serving retain applicable completed work before the corrected session. The
 | Serving JSON stage and continuous-lock orchestration | [serve.py](../libs/alpaca_pipeline/serve.py), [runner.py](../libs/alpaca_pipeline/runner.py); [Phase 3 contract](development.md#pipeline-phase-3-complete-pipeline) |
 | Recovery, observation, registration, orchestration | [universe_update.py](../libs/alpaca_lineage_build/universe_update.py): `run_update` |
 | Live check → correction → approved append | [update.py](../libs/alpaca_lineage_build/update.py): `update_everything` |
-| Dependency closure and complete-group publication | [pipeline.py](../libs/alpaca_lineage_build/pipeline.py): `run_lineage`, `process_group` |
+| Group selection, prefetch and lineage command coordination | [pipeline.py](../libs/alpaca_lineage_build/pipeline.py): `run_lineage` |
+| Dependency closure, component evaluation and complete-group completion | [group_engine.py](../libs/alpaca_lineage_build/group_engine.py): `process_group`, `correlate_components`, `publish_completed_group` |
 | Offline serving maintenance | [producer.py](../libs/alpaca_serving_catalogue/producer.py): `maintain` |
 
 The pure [API solver](../libs/alpaca_data_api_solver/__init__.py), `build_plan`, maps reasoned needs to ordered
@@ -62,11 +63,30 @@ Ordered authorities: [ownership intervals](../libs/alpaca_end_of_day_security_co
 Lineage's compiler/evaluator serve production and offline replay; correlation owns ordered rule registries and
 certificate-backed rule factories. [Lineage](lineage.md) owns policy authorization, reuse and evidence constraints;
 the [policy lab](policy-lab.md) owns read-only candidate comparison/audit.
+The [canonical YAML](../resources/alpaca_security_correlation_policy.yaml) contains executable `policy`,
+scoped factual `evidence.applications`, and explicit `producers` selection. The
+[ruleset owner](../libs/alpaca_lineage_build/ruleset.py) accepts them once after frozen-journal recovery.
+Executable rules, factual applications and optional producer selection have separate identities; moving
+facts into this container does not invalidate accepted lineage. Python implements the named generic rules.
 The [lineage rule tool](lineage-debug.md) exposes recorded explanations and explicit selected/all-group
-research through the public JSON API, reusing that shared engine without production publication.
-Its paired comparison separates stored/control drift from candidate impact on one loaded group. The
-correlation-owned [component refinement](../libs/alpaca_end_of_day_security_correlation/component_refinement.py)
-is an explicitly selected research producer; authorized production does not invoke it.
+research through the public JSON API. Its paired comparison separates stored/control drift from candidate
+impact on one loaded group; it never publishes production output.
+
+The complete-group engine separates selection from computation and publication. It closes dependencies,
+selects source work, evaluates current components, and delegates genuinely required pricing acquisition
+outside pricing locks. Both selective source work and ordinary correlation use one completed-publication
+consumer for journaled publication, receipt-cache/index updates and exact workflow acknowledgement.
+[Source-work contracts](../libs/alpaca_lineage_build/source_work_contract.py) and
+[accepted ruleset contracts](../libs/alpaca_lineage_build/ruleset_contract.py) carry completed values without
+importing their executors or recompiling configuration during JSON restoration.
+
+Production and documented research share the storage-free
+[documented-update owner](../libs/alpaca_lineage_build/documented_updates.py): bind newly supplied facts,
+retain accepted owner plans, apply per-fact positive-date refinement intent, and identify genuinely new
+numerical contests. Metadata-only changes preserve completed numerical choices. The correlation-owned
+[component refinement](../libs/alpaca_end_of_day_security_correlation/component_refinement.py) is an optional
+named producer, disabled by default in the canonical YAML. Its evidence conditions and selected overlap
+scope remain separate from dated ownership and serving eligibility.
 
 ## Serving and consumption
 

@@ -1,9 +1,10 @@
-"""Research-only refinement of completed same-security component membership.
+"""Scoped refinement of completed same-security component membership.
 
 The containing component and dated owners are completed producer facts. This
 producer decides their applicability to a narrower source scope; it neither
 rebuilds membership nor reruns ownership, UUID-edge certification or prices.
-Production policy does not invoke this experimental producer.
+The canonical ruleset can select this producer for the shared lineage engine;
+research uses the same applicability decisions without publication.
 """
 
 from collections import defaultdict

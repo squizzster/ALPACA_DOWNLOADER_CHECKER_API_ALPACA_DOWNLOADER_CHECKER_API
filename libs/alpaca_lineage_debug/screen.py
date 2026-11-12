@@ -7,7 +7,7 @@ from libs.alpaca_lineage_build import storage
 
 from . import accept_report
 from .paired import same_cascade
-from .policy import policy_applies, policy_applies_to_group
+from .policy import policy_applies, policy_applies_to_group, require_research_application_support
 from .research import failure, select
 
 
@@ -32,10 +32,11 @@ def screen(store, policy, control):
             documented = any(
                 set(entry["symbols"]).intersection(group) for entry in getattr(policy, "documented_facts", ())
             )
-            if len(available) < 2 and not documented:
-                unaffected.append({"group": list(group), "reason": "no_different_indexed_donor_source"})
-                continue
             try:
+                require_research_application_support(policy, control, group)
+                if len(available) < 2 and not documented:
+                    unaffected.append({"group": list(group), "reason": "no_different_indexed_donor_source"})
+                    continue
                 receipts = {}
                 for source in available:
                     reads += 1

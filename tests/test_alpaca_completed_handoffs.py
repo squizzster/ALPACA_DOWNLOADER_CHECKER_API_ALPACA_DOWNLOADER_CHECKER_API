@@ -379,13 +379,15 @@ class ExpandedPricingTests(unittest.TestCase):
                         changed = True
                         self.download("AAA", bars=[bar("2016-01-04", "50"), *self.bars[1:]], refresh_all=True)
 
+                context = lineage_context.OperationContext(self.store)
                 with (
                     patch.object(storage, "pricing_locks", side_effect=selected),
                     patch.object(pipeline, "load_pricing", wraps=pipeline.load_pricing) as loads,
                     patch.object(pipeline, "correlate", wraps=pipeline.correlate) as calculate,
                 ):
-                    result = pipeline.run_lineage(self.store, ["AAA"], identity_client=identity)
+                    result = pipeline.run_lineage(self.store, ["AAA"], identity_client=identity, context=context)
                 self.assertEqual(result["failed"], 0, result)
+                self.assertEqual(context.group_completions, {})
                 self.assertEqual(
                     Counter(call.args[1] for call in loads.call_args_list),
                     {"AAA": 2 if concurrent else 1, "BBB": 1},

@@ -25,9 +25,10 @@ from libs.alpaca_lineage_build.policy_active_suffix import ActiveSuffixRule
 from libs.alpaca_lineage_build.policy_evidence_quality import EvidenceQualityRule
 from libs.alpaca_lineage_build.prepared_recovery import PreparedCandidate
 from libs.alpaca_lineage_build.pricing import ClosedAcceptedSource, MetadataSourceControl, PricingInput
+from libs.alpaca_lineage_build.ruleset_contract import AcceptedRuleset
 from libs.alpaca_lineage_build.source_choice_handoff import AcceptedSourceBundles
 from libs.alpaca_lineage_build.source_equivalence import AcceptedEqualityFrame, AcceptedSourceEquivalence
-from libs.alpaca_lineage_build.source_work import SourceWorkPlan
+from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
 from libs.alpaca_lineage_build.storage import AcceptedStore
 from libs.alpaca_pricing_download.adaptive import CompletedAdjustments
 from libs.alpaca_pricing_download.adjustment_policy import AdaptiveAdjustmentDecision
@@ -65,6 +66,7 @@ DATACLASSES = {
     c.__name__: c
     for c in (
         CompiledPolicy,
+        AcceptedRuleset,
         ActiveSuffixRule,
         EvidenceQualityRule,
         CompletedBars,

@@ -158,6 +158,7 @@ class EvidenceClient:
         self._retained_supplement_evidence = {}
         self.applied_event_supplements = set()
         self.rule_applications = ()
+        self.application_projections = {}
         self.rule_fact_scopes = None
         if observation is not None:
             self._load_catalogue(observation["records"])
@@ -953,10 +954,11 @@ def acquire(view, client, previous=None, *, refresh=False, query_dates=None):
 
 
 def _finish_evidence(evidence, window):
-    from .sourced_rules import incorporated
+    from .sourced_rules import project_application_intents
 
-    if window.client.rule_applications:
-        evidence["sourced_fact_applications"] = incorporated(window.client, evidence)
+    if window.previous and window.previous["evidence"].get("sourced_fact_intents"):
+        evidence["sourced_fact_intents"] = window.previous["evidence"]["sourced_fact_intents"]
+    evidence = project_application_intents(window.client, evidence)
     evidence.pop("api_request_count", None)
     observation = getattr(window.client, "observation", None)
     if observation is not None:

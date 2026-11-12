@@ -13,7 +13,7 @@ from . import SCHEMA_VERSION, VERSION, implementation_binding
 from .export import instances
 from .handoff import inspect_handoff
 from .inspection import explain
-from .policy import DEFAULT_POLICY, load_policy, rule_index, template
+from .policy import DEFAULT_POLICY, control_view, load_policy, rule_index, template
 from .research import run
 
 REQUEST_SCHEMA = "alpaca.lineage.debug.request"
@@ -127,13 +127,16 @@ def dispatch(command, request):
     if command == "screen":
         from .screen import screen
 
+        control = load_policy(path(request.get("control_policy"), "control_policy"))
+        if getattr(control, "ruleset", None) is not None:
+            control = control_view(control)
         return screen(
             path(request.get("store"), "store"),
             load_policy(path(request.get("policy"), "policy")),
-            load_policy(path(request.get("control_policy"), "control_policy")),
+            control,
         )
     if command == "init":
-        return {"status": "complete", "execution_complete": True, "yaml": template()}
+        return {"status": "complete", "execution_complete": True, "yaml": template(combined=True)}
     if command == "rules":
         return {
             "status": "complete",
@@ -173,6 +176,11 @@ def dispatch(command, request):
         policy = load_policy(path(request.get("policy", str(DEFAULT_POLICY)), "policy"))
         control = request.get("control_policy")
         control = load_policy(path(control, "control_policy")) if control is not None else None
+        automatic_control = control is None and getattr(policy, "ruleset", None) is not None
+        if automatic_control:
+            control = policy if policy.source == str(DEFAULT_POLICY) else load_policy(DEFAULT_POLICY)
+        if getattr(control, "ruleset", None) is not None:
+            control = control_view(control)
         if ("screen_report" in request or "reuse_report" in request) and control is None:
             raise ValueError("screen and completed-report consumption require an explicit control_policy")
         if (
@@ -182,7 +190,7 @@ def dispatch(command, request):
             raise ValueError("membership refinement requires an explicit control_policy")
         if control is not None and getattr(control, "membership_refinement", None):
             raise ValueError("the control policy must disable experimental membership refinement")
-        return run(
+        result = run(
             path(request.get("store"), "store"),
             policy,
             selected,
@@ -200,6 +208,8 @@ def dispatch(command, request):
             if "metadata_handoff" in request
             else None,
         )
+        result["control_selection"] = "canonical_ruleset_default" if automatic_control else "explicit_or_legacy"
+        return result
     if command == "export":
         multiple = request.get("multiple_only", True)
         if type(multiple) is not bool:

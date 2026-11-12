@@ -18,6 +18,7 @@ from libs.alpaca_pricing_download.context import PricingContext
 
 CONTEXT_FIELDS = (
     "_accepted_store",
+    "_ruleset",
     "_correlation_policy",
     "_authorized_policy",
     "_lineage_recovery_complete",
@@ -27,6 +28,8 @@ CONTEXT_FIELDS = (
     "history_comparisons",
     "history_checks",
     "_history_scopes",
+    "completed_membership_plans",
+    "group_completions",
 )
 PRICING_FIELDS = (
     "endpoint_selections",

@@ -572,5 +572,12 @@
     "modifications": [
       "Forward newly completed numerical equality through retained-choice selection to its requesting producer; preserve accepted rows without repeating their comparisons."
     ]
+  },
+  {
+    "modifications": [
+      "Consolidate complete-group execution, documented updates and publication/acknowledgement through shared lineage owners used by production and diagnostics, preserving completed decisions and exact bindings.",
+      "Accept one canonical YAML bundle with scoped evidence and independent application intent; carry it through JSON without repeated compilation or acceptance, preserving frozen publication recovery and retained policy identities.",
+      "Integrate scoped documented date refinement and containing-component membership work using explicit completed applicability; preserve unresolved-only intent, accepted positives and numerical decisions outside new contests."
+    ]
   }
 ]
