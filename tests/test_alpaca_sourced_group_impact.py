@@ -233,7 +233,7 @@ class SourcedCompleteGroupImpactTests(unittest.TestCase):
                 )
                 for name in names
             }
-            Path("/tmp/barrick-synthetic-impact-debug.json").write_text(
+            (store / ".barrick-synthetic-impact-debug.json").write_text(
                 json.dumps({"before": before, "after": after, "receipts": receipts}, indent=2)
             )
             self.assertEqual(receipts["ABL"]["identity_memberships"], receipts["ERES"]["identity_memberships"])
@@ -265,6 +265,6 @@ class SourcedCompleteGroupImpactTests(unittest.TestCase):
                 "retained_numerical_parity_asserted": False,
                 "online_external_target_asserted": False,
             }
-            Path("/tmp/barrick-synthetic-nine-label-impact.json").write_text(
+            (store / ".barrick-synthetic-nine-label-impact.json").write_text(
                 json.dumps(evidence, indent=2) + "\n"
             )

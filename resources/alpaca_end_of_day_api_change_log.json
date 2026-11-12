@@ -211,5 +211,10 @@
     "modifications": [
       "Consume completed dated metadata refinements and label-aware membership transfers while retaining selected numerical observations and explicit historical ambiguity."
     ]
+  },
+  {
+    "modifications": [
+      "Expose Prepare as a transient UTF-8 JSON request/result API with a matching stdin/stdout adapter."
+    ]
   }
 ]

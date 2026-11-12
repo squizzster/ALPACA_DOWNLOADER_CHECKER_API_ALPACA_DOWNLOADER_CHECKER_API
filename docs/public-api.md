@@ -136,3 +136,12 @@ catalogues retain no old pricing files. `PublicIdUnavailableError` conceals whet
 offline. Both inherit `DataLibraryError`; malformed arguments raise `ValueError`, busy groups `ReaderBusyError`.
 
 [Exports](exports.md) owns flat/per-identity CSV contracts, snapshot scope and output publication.
+
+## Pipeline preparation
+
+`prepare_pipeline(request_json: bytes) -> bytes` performs daily-update preparation
+through the [Phase 1 JSON contract](development.md#pipeline-phase-1-prepare).
+It is a writer entrypoint, separate from the read-only reader APIs. It acquires the
+store operation gate, uses existing provider credential configuration and propagates
+`PipelineStageError` on execution failure. Successful output is the complete transient argument for the
+next owner; callers must not treat it as completion of the daily update.

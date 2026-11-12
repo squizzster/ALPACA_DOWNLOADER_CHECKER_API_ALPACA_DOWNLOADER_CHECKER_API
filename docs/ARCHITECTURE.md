@@ -33,6 +33,7 @@ and serving retain applicable completed work before the corrected session. The
 | Responsibility | Authority |
 |---|---|
 | Accepted boundaries, work selection, estimates | [universe_plan.py](../libs/alpaca_lineage_build/universe_plan.py): `boundaries`, `select_work`, `preview` |
+| Prepare JSON transport and independent consumption | [prepare.py](../libs/alpaca_pipeline/prepare.py); [contract and Phase 1 scope](development.md#pipeline-phase-1-prepare) |
 | Recovery, observation, registration, orchestration | [universe_update.py](../libs/alpaca_lineage_build/universe_update.py): `run_update` |
 | Live check → correction → approved append | [update.py](../libs/alpaca_lineage_build/update.py): `update_everything` |
 | Dependency closure and complete-group publication | [pipeline.py](../libs/alpaca_lineage_build/pipeline.py): `run_lineage`, `process_group` |
@@ -77,6 +78,7 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | [IS_ELIGIBLE_LISTED_BUSINESS_EQUITY](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/) | Independent consumer exporting public-reader identity metadata and group evidence without prices or eligibility assessments. |
 | [bloodhound_app](../bloodhound_app/README.md) | Standalone offline CSV-to-Parquet application with its own CLI, dependencies, tests and publication limitations. |
 | [alpaca_end_of_day](../alpaca_end_of_day/) | Public API, shared history assembly, CSV exports, reader adapters. |
+| [alpaca_pipeline](../libs/alpaca_pipeline/) | Transient Prepare JSON contract, acceptance transport and stage adapters. |
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch, progress adapters and post-update recovery-registry Git commits/pushes. |
 | [alpaca_heartbeat](../libs/alpaca_heartbeat/) | Shared opt-in stderr lifecycle timer, protocol encoding and consumption. |
 | [alpaca_recovery_registry](../libs/alpaca_recovery_registry/) | Locked, atomic recovery-label union. |

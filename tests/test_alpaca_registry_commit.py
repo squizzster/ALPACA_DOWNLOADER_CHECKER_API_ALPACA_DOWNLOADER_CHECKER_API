@@ -15,7 +15,7 @@ from libs.alpaca_heartbeat import LifecycleReporter, parse_record
 
 class RegistryCommitTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(dir=alpaca_cli.REPOSITORY / ".git")
+        temporary = tempfile.TemporaryDirectory(prefix="alpaca-registry-test-")
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.repository = self.directory / "checkout"

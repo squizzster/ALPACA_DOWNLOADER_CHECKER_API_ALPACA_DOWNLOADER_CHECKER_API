@@ -18,6 +18,7 @@ Runtime validators check one-based changelog array position against the owning c
 | [Lineage](libs/alpaca_lineage_build/contract.py): `RUNTIME_VERSION` | [Lineage history](resources/alpaca_lineage_build_change_log.json) |
 | [Operator evidence](libs/alpaca_lineage_build/evidence.py): `EVIDENCE_VERSION` | [Evidence history](resources/alpaca_lineage_evidence_change_log.json) |
 | [Correlation](libs/alpaca_end_of_day_security_correlation/correlation_version.py): `RUNTIME_VERSION` | [Correlation history](resources/alpaca_end_of_day_security_correlation_change_log.json) |
+| [Prepare protocol](libs/alpaca_pipeline/prepare.py): `VERSION` | [Protocol history](resources/alpaca_pipeline_change_log.json) |
 | [Pipeline report](libs/alpaca_end_of_day_pipeline/pipeline_version.py): `PIPELINE_VERSION` | [Pipeline history](resources/alpaca_end_of_day_pipeline_change_log.json) |
 | [Serving](libs/alpaca_serving_catalogue/contract.py): `RUNTIME_VERSION` | [Serving history](resources/alpaca_serving_catalogue_change_log.json) |
 | [API solver](libs/alpaca_data_api_solver/__init__.py): `VERSION` | [Solver history](resources/alpaca_data_api_solver_change_log.json) |
@@ -36,7 +37,7 @@ it authorizes neither executing the earlier policy as current nor promoting pote
 Metadata membership and mapped-source ownership have separate completion handoffs in the selecting lineage
 receipt; a pricing change alone does not invalidate an unchanged metadata decision.
 Pricing installation journals declare [INSTALLATION_HANDOFF_VERSION](libs/alpaca_pricing_download/storage.py)
-independently of readable source schemas; [recovery](docs/technical-contracts.md#locks-and-publication) consumes
+independently of readable source schemas; [recovery](docs/technical-contracts.md#publication-and-recovery) consumes
 their accepted staging and summary values.
 Public-common continuity and distinct-security conversions have independent version-1 fact schemas;
 their completed membership, source and relation handoffs belong to the lineage receipt. Serving numerical

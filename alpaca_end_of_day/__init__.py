@@ -1,4 +1,4 @@
-"""Public, read-only Python library for published end-of-day market data.
+"""Public readers and JSON preparation API for end-of-day market data.
 
 Consumer code should import this package and no module below ``libs``. The
 pipeline has already checked its published boundaries; this consumer reads the
@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 39
+API_VERSION = 40
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -821,10 +821,30 @@ __all__ = [
     "History",
     "MetadataObservation",
     "PublicIdUnavailableError",
+    "PipelineStageError",
     "ReaderBusyError",
     "Security",
     "StandaloneReader",
     "StandaloneReaderError",
     "TickerResolution",
     "TickerOwnershipInterval",
+    "prepare_pipeline",
 ]
+
+
+class PipelineStageError(RuntimeError):
+    """A pipeline stage failed to produce its completed JSON result."""
+
+
+def prepare_pipeline(request_json: bytes) -> bytes:
+    """Execute daily-update preparation through its transient UTF-8 JSON contract.
+
+    Production effects use existing formats. DEBUG alone records handoff bytes.
+    Credentials use the existing environment configuration.
+    """
+    from libs.alpaca_pipeline.prepare import prepare
+
+    try:
+        return prepare(request_json)
+    except (RuntimeError, OSError, ValueError) as error:
+        raise PipelineStageError(str(error)) from error

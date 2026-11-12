@@ -724,6 +724,9 @@ then blocks on the same descriptor until acquisition or interruption, without po
 The internal library defaults to nonblocking acquisition; callers explicitly select waiting. Store gate precedes owner locks. Writers exclude writers/exports;
 read-only exports may coexist. Exit, including `SIGKILL`, releases the kernel lock; path remains, with no PID or
 stale-lock recovery.
+The public [Prepare JSON entrypoint](development.md#pipeline-phase-1-prepare) takes the same exclusive gate
+nonblockingly after receiving its complete input, and releases it before delivering output. Its next owner
+reacquires the gate and checks named selector applicability; a lock gap does not authorize preparation replay.
 Direct internal producer functions require their caller to provide this outer exclusion when used alongside
 exports; they are not independent concurrent writer entrypoints. Public consumers use `alpaca_end_of_day`.
 

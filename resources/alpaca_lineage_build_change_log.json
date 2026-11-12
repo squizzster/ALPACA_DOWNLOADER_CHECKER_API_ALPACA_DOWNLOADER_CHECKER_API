@@ -531,5 +531,10 @@
     "modifications": [
       "Carry selected logical download digests and request context on retained peer descriptors and ownership segments, allowing fresh correlation to consume held donor rows without reopening or authenticating accepted pricing. Source work supplies the materialized pricing handoff after metadata planning. Preserve generation mismatch rejection and the completed retained report across peer interruption."
     ]
+  },
+  {
+    "modifications": [
+      "Extract preparation and downstream consumption owners; carry effective registration records and selected acceptance state across the Prepare JSON boundary without changing stored formats."
+    ]
   }
 ]

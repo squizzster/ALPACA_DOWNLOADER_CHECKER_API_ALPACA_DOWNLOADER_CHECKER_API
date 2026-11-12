@@ -37,7 +37,10 @@ def seed_short_history(case, *, empty=False):
 
 
 def accept_then_interrupt(case, symbol="SHORT", start="2016-01-01"):
-    with patch.object(command_line, "download_pricing", side_effect=ProcessInterrupted()):
+    with (
+        patch.object(command_line, "BarsClient", return_value=case.pricing),
+        patch.object(command_line, "download_pricing", side_effect=ProcessInterrupted()),
+    ):
         try:
             invoke(case, "pricing", "acquire", "--symbol", symbol, "--from", start, "--through", "2026-10-16")
         except ProcessInterrupted:

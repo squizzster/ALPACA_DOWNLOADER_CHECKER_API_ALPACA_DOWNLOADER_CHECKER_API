@@ -84,3 +84,85 @@ edits need no additional full runtime-suite rerun.
 
 Keep explanations in one README-linked home. Preserve rationale, constraints and gotchas; omit status journals,
 dated test histories, duplicate version tables and speculative plans.
+
+## Pipeline Phase 1: Prepare
+
+The Phase 1 goal is to turn a daily-update request into a complete, registered
+work package through a real UTF-8 JSON argument/result boundary. Its consumer
+must continue in a fresh process without repeating preparation or relying on
+predecessor Python objects. This is the first executable part of the three-part
+split: Prepare, history production, then serving. The six logical responsibilities
+are baseline restoration, initial selection, complete pricing/lineage production,
+serving component selection, serving preparation/assessment, and publication.
+
+Prepare owns the operation identity and frozen inclusive cutoff, existing journal
+recovery, selected pending-summary recovery, catalogue observation, initial work
+selection, registration, completed-work acknowledgements and initial maintenance
+membership. Ordinary live pricing maintenance starts after it returns. Recovery
+may itself finish pricing and lineage work; its accepted results must cross too.
+
+The implementation is in [alpaca_pipeline](../libs/alpaca_pipeline/prepare.py).
+The public entrypoint is `alpaca_end_of_day.prepare_pipeline(request_json: bytes) -> bytes`;
+[alpaca_pipeline_prepare.py](../alpaca_pipeline_prepare.py) calls that same entrypoint
+with stdin and stdout. It requires the existing provider credential environment.
+For example, supply this document with absolute paths appropriate to your store:
+
+```json
+{
+  "schema": "alpaca.pipeline.request",
+  "schema_version": 1,
+  "operation": "daily_update",
+  "store": "/absolute/path/to/store",
+  "registry": "/absolute/path/to/ticker.csv",
+  "through": null,
+  "options": {"workers": 3, "retry_blocked": false, "coalesce_late_bars": true},
+  "debug": {"enabled": false}
+}
+```
+
+```bash
+python3.11 alpaca_pipeline_prepare.py < request.json
+```
+
+`through` is inclusive and resolves once using the existing session-cutoff owner;
+null selects its existing default. Prepare performs production bookkeeping and
+recovery, unlike `update --plan`. It returns `alpaca.pipeline.prepared`, schema 1.
+A successful Prepare return means preparation completed, not that the update did.
+Blocked independent groups and completed negative/failed observations remain explicit
+in selection and evidence records.
+
+The output carries operation/request and implementation-version bindings, effective obligations, selected
+scope and maintenance membership, accepted selectors, provider observations,
+producer decisions, recovery values and request counts. Its handoff-local object
+table preserves shared values, tuple keys and producer acceptance records. Prices
+remain strings. Named record kinds are allowlisted; decoding does not import
+classes from document-supplied paths, replay validators or compile policy again.
+The protocol is transient and does not change pricing, lineage or serving formats.
+
+Normal execution writes no handoff archive, spool, replay cache or extra derived
+store. DEBUG requires `{"enabled": true, "directory": "/absolute/debug/path"}`
+and captures exact input/output, available structured errors and producer effect records
+under the operation ID. Captures are diagnostic
+and never recovery authority. If execution or delivery loses a result, dependent
+execution fails. There is no automatic retry, reconstruction or handoff recovery.
+Existing publication journals retain their separate interrupted-write responsibility.
+
+Input parsing precedes the store operation lock and universe lock. Prepare freezes
+its output under those locks, releases them, then delivers bytes. The internal
+`consume_prepared` adapter consumes the actual downstream history and serving
+owners for feasibility testing. It checks only workflow, summary, lineage and
+serving selector applicability across the lock gap; changed implementation versions or a
+changed binding fail rather
+than selecting preparation again. This adapter is not a separately exposed history
+stage, and the ordinary `update` command still uses the extracted owners directly.
+
+Acceptance requires actual-consumer fresh-process tests, not just parsing a schema.
+The [Prepare regressions](../tests/test_alpaca_pipeline_prepare.py),
+[evidence regressions](../tests/test_alpaca_pipeline_evidence.py) and
+[value transport regressions](../tests/test_alpaca_pipeline_codec.py) and
+[CLI transport regressions](../tests/test_alpaca_pipeline_transport.py) cover the
+transport and forbid repeated upstream work. Run the existing daily-update and
+trust-review owning modules as well. Production readiness additionally requires
+representative memory/serialization measurements, remaining recovery-path coverage
+and operational acceptance; synthetic transport success does not establish lineage
+quality, 20,000-security throughput or the 60-minute/90-minute target.

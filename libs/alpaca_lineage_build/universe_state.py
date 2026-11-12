@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -185,10 +186,11 @@ def initialize(store):
 
 
 @traced("work_accept")
-def accept(store, observation, additions, work):
+def accept(store, observation, additions, work, *, handoff=False):
     # Persist the accepted obligation before delegated work can publish. A crash
     # may leave unfinished work, but must not lose the requirement or its group.
     """One transaction persists all intentions before registry or pricing writes."""
+    effective = {}
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         _check(connection)
         cursor = connection.execute(
@@ -205,9 +207,14 @@ def accept(store, observation, additions, work):
                 if previous.get("obligation_id") == item.get("obligation_id") and item.get("obligation_id")
                 else cursor.lastrowid
             )
+            effective[symbol] = value
             connection.execute("INSERT OR REPLACE INTO work VALUES (?, ?)", (symbol, json.dumps(value)))
-        connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
-    return cursor.lastrowid
+        revision_value = _advance(connection, required=handoff)
+    return (
+        {"observation_id": cursor.lastrowid, "work": effective, "revision": revision_value}
+        if handoff
+        else cursor.lastrowid
+    )
 
 
 def put_work(store, symbol, item):
@@ -226,7 +233,7 @@ def put_work_group(store, work):
             connection.execute(
                 "INSERT OR REPLACE INTO work VALUES (?, ?)", (symbol, json.dumps(accepted[symbol]))
             )
-        connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+        _advance(connection)
     return accepted
 
 
@@ -245,12 +252,12 @@ def accept_correction_completion(store, symbol, expected, completed):
             raise LineageError("correction completion does not match its current obligation")
         current["correction_completion"] = completed
         connection.execute("UPDATE work SET body=? WHERE symbol=?", (json.dumps(current), symbol))
-        connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+        _advance(connection)
     return current
 
 
 @traced("registry_register")
-def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
+def register(store, labels=(), *, registry=DEFAULT_REGISTRY, handoff=False):
     # New dependency discovery must use exactly this interruption-safe route too.
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         _check(connection)
@@ -259,8 +266,8 @@ def register(store, labels=(), *, registry=DEFAULT_REGISTRY):
     result = publish_union(selected, registry)
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         connection.executemany("UPDATE registration SET complete=1 WHERE symbol=?", [(s,) for s in selected])
-        connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
-    return result
+        revision_value = _advance(connection, required=handoff)
+    return {**result, "revision": revision_value} if handoff else result
 
 
 class _OutcomeBatch:
@@ -281,7 +288,7 @@ class _OutcomeBatch:
 
 
 @contextmanager
-def outcome_batch(store):
+def outcome_batch(store, *, handoff=False):
     """Commit accepted outcomes together; interruption rolls back the whole batch."""
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -291,7 +298,7 @@ def outcome_batch(store):
         try:
             yield batch
             if connection.total_changes != before:
-                connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+                batch.revision = _advance(connection, required=handoff)
         finally:
             batch.active = False
 
@@ -334,3 +341,36 @@ def record_outcome(store, symbol, *, status, outcome, attempts=0, batch=None, ex
 
 def pending_count(state):
     return sum(item["status"] != "complete" for item in state["work"].values())
+
+
+def revision(store):
+    """Read only the workflow selector token for applicability, never work bodies."""
+    with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection:
+        return connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
+
+
+_mutations = ContextVar("pipeline_workflow_mutations", default=None)
+
+
+@contextmanager
+def mutation_handoff():
+    """Lend revisions returned by the active producer, without rereading state."""
+    result = {}
+    token = _mutations.set(result)
+    try:
+        yield result
+    finally:
+        _mutations.reset(token)
+
+
+def _advance(connection, *, required=False):
+    connection.execute("UPDATE state SET revision=revision+1 WHERE id=1")
+    selected = _mutations.get()
+    if selected is None and not required:
+        return None
+    # This is the producer's newly updated selector, never an accepted work-body
+    # reread. Older supported SQLite versions do not implement UPDATE RETURNING.
+    value = connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
+    if selected is not None:
+        selected["revision"] = value
+    return value

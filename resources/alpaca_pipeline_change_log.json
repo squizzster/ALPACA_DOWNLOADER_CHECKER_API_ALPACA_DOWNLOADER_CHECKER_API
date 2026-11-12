@@ -1,0 +1,5 @@
+[
+  {
+    "modifications": ["Introduce the transient Prepare request/result protocol with explicit accepted-state transport and DEBUG-only handoff capture."]
+  }
+]
