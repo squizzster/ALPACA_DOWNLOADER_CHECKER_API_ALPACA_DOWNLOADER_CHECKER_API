@@ -73,7 +73,10 @@ class SelectedWorkStateTests(unittest.TestCase):
             explanation = connection.execute(
                 "EXPLAIN QUERY PLAN SELECT symbol, body FROM work WHERE symbol IN (?, ?)", ("MISSING", "TEST")
             ).fetchall()
-        self.assertTrue(any("SEARCH work USING INDEX" in row[-1] for row in explanation), explanation)
+        self.assertTrue(
+            any("SEARCH work USING INDEX" in row[-1].replace("SEARCH TABLE ", "SEARCH ") for row in explanation),
+            explanation,
+        )
 
     def test_empty_scope_reads_no_work_bodies(self):
         statements = []

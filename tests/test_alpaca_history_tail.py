@@ -379,8 +379,15 @@ class HistoryTailPublicationTests(unittest.TestCase):
 
         _, _ = self.legacy_entry()
         with sqlite3.connect(check_summary.summary_path(self.store)) as db:
-            for column in ("tail_all", "tail_version", "source_sha256"):
-                db.execute(f"ALTER TABLE entries DROP COLUMN {column}")
+            db.execute("ALTER TABLE entries RENAME TO current_entries")
+            db.execute(
+                "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, "
+                "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL, first_all TEXT NOT NULL)"
+            )
+            db.execute(
+                "INSERT INTO entries SELECT symbol, asof, end_exclusive, last_all, first_all FROM current_entries"
+            )
+            db.execute("DROP TABLE current_entries")
             db.execute("PRAGMA user_version=3")
         selected = check_summary.read_snapshot(self.store)
         self.assertIsNone(selected["entries"][0]["tail_all"])

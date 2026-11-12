@@ -304,5 +304,10 @@
       "Carry producer digests and exact closed staging bytes into a versioned installation journal; ordinary publication and interruption recovery install accepted outputs without rereading or hashing staged and installed files. Unmarked legacy journals accept each selected output once and parse an update from the same bytes.",
       "Retain accepted source and fully adjusted endpoint/tail values in the installation journal for summary recovery without installed metadata reads; an exact completed summary generation consumes only pricing acknowledgement, preserving pending lineage ownership."
     ]
+  },
+  {
+    "modifications": [
+      "Carry committed summary-generation revisions into transient downstream handoffs without rereading accepted summary bodies; check lock-gap applicability for partial history runs."
+    ]
   }
 ]

@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 40
+API_VERSION = 41
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -829,6 +829,7 @@ __all__ = [
     "TickerResolution",
     "TickerOwnershipInterval",
     "prepare_pipeline",
+    "produce_histories_pipeline",
 ]
 
 
@@ -846,5 +847,15 @@ def prepare_pipeline(request_json: bytes) -> bytes:
 
     try:
         return prepare(request_json)
+    except (RuntimeError, OSError, ValueError) as error:
+        raise PipelineStageError(str(error)) from error
+
+
+def produce_histories_pipeline(prepared_json: bytes) -> bytes:
+    """Finish selected pricing and lineage; return the transient serving handoff."""
+    from libs.alpaca_pipeline.histories import produce_histories
+
+    try:
+        return produce_histories(prepared_json)
     except (RuntimeError, OSError, ValueError) as error:
         raise PipelineStageError(str(error)) from error

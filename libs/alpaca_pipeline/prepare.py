@@ -3,6 +3,7 @@
 import json
 import math
 import os
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,13 +13,13 @@ from libs.alpaca_lineage_build.recovery_handoffs import operation
 from libs.alpaca_pricing_download.check_summary import assert_current
 from libs.alpaca_pricing_download.download import pricing_session_end
 from libs.common.store_lock import operation_lock
-from libs.common.work_scope import selected_work
 
 from .codec import Decoder, Encoder, HandoffError
 from .evidence import export_evidence, import_evidence
-from .state import export_recovery, export_state, import_state, restore_recovery
+from .state import export_recovery, export_state, import_state
 
-VERSION = 1
+VERSION = 2
+SCHEMA_VERSION = 1
 
 
 def _runtime_binding():
@@ -89,7 +90,7 @@ def request(data):
         set(value) != required
         or value["schema"] != "alpaca.pipeline.request"
         or type(value["schema_version"]) is not int
-        or value["schema_version"] != VERSION
+        or value["schema_version"] != SCHEMA_VERSION
         or value["operation"] != "daily_update"
     ):
         raise HandoffError("unsupported pipeline request")
@@ -193,7 +194,7 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
             output = encode(
                 {
                     "schema": "alpaca.pipeline.prepared",
-                    "schema_version": VERSION,
+                    "schema_version": SCHEMA_VERSION,
                     "operation": {
                         "id": operation_id,
                         "request": value,
@@ -231,7 +232,7 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
                     encode(
                         {
                             "schema": "alpaca.pipeline.error",
-                            "schema_version": VERSION,
+                            "schema_version": SCHEMA_VERSION,
                             "operation_id": operation_id,
                             "stage": "prepare",
                             "error_type": type(error).__name__,
@@ -244,25 +245,67 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
         raise
 
 
-def consume_prepared(data, *, pricing_client=None, identity_client=None, progress=None):
-    """Feasibility consumer: continue through existing history and serving owners.
+def load_prepared(data, *, pricing_client=None, identity_client=None):
+    """Restore the complete prepared argument before any lock or effects."""
+    try:
+        return _load_prepared(data, pricing_client=pricing_client, identity_client=identity_client)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise HandoffError("incomplete prepared contract") from error
 
-    Phase 1 exposes Prepare only. This internal adapter proves its real consumer
-    can operate independently; it is not the future history-production stage.
-    """
+
+def operation_configuration(op):
+    """Check the transport envelope, never recompute its frozen cutoff."""
+    if not isinstance(op, dict) or op.get("runtime") != _runtime_binding():
+        raise HandoffError("stale_handoff: pipeline implementation changed")
+    if (
+        set(op) != {"id", "request", "end_exclusive", "runtime"}
+        or not isinstance(op["id"], str)
+        or len(op["id"]) != 32
+        or any(c not in "0123456789abcdef" for c in op["id"])
+        or not isinstance(op["end_exclusive"], str)
+        or date.fromisoformat(op["end_exclusive"]).isoformat() != op["end_exclusive"]
+    ):
+        raise HandoffError("invalid pipeline operation")
+    return request(encode(op["request"]))
+
+
+def validate_stage_result(result, end, *, histories=False):
+    """Require the fields the next owner uses before that owner can publish."""
+    if (
+        not isinstance(result, dict)
+        or result.get("complete") is not False
+        or result.get("end_exclusive") != end
+        or type(result.get("failed")) is not int
+        or result["failed"] < 0
+        or not isinstance(result.get("stages"), dict)
+        or "serving_catalogue" in result["stages"]
+    ):
+        raise HandoffError("incomplete pipeline stage result")
+    if histories and (
+        result.get("execution_complete") is not True
+        or not isinstance(result.get("failures"), list)
+        or any(not isinstance(failure, dict) for failure in result["failures"])
+        or type(result.get("pending_work")) is not int
+        or result["pending_work"] < 0
+        or not isinstance(result.get("requests"), dict)
+        or "metadata_http_requests" not in result["requests"]
+        or any(type(count) is not int or count < 0 for count in result["requests"].values())
+    ):
+        raise HandoffError("incomplete history attempt result")
+
+
+def _load_prepared(data, *, pricing_client=None, identity_client=None):
     value = parse(data)
     if (
         set(value) != {"schema", "schema_version", "operation", "prepared", "objects", "requests"}
         or value["schema"] != "alpaca.pipeline.prepared"
         or type(value["schema_version"]) is not int
-        or value["schema_version"] != VERSION
+        or value["schema_version"] != SCHEMA_VERSION
     ):
         raise HandoffError("expected completed prepared document")
     op = value["operation"]
-    if not isinstance(op, dict) or op.get("runtime") != _runtime_binding():
-        raise HandoffError("stale_handoff: pipeline implementation changed")
-    configuration = request(encode(op["request"]))
-    store, registry = Path(configuration["store"]), Path(configuration["registry"])
+    configuration = operation_configuration(op)
+    store = Path(configuration["store"])
     decoder = Decoder(value["objects"])
     body = value["prepared"]
     expected = {
@@ -279,15 +322,41 @@ def consume_prepared(data, *, pricing_client=None, identity_client=None, progres
     }
     if not isinstance(body, dict) or set(body) != expected:
         raise HandoffError("incomplete prepared handoff")
+    counts = value["requests"]
+    if (
+        not isinstance(counts, dict)
+        or set(counts) != {"metadata", "pricing"}
+        or type(counts["metadata"]) is not int
+        or counts["metadata"] < 0
+        or counts["pricing"] is not None
+        and (type(counts["pricing"]) is not int or counts["pricing"] < 0)
+    ):
+        raise HandoffError("invalid prepared request counts")
     # Complete input restoration precedes locks and any producer effects.
     if pricing_client is None and identity_client is None:
         pricing_client, identity_client = clients()
+    if pricing_client is None or identity_client is None:
+        raise HandoffError("both internal clients are required")
     evidence = import_evidence(body["evidence"], identity_client, decoder.decode)
     context, policy = import_state(store, body["state"], decoder.decode, evidence=evidence)
     evidence.work_policy = policy
     prepared = {key: decoder.decode(body[key]) for key in expected - {"state", "evidence", "recovery"}}
     prepared.update(context=context, policy=policy, evidence=evidence)
-    decoder.decode(body["recovery"]["values"])
+    validate_stage_result(prepared["result"], op["end_exclusive"])
+    if (
+        not isinstance(prepared["storage_symbols"], set)
+        or not isinstance(prepared["maintenance_symbols"], set)
+        or any(type(symbol) is not str or not symbol for symbol in prepared["storage_symbols"])
+    ):
+        raise HandoffError("incomplete prepared storage scope")
+    recovery = body["recovery"]
+    if (
+        not isinstance(recovery, dict)
+        or set(recovery) != {"store", "values"}
+        or recovery["store"] != str(store)
+        or not isinstance(decoder.decode(recovery["values"]), dict)
+    ):
+        raise HandoffError("invalid prepared recovery binding")
     end = op["end_exclusive"]
     if (
         context.store != store
@@ -306,31 +375,28 @@ def consume_prepared(data, *, pricing_client=None, identity_client=None, progres
         raise HandoffError("missing completed baseline acceptance")
     if context._accepted_store.store != store or context._accepted_store.root != store / "end_of_day/lineage":
         raise HandoffError("accepted baseline belongs to another store")
-    with operation_lock(store, exclusive=True), universe_state.update_lock(store), operation(store):
-        # These selector checks establish applicability across the lock gap only.
-        if universe_state.revision(store) != prepared["workflow_revision"]:
-            raise HandoffError("stale_handoff: workflow changed")
-        assert_current(store, prepared["accepted"]["summary"]["token"])
-        with storage.publication_lock(context.accept_store().root):
-            storage.assert_index_current(context.accept_store().root, prepared["accepted"]["index"])
-        from libs.alpaca_serving_catalogue.storage import selector_state
+    return value, configuration, prepared, decoder, pricing_client, identity_client
 
-        if selector_state(store)["generation"] != context.serving["state"]["generation"]:
-            raise HandoffError("stale_handoff: serving generation changed")
-        restore_recovery(store, body["recovery"], decoder.decode)
-        with selected_work(store, prepared["storage_symbols"]):
-            result = universe_update.continue_locked(
-                store,
-                end,
-                prepared,
-                pricing_client=pricing_client,
-                identity_client=identity_client,
-                registry=registry,
-                workers=configuration["options"]["workers"],
-                progress=progress,
-                metadata_started=identity_client.request_count - value["requests"]["metadata"],
-                pricing_started=None
-                if value["requests"]["pricing"] is None
-                else pricing_client.request_count - value["requests"]["pricing"],
-            )
-    return encode(result)
+
+def assert_prepared_current(store, prepared):
+    """Only establish applicability across the lock gap; do not repeat acceptance."""
+    context = prepared["context"]
+    if universe_state.revision(store) != prepared["workflow_revision"]:
+        raise HandoffError("stale_handoff: workflow changed")
+    assert_current(store, prepared["accepted"]["summary"]["token"])
+    with storage.publication_lock(context.accept_store().root):
+        storage.assert_index_current(context.accept_store().root, prepared["accepted"]["index"])
+    from libs.alpaca_serving_catalogue.storage import selector_state
+
+    if selector_state(store)["generation"] != context.serving["state"]["generation"]:
+        raise HandoffError("stale_handoff: serving generation changed")
+
+
+def consume_prepared(data, *, pricing_client=None, identity_client=None, progress=None):
+    """Compatibility feasibility consumer, now crossing both actual JSON boundaries."""
+    from .histories import consume_histories, produce_histories
+
+    output = produce_histories(
+        data, pricing_client=pricing_client, identity_client=identity_client, progress=progress
+    )
+    return consume_histories(output, progress=progress)

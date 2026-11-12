@@ -464,7 +464,42 @@ def continue_locked(
     metadata_started,
     pricing_started,
 ):
-    """Existing downstream owners consume Prepare's completed work, without reselection."""
+    """Compose history production and serving for the existing update command."""
+    histories = histories_locked(
+        store,
+        end,
+        prepared,
+        pricing_client=pricing_client,
+        identity_client=identity_client,
+        registry=registry,
+        workers=workers,
+        progress=progress,
+        metadata_started=metadata_started,
+        pricing_started=pricing_started,
+    )
+    if histories is None:
+        return prepared["result"]
+    return serve_locked(store, histories, context=prepared["context"], progress=progress)
+
+
+def histories_locked(
+    store,
+    end,
+    prepared,
+    *,
+    pricing_client,
+    identity_client,
+    registry,
+    workers,
+    progress,
+    metadata_started,
+    pricing_started,
+):
+    """Finish pricing, dependency closure, lineage and history acknowledgements.
+
+    This owner does not evaluate or publish serving. A missing completion
+    boundary returns no handoff; completed independent failures remain explicit.
+    """
     from .projection import require_complete
 
     accepted, selection = prepared["accepted"], prepared["selection"]
@@ -634,7 +669,7 @@ def continue_locked(
 
     boundary = completion_boundary()
     if boundary is None:
-        return result
+        return None
     index, pending = boundary
     # Fresh source-bound approval can complete unchanged published work here.
     # DO NOT route a retry through lineage merely to stamp its workflow ID:
@@ -654,7 +689,7 @@ def continue_locked(
         lineage_phase("approval", finish)
         boundary = completion_boundary()
         if boundary is None:
-            return result
+            return None
         index, pending = boundary
         completed = {s: policy.satisfying_entry(s, index["symbols"], pending) for s in policy.work}
     unfinished = []
@@ -689,8 +724,26 @@ def continue_locked(
     # Workflow owns failed symbol obligations; command owners record failures
     # without a symbol separately. Stage totals describe these same outcomes.
     result["failed"] = len(result["failures"])
+    result["requests"] = {"metadata_http_requests": identity_client.request_count - metadata_started}
+    if pricing_started is not None:
+        result["requests"]["pricing_http_requests"] = pricing_client.request_count - pricing_started
+    return {
+        "result": result,
+        "history_complete": bool(
+            initial_maintenance["complete"]
+            and maintained["complete"]
+            and not result["failed"]
+            and not result["pending_work"]
+            and not selection["deferred"]
+        ),
+    }
+
+
+def serve_locked(store, histories, *, context, progress=None):
+    """Consume completed history results without invoking their producers."""
     from libs.alpaca_serving_catalogue.producer import maintain
 
+    result = histories["result"]
     try:
         serving = maintain(store, progress=progress, context=context)
     except (RuntimeError, OSError, ValueError) as error:
@@ -701,17 +754,7 @@ def continue_locked(
         {"stage": "serving_catalogue", **failure}
         for failure in serving.get("failures", [{"error": serving["error"]}] if "error" in serving else [])
     )
-    result["complete"] = (
-        initial_maintenance["complete"]
-        and maintained["complete"]
-        and serving["complete"]
-        and not result["failed"]
-        and not result["pending_work"]
-        and not selection["deferred"]
-    )
-    result["requests"] = {"metadata_http_requests": identity_client.request_count - metadata_started}
-    if pricing_started is not None:
-        result["requests"]["pricing_http_requests"] = pricing_client.request_count - pricing_started
+    result["complete"] = histories["history_complete"] and serving["complete"] and not result["failed"]
     if progress:
         progress(
             "completion",

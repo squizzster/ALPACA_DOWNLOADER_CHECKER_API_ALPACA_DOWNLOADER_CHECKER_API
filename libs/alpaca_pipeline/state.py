@@ -12,6 +12,7 @@ from libs.alpaca_lineage_build import recovery_handoffs
 from libs.alpaca_lineage_build.context import OperationContext
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.selection import DependencyGraph
+from libs.alpaca_lineage_build.storage import AcceptedStore
 from libs.alpaca_lineage_build.work_contract import WorkPolicy
 from libs.alpaca_pricing_download.context import PricingContext
 
@@ -175,3 +176,36 @@ def restore_recovery(store, document, decode):
     if not isinstance(values, dict):
         raise LineageError("invalid recovery handoff values")
     selected[1].update(values)
+
+
+def export_serving_context(context, encode):
+    """Carry only the completed facts whose remaining consumer is serving.
+
+    Pricing comparisons, acquisition plans, provider evidence and source-work
+    caches have finished their job. Receipts, assignments and decoded partitions
+    travel separately through the recovery value handoff, under their exact keys.
+    """
+    return {name: encode(getattr(context, name)) for name in ("_accepted_store", "index", "serving")}
+
+
+def import_serving_context(store, document, decode):
+    _require_fields(document, ("_accepted_store", "index", "serving"), "serving context")
+    context = object.__new__(OperationContext)
+    context.store = Path(store).absolute()
+    for name in CONTEXT_FIELDS:
+        setattr(context, name, None)
+    context._lineage_recovery_complete = True
+    context._pricing = None
+    context.sourced_operations = {}
+    context.history_comparisons, context.history_checks, context._history_scopes = {}, {}, {}
+    for name, value in document.items():
+        setattr(context, name, decode(value))
+    if (
+        not isinstance(context._accepted_store, AcceptedStore)
+        or context._accepted_store.store != context.store
+        or context._accepted_store.root != context.store / "end_of_day/lineage"
+        or not isinstance(context.index, dict)
+        or not isinstance(context.serving, dict)
+    ):
+        raise LineageError("incomplete serving baseline acceptance")
+    return context

@@ -149,12 +149,11 @@ Existing publication journals retain their separate interrupted-write responsibi
 
 Input parsing precedes the store operation lock and universe lock. Prepare freezes
 its output under those locks, releases them, then delivers bytes. The internal
-`consume_prepared` adapter consumes the actual downstream history and serving
-owners for feasibility testing. It checks only workflow, summary, lineage and
-serving selector applicability across the lock gap; changed implementation versions or a
-changed binding fail rather
-than selecting preparation again. This adapter is not a separately exposed history
-stage, and the ordinary `update` command still uses the extracted owners directly.
+`consume_prepared` feasibility adapter composes the history JSON stage and its
+actual serving consumer. They check only the required selector applicability
+across lock gaps; changed implementation versions or bindings fail rather than
+selecting preparation again. The ordinary `update` command uses the extracted
+owners directly; its full orchestration has not switched to the JSON runner.
 
 Acceptance requires actual-consumer fresh-process tests, not just parsing a schema.
 The [Prepare regressions](../tests/test_alpaca_pipeline_prepare.py),
@@ -166,3 +165,89 @@ trust-review owning modules as well. Production readiness additionally requires
 representative memory/serialization measurements, remaining recovery-path coverage
 and operational acceptance; synthetic transport success does not establish lineage
 quality, 20,000-security throughput or the 60-minute/90-minute target.
+
+## Pipeline Phase 2: History production
+
+The Phase 2 goal is an independently executable history producer: completed
+Prepare JSON in, completed pricing/lineage JSON out. It owns ordinary maintenance,
+acquisition, permitted dependency closure and registration, corrections, ownership,
+numerical source selection, pricing/lineage publication and history-work
+acknowledgements. Serving selection, assessment and catalogue publication follow
+this boundary. A completed attempt carries independent group failures explicitly;
+it does not turn incomplete histories into a successful daily update.
+
+The public API is
+`alpaca_end_of_day.produce_histories_pipeline(prepared_json: bytes) -> bytes`.
+[alpaca_pipeline_histories.py](../alpaca_pipeline_histories.py) calls that same API:
+
+```bash
+set -o pipefail
+python3.11 alpaca_pipeline_prepare.py < request.json | python3.11 alpaca_pipeline_histories.py
+```
+
+These commands emit the handoff to stdout without saving intermediate files.
+Progress/errors belong on stderr. The root adapters contain no domain decisions.
+The [history transport owner](../libs/alpaca_pipeline/histories.py) invokes the
+[history domain owner](../libs/alpaca_lineage_build/universe_update.py),
+`histories_locked`, independently of `serve_locked`. Existing `continue_locked`
+composes those owners for the ordinary update command, preserving its behavior.
+
+Input is the complete `alpaca.pipeline.prepared`, schema 1. The stage consumes
+carried observations, graph, approvals and recovery results; it does not repeat
+catalogue observation, selection or acceptance. Its internal discovery can expand
+and register dependencies within the carried work policy. It finishes all such
+iteration before returning `alpaca.pipeline.histories`, schema 1. Protocol runtime
+compatibility is separate from these schema numbers.
+
+The histories document contains:
+
+| Field | Authority and remaining consumer |
+|---|---|
+| `operation` | Original ID, request, resolved cutoff, destinations and implementation binding; consumed unchanged. |
+| `histories.result` | Completed attempt, accumulated producer stage outcomes, failures, pending obligations and request counts. `execution_complete` is true; overall `complete` remains false until serving. |
+| `histories.history_complete` | Whether required history work completed without failed/pending/deferred obligations; ambiguity remains a distinct completed lineage disposition in the producer results. |
+| `histories.storage_symbols` | Actual active scope after dependency expansion, required for downstream selected storage work. |
+| `histories.workflow_revision` | Latest revision returned by committed workflow mutations, without a bookkeeping reread. |
+| `histories.summary_token` | Accepted pricing-summary epoch/revision advanced by committed producer transactions. Rolled-back revisions do not advance the handoff. |
+| `histories.context` | Accepted store, current complete lineage index and prior serving controls needed by the serving owner. |
+| `histories.recovery` | Generation-bound held receipt bodies, assignments, choices, decoded partitions and other selected values required by remaining consumers. |
+| `objects` | Allowlisted value records and aliases, shared across the document. |
+
+Encoded field values use the same explicit reference codec as Prepare. Provider
+clients, metadata request caches, pricing acquisition plans and source-work
+calculation caches have completed their jobs and do not cross into serving.
+Already materialized serving inputs still cross; dropping those would force
+forbidden rereads. Unread authoritative artifacts retain selected references.
+
+`history_complete: false` can accompany a valid completed attempt: failed groups
+remain explicit while independent published groups can proceed. An unavailable
+completion boundary, malformed input or missing acceptance is an execution error
+and emits no successful handoff. Lost or undeliverable JSON is not reconstructed;
+no automatic replay or backwards call occurs. Existing journals retain their
+own interrupted-publication responsibility. A committed publication survives
+an output delivery failure without turning that failed call into success.
+
+Both executable stages receive complete input before locking, freeze output
+under the existing operation/universe locks, then release locks before delivery.
+The internal `consume_histories` feasibility consumer runs the actual serving
+owner in a fresh process without provider clients. On lock reacquisition it checks
+workflow, pricing-summary, lineage-index and serving generations. A real change
+stops consumption. Partial-history applicability checks do not require unrelated
+pending peers to be ready, and do not authorize summary membership selection.
+The selected group reader retains its required current-source binding checks.
+
+Normal execution adds no handoff files, spooling or replay store. DEBUG captures
+exact stage input/output or its available structured error and producer-generated
+effects. It changes no decisions or required reads/calculations. Production
+pricing, lineage and catalogue schemas and layout remain unchanged.
+
+The [history regressions](../tests/test_alpaca_pipeline_histories.py) cover real
+append, corrections, dependency expansion/registration, peer failures, sourced
+equality, missing inputs and actual binding invalidation. The
+[history transport regressions](../tests/test_alpaca_pipeline_history_transport.py)
+cover API/CLI parity, full input before locking, output exceeding pipe capacity,
+broken delivery, DEBUG equivalence and committed/rolled-back summary-generation
+carry. They reject repeated upstream work and physical reads of carried values.
+The serving consumer remains internal: an independent public serving stage and
+the ordinary runner's JSON orchestration are subsequent work. Synthetic transport
+tests establish neither production-scale memory nor the live runtime target.

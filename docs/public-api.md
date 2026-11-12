@@ -137,7 +137,7 @@ offline. Both inherit `DataLibraryError`; malformed arguments raise `ValueError`
 
 [Exports](exports.md) owns flat/per-identity CSV contracts, snapshot scope and output publication.
 
-## Pipeline preparation
+## Pipeline execution
 
 `prepare_pipeline(request_json: bytes) -> bytes` performs daily-update preparation
 through the [Phase 1 JSON contract](development.md#pipeline-phase-1-prepare).
@@ -145,3 +145,12 @@ It is a writer entrypoint, separate from the read-only reader APIs. It acquires 
 store operation gate, uses existing provider credential configuration and propagates
 `PipelineStageError` on execution failure. Successful output is the complete transient argument for the
 next owner; callers must not treat it as completion of the daily update.
+
+`produce_histories_pipeline(prepared_json: bytes) -> bytes` consumes that output and
+finishes pricing, dependency closure and lineage through the
+[Phase 2 JSON contract](development.md#pipeline-phase-2-history-production).
+It is a writer with the same credential and error behavior. It returns a transient
+serving handoff, including explicit independent failures. It does not assess or
+publish the serving catalogue. Both calls use actual UTF-8 JSON bytes, not privileged
+Python objects. Normal calls retain no intermediate archive; DEBUG records the same
+arguments/results outside the production store.

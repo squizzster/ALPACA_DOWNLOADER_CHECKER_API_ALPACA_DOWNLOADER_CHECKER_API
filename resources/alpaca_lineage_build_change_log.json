@@ -536,5 +536,10 @@
     "modifications": [
       "Extract preparation and downstream consumption owners; carry effective registration records and selected acceptance state across the Prepare JSON boundary without changing stored formats."
     ]
+  },
+  {
+    "modifications": [
+      "Separate completed pricing/lineage production and acknowledgements from serving while preserving ordinary update composition."
+    ]
   }
 ]

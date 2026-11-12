@@ -18,7 +18,7 @@ Runtime validators check one-based changelog array position against the owning c
 | [Lineage](libs/alpaca_lineage_build/contract.py): `RUNTIME_VERSION` | [Lineage history](resources/alpaca_lineage_build_change_log.json) |
 | [Operator evidence](libs/alpaca_lineage_build/evidence.py): `EVIDENCE_VERSION` | [Evidence history](resources/alpaca_lineage_evidence_change_log.json) |
 | [Correlation](libs/alpaca_end_of_day_security_correlation/correlation_version.py): `RUNTIME_VERSION` | [Correlation history](resources/alpaca_end_of_day_security_correlation_change_log.json) |
-| [Prepare protocol](libs/alpaca_pipeline/prepare.py): `VERSION` | [Protocol history](resources/alpaca_pipeline_change_log.json) |
+| [Pipeline transport runtime](libs/alpaca_pipeline/prepare.py): `VERSION` | [Protocol history](resources/alpaca_pipeline_change_log.json) |
 | [Pipeline report](libs/alpaca_end_of_day_pipeline/pipeline_version.py): `PIPELINE_VERSION` | [Pipeline history](resources/alpaca_end_of_day_pipeline_change_log.json) |
 | [Serving](libs/alpaca_serving_catalogue/contract.py): `RUNTIME_VERSION` | [Serving history](resources/alpaca_serving_catalogue_change_log.json) |
 | [API solver](libs/alpaca_data_api_solver/__init__.py): `VERSION` | [Solver history](resources/alpaca_data_api_solver_change_log.json) |
@@ -27,6 +27,10 @@ Runtime validators check one-based changelog array position against the owning c
 | [Parquet export](libs/alpaca_bloodhound_export/__init__.py): `VERSION` | [Export history](resources/alpaca_bloodhound_export_change_log.json) |
 
 ## Compatibility
+
+Pipeline transport `VERSION` tracks implementation compatibility; `SCHEMA_VERSION`
+owns the transient request, prepared and histories document schemas independently.
+Its runtime binding rejects arguments from an incompatible executable implementation.
 
 Pricing/lineage/serving `RUNTIME_VERSION` tracks releases; their `VERSION` constants retain persisted publication
 contracts. A runtime bump alone neither invalidates completed decisions nor authorizes reconstruction.

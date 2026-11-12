@@ -236,10 +236,13 @@ class CheckSummaryTests(unittest.TestCase):
 
     def test_v2_recovery_finishes_without_lending_incomplete_endpoints(self):
         with sqlite3.connect(summary.summary_path(self.store)) as db:
-            db.execute("ALTER TABLE entries DROP COLUMN first_all")
-            db.execute("ALTER TABLE entries DROP COLUMN tail_all")
-            db.execute("ALTER TABLE entries DROP COLUMN tail_version")
-            db.execute("ALTER TABLE entries DROP COLUMN source_sha256")
+            db.execute("ALTER TABLE entries RENAME TO current_entries")
+            db.execute(
+                "CREATE TABLE entries (symbol TEXT PRIMARY KEY, asof TEXT NOT NULL, "
+                "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL)"
+            )
+            db.execute("INSERT INTO entries SELECT symbol, asof, end_exclusive, last_all FROM current_entries")
+            db.execute("DROP TABLE current_entries")
             db.execute("PRAGMA user_version=2")
         with self.assertRaisesRegex(DownloadError, "summary rebuild"):
             self.read()

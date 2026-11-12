@@ -216,5 +216,10 @@
     "modifications": [
       "Expose Prepare as a transient UTF-8 JSON request/result API with a matching stdin/stdout adapter."
     ]
+  },
+  {
+    "modifications": [
+      "Expose produce_histories_pipeline as a UTF-8 JSON argument/result API with the matching history-production CLI."
+    ]
   }
 ]

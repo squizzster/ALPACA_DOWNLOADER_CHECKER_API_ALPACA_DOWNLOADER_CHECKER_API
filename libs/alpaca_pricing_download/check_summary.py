@@ -4,6 +4,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -17,6 +18,49 @@ from .storage import regular_path
 SUMMARY_FILE = "pricing_check_summary.sqlite3"
 FORMAT = 4
 
+_generation_handoff = ContextVar("pricing_summary_generation_handoff", default=None)
+
+
+@contextmanager
+def generation_handoff(store, token):
+    """Carry an accepted selector through this owner's committed revisions.
+
+    The caller holds the operation gate and has checked token applicability.
+    Each committed revision advances that token once. No summary bodies or
+    final selector are reread merely to construct the downstream argument.
+    """
+    value = {"store": Path(store).absolute(), "token": tuple(token), "transactions": {}}
+    selected = _generation_handoff.set(value)
+    try:
+        yield value
+    finally:
+        _generation_handoff.reset(selected)
+
+
+@contextmanager
+def _committed_generation(store, db, *, readonly):
+    selected = _generation_handoff.get()
+    if readonly or selected is None or selected["store"] != Path(store).absolute():
+        yield
+        return
+    transactions = selected["transactions"]
+    transactions[db] = 0
+    try:
+        yield  # The enclosed transaction must commit before lending its token.
+        if transactions[db]:
+            epoch, revision = selected["token"]
+            selected["token"] = epoch, revision + transactions[db]
+    finally:
+        transactions.pop(db, None)
+
+
+def _advance(db, *, complete=None):
+    assignments = "revision=revision+1" if complete is None else f"complete={int(complete)}, revision=revision+1"
+    db.execute("UPDATE state SET " + assignments + " WHERE singleton=1")
+    selected = _generation_handoff.get()
+    if selected is not None and db in selected["transactions"]:
+        selected["transactions"][db] += 1
+
 
 def summary_path(store):
     return regular_path(Path(store).absolute(), SUMMARY_FILE)
@@ -29,7 +73,7 @@ def _connection(store, *, create=False, readonly=False, allow_legacy=False):
     try:
         with closing(connect_sqlite(path, readonly=readonly, create=create)) as db:
             if create:
-                with db:
+                with _committed_generation(store, db, readonly=False), db:
                     db.execute("BEGIN IMMEDIATE")
                     if db.execute("PRAGMA user_version").fetchone()[0] == 0:
                         db.execute(
@@ -63,23 +107,23 @@ def _connection(store, *, create=False, readonly=False, allow_legacy=False):
                             "end_exclusive TEXT NOT NULL, last_all TEXT NOT NULL, first_all TEXT NOT NULL, "
                             "tail_all TEXT, tail_version INTEGER NOT NULL, source_sha256 TEXT)"
                         )
-                        db.execute("UPDATE state SET complete=0, revision=revision+1 WHERE singleton=1")
+                        _advance(db, complete=False)
                         db.execute(f"PRAGMA user_version={FORMAT}")
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version == 3 and not readonly:
                 # Version 3 already certifies membership and both endpoints.
                 # Preserve it while explicitly selecting missing legacy tails.
-                with db:
+                with _committed_generation(store, db, readonly=False), db:
                     db.execute("BEGIN IMMEDIATE")
                     db.execute("ALTER TABLE entries ADD COLUMN tail_all TEXT")
                     db.execute("ALTER TABLE entries ADD COLUMN tail_version INTEGER NOT NULL DEFAULT 31")
                     db.execute("ALTER TABLE entries ADD COLUMN source_sha256 TEXT")
                     db.execute(f"PRAGMA user_version={FORMAT}")
-                    db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
+                    _advance(db)
                 version = FORMAT
             if version not in (3, FORMAT) and not (allow_legacy and version == 2):
                 raise DownloadError("unsupported pricing check summary; run alpaca-cli-eod summary rebuild")
-            with db:
+            with _committed_generation(store, db, readonly=readonly), db:
                 db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
                 yield db
     except (sqlite3.Error, TypeError, ValueError) as error:
@@ -243,7 +287,7 @@ def invalidate(store, symbols, *, owner="pricing"):
         return  # Absence already fails closed; only an explicit rebuild establishes coverage.
     with _connection(store, allow_legacy=True) as db:
         db.executemany("INSERT OR IGNORE INTO pending VALUES (?, ?)", [(symbol, owner) for symbol in symbols])
-        db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
+        _advance(db)
 
 
 def replace_entries(store, entries, *, pricing_only=False):
@@ -294,7 +338,7 @@ def replace_entries(store, entries, *, pricing_only=False):
                 )
             db.execute("DELETE FROM pending WHERE symbol=?", (symbol,))
         if db.total_changes != before:
-            db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
+            _advance(db)
 
 
 def selected_inputs(store, symbols):
@@ -384,7 +428,7 @@ def refresh_prices(root, *, source=None, endpoints=None, source_sha256=None):
                     (symbol, symbol),
                 )
                 if db.total_changes != before:
-                    db.execute("UPDATE state SET revision=revision+1 WHERE singleton=1")
+                    _advance(db)
             return
         if source is None:
             source = load_source(root, symbol)
@@ -398,7 +442,7 @@ def refresh_prices(root, *, source=None, endpoints=None, source_sha256=None):
 
 def begin_rebuild(store):
     with _connection(store, create=True) as db:
-        db.execute("UPDATE state SET complete=0, revision=revision+1 WHERE singleton=1")
+        _advance(db, complete=False)
         return _token(db)
 
 
@@ -410,7 +454,7 @@ def finish_rebuild(store, token, entries):
         db.execute("DELETE FROM entries")
         db.executemany("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values)
         db.execute("DELETE FROM pending")
-        db.execute("UPDATE state SET complete=1, revision=revision+1 WHERE singleton=1")
+        _advance(db, complete=True)
 
 
 def _require_ready(db):
@@ -428,6 +472,18 @@ def assert_current(store, token):
         _require_ready(db)
         if _token(db) != tuple(token):
             raise DownloadError("pricing check baseline changed; repeat the check")
+
+
+def assert_generation(store, token):
+    """Check only lock-gap applicability, including an explicitly partial run.
+
+    A pending peer does not invalidate completed independent histories. A new
+    publication or invalidation changes this generation and stops consumption.
+    This does not authorize summary membership selection or historical checks.
+    """
+    with _connection(store, readonly=True) as db:
+        if _token(db) != tuple(token):
+            raise DownloadError("stale_handoff: pricing summary generation changed")
 
 
 def read_snapshot(store):
