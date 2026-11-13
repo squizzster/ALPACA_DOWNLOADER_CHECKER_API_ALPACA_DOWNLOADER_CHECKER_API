@@ -1826,6 +1826,7 @@ def process_group(
                                 inputs, reports, trace, instants=completion.setdefault("instant_keys", {})
                             ).items():
                                 affected[day] = set(affected.get(day, ())) | identifiers
+                            completion["membership_refinement"] = trace
                         completion["correlation"] = components, reports, affected
                     components, reports, affected = completion["correlation"]
                     completion["finish_args"] = {

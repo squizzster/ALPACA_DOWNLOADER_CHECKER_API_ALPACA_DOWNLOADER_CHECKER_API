@@ -599,5 +599,10 @@
       "Preserve accepted append-prefix numerical choices and original donor transfers through metadata subdivision while retaining changed-owner, changed-label and rollover guards.",
       "Remove hardcoded exchange test-symbol snapshots from fresh metadata classification; retain only inert legacy reader compatibility and provider-supported decisions for every label."
     ]
+  },
+  {
+    "modifications": [
+      "Carry the configured membership producer's completed ordinary-update trace into publication reporting without repeating inference or opening accepted pricing history."
+    ]
   }
 ]

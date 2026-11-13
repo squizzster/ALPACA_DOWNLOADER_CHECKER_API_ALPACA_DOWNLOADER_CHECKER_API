@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 6
+VERSION = 7
 SCHEMA_VERSION = 1
 
 
@@ -49,7 +49,7 @@ def accept_report(value, operation, *, allow_previous=False):
             )
         if current == (5, 22, 96, 100):
             bindings.append({**binding, "debug": 4, "lineage_runtime": 99})
-    if allow_previous and current == (6, 23, 97, 101):
+    if allow_previous and current == (7, 23, 97, 102):
         # Generic completed comparisons retain their exact policy/generation
         # bindings. Factual candidates are rejected above, never restored.
         bindings.extend(
@@ -68,6 +68,8 @@ def accept_report(value, operation, *, allow_previous=False):
                 (5, 22, 96, 100),
                 (6, 22, 96, 100),
                 (6, 23, 96, 100),
+                (6, 23, 97, 101),
+                (6, 23, 97, 102),
             )
         )
     if (
