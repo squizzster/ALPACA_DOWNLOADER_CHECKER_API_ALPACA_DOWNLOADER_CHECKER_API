@@ -1,4 +1,4 @@
-"""Sourced unchanged-equity membership and independently scoped mapped rows."""
+"""Reject researched rename ingress; retain provider inference and completed handoffs."""
 
 import copy
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from libs.alpaca_end_of_day_security_correlation import sourced_rename
-from libs.alpaca_lineage_build.continuation import validate_handoff
+from libs.alpaca_end_of_day_security_correlation.row_correlation import CorrelationCache
 from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.transform import correlate
 from libs.alpaca_security_lineage import event_supplements
@@ -122,9 +122,7 @@ def case():
         )
     )
     evidence["provider_corporate_actions"] = copy.deepcopy(evidence["corporate_actions"])
-    evidence["corporate_actions"], evidence["event_supplements"] = event_supplements.project_actions(
-        evidence["provider_corporate_actions"], event_supplements.accept_supplements([supplement()])
-    )
+    evidence["event_supplements"] = [supplement()]
     days = ("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08")
     inputs = inputs_for(
         {"NEW": bars(days, 10), "OLD": bars(days[-2:], 100)}, asofs={"NEW": "2024-01-09", "OLD": "2024-01-09"}
@@ -132,141 +130,139 @@ def case():
     return evidence, inputs
 
 
+def provider_case():
+    evidence, inputs = case()
+    evidence.pop("event_supplements")
+    return evidence, inputs
+
+
+def completed_certificate():
+    # Frozen producer output, not an invocation of the retired researched certifier.
+    return sourced_rename.RenameCertificate.from_report(
+        {
+            "action_id": "transition",
+            "old_symbol": "OLD",
+            "new_symbol": "NEW",
+            "old_cusip": "111111111",
+            "new_cusip": "222222222",
+            "old_id": "old-id",
+            "new_id": "new-id",
+            "boundary": "2024-01-05",
+            "legal_date": "2024-01-04",
+            "labels": [["EARLY", "2024-01-01", "2024-01-03"], ["OLD", "2024-01-03", "2024-01-05"]],
+        }
+    )
+
+
 class SourcedRenameTests(unittest.TestCase):
-    def evaluate(self, evidence, inputs, *, version=81):
+    def evaluate(self, evidence, inputs, *, version=97):
         policy = replace(load_authorized_policy(), implementation_correlation_version=version)
         us_market_hours_sha256()
         with patch.object(Path, "open", side_effect=AssertionError("unexpected retained payload read")):
             return correlate(Path("/unused"), inputs, {name: evidence for name in inputs}, policy=policy)
 
-    def test_same_security_one_id_full_labels_and_reused_donor_untouched(self):
-        evidence, inputs = case()
-        previous = self.evaluate(evidence, inputs, version=80)
-        with (
-            patch.object(sourced_rename, "certify_group", wraps=sourced_rename.certify_group) as membership,
-            patch.object(sourced_rename, "source_history", wraps=sourced_rename.source_history) as source,
+    def test_well_formed_rename_assertion_rejects_before_binding(self):
+        evidence, _ = case()
+        with patch.object(
+            sourced_rename, "exact_cusip_lookup_asset", side_effect=AssertionError("endpoint selected")
         ):
-            reports = self.evaluate(evidence, inputs)
-        self.assertEqual(1, membership.call_count)
-        self.assertEqual(2, source.call_count)
-        report = reports["NEW"]
-        self.assertEqual(40, report["correlated"]["row_count"])
-        segments = raw_segments(report)
-        self.assertEqual(["EARLY", "OLD", "NEW"], [item["historical_symbol"] for item in segments])
-        self.assertEqual(1, len({item["security_identity"]["security_id"] for item in segments}))
-        self.assertEqual({"new-id", "old-id"}, set(segments[0]["security_identity"]["member_alpaca_asset_ids"]))
-        self.assertEqual(
-            [
-                (s["historical_symbol"], s["security_identity"], s["row_count"])
-                for s in raw_segments(previous["OLD"])
-            ],
-            [
-                (s["historical_symbol"], s["security_identity"], s["row_count"])
-                for s in raw_segments(reports["OLD"])
-            ],
-        )
-        self.assertEqual(previous["OLD"]["uncorrelated"]["segments"], reports["OLD"]["uncorrelated"]["segments"])
-        interval = segments[0]["ticker_ownership_interval"]
-        self.assertEqual([], interval["supporting_corporate_action_ids"])
-        self.assertEqual(["transition"], interval["supporting_sourced_fact_ids"])
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                sourced_rename.certify_group([evidence])
 
-    def test_missing_predecessor_source_does_not_require_lookup_of_historical_label(self):
+    def test_incomplete_group_or_relations_cannot_reenable_fact_input(self):
+        evidence, _ = case()
+        for complete in (True, False):
+            with self.subTest(complete=complete), self.assertRaisesRegex(ValueError, "inadmissible"):
+                sourced_rename.certify_group([evidence], complete=complete, relations={})
+
+    def test_transform_rejects_before_price_or_row_work(self):
         evidence, inputs = case()
-        inputs.pop("OLD")
-        reports = self.evaluate(evidence, inputs)
-        self.assertEqual(40, reports["NEW"]["correlated"]["row_count"])
-        self.assertNotIn("EARLY", evidence["queried_symbols"])
+        with self.assertRaisesRegex(Exception, "inadmissible"):
+            self.evaluate(evidence, inputs)
 
-    def test_source_veto_does_not_revoke_independently_proved_membership(self):
-        def context(inputs, key, value):
-            for download in inputs["NEW"].downloads.values():
-                download.manifest[key] = value
+    def test_legacy_cache_switch_rejects(self):
+        with self.assertRaisesRegex(Exception, "inadmissible"):
+            CorrelationCache(sourced_rename_certificates=True)
 
-        for label, mutate in {
-            "historical asof": lambda e, i: context(i, "asof", "2024-01-04"),
-            "disabled asof": lambda e, i: context(i, "asof", "-"),
-            "incomplete view": lambda e, i: i["NEW"].local["downloads"][0].update(rows=6),
-            "context mismatch": lambda e, i: next(iter(i["NEW"].downloads.values())).manifest.update(feed="iex"),
-            "wrong current mapping": lambda e, i: e["asset_lookups"][1].update(asset=e["identities"][-1]),
-        }.items():
-            with self.subTest(label=label):
-                evidence, inputs = case()
-                mutate(evidence, inputs)
-                report = self.evaluate(evidence, inputs)["NEW"]
-                self.assertIsNone(report["sourced_rename_ownership"])
-                self.assertTrue(
-                    any(edge.get("corporate_action_id") == "transition" for edge in report["uuid_lineage_edges"])
+    def test_provider_only_certifier_result_needs_no_endpoint_or_storage(self):
+        evidence, _ = provider_case()
+        with (
+            patch.object(
+                sourced_rename, "exact_cusip_lookup_asset", side_effect=AssertionError("endpoint selected")
+            ),
+            patch.object(Path, "open", side_effect=AssertionError("storage opened")),
+        ):
+            self.assertEqual(((), ()), sourced_rename.certify_group([evidence]))
+
+    def test_researched_source_recipe_cannot_establish_new_bounds(self):
+        with patch.object(Path, "open", side_effect=AssertionError("price opened")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                sourced_rename.source_history(
+                    "NEW", completed_certificate(), None, None, complete=True, informative=True
                 )
 
-    def test_conversion_and_conflicting_peer_endpoint_veto_membership(self):
-        evidence, _ = case()
-        peer = copy.deepcopy(evidence)
-        peer.pop("event_supplements")
-        peer["corporate_actions"].append(
-            {
-                "id": "conversion",
-                "action_type": "stock_merger",
-                "recipients": [{"cusip": "111111111"}],
-                "process_date": "2024-01-04",
-            }
-        )
-        peer["provider_corporate_actions"] = peer["corporate_actions"]
-        self.assertEqual((), sourced_rename.certify_group((evidence, peer))[0])
-        peer = copy.deepcopy(evidence)
-        peer.pop("event_supplements")
-        peer["asset_lookups"][2]["asset"]["id"] = "conflicting-id"
-        self.assertEqual((), sourced_rename.certify_group((evidence, peer))[0])
-
-    def test_no_facts_replays_v80_assignments_exactly(self):
-        evidence, inputs = case()
-        evidence.pop("event_supplements")
-        previous = self.evaluate(evidence, inputs, version=80)
-        current = self.evaluate(evidence, inputs)
-        for symbol in inputs:
-            for branch in ("correlated", "uncorrelated"):
-                self.assertEqual(previous[symbol][branch], current[symbol][branch])
-
-    def test_ingress_preserves_provider_actions_and_accepts_once(self):
-        item = supplement()
-        accepted = event_supplements.accept_supplements([item])
+    def test_closed_certificate_serializes_without_recertification(self):
+        certificate = completed_certificate()
         with patch.object(
-            event_supplements, "validate_supplements", side_effect=AssertionError("repeated ingress")
+            sourced_rename, "certify_group", side_effect=AssertionError("closed decision rechecked")
         ):
-            self.assertIs(accepted, event_supplements.accept_supplements(accepted))
-        action = copy.deepcopy(item["match"])
-        projected, applied = event_supplements.project_actions([action], accepted)
-        self.assertIs(action, projected[0])
-        self.assertEqual(accepted, applied)
-        with self.assertRaises(ValueError):
-            event_supplements.project_actions([{**action, "effective_date": "2024-01-06"}], accepted)
+            self.assertEqual(certificate, sourced_rename.RenameCertificate.from_report(certificate.to_report()))
+            self.assertEqual("old-id", certificate.identity_edge().predecessor_asset_id)
 
-    def test_receipt_envelope_fails_closed_without_reproving_fact(self):
-        evidence, inputs = case()
+    def test_closed_label_intervals_are_cached_and_immutable(self):
+        certificate = completed_certificate()
+        self.assertIs(certificate.intervals(), certificate.intervals())
+        self.assertEqual(["EARLY", "OLD"], [x.historical_symbol for x in certificate.intervals()])
+        with self.assertRaises(Exception):
+            certificate.old_id = "changed"
+
+    def test_closed_source_bounds_are_read_without_new_source_proof(self):
+        certificate = completed_certificate()
+        handoff = {"symbol": "NEW", "first": "2024-01-02", "last": "2024-01-04"}
+        with (
+            patch.object(sourced_rename, "source_history", side_effect=AssertionError("closed proof replayed")),
+            patch.object(Path, "open", side_effect=AssertionError("closed prices reopened")),
+        ):
+            history = sourced_rename.histories(handoff, certificate)
+        self.assertEqual(["EARLY", "OLD"], [h.interval.historical_symbol for h in history])
+        self.assertEqual(["2024-01-02", "2024-01-03"], [h.first.isoformat() for h in history])
+
+    def test_retained_research_labels_do_not_reenter_provider_projection(self):
+        from libs.alpaca_lineage_build.metadata import EvidenceClient
+
+        evidence, _ = case()
+        selected = EvidenceClient(None).provider_view(evidence)
+        self.assertNotIn("event_supplements", selected)
+        self.assertNotIn("EARLY", selected["queried_symbols"])
+        self.assertTrue(evidence["event_supplements"])
+
+    def test_provider_same_security_rule_generalizes_to_future_labels(self):
+        days = ("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08")
+        for old, new in (("OLD", "NEW"), ("FUTUREA", "FUTUREB")):
+            evidence = rename(old=old, new=new)
+            with (
+                self.subTest(labels=(old, new)),
+                patch.object(sourced_rename, "certify_group", side_effect=AssertionError("research needed")),
+            ):
+                report = self.evaluate(evidence, inputs_for({old: bars(days[:3]), new: bars(days)}))[new]
+            self.assertEqual(0, report["uncorrelated"]["row_count"])
+            self.assertEqual(
+                {"old-id", "new-id"}, {s["canonical_security"]["alpaca_asset_id"] for s in raw_segments(report)}
+            )
+
+    def test_missing_provider_endpoint_does_not_gain_researched_label_history(self):
+        evidence, inputs = provider_case()
+        evidence["asset_lookups"] = [x for x in evidence["asset_lookups"] if x["lookup"] != "111111111"]
         report = self.evaluate(evidence, inputs)["NEW"]
-        value = report["sourced_rename_ownership"]
-        receipt = {
-            "schema_version": 36,
-            "symbol": "NEW",
-            "current_source_ownership": None,
-            "sourced_rename_ownership": value,
-            "sourced_rename_membership": report["sourced_rename_membership"],
-        }
-        validate_handoff(receipt)
-        for wrong in (None, {**value, "version": True}, {**value, "last": "2023-01-01"}):
-            altered = copy.deepcopy(receipt)
-            if wrong is None:
-                altered.pop("sourced_rename_ownership")
-            else:
-                altered["sourced_rename_ownership"] = wrong
-            with self.assertRaisesRegex(Exception, "owning lineage recovery"):
-                validate_handoff(altered)
+        self.assertIsNone(report["sourced_rename_ownership"])
+        self.assertFalse(any(s.get("ticker") == "EARLY" for s in raw_segments(report)))
 
 
 class MappedSourceSeparationTests(unittest.TestCase):
     evaluate = SourcedRenameTests.evaluate
 
     def terminal_case(self):
-        evidence, inputs = case()
+        evidence, inputs = provider_case()
         terminal = {
             **evidence["identities"][0],
             "id": "terminal-id",
@@ -321,7 +317,7 @@ class MappedSourceSeparationTests(unittest.TestCase):
             )
         return evidence, inputs
 
-    def test_current_mapping_never_falls_back_to_terminal_label_occupant(self):
+    def test_provider_terminal_owner_never_extends_past_its_dated_exit(self):
         for failure in ("partial", "old endpoint missing", "old endpoint conflicting"):
             evidence, inputs = self.terminal_case()
             if failure == "partial":
@@ -335,12 +331,13 @@ class MappedSourceSeparationTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 report = self.evaluate(evidence, inputs)["NEW"]
                 self.assertIsNone(report["sourced_rename_ownership"])
-                self.assertFalse(
-                    any(
-                        segment["canonical_security"]["alpaca_asset_id"] == "terminal-id"
-                        for segment in raw_segments(report)
-                    )
-                )
+                terminal = [
+                    s
+                    for s in raw_segments(report)
+                    if s["canonical_security"]["alpaca_asset_id"] == "terminal-id"
+                ]
+                self.assertTrue(terminal)
+                self.assertTrue(all(s["last_session_date"] < "2024-01-04" for s in terminal))
                 self.assertGreater(report["uncorrelated"]["row_count"], 0)
 
     def test_pinned_terminal_mapping_keeps_its_original_ownership(self):
@@ -362,7 +359,7 @@ class MappedSourceSeparationTests(unittest.TestCase):
 
     def test_missing_session_and_uninformative_history_never_gain_source_scope(self):
         for kind in ("gap", "empty", "constant"):
-            evidence, inputs = case()
+            evidence, inputs = provider_case()
             for download in inputs["NEW"].downloads.values():
                 if kind == "gap":
                     download.rows.pop(1)
@@ -379,80 +376,10 @@ class MappedSourceSeparationTests(unittest.TestCase):
 
 
 class SelectedGroupHandoffTests(unittest.TestCase):
-    def test_completed_empty_membership_is_a_reusable_handoff(self):
-        evidence, inputs = case()
-        evidence.pop("event_supplements")
-        report = SourcedRenameTests().evaluate(evidence, inputs)["NEW"]
-        self.assertEqual({"version": 1, "certificates": [], "issues": []}, report["sourced_rename_membership"])
-        _, following_inputs = case()
-        for view in following_inputs.values():
-            view.accepted_sourced_rename_membership = report["sourced_rename_membership"]
-        with patch.object(
-            sourced_rename, "certify_group", side_effect=AssertionError("empty completed decision repeated")
-        ):
-            following = SourcedRenameTests().evaluate(evidence, following_inputs)["NEW"]
-        self.assertEqual(report["sourced_rename_membership"], following["sourced_rename_membership"])
-
-    def test_missing_or_conflicting_unpriced_peer_cannot_be_ignored(self):
-        evidence, inputs = case()
-        inputs.pop("OLD")
-        peer = copy.deepcopy(evidence)
-        peer.pop("event_supplements")
-        peer["provider_corporate_actions"].append(
-            {
-                "id": "conversion",
-                "action_type": "stock_merger",
-                "recipients": [{"cusip": "111111111"}],
-                "process_date": "2024-01-04",
-            }
-        )
-        policy = load_authorized_policy()
-        for scope in (
-            {"selected_group": ["NEW", "MISSING"]},
-            {"selected_group": ["NEW", "MISSING"], "unavailable_pricing": ["MISSING"]},
-            {
-                "selected_group": ["NEW", "MISSING"],
-                "unavailable_pricing": ["MISSING"],
-                "auxiliary_evidence": {"MISSING": peer},
-            },
-        ):
-            with self.subTest(scope=scope.keys()):
-                report = correlate(
-                    Path("/unused"), copy.deepcopy(inputs), {"NEW": evidence}, policy=policy, **scope
-                )["NEW"]
-                self.assertEqual([], report["sourced_rename_membership"]["certificates"])
-                self.assertIsNone(report["sourced_rename_ownership"])
-
-    def test_completed_positive_and_negative_membership_survives_new_price_objects(self):
-        for valid in (True, False):
-            evidence, inputs = case()
-            if not valid:
-                evidence["asset_lookups"] = [
-                    item for item in evidence["asset_lookups"] if item["lookup"] != "111111111"
-                ]
-            # An incomplete source cannot carry positive source history, but the
-            # completed independent metadata decision remains authoritative.
-            inputs["NEW"].local["downloads"][0]["rows"] += 1
-            report = SourcedRenameTests().evaluate(evidence, inputs)["NEW"]
-            self.assertIsNone(report["sourced_rename_ownership"])
-            _, next_inputs = case()
-            for view in next_inputs.values():
-                view.accepted_sourced_rename_membership = report["sourced_rename_membership"]
-            with (
-                self.subTest(valid=valid),
-                patch.object(
-                    sourced_rename,
-                    "certify_group",
-                    side_effect=AssertionError("completed metadata proof repeated"),
-                ),
-            ):
-                following = SourcedRenameTests().evaluate(evidence, next_inputs)["NEW"]
-            self.assertEqual(report["sourced_rename_membership"], following["sourced_rename_membership"])
-
     def test_metadata_delta_is_handed_off_once_including_unavailable_peer(self):
         from libs.alpaca_lineage_build import resume
 
-        evidence, _ = case()
+        evidence, _ = provider_case()
         before = {"NEW": {"evidence": evidence, "source_rows": 1}}
         other = {"peer": {"identities": []}}
         changed = {"peer": {"identities": [{"id": "changed"}]}}
@@ -476,6 +403,33 @@ class SelectedGroupHandoffTests(unittest.TestCase):
             self.assertEqual(expected, completed["peer"]["scope"])
             self.assertEqual("none", completed["NEW"]["scope"])
 
+    def test_provider_view_is_reused_without_projection_replay(self):
+        from libs.alpaca_lineage_build.metadata import EvidenceClient
+        from libs.alpaca_security_lineage import lineage
+
+        evidence, _ = case()
+        client = EvidenceClient(None)
+        first = client.provider_view(evidence)
+        with patch.object(
+            lineage, "report_from_observations", side_effect=AssertionError("completed projection repeated")
+        ):
+            self.assertIs(first, client.provider_view(evidence))
+        self.assertTrue(evidence["event_supplements"])
+
+    def test_unavailable_peer_scope_does_not_trigger_researched_certifier(self):
+        evidence, inputs = provider_case()
+        inputs.pop("OLD")
+        with patch.object(sourced_rename, "certify_group", side_effect=AssertionError("research accessed")):
+            report = correlate(
+                Path("/unused"),
+                inputs,
+                {"NEW": evidence},
+                policy=load_authorized_policy(),
+                selected_group=["NEW", "MISSING"],
+                unavailable_pricing=["MISSING"],
+            )["NEW"]
+        self.assertIsNone(report["sourced_rename_ownership"])
+
 
 class MetadataProjectionHandoffTests(unittest.TestCase):
     def test_action_request_planning_needs_no_live_projection_owner(self):
@@ -488,10 +442,9 @@ class MetadataProjectionHandoffTests(unittest.TestCase):
                 "query": {"corporate_actions_start": "2024-01-01"},
             },
         }
-        client = metadata.EvidenceClient(None)
         with (
             patch.object(
-                metadata, "EventProjection", side_effect=AssertionError("planning allocated projector")
+                event_supplements, "EventProjection", side_effect=AssertionError("planning allocated projector")
             ),
             patch.object(
                 event_supplements,
@@ -507,87 +460,6 @@ class MetadataProjectionHandoffTests(unittest.TestCase):
                 [("NEW", "2024-06-01", "2024-07-01"), ("OLD", "2024-06-01", "2024-07-01")],
                 metadata.action_requests("NEW", "2024-01-01", "2024-07-01", previous),
             )
-            self.assertIsNone(metadata.WindowClient(None, "NEW", previous, False).event_projection)
-            self.assertIs(
-                client.event_projection, metadata.WindowClient(client, "NEW", previous, False).event_projection
-            )
-
-    def test_no_fact_reports_are_not_retained_but_malformed_facts_fail_closed(self):
-        from libs.alpaca_lineage_build.metadata import EvidenceClient
-
-        client = EvidenceClient(None)
-        client.retain_event_supplements([{"corporate_actions": [{"id": "ordinary"}]}])
-        self.assertEqual({}, client._retained_supplement_evidence)
-        self.assertEqual({}, client.event_projection.accepted)
-        with self.assertRaisesRegex(Exception, "unsupported retained sourced succession schema"):
-            client.retain_event_supplements([{"sourced_successions": {}}])
-
-    def test_traversal_and_peer_failure_reuse_completed_projection(self):
-        fact = event_supplements.accept_supplements([supplement()])[0]
-        action = dict(fact["match"])
-        owner = event_supplements.EventProjection()
-        project = owner.bind([fact])
-        with patch.object(
-            event_supplements, "_project_action", wraps=event_supplements._project_action
-        ) as produce:
-            first = project([action])
-            self.assertEqual(first, project([action]))
-            bad = {**action, "old_cusip": "999999999"}
-            with self.assertRaises(ValueError):
-                project([bad])
-            self.assertEqual(first, owner.bind([fact])([action]))
-        self.assertEqual(2, produce.call_count)  # accepted input once, distinct bad observation once
-        for key, value in (
-            ("process_date", "2024-01-06"),
-            ("new_cusip", "999999999"),
-            ("effective_date", "2024-01-06"),
-        ):
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                project([{**action, key: value}])
-        changed_fact = supplement()
-        changed_fact["match"]["new_symbol"] = "OTHER"
-        with self.assertRaises(ValueError):
-            owner.bind(event_supplements.accept_supplements([changed_fact]))([action])
-
-    def test_retained_equal_fact_copies_use_canonical_completed_projection(self):
-        from libs.alpaca_lineage_build.metadata import EvidenceClient
-
-        evidence, _ = case()
-        evidence["event_supplement_schema_version"] = 1
-        client = EvidenceClient(None)
-        peer = copy.deepcopy(evidence)
-        client.retain_event_supplements([evidence, peer])
-        project = client.event_projection.bind(client.all_event_supplements())
-        with patch.object(
-            event_supplements, "_project_action", side_effect=AssertionError("retained event rematched")
-        ):
-            for accepted in (evidence, peer):
-                self.assertEqual(
-                    accepted["corporate_actions"], project(accepted["provider_corporate_actions"])[0]
-                )
-            client.retain_event_supplements([evidence, peer])
-            self.assertEqual(evidence["corporate_actions"], project(evidence["provider_corporate_actions"])[0])
-
-    def test_retained_negative_projection_is_carried_without_recalculation(self):
-        from libs.alpaca_lineage_build.metadata import EvidenceClient
-        from tests.test_alpaca_event_supplements import derivative_supplement
-
-        fact = event_supplements.accept_supplements([derivative_supplement()])[0]
-        action = dict(fact["match"])
-        evidence = {
-            "event_supplement_schema_version": 1,
-            "event_supplements": [fact],
-            "provider_corporate_actions": [action],
-            "corporate_actions": [],
-        }
-        client = EvidenceClient(None)
-        client.retain_event_supplements([evidence])
-        with patch.object(
-            event_supplements, "_project_action", side_effect=AssertionError("negative projection repeated")
-        ):
-            self.assertEqual(
-                ([], [fact]), client.event_projection.bind(client.all_event_supplements())([action])
-            )
 
 
 class EmptyMembershipPipelineTests(unittest.TestCase):
@@ -602,7 +474,6 @@ class EmptyMembershipPipelineTests(unittest.TestCase):
         fixture.setUp()
         fixture.build()
         before = fixture.receipt()
-        self.assertEqual({"version": 1, "certificates": [], "issues": []}, before["sourced_rename_membership"])
         changed = copy.deepcopy(fixture.rows["NEXT"])
         for field in ("o", "h", "l", "c", "vw"):
             changed[0][field] += 1
@@ -631,14 +502,9 @@ class EmptyMembershipPipelineTests(unittest.TestCase):
         after = fixture.receipt()
         self.assertNotEqual(before["source_sha256"], after["source_sha256"])
         self.assertEqual(before["sourced_rename_membership"], after["sourced_rename_membership"])
-        # New submitted facts invalidate the absence proof even when pricing is
-        # unchanged; the existing owner must produce the newly supported union.
-        with patch.object(sourced_rename, "certify_group", wraps=sourced_rename.certify_group) as produce:
-            fixture.build(submit=True)
-        self.assertEqual(1, produce.call_count)
-        self.assertTrue(fixture.receipt()["sourced_rename_membership"]["certificates"])
 
-    def test_newly_observed_event_with_new_applied_fact_invalidates_empty_result(self):
+    def test_new_fact_rejects_before_reopening_completed_store(self):
+        from libs.alpaca_lineage_build import pipeline
         from tests.test_alpaca_sourced_rename_pipeline import SourcedRenamePipelineTests
 
         fixture = SourcedRenamePipelineTests()
@@ -646,21 +512,10 @@ class EmptyMembershipPipelineTests(unittest.TestCase):
         fixture.setUp()
         fixture.build()
         before = fixture.receipt()
-        new_action = {**fixture.actions[0], "id": "newly-observed-rename", "process_date": "2024-06-18"}
-        fixture.actions.append(new_action)
-        fixture.supplement = copy.deepcopy(fixture.supplement)
-        fixture.supplement["match"] = dict(new_action)
-        fixture.supplement["facts"]["exchange_effective_date"] = "2024-06-18"
-        fixture.supplement["facts"]["prior_labels"][-1]["end_exclusive"] = "2024-06-18"
-        fixture.append()
-        with patch.object(sourced_rename, "certify_group", wraps=sourced_rename.certify_group) as produce:
-            fixture.build(submit=True)
-        after = fixture.receipt()
-        self.assertEqual(set(before["input_sources"]), set(after["input_sources"]))
-        self.assertEqual(1, produce.call_count)
-        self.assertEqual("newly-observed-rename", after["evidence"]["event_supplements"][0]["match"]["id"])
-        self.assertNotEqual(before["sourced_rename_membership"], after["sourced_rename_membership"])
-        self.assertTrue(after["sourced_rename_membership"]["issues"])
+        with patch.object(pipeline, "accept_context", side_effect=AssertionError("accepted store reopened")):
+            with self.assertRaisesRegex(Exception, "inadmissible"):
+                fixture.build(submit=True)
+        self.assertEqual(before, fixture.receipt())
 
     def test_changed_complete_group_cannot_inherit_old_empty_scope(self):
         from libs.alpaca_pricing_download.download import download_pricing
@@ -700,5 +555,5 @@ class EmptyMembershipPipelineTests(unittest.TestCase):
         after = fixture.receipt()
         self.assertNotEqual(set(before["input_sources"]), set(after["input_sources"]))
         self.assertEqual({"NEXT", "PRIOR", "THIRD"}, set(after["input_sources"]))
-        self.assertEqual(1, produce.call_count)
+        self.assertEqual(0, produce.call_count)
         self.assertEqual(before["sourced_rename_membership"], after["sourced_rename_membership"])

@@ -191,17 +191,6 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
         graph = getattr(view, "accepted_uuid_lineage_candidates", None)
         if graph is not None:
             cache._uuid_candidates[id(graph[0])] = graph
-        common = getattr(view, "accepted_public_common_membership", None)
-        if common is not None:
-            cache.accepted_public_common_membership = common
-        relations = getattr(view, "accepted_security_relations", None)
-        if relations is not None:
-            cache.accepted_security_relations = relations
-        cache.accepted_common_bounds.update(getattr(view, "accepted_common_bounds", None) or {})
-        cache.accepted_common_routes = getattr(view, "accepted_common_routes", ())
-        ownership = getattr(view, "accepted_public_common_ownership", None)
-        if ownership is not None:
-            cache.accepted_common_sources[symbol] = ownership
         if getattr(view, "materialized", True) is False:
             continue
         cache.register_name_change_source(
@@ -221,27 +210,16 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
                 certificate,
                 timestamp(last).astimezone(NEW_YORK).date().isoformat() if last else None,
             )
-        rename = getattr(view, "accepted_sourced_rename_ownership", None)
-        if rename is not None:
-            descriptor = next(item for item in view.local["downloads"] if item["adjustment"] == "raw")
-            last = descriptor.get("to")
-            cache.accepted_rename_sources[symbol] = (
-                rename,
-                timestamp(last).astimezone(NEW_YORK).date().isoformat() if last else None,
-            )
-        membership = getattr(view, "accepted_sourced_rename_membership", None)
-        if membership is not None:
-            cache.accepted_rename_membership = membership
     cache.accepted_identity_memberships = accepted
 
 
 def _correlation_cache(policy) -> CorrelationCache:
-    return CorrelationCache(
-        sourced_rename_certificates=policy.implementation_correlation_version >= 81,
-        public_common_certificates=policy.implementation_correlation_version >= 82,
-        new_public_parent_continuations=policy.implementation_correlation_version >= 85,
+    cache = CorrelationCache(
+        sourced_rename_certificates=False,
+        public_common_certificates=False,
+        new_public_parent_continuations=False,
         closed_departure_current_sources=policy.implementation_correlation_version >= 80,
-        sourced_succession_certificates=policy.implementation_correlation_version >= 79,
+        sourced_succession_certificates=False,
         completed_event_scope=(
             policy.implementation_correlation_version >= COMPLETED_EVENT_SCOPE_CORRELATION_VERSION
         ),
@@ -308,6 +286,9 @@ def _correlation_cache(policy) -> CorrelationCache:
             policy.implementation_correlation_version >= CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION
         ),
     )
+
+    cache.emit_empty_rename_membership = policy.implementation_correlation_version >= 81
+    return cache
 
 
 def _selected_group_cache(
@@ -923,6 +904,31 @@ def evaluate_policy(
     closed_report_loader=None,
 ) -> dict[str, dict[str, Any]]:
     """Execute one compiled policy; there is no implicit Python-rule fallback."""
+    from libs.alpaca_security_lineage.inference_evidence import accept_provider_evidence
+
+    # Keep the acceptance on the selected owner so a retry preserves the actual
+    # evidence objects and the group producer cache, rather than reaccepting copies.
+    owner = inputs[min(inputs)] if inputs else None
+    held = getattr(owner, "_provider_input_acceptances", None) if owner is not None else None
+    if held is None:
+        held = {}
+        if owner is not None:
+            owner._provider_input_acceptances = held
+
+    def accept_selected(selected):
+        result = {}
+        for name, value in selected.items():
+            key = id(value)
+            if key not in held:
+                held[key] = (value, accept_provider_evidence(value, where="fresh policy evidence"))
+            result[name] = held[key][1]
+        return result
+
+    evidence = accept_selected(evidence)
+    if evidence_projection is not None:
+        evidence_projection = accept_selected(evidence_projection)
+    if auxiliary_evidence is not None:
+        auxiliary_evidence = accept_selected(auxiliary_evidence)
     # Mandatory phase/certificate checks establish this NEW decision at its owner.
     # They are not a reader-side audit of completed decisions. Detailed traces and
     # trace digests are opt-in; DO NOT add them to ordinary reuse for reassurance.

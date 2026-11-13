@@ -53,7 +53,6 @@ POLICY_FIELDS = (
     "completed_corrections",
     "restricted_identifiers",
     "current_group",
-    "rule_applications",
 )
 GRAPH_FIELDS = ("dependencies", "assets", "dependants", "members")
 
@@ -70,6 +69,8 @@ def export_state(context, policy, encode, *, evidence=None):
     The transport names that client explicitly rather than serializing a Python
     client as a dictionary key. Unknown peer clients are a contract defect.
     """
+    if policy is not None and getattr(policy, "rule_applications", None):
+        raise LineageError("pipeline work policy cannot carry research applications")
     sourced = context.sourced_operations
     if sourced and (evidence is None or set(sourced) != {evidence}):
         raise LineageError("sourced-operation handoff has an unbound evidence owner")
@@ -135,7 +136,12 @@ def import_state(store, document, decode, *, evidence=None):
         raise LineageError("invalid sourced-operation presence")
     if sourced["present"] and evidence is None:
         raise LineageError("sourced-operation handoff requires its evidence owner")
-    context.sourced_operations = {evidence: decode(sourced["value"])} if sourced["present"] else {}
+    packed_sourced = decode(sourced["value"]) if sourced["present"] else None
+    if packed_sourced is not None:
+        from .source_state import require_generic_sourced
+
+        require_generic_sourced(packed_sourced)
+    context.sourced_operations = {evidence: packed_sourced} if sourced["present"] else {}
     policy_document = document["policy"]
     policy = None
     if policy_document is not None:

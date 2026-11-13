@@ -4,25 +4,33 @@ from . import storage
 from .assignment_handoff import accept_observation_choices
 from .continuation import validate_handoff
 from .contract import LineageError, selected_document
-from .selection import DependencyGraph
+from .recovery_handoffs import recall, remember
 
 
-def recover(store, root, index, pending_serving, applications):
+def recover(store, root, index, pending_serving):
     """Repair only selected pending publications, preserving all completed work."""
-    graph = DependencyGraph(index["symbols"])
     groups, seen = [], set()
-    for application in applications:
-        for symbol in set(application["symbols"]) & index["symbols"].keys():
-            entry = index["symbols"][symbol]
-            if (
-                entry["projection"].get("sourced_fact_applications", {}).get(application["id"])
-                != application["fingerprint"]
-            ):
-                continue
-            group = graph.closure({symbol})
-            if group & pending_serving.keys() and not group & seen:
-                groups.append(group)
-                seen.update(group)
+    entries = index["symbols"]
+    for symbol, generation in pending_serving.items():
+        entry = entries.get(symbol)
+        if entry is None:
+            continue
+        if entry["sha256"] != generation:
+            raise LineageError(f"{symbol}: pending serving generation changed before envelope recovery")
+        if (
+            entry.get("versions", {}).get("lineage") != 37
+            or entry.get("versions", {}).get("correlation") != 82
+            or entry.get("projection", {}).get("closed_source_handoff_version") == 1
+            or entry.get("projection", {}).get("source_ownership_envelopes_complete") is True
+        ):
+            continue
+        members = entry.get("group_members")
+        if not isinstance(members, list) or not members or symbol not in members:
+            raise LineageError(f"{symbol}: envelope recovery requires completed group membership")
+        group = set(members)
+        if not group & seen:
+            groups.append(group)
+            seen.update(group)
     repaired = []
     for group in groups:
         repaired.extend(_recover_group(store, root, index, group))
@@ -38,16 +46,22 @@ def _recover_group(store, root, index, group):
             storage.assert_index_current(root, index)
         for symbol in sorted(selected):
             entry = index["symbols"][symbol]
-            old = selected_document(
-                storage.path_at(root, f"{symbol}/lineage.manifest.json", published=True), entry["sha256"]
-            )
-            accept_observation_choices(old)
+            old = recall(store, "receipt", (symbol, entry["sha256"]))
+            held = old is not None
+            if old is None:
+                old = selected_document(
+                    storage.path_at(root, f"{symbol}/lineage.manifest.json", published=True), entry["sha256"]
+                )
+                accept_observation_choices(old)
             previous[symbol] = receipts[symbol] = old
-            from .recovery_handoffs import remember
 
             missing = fields - old.keys()
             if not missing:
-                validate_handoff(old)
+                if (
+                    not held
+                    and entry.get("projection", {}).get("source_ownership_envelopes_complete") is not True
+                ):
+                    validate_handoff(old)
                 remember(store, "receipt", (symbol, entry["sha256"]), old)
                 continue
             if (

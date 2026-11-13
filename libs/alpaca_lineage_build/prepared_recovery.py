@@ -10,6 +10,8 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
 from . import storage
 from .assignment_handoff import accept_observation_choices, selected
 from .continuation import validate_handoff
@@ -28,6 +30,65 @@ class PreparedCandidate:
     policy: dict
     assignments: dict
     observations: object = None
+
+
+_ASSERTED_OUTPUTS = (
+    "documented_identity_membership",
+    "sourced_rename_membership",
+    "sourced_rename_ownership",
+    "public_common_continuation_membership",
+    "public_common_continuation_ownership",
+    "security_relations",
+)
+_RESEARCH_EDGE_TYPES = frozenset(
+    {"holding_company_succession", "public_common_continuation", "sourced_ticker_change"}
+)
+
+
+def _researched_output(field, value):
+    if not value:
+        return False
+    if isinstance(value, dict):
+        if field in {"sourced_rename_membership", "public_common_continuation_membership"}:
+            return bool(value.get("certificates"))
+        if field == "security_relations":
+            return bool(value.get("relations"))
+    return True
+
+
+def _researched_edge(edge):
+    return isinstance(edge, dict) and (
+        bool(edge.get("sourced_fact_id") or edge.get("source_fact_id"))
+        or edge.get("edge_type") in _RESEARCH_EDGE_TYPES
+    )
+
+
+def require_assertion_free_outputs(receipts, previous, policy):
+    """Reject newly supplied facts while leaving baseline closed decisions alone.
+
+    This boundary accepts new candidate output, never a frozen publication
+    journal. Existing accepted receipts are independently selected baseline values
+    and are not interpreted as new assertions or revalidated here.
+    """
+    try:
+        reject_assertions(policy, where="prepared candidate policy")
+        for name, receipt in receipts.items():
+            reject_assertions(receipt.get("evidence", {}), where=name + ": prepared candidate evidence")
+            reject_assertions(receipt.get("correlation_policy", {}), where=name + ": candidate policy")
+            origin = receipt.get("research_admission") or {}
+            scope = origin.get("approved_scope", {})
+            if scope.get("canonical_applications"):
+                raise ValueError("prepared candidate cannot admit researched factual applications")
+            old = previous.get(name, {})
+            for field in _ASSERTED_OUTPUTS:
+                if _researched_output(field, receipt.get(field)) and receipt.get(field) != old.get(field):
+                    raise ValueError("prepared candidate cannot introduce researched ownership: " + field)
+            prior_edges = old.get("uuid_lineage_edges", ())
+            for edge in receipt.get("uuid_lineage_edges", ()):
+                if _researched_edge(edge) and edge not in prior_edges:
+                    raise ValueError("prepared candidate cannot introduce a researched UUID edge")
+    except (ValueError, AttributeError, TypeError) as error:
+        raise LineageError(str(error)) from error
 
 
 def accept_candidate(value, store):
@@ -75,6 +136,7 @@ def accept_candidate(value, store):
         for items in (receipts, boundaries, previous)
     ):
         raise LineageError("prepared candidate output does not cover its selected sources")
+    require_assertion_free_outputs(receipts, previous, policy)
     comparison = value.get("comparison", {}).get("comparison", {})
     if comparison.get("mapping_corrections") != {} or comparison.get("candidate_partition_complete") is not True:
         raise LineageError("prepared candidate requires completed assignments and no pricing correction")

@@ -13,6 +13,8 @@ from .selection import DependencyGraph
 def obligation(item, previous=None):
     """An unfinished contract survives reselection, including catalogue absence."""
     previous = previous or {}
+    if item.get("required_sourced_facts"):
+        raise LineageError("authored fact requirements need explicit generic lineage recovery")
     keys = (
         "end_exclusive",
         "evidence_fingerprint",
@@ -26,7 +28,6 @@ def obligation(item, previous=None):
         "correction_id",
         "pricing_correction",
         "required_group",
-        "required_sourced_facts",
     )
     if previous.get("obligation_id") and all(item.get(k) == previous.get(k) for k in keys):
         return {**item, "obligation_id": previous["obligation_id"]}
@@ -121,10 +122,6 @@ def satisfied(item, entry, pending, *, approved=False):
     projection = entry.get("projection") or {}
     return (
         not pending
-        and all(
-            projection.get("sourced_fact_applications", {}).get(key) == value
-            for key, value in item.get("required_sourced_facts", {}).items()
-        )
         and covers_pricing_start(item, projection.get("pricing_request"))
         and projection.get("processed_through", "")[:10] >= pricing_target(item)
         and (approved or projection.get("update_obligation_id") == item["obligation_id"])
@@ -167,6 +164,8 @@ def restriction(item, end, *, retry_blocked=False):
 
     if item.get("status") == "complete":
         return None
+    if item.get("required_sourced_facts"):
+        return "generic_lineage_recovery_required"
     if max(item.get("end_exclusive", end), item.get("pricing_end_exclusive", end)) > end:
         return "pending_target_exceeds_requested_cutoff"
     if not retry_blocked:
@@ -207,6 +206,11 @@ class WorkPolicy:
             for member in group:
                 self.required_groups.setdefault(member, set()).update(group)
         self.blocked = {item["symbol"] for item in deferred}
+        self.blocked.update(
+            symbol
+            for symbol, item in self.work.items()
+            if item.get("required_sourced_facts") and not satisfied(item, index["symbols"].get(symbol), False)
+        )
         self.failures = []
         self.command_failures = []
         self.history_approved = {}
@@ -217,7 +221,6 @@ class WorkPolicy:
             for identifier in work.get(symbol, {}).get("outcome", {}).get("request_identifiers", [])
         }
         self.current_group = set()
-        self.rule_applications = ()
 
     def update_index(self, entries):
         self.index["symbols"].update(entries)
@@ -612,70 +615,11 @@ class WorkPolicy:
                 for label, expected in item.get("required_lookups", {}).items()
             ):
                 raise WorkDeferred(f"{symbol}: lineage evidence differs from its accepted obligation")
-        # Application incorporation is a complete-input-component result.
-        # Source-local metadata deliberately need not repeat a common/right fact
-        # on each unit or later unrelated market label. Project only inventory,
-        # using the receipt's selected generation bindings, before a later peer
-        # or pricing obligation can fail. Those completed markers survive retry.
-        pending_applications = {
-            symbol: {
-                name: fingerprint
-                for name, fingerprint in self.work.get(symbol, {}).get("required_sourced_facts", {}).items()
-                if receipt["evidence"].get("sourced_fact_applications", {}).get(name) != fingerprint
-            }
-            for symbol, receipt in receipts.items()
-        }
-        pending_applications = {symbol: needed for symbol, needed in pending_applications.items() if needed}
-        if pending_applications:
-            from .sourced_rules import incorporated_group
-
-            components = {}
-            for symbol, needed in pending_applications.items():
-                receipt = receipts[symbol]
-                selected = receipt.get("input_sources") or {symbol: receipt["source_sha256"]}
-                auxiliaries = receipt.get("unavailable_pricing", {})
-                key = tuple(sorted(selected.items())), tuple(sorted(auxiliaries))
-                component = components.setdefault(key, {"evidence": {}, "required": {}, "symbols": []})
-                component["evidence"].update(
-                    (name, receipts[name]["evidence"])
-                    for name, generation in selected.items()
-                    if name in receipts and receipts[name]["source_sha256"] == generation
-                )
-                component["evidence"].update((name, value["evidence"]) for name, value in auxiliaries.items())
-                component["required"].update(needed)
-                component["symbols"].append(symbol)
-            for component in components.values():
-                applications = [
-                    application
-                    for application in self.rule_applications
-                    if component["required"].get(application["id"]) == application["fingerprint"]
-                ]
-                applied = incorporated_group(self, component["evidence"], applications=applications)
-                for symbol in component["symbols"]:
-                    carried = {
-                        name: fingerprint
-                        for name, fingerprint in pending_applications[symbol].items()
-                        if applied.get(name) == fingerprint
-                    }
-                    if carried:
-                        receipt = receipts[symbol]
-                        receipt["evidence"] = {
-                            **receipt["evidence"],
-                            "sourced_fact_applications": {
-                                **receipt["evidence"].get("sourced_fact_applications", {}),
-                                **carried,
-                            },
-                        }
         accepted = {}
         for symbol, receipt in receipts.items():
             item = self.work.get(symbol)
             if item is None:
                 continue
-            if any(
-                receipt["evidence"].get("sourced_fact_applications", {}).get(key) != value
-                for key, value in item.get("required_sourced_facts", {}).items()
-            ):
-                raise WorkDeferred(f"{symbol}: required sourced facts were not incorporated")
             if set(item.get("required_group", [])) - group:
                 continue
             source = sources[symbol]

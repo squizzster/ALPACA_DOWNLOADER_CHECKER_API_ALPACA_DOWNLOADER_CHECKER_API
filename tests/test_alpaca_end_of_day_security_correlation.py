@@ -18,6 +18,7 @@ from libs.alpaca_end_of_day_security_correlation.action_identity import complete
 from libs.alpaca_end_of_day_security_correlation.current_symbol_reuse import (
     CURRENT_SYMBOL_REUSE_RULE_NAME,
 )
+from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
 from libs.alpaca_end_of_day_security_correlation.evidence import (
     build_ticker_ownership_intervals,
     ownership_interval_rule_order,
@@ -1791,17 +1792,19 @@ class RowCorrelationTests(unittest.TestCase):
                 self.assertEqual(("ambiguous_asof_uuid_lineage_intervals",), decision.reason_codes)
         self.assertIsNone(_apply_asof_selected_identity_rule(replace(context, selected_asof_interval=None)))
 
-    def test_exchange_exclusion_precedes_exact_asof_uuid(self):
+    def test_retired_exchange_classification_rejects_before_exact_asof_rows(self):
         lineage = self._overlapping_asof_lineage()
         lineage["symbol_disposition"] = {"classification": EXCHANGE_TEST_SYMBOL}
         intervals, _ = build_ticker_ownership_intervals(lineage)
-        branches = correlate_download_rows(
-            [{"t": "2024-01-03T12:00:00Z"}], correlation_source("CURRENT", asof="2026-10-15"), lineage, intervals
-        )
-        self.assertEqual([], branches["correlated"])
-        self.assertEqual(
-            "exchange_test_symbol_exclusion", branches["uncorrelated"][0]["correlation_rule"]["name"]
-        )
+
+        class ForbiddenRows:
+            def __iter__(self):
+                raise AssertionError("retired assertion reached row evaluation")
+
+        with self.assertRaisesRegex((ValueError, SecurityCorrelationError), "inadmissible"):
+            correlate_download_rows(
+                ForbiddenRows(), correlation_source("CURRENT", asof="2026-10-15"), lineage, intervals
+            )
 
     def test_preserved_start_exposes_concurrent_predecessors_instead_of_selecting_one(self):
         lineage = {"corporate_actions": [], "identities": [], "symbol_occupancy_evidence": []}
@@ -3502,7 +3505,7 @@ class RowCorrelationTests(unittest.TestCase):
         self.assertEqual(series_identity, segment["market_data_series_identity"])
         self.assertFalse(segment["market_data_series_identity"]["is_security_identity"])
 
-    def test_exchange_test_symbol_is_explicitly_excluded_from_security_correlation(self) -> None:
+    def test_retired_exchange_label_cannot_override_a_supported_provider_identity(self) -> None:
         test_asset = asset("test-asset-id", "ZXZZT", "NASDAQ TEST STOCK")
         lineage = {
             "identities": [{**test_asset, "lookup_symbols": ["ZXZZT"]}],
@@ -3525,22 +3528,16 @@ class RowCorrelationTests(unittest.TestCase):
                 "market_data_series_identity": market_data_series_identity("ZXZZT"),
             },
         }
-
-        branches = correlate_download_rows(
-            [{"t": "2026-09-30T04:00:00Z"}],
-            correlation_source("ZXZZT", asof="2026-10-06"),
-            lineage,
-            [],
-        )
-
-        self.assertEqual([], branches["correlated"])
+        rows = [{"t": "2026-10-05T04:00:00Z"}]
+        source = correlation_source("ZXZZT", asof="2026-10-06")
+        with self.assertRaisesRegex((ValueError, SecurityCorrelationError), "inadmissible"):
+            correlate_download_rows(rows, source, lineage, [])
+        lineage.pop("symbol_disposition")
+        intervals, _ = build_ticker_ownership_intervals(lineage)
+        branches = correlate_download_rows(rows, source, lineage, intervals)
+        self.assertEqual([], branches["uncorrelated"])
         self.assertEqual(
-            ["exchange_test_symbol_excluded"],
-            branches["uncorrelated"][0]["reason_codes"],
-        )
-        self.assertEqual(
-            ["test-asset-id"],
-            [item["asset_id"] for item in branches["uncorrelated"][0]["candidate_securities"]],
+            ["test-asset-id"], [s["canonical_security"]["alpaca_asset_id"] for s in branches["correlated"]]
         )
 
     def test_internal_security_id_is_order_independent_and_membership_sensitive(self) -> None:

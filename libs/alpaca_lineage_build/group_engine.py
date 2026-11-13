@@ -16,8 +16,6 @@ from libs.alpaca_pricing_download.contract import (
 from libs.alpaca_pricing_download.update_checks import (
     acknowledge_checks,
 )
-from libs.alpaca_security_lineage.event_supplements import RENAME_KIND
-from libs.alpaca_security_lineage.sourced_facts import items as sourced_items
 from libs.common.debug_trace import traced
 
 from . import storage
@@ -532,7 +530,6 @@ def process_group(
 
     unavailable = {}
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
-        evidence_client.expand_rule_scope(group)
         required = None
         if work_policy is not None:
             work_policy.current_group = set(group)
@@ -683,37 +680,12 @@ def process_group(
                         "retained lineage rebuild requires coherent completed inputs; finish owning recovery first"
                     )
                 unavailable = dict(prior_unavailable)
-            retained_evidence = [prior["evidence"] for prior in previous.values() if prior] + [
-                item["evidence"] for item in prior_unavailable.values() if "evidence" in item
-            ]
-            evidence_client.retain_event_supplements(retained_evidence)
-            application_changed = any(
-                set(application["symbols"]).intersection(group)
-                and any(
-                    prior
-                    and prior["evidence"].get("sourced_fact_applications", {}).get(application["id"])
-                    != application["fingerprint"]
-                    for name, prior in previous.items()
-                    if name in application["symbols"]
-                )
-                for application in evidence_client.rule_applications
-            )
-            changed_event_supplements = not retained_rebuild and any(
-                evidence_client.supplements_for(facts) != facts.get("event_supplements", [])
-                or evidence_client.successions_for(facts)
-                != facts.get("sourced_successions", {}).get("facts", [])
-                or evidence_client.sourced_for(facts) != list(sourced_items(facts))
-                for facts in retained_evidence
-            )
-            changed_event_supplements = changed_event_supplements or (
-                not retained_rebuild and application_changed
-            )
             explicit_membership = context.completed_membership_plans.get(tuple(sorted(group)))
             if explicit_membership is not None and (
                 context._ruleset is None or context._ruleset.membership_refinement is None
             ):
                 raise LineageError("completed membership input requires its enabled registered producer")
-            changed_event_supplements = changed_event_supplements or explicit_membership is not None
+            membership_projection_requested = explicit_membership is not None
             from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
 
             if not retained_rebuild and any(
@@ -721,8 +693,12 @@ def process_group(
                 for prior in previous.values()
             ):
                 evidence_client.prepare_retained(
-                    [prior["evidence"] for prior in previous.values() if prior]
-                    + [item["evidence"] for item in prior_unavailable.values() if "evidence" in item]
+                    [evidence_client.provider_view(prior["evidence"]) for prior in previous.values() if prior]
+                    + [
+                        evidence_client.provider_view(item["evidence"])
+                        for item in prior_unavailable.values()
+                        if "evidence" in item
+                    ]
                 )
             reuse_metadata = services.reuse_metadata(seed, group, selected, previous, notices, metadata_refresh)
             metadata_current = reuse_metadata and (
@@ -795,7 +771,7 @@ def process_group(
                 reuse_metadata
                 and metadata_current
                 and computation_current
-                and not changed_event_supplements
+                and not membership_projection_requested
                 and can_promote_group(previous, group)
                 and all(
                     evidence_client.evidence_current(item["evidence"])
@@ -807,7 +783,7 @@ def process_group(
                 reuse_metadata
                 and metadata_current
                 and computation_current
-                and not changed_event_supplements
+                and not membership_projection_requested
                 and (
                     promoted_decision
                     or all(
@@ -922,6 +898,21 @@ def process_group(
                     f"{seed}: required group reconciliation extends beyond requested cutoff {end_date}; "
                     "retained pricing and lineage remain unchanged"
                 )
+            # The unchanged publication above stays closed. Only selected new
+            # work consumes provider-only views of legacy auxiliary metadata;
+            # replacing that view must not mutate the prior receipt's body.
+            unavailable = {
+                name: {
+                    **value,
+                    **(
+                        {"evidence": evidence_client.provider_view(value["evidence"])}
+                        if "evidence" in value
+                        and value["evidence"] is prior_unavailable.get(name, {}).get("evidence")
+                        else {}
+                    ),
+                }
+                for name, value in unavailable.items()
+            }
             required = {
                 symbol: {"from": start, "end_exclusive": end}
                 for symbol in sorted(group)
@@ -952,7 +943,7 @@ def process_group(
                 choice_corrections = dict(corrections)
                 prefix_scope = (
                     retained_recovery is None
-                    and not changed_event_supplements
+                    and not membership_projection_requested
                     and group == sources.keys() | unavailable.keys()
                 )
                 unchanged = (
@@ -976,21 +967,7 @@ def process_group(
                     if resume
                     else "changed_or_unproven_inputs",
                 )
-                source_work_requested = not retained_rebuild and (
-                    explicit_membership is not None
-                    or any(
-                        item["kind"]
-                        in {
-                            "public_common_continuation",
-                            "distinct_security_conversion",
-                            "dated_market_occupancy",
-                            "issuer_capital_repayment",
-                        }
-                        for symbol in group
-                        for item in evidence_client.all_event_supplements(symbol)
-                    )
-                    and (changed_event_supplements or any(prior is None for prior in previous.values()))
-                )
+                source_work_requested = not retained_rebuild and membership_projection_requested
                 if source_work_requested:
                     controls = {
                         name: metadata_source_control(
@@ -1005,6 +982,10 @@ def process_group(
                     }
                     for name, control in controls.items():
                         control.previous_receipt_generation = index["symbols"].get(name, {}).get("sha256")
+                        if control.previous is not None:
+                            control.accepted_provider_evidence = evidence_client.provider_view(
+                                control.previous["evidence"], local_report=control.local
+                            )
                     if progress:
                         progress("lineage_evidence", {"symbols": sorted(group), "reused": reuse_metadata})
                     for _metadata_round in range(MAX_CLOSURE + 1):
@@ -1016,7 +997,7 @@ def process_group(
                             )
                             key = (symbol, view.source_sha256, full)
                             if retained_rebuild:
-                                evidence[symbol] = prior["evidence"]
+                                evidence[symbol] = view.accepted_provider_evidence
                             elif key in metadata_cache and evidence_client.evidence_current(metadata_cache[key]):
                                 # A receipt reader can return another accepted copy.
                                 # Keep the completed metadata producer object and
@@ -1031,7 +1012,7 @@ def process_group(
                                 # object even when another source selects new work.
                                 # Rebuilding an equal copy loses its producer binding
                                 # and repeats downstream work after interruption.
-                                metadata_cache[key] = evidence[symbol] = prior["evidence"]
+                                metadata_cache[key] = evidence[symbol] = view.accepted_provider_evidence
                             else:
                                 if key not in metadata_cache or not evidence_client.evidence_current(
                                     metadata_cache[key]
@@ -1051,11 +1032,6 @@ def process_group(
                                         refresh=full,
                                     )
                                 evidence[symbol] = metadata_cache[key]
-                            if not retained_rebuild:
-                                from .sourced_rules import project_application_intents
-
-                                evidence[symbol] = project_application_intents(evidence_client, evidence[symbol])
-                                metadata_cache[key] = evidence[symbol]
                             deps[symbol] = (
                                 prior["dependencies"]
                                 if retained_rebuild
@@ -1169,7 +1145,7 @@ def process_group(
                             ruleset=context._ruleset,
                             accepted_membership_plan=accepted_membership_plan,
                         )
-                        if source_plan.common_membership["certificates"] and any(
+                        if any(
                             source_plan.memberships.get(member, identity)["security_id"]
                             != identity["security_id"]
                             for control in controls.values()
@@ -1317,7 +1293,7 @@ def process_group(
                         release_completed_assemblies(context, store, group)
                         return result
                     raise LineageError(
-                        "sourced metadata closure requires explicitly selected missing pricing before evaluation"
+                        "metadata closure requires explicitly selected missing pricing before evaluation"
                     )
                 # Assembly has the same source/receipt scope as its producer.
                 # It survives a peer or publication failure, never a new generation.
@@ -1471,11 +1447,15 @@ def process_group(
                     for symbol, view in inputs.items():
                         prior = previous[symbol]
                         if retained_rebuild:
-                            evidence[symbol] = prior["evidence"]
+                            evidence[symbol] = evidence_client.provider_view(
+                                prior["evidence"], local_report=view.local
+                            )
                         elif reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
                             # Only the downstream rules changed. Consume the approved
                             # evidence directly, then recalculate the complete group.
-                            evidence[symbol] = prior["evidence"]
+                            evidence[symbol] = evidence_client.provider_view(
+                                prior["evidence"], local_report=view.local
+                            )
                         else:
                             full = full_metadata(
                                 prior, None if corrections[symbol] else notices.get(symbol), history_refresh
@@ -1591,63 +1571,25 @@ def process_group(
                             required.setdefault(symbol, {"from": start, "end_exclusive": end})
                 if not required:
                     check_unavailable_pricing(store, unavailable, locked, sources=sources)
-                    retained_membership = next(
-                        (
-                            prior.get("sourced_rename_membership")
-                            for prior in previous.values()
-                            if prior and prior.get("sourced_rename_membership")
-                        ),
-                        None,
-                    )
-                    membership_scope_applies = (
-                        retained_membership is not None
-                        and not changed_event_supplements
-                        and all(
-                            prior and set(prior["input_sources"]) | unavailable_pricing(prior).keys() == group
-                            for prior in previous.values()
-                        )
-                    )
-                    # An empty completed result depends only on fact absence and
-                    # selected closure. Provider observations cannot manufacture
-                    # operator facts. Price replacement therefore needs no extra
-                    # metadata comparison to carry this already accepted result.
-                    membership_is_empty = (
-                        retained_membership is not None
-                        and not retained_membership["certificates"]
-                        and not retained_membership["issues"]
-                    )
-                    empty_membership_applies = (
-                        membership_scope_applies
-                        and membership_is_empty
-                        and not any(
-                            item["kind"] == RENAME_KIND
-                            for facts in (
-                                *evidence.values(),
-                                *(item["evidence"] for item in unavailable.values()),
-                            )
-                            for item in facts.get("event_supplements", ())
-                        )
-                    )
-                    new_fact_handoffs = any(
-                        prior
-                        and (
-                            (prior.get("public_common_continuation_membership") or {}).get("certificates")
-                            or (prior.get("public_common_continuation_membership") or {}).get("issues")
-                            or prior.get("security_relations", {}).get("relations")
-                            or prior.get("security_relations", {}).get("issues")
-                        )
-                        for prior in previous.values()
-                    )
                     membership_deltas = (
-                        {}
-                        if resume
-                        or any(decision[1][1] for decision in prefix_decisions.values())
-                        or membership_scope_applies
-                        and (not membership_is_empty or new_fact_handoffs)
-                        else None
+                        {} if resume or any(decision[1][1] for decision in prefix_decisions.values()) else None
                     )
+                    # Compare the metadata owner's completed provider views.
+                    # Legacy research provenance stays in the original receipts;
+                    # its omission from fresh inference is not a history change.
+                    provider_previous = previous
+                    if membership_deltas is not None:
+                        provider_previous = dict(previous)
+                        for name, prior in previous.items():
+                            if prior is None or not (resume or prefix_decisions[name][1][1]):
+                                continue
+                            before = evidence_client.provider_view(
+                                prior["evidence"], local_report=inputs[name].local
+                            )
+                            if before is not prior["evidence"]:
+                                provider_previous[name] = {**prior, "evidence": before}
                     historical_lineage = requires_lineage(
-                        previous,
+                        provider_previous,
                         evidence,
                         pricing_unchanged=resume
                         and (unchanged or all(complete_append(view) for view in inputs.values())),
@@ -1655,7 +1597,7 @@ def process_group(
                         append=resume,
                         completed_deltas=membership_deltas,
                         auxiliary_previous={
-                            name: item["evidence"]
+                            name: evidence_client.provider_view(item["evidence"])
                             for name, item in unavailable_pricing(previous.get(seed)).items()
                         }
                         if membership_deltas is not None
@@ -1666,19 +1608,11 @@ def process_group(
                         classification_sources={
                             name for name, decision in prefix_decisions.items() if decision[1][1]
                         }
-                        if not resume and membership_is_empty and not new_fact_handoffs
+                        if not resume
                         else None,
                     )
-                    accepted_membership = (
-                        retained_membership
-                        if empty_membership_applies
-                        or membership_deltas is not None
-                        and membership_deltas.keys() == previous.keys() | unavailable.keys()
-                        and all(delta["scope"] != "complete_group" for delta in membership_deltas.values())
-                        else None
-                    )
                     append_invalidation = (
-                        append_history_invalidation(previous, inputs)
+                        append_history_invalidation(provider_previous, inputs)
                         if resume and not historical_lineage
                         else None
                     )
@@ -1781,35 +1715,9 @@ def process_group(
                                 + ", ".join(incomplete)
                             )
                     resume = not historical_lineage
-                    if accepted_membership is not None:
-                        metadata_applies = not changed_event_supplements and (
-                            not new_fact_handoffs
-                            or membership_deltas is not None
-                            and all(delta["scope"] != "complete_group" for delta in membership_deltas.values())
-                        )
-                        for name, view in inputs.items():
-                            view.accepted_sourced_rename_membership = accepted_membership
-                            if metadata_applies:
-                                view.accepted_public_common_membership = previous[name].get(
-                                    "public_common_continuation_membership"
-                                )
-                                view.accepted_security_relations = previous[name].get("security_relations")
-                                if not historical_lineage:
-                                    view.accepted_public_common_ownership = previous[name].get(
-                                        "public_common_continuation_ownership"
-                                    )
                     for name, certificate in accepted_prefix_sources.items():
-                        inputs[name].accepted_documented_membership = certificate.get(
-                            "documented_identity_membership"
-                        )
                         inputs[name].accepted_current_source_ownership = certificate.get(
                             "current_source_ownership"
-                        )
-                        inputs[name].accepted_sourced_rename_ownership = certificate.get(
-                            "sourced_rename_ownership"
-                        )
-                        inputs[name].accepted_public_common_ownership = certificate.get(
-                            "public_common_continuation_ownership"
                         )
                     scoped_memberships = services.scoped_identity_memberships(
                         choice_prefix_sources, old_boundaries

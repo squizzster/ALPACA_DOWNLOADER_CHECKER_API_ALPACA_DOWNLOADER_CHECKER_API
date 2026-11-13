@@ -1,13 +1,14 @@
-"""First ownership comes from dated securities, not from an existing owned row."""
+"""Authored market plans reject; completed generic components remain closed."""
 
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
 from libs.alpaca_end_of_day_security_correlation import documented_markets as documented
-from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
 from libs.alpaca_end_of_day_security_correlation.security_identity import security_identity_for_alpaca_assets
+from libs.alpaca_lineage_build.source_work_contract import compose_memberships
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_security_lineage import event_supplements
 
@@ -50,7 +51,7 @@ def documented_fact(
 
 
 def fixture():
-    facts = event_supplements.accept_supplements(
+    facts = list(
         [
             documented_fact(
                 "former-bank",
@@ -185,35 +186,40 @@ def fixture():
 
 
 class DocumentedMarketTests(TestCase):
-    def test_documented_owner_consumes_one_completed_containing_component(self):
-        inputs, reports, evidence, accepted = fixture()
-        completed = security_identity_for_alpaca_assets(
-            ["continuing", "later-observed"], [], tickers=["OLD", "CONT"], basis="accepted_later_component"
+    def test_generic_membership_consumes_a_completed_containing_component(self):
+        narrow = security_identity_for_alpaca_assets(
+            ["continuing"], [], tickers=["OLD", "CONT"], basis="accepted"
         ).as_report_object()
-        accepted["later-scope"] = {identifier: completed for identifier in completed["member_alpaca_asset_ids"]}
-        with self.assertRaisesRegex(SecurityCorrelationError, "source-scoped public membership"):
-            documented.bind(evidence, accepted_memberships=accepted)
-        plan = documented.bind(evidence, accepted_memberships=accepted, allow_containing_membership=True)
-        owner = next(item for item in plan["owners"] if item["source_fact_id"] == "continuing-bank")
-        self.assertIs(completed, owner["identity"])
-        self.assertEqual("completed_containing_component", owner["membership_resolution"])
-        with patch.object(
-            documented, "bind", side_effect=AssertionError("completed containing binding repeated")
+        whole = security_identity_for_alpaca_assets(
+            ["continuing", "later"], [], tickers=["OLD", "CONT"], basis="accepted"
+        ).as_report_object()
+        previous = {"continuing": narrow, "later": whole}
+        edge = SimpleNamespace(
+            predecessor_asset_id="continuing",
+            successor_asset_id="later",
+            predecessor_symbol="OLD",
+            successor_symbol="CONT",
+        )
+        with patch(
+            "libs.alpaca_lineage_build.source_work_contract.security_identity_for_alpaca_assets",
+            side_effect=AssertionError("completed component recalculated"),
         ):
-            result = documented.project(inputs, reports, evidence, plan=plan)
-        restored = next(item for item in result["CONT"]["correlated"]["segments"] if item["row_start"] == 1)
-        self.assertEqual(completed["security_id"], restored["security_identity"]["security_id"])
-        self.assertEqual("OLD", restored["historical_symbol"])
+            result = compose_memberships(previous, [edge])
+        self.assertTrue(all(value is whole for value in result.values()))
 
-    def test_incomparable_accepted_components_cannot_be_unioned_by_a_shared_uuid(self):
-        _, _, evidence, accepted = fixture()
-        for name in ("one", "two"):
-            component = security_identity_for_alpaca_assets(
-                ["continuing", name], [], tickers=["OLD", "CONT"], basis="accepted_separate_scope"
-            ).as_report_object()
-            accepted[name] = dict.fromkeys(component["member_alpaca_asset_ids"], component)
-        with self.assertRaisesRegex(SecurityCorrelationError, "source-scoped public membership"):
-            documented.bind(evidence, accepted_memberships=accepted, allow_containing_membership=True)
+    def test_shared_uuid_does_not_invent_a_join_without_a_completed_edge(self):
+        one = security_identity_for_alpaca_assets(
+            ["shared", "one"], [], tickers=["OLD"], basis="accepted"
+        ).as_report_object()
+        two = security_identity_for_alpaca_assets(
+            ["shared", "two"], [], tickers=["NEW"], basis="accepted"
+        ).as_report_object()
+        previous = {"one": one, "two": two}
+        with patch(
+            "libs.alpaca_lineage_build.source_work_contract.security_identity_for_alpaca_assets",
+            side_effect=AssertionError("unsupported join calculated"),
+        ):
+            self.assertEqual(previous, compose_memberships(previous, []))
 
     def test_held_report_rebind_changes_only_the_public_component_references(self):
         from libs.alpaca_lineage_build.source_work import rebind_retained_report
@@ -241,116 +247,59 @@ class DocumentedMarketTests(TestCase):
                 self.assertEqual(before[field], after[field])
         self.assertIs(report, rebind_retained_report(report, prior, {"continuing": old}))
 
-    def test_first_owners_and_reuse_gap_are_separate_from_later_description(self):
-        inputs, reports, evidence, accepted = fixture()
-        plan = documented.bind(evidence, accepted_memberships=accepted)
-        with patch.object(documented, "bind", side_effect=AssertionError("accepted identity binding replayed")):
-            result = documented.project(inputs, reports, evidence, plan=plan)
-        self.assertEqual(40, result["REUSE"]["correlated"]["row_count"])
-        self.assertEqual(8, result["REUSE"]["uncorrelated"]["row_count"])
-        raw = [s for s in result["REUSE"]["correlated"]["segments"] if s["adjustment"] == "raw"]
-        self.assertEqual([(1, 3), (5, 6)], [(s["row_start"], s["row_end"]) for s in raw])
-        self.assertEqual(["old-bank", "new-fund"], [s["canonical_security"]["alpaca_asset_id"] for s in raw])
-        self.assertEqual(
-            ["Former Bank", "Later ETF"],
-            [s["ticker_ownership_interval"]["security_description"]["name"] for s in raw],
-        )
-        self.assertTrue(all("observation_selection" not in s for s in result["REUSE"]["correlated"]["segments"]))
-        self.assertEqual(reports["FROZEN"]["correlated"], result["FROZEN"]["correlated"])
-
-    def test_missing_dated_uuid_keeps_known_public_owner_and_old_supersessions(self):
-        inputs, reports, evidence, accepted = fixture()
-        result = documented.project(
-            inputs, reports, evidence, plan=documented.bind(evidence, accepted_memberships=accepted)
-        )
-        held = reports["CONT"]["correlated"]["segments"]
-        self.assertTrue(all(result["CONT"]["correlated"]["segments"][i] is s for i, s in enumerate(held)))
-        new = [s for s in result["CONT"]["correlated"]["segments"] if s["row_start"] == 1]
-        self.assertEqual(8, len(new))
-        self.assertTrue(all(s["canonical_security"]["alpaca_asset_id"] is None for s in new))
-        self.assertTrue(all(s["security_identity"] is accepted["CONT"]["continuing"] for s in new))
-        self.assertTrue(all(s["observation_selection"] == "superseded" for s in held))
-
-    def test_source_continuation_beats_an_unrelated_historical_ticker(self):
-        inputs, reports, evidence, accepted = fixture()
-        result = documented.project(
-            inputs, reports, evidence, plan=documented.bind(evidence, accepted_memberships=accepted)
-        )
-        raw = [s for s in result["OLD"]["correlated"]["segments"] if s["adjustment"] == "raw"]
-        self.assertEqual(["BEFORE", "OLD"], [s["historical_symbol"] for s in raw])
-        self.assertEqual({"replacement"}, {s["canonical_security"]["alpaca_asset_id"] for s in raw})
-
-    def test_unknown_or_conflicting_exact_mapping_requires_metadata_recovery(self):
+    def test_well_formed_documented_owner_rejects_before_storage(self):
         _, _, evidence, accepted = fixture()
-        missing = deepcopy(evidence)
-        for report in missing.values():
-            report["asset_lookups"] = [x for x in report["asset_lookups"] if x["lookup"] != "333333333"]
-        with self.assertRaisesRegex(SecurityCorrelationError, "exact metadata recovery"):
-            documented.bind(missing, accepted_memberships=accepted)
-        bad = deepcopy(evidence)
-        bad["CONT"]["asset_lookups"].append(
-            {
-                "lookup_kind": "cusip",
-                "lookup": "444444444",
-                "outcome": "found",
-                "http_status": 200,
-                "asset": {"id": "rival"},
-            }
-        )
-        with self.assertRaisesRegex(SecurityCorrelationError, "conflicting completed"):
-            documented.bind(bad, accepted_memberships=accepted)
+        with patch.object(Path, "open", side_effect=AssertionError("metadata opened")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                documented.bind(evidence, accepted_memberships=accepted, allow_containing_membership=True)
 
-    def test_tied_former_owners_remain_explicit_instead_of_using_uuid_order(self):
-        inputs, reports, evidence, accepted = fixture()
-        rival = event_supplements.accept_supplements(
-            [
-                documented_fact(
-                    "another-former-bank",
-                    ("REUSE", "666666666"),
-                    ("REUSE", "666666666"),
-                    [("REUSE", "666666666", "2024-01-01", "2024-01-05", "Another Bank")],
+    def test_rejected_projection_keeps_completed_positive_and_ownerless_rows(self):
+        inputs, reports, evidence, _ = fixture()
+        original = deepcopy(reports)
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            documented.project(inputs, reports, evidence)
+        self.assertEqual(original, reports)
+
+    def test_raw_plan_cannot_bypass_assertion_ingress(self):
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            documented.project(None, None, {}, plan={"owners": [{"identity": "authored"}]})
+
+    def test_missing_or_conflicting_endpoint_cannot_authorize_research(self):
+        for missing in (True, False):
+            _, _, evidence, accepted = fixture()
+            if missing:
+                evidence["CONT"]["asset_lookups"] = []
+            else:
+                evidence["CONT"]["asset_lookups"].append(
+                    {"lookup_kind": "cusip", "lookup": "444444444", "asset": {"id": "rival"}}
                 )
-            ]
-        )[0]
-        evidence["REUSE"]["sourced_market_occupancy"]["facts"] = [
-            *evidence["REUSE"]["sourced_market_occupancy"]["facts"],
-            rival,
-        ]
-        evidence["REUSE"]["asset_lookups"].append(
-            {
-                "lookup_kind": "cusip",
-                "lookup": "666666666",
-                "outcome": "found",
-                "http_status": 200,
-                "asset": {"id": "other-old-bank"},
-            }
-        )
-        result = documented.project(
-            inputs, reports, evidence, plan=documented.bind(evidence, accepted_memberships=accepted)
-        )
-        first = next(
-            s
-            for s in result["REUSE"]["uncorrelated"]["segments"]
-            if s["adjustment"] == "raw" and s["row_start"] == 1
-        )
-        self.assertEqual(
-            {"old-bank", "other-old-bank"}, {s["alpaca_asset_id"] for s in first["candidate_securities"]}
-        )
-        self.assertIn("competing_documented_public_owners", first["reason_codes"])
+            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "inadmissible"):
+                documented.bind(evidence, accepted_memberships=accepted)
 
-    def test_schema_rejects_unlike_instruments_and_unsupported_share_treatment(self):
-        value = documented_fact(
-            "bad",
-            ("ONE", "111111111"),
-            ("TWO", "222222222"),
-            [
-                ("ONE", "111111111", "2024-01-01", "2024-01-05", "One"),
-                ("TWO", "222222222", "2024-01-05", None, "Two"),
-            ],
+    def test_no_research_request_preserves_closed_labels_and_ownerless_rows(self):
+        inputs, reports, evidence, _ = fixture()
+        for value in evidence.values():
+            value.pop("sourced_market_occupancy")
+        with patch.object(Path, "open", side_effect=AssertionError("accepted prices reopened")):
+            self.assertIs(reports, documented.project(inputs, reports, evidence))
+        self.assertEqual(48, reports["REUSE"]["uncorrelated"]["row_count"])
+        self.assertTrue(
+            all(s["observation_selection"] == "superseded" for s in reports["CONT"]["correlated"]["segments"])
         )
-        with self.assertRaisesRegex(ValueError, "continuing security treatment"):
-            event_supplements.accept_supplements([value])
-        value["facts"]["identity_treatment"] = "preexisting_common_remained_outstanding"
-        value["facts"]["successor"]["instrument_kind"] = "ETF"
-        with self.assertRaisesRegex(ValueError, "unlike instruments"):
-            event_supplements.accept_supplements([value])
+
+    def test_all_authored_instrument_and_treatment_variants_reject(self):
+        for kind, treatment in (
+            ("public_common_stock", "same_cusip_security"),
+            ("ETF", "same_cusip_security"),
+            ("warrant", "preexisting_common_remained_outstanding"),
+        ):
+            fact = documented_fact(
+                "asserted",
+                ("OLD", "111111111"),
+                ("NEW", "222222222"),
+                [("OLD", "111111111", "2024-01-01", "2024-01-05", "Old")],
+                kind=kind,
+                treatment=treatment,
+            )
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "inadmissible"):
+                event_supplements.accept_supplements([fact])

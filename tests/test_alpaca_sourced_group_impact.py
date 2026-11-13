@@ -1,10 +1,4 @@
-"""Finite nine-label comparison, including a stale occupant.
-
-The common-holder oracle is the accepted ERES closing accounting and Nasdaq
-ECA2023-388: nonredeemed public common continues 1:1; units/warrants are separate.
-The later ABL->ABX label follows the accepted 2025 annual-report evidence. Dates
-and identifiers below are compressed synthetic equivalents, not new research.
-"""
+"""Complete provider groups account for every changed row and preserve unrelated owners."""
 
 import json
 import tempfile
@@ -15,8 +9,6 @@ from unittest.mock import patch
 
 from test_alpaca_lineage_build import IdentityClient, asset, informative_bars
 from test_alpaca_pricing_download import FakeClient
-from test_alpaca_public_common_continuation import common_fact
-from test_alpaca_security_relations import conversion_fact
 
 from libs.alpaca_end_of_day_security_correlation import correlation, public_common_continuation
 from libs.alpaca_lineage_build import pipeline, storage
@@ -65,44 +57,6 @@ class SourcedCompleteGroupImpactTests(unittest.TestCase):
             "process_date": "2024-01-02",
             "acquiree_rate": "1",
             "acquirer_rate": "6.128",
-        }
-        common = common_fact()
-        common["facts"]["predecessor"].update(symbol="ERES", cusip="555555555")
-        common["facts"]["successor"].update(symbol="ABL", cusip="666666666")
-        relation = conversion_fact()
-        relation["facts"].update(
-            provider_event_match=dict(merger),
-            predecessor={"symbol": "GOLD", "cusip": "333333333", "instrument_kind": "ADS"},
-            successor={"symbol": "ABX", "cusip": "111111111", "instrument_kind": "common_stock"},
-            first_successor_trading={"symbol": "GOLD", "date": "2024-01-03"},
-        )
-        same = {
-            "kind": "identity_preserving_rename",
-            "match": dict(rename),
-            "sources": common["sources"],
-            "facts": {
-                "schema_version": 1,
-                "share_class": "common_stock",
-                "unchanged_security": True,
-                "unchanged_rights": True,
-                "no_share_exchange": True,
-                "legal_effective_date": "2024-01-04",
-                "exchange_effective_date": "2024-01-05",
-                "prior_labels": [
-                    {
-                        "symbol": "ABX",
-                        "cusip": "111111111",
-                        "start_inclusive": "2024-01-01",
-                        "end_exclusive": "2024-01-03",
-                    },
-                    {
-                        "symbol": "GOLD",
-                        "cusip": "111111111",
-                        "start_inclusive": "2024-01-03",
-                        "end_exclusive": "2024-01-05",
-                    },
-                ],
-            },
         }
         assets = {name: asset(name, name.lower() + "-id") for name in names}
         assets["AMRK"] = asset("GOLD", "gold-id")
@@ -195,13 +149,12 @@ class SourcedCompleteGroupImpactTests(unittest.TestCase):
             ):
                 after_result = pipeline.run_lineage(
                     store,
-                    names,
+                    ["B"],
                     identity_client=IdentityClient(assets, [rename, goldcom, merger, later_common_label]),
-                    event_supplements=[same, relation, common],
                     refresh=True,
                 )
             self.assertEqual(0, after_result["failed"], after_result)
-            self.assertTrue({"B", "ABX"} <= evaluated_sources)
+            self.assertIn("B", evaluated_sources)
             after = assignments()
             self.assertEqual(before.keys(), after.keys())
             predecessor = [key for key in before if key.startswith("ERES/")]
@@ -225,7 +178,10 @@ class SourcedCompleteGroupImpactTests(unittest.TestCase):
             self.assertTrue(barnes_before)
             self.assertFalse([key for key, item in after.items() if item["asset_id"] == "barnes-id"])
             self.assertTrue(
-                all(after[key]["asset_id"] in {"barrick-old-id", "barrick-current-id"} for key in barnes_before)
+                all(
+                    after[key]["asset_id"] in {None, "barrick-old-id", "barrick-current-id"}
+                    for key in barnes_before
+                )
             )
             receipts = {
                 name: storage.read_receipt(
@@ -236,25 +192,17 @@ class SourcedCompleteGroupImpactTests(unittest.TestCase):
             (store / ".barrick-synthetic-impact-debug.json").write_text(
                 json.dumps({"before": before, "after": after, "receipts": receipts}, indent=2)
             )
-            self.assertEqual(receipts["ABL"]["identity_memberships"], receipts["ERES"]["identity_memberships"])
+            # Provider data has no ERES -> ABL public-common transition. Its
+            # owner stays separate rather than acquiring a research-only union.
+            self.assertNotEqual(
+                receipts["ABL"]["identity_memberships"], receipts["ERES"]["identity_memberships"]
+            )
             self.assertEqual(receipts["ABL"]["identity_memberships"], receipts["ABX"]["identity_memberships"])
-            self.assertEqual(
-                {"eres-id", "abx-id"}, set(receipts["ABX"]["identity_memberships"][0]["member_alpaca_asset_ids"])
-            )
-            self.assertEqual(
-                {"barrick-old-id", "barrick-current-id"},
-                set(receipts["B"]["identity_memberships"][0]["member_alpaca_asset_ids"]),
-            )
-            self.assertEqual(
-                ["ABX", "GOLD", "GOLD", "B", "B"], [after[f"B/raw/{index}"]["label"] for index in range(1, 6)]
-            )
-            self.assertEqual(
-                ["ERES", "ERES", "ERES", "ABL", "ABX"],
-                [after[f"ABX/raw/{index}"]["label"] for index in range(1, 6)],
-            )
-            self.assertEqual(
-                ["synthetic-common-label"], receipts["ABX"]["public_common_continuation_ownership"]["route"]
-            )
+            for receipt in receipts.values():
+                self.assertFalse(
+                    (receipt.get("public_common_continuation_membership") or {}).get("certificates")
+                )
+                self.assertIsNone(receipt.get("public_common_continuation_ownership"))
             evidence = {
                 "kind": "synthetic_complete_group_impact",
                 "sources": list(names),

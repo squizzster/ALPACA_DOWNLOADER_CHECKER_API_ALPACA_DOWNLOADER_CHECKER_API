@@ -98,12 +98,42 @@ class PipelineCodecTests(unittest.TestCase):
         # These values exercise transport, not owning domain validation.
         for name, cls in DATACLASSES.items():
             with self.subTest(name=name):
-                value = cls(**{field.name: None for field in fields(cls)})
+                values = {field.name: None for field in fields(cls)}
+                if name == "PreparedCandidate":
+                    values.update(receipts={}, previous={}, policy={})
+                value = cls(**values)
                 self.assertEqual(roundtrip(value), value)
+
+    def test_completed_provider_evidence_restores_acceptance_without_guard_or_constructor(self):
+        from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence, accept_provider_evidence
+
+        accepted = accept_provider_evidence({"corporate_actions": [], "asset_lookups": []})
+        with (
+            patch(
+                "libs.alpaca_security_lineage.inference_evidence.reject_assertions",
+                side_effect=AssertionError("repeated guard"),
+            ),
+            patch.object(ProviderEvidence, "__init__", side_effect=AssertionError("constructor replay")),
+        ):
+            restored, alias = roundtrip([accepted, accepted])
+        self.assertIs(restored, alias)
+        self.assertIsInstance(restored, ProviderEvidence)
+        self.assertEqual(restored, accepted)
 
     def test_unknown_producer_type_fails_closed(self):
         with self.assertRaisesRegex(HandoffError, "unsupported handoff value"):
             roundtrip(object())
+
+    def test_active_fact_container_tags_are_not_decoder_capabilities(self):
+        for kind in ("fact_mapping", "fact_list", "accepted_facts", "EventProjection", "MarketPlan"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(HandoffError, "unknown handoff record kind"):
+                Decoder([{"kind": kind, "items": []}]).decode({"ref": 0})
+
+    def test_accepted_fact_container_cannot_be_disguised_as_completed_transport(self):
+        from libs.alpaca_security_lineage.event_supplements import _AcceptedSupplements
+
+        with self.assertRaisesRegex(HandoffError, "research assertion containers"):
+            roundtrip(_AcceptedSupplements([{"authored": True}]))
 
 
 class PipelineStateCapabilityTests(unittest.TestCase):
@@ -158,7 +188,6 @@ class PipelineStateCapabilityTests(unittest.TestCase):
             "metadata": {("AAA", "generation", False): report, ("PRIOR", "generation", False): prior},
             "source_work": {
                 "owner_applicability": {("AAA", id(prior), id(report)): True},
-                "documented_continuities": {(("AAA", id(report)),): ({"complete": True}, None)},
                 "donor_grid_ids": {("AAA", "generation", id(prior), ()): {"public-id"}},
                 "completed_source_work": {
                     ("policy", (("AAA", "/synthetic", "generation", id(prior), id(report)),), ()): {
@@ -178,10 +207,6 @@ class PipelineStateCapabilityTests(unittest.TestCase):
         restored_prior = held["metadata"]["PRIOR", "generation", False]
         self.assertTrue(
             held["source_work"]["owner_applicability"]["AAA", id(restored_prior), id(restored_report)]
-        )
-        self.assertEqual(
-            held["source_work"]["documented_continuities"][(("AAA", id(restored_report)),)][0],
-            {"complete": True},
         )
         scope = ("policy", (("AAA", "/synthetic", "generation", id(restored_prior), id(restored_report)),), ())
         completed = held["source_work"]["completed_source_work"][scope]
@@ -248,14 +273,40 @@ class PipelineObservedErrorTests(unittest.TestCase):
 
 
 class PipelineSourcePlanTests(unittest.TestCase):
+    def test_researched_source_recipes_fail_before_stage_restoration(self):
+        from libs.alpaca_lineage_build.contract import LineageError
+        from libs.alpaca_pipeline.source_state import export_sourced, require_generic_sourced
+
+        for recipe in ("documented_plans", "market_plans", "recapitalization_plans", "documented_continuities"):
+            value = {"source_work": {recipe: {"bound": {"authored": True}}}}
+            with self.subTest(recipe=recipe):
+                with self.assertRaisesRegex(LineageError, "research recipe"):
+                    export_sourced(value, roots=())
+                with self.assertRaisesRegex(LineageError, "research recipe"):
+                    require_generic_sourced(value)
+
+    def test_source_plan_cannot_restore_active_documented_membership(self):
+        from libs.alpaca_lineage_build.contract import LineageError
+        from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
+
+        plan = SourceWorkPlan({}, {}, {}, {}, {}, {}, {}, False, documented_membership={"owners": []})
+        with self.assertRaisesRegex(LineageError, "research recipe"):
+            roundtrip(plan)
+        encoder = Encoder()
+        clean = SourceWorkPlan({}, {}, {}, {}, {}, {}, {}, False)
+        reference = encoder.encode(clean)
+        encoder.objects[reference["ref"]]["fields"]["documented_membership"] = encoder.encode({"owners": []})
+        with self.assertRaisesRegex(LineageError, "research recipe"):
+            Decoder(encoder.objects).decode(reference)
+
     def test_completed_plan_projection_keys_and_adapter_decisions_cross(self):
         from libs.alpaca_lineage_build.pricing import MetadataSourceControl
         from libs.alpaca_lineage_build.source_work import SourceWorkPlan
         from libs.alpaca_pipeline.source_state import export_sourced
 
         evidence, previous = {"metadata": "accepted"}, {"receipt": "accepted"}
-        memberships, documented = {"asset": {"public_id": "held"}}, {"owners": []}
-        projection_key = ("/synthetic", "AAA", "receipt", "generation", id(memberships), id(documented), True)
+        memberships, documented = {"asset": {"public_id": "held"}}, None
+        projection_key = ("/synthetic", "AAA", "receipt", "generation", id(memberships), id(documented), False)
         plan = SourceWorkPlan(
             {"AAA": "A"},
             memberships,
@@ -273,10 +324,10 @@ class PipelineSourcePlanTests(unittest.TestCase):
         control._accepted_binding_applies = True
         control.accepted_common_routes = ({"route": "accepted"},)
         bound = (("AAA", id(evidence)),)
-        market_key = (bound, (("AAA", "receipt", "generation"),))
+        market_key = (bound, (("AAA", "/synthetic", "generation", "receipt"),))
         cache = {
             "source_work": {
-                "documented_plans": {market_key: plan},
+                "plans": {market_key: plan},
                 "completed_source_work": {
                     ("policy", (("AAA", "/synthetic", "generation", "receipt", id(evidence)),), ()): {
                         "controls": (control,),
@@ -287,8 +338,10 @@ class PipelineSourcePlanTests(unittest.TestCase):
         }
         packed = export_sourced(cache, roots=(evidence, previous))
         restored, restored_evidence = roundtrip([packed, evidence])
-        plans = restored["source_work"]["documented_plans"]
-        restored_plan = plans[((("AAA", id(restored_evidence)),), (("AAA", "receipt", "generation"),))]
+        plans = restored["source_work"]["plans"]
+        restored_plan = plans[
+            ((("AAA", id(restored_evidence)),), (("AAA", "/synthetic", "generation", "receipt"),))
+        ]
         key = (
             "/synthetic",
             "AAA",
@@ -296,7 +349,7 @@ class PipelineSourcePlanTests(unittest.TestCase):
             "generation",
             id(restored_plan.memberships),
             id(restored_plan.documented_membership),
-            True,
+            False,
         )
         self.assertEqual(restored_plan.closed_report_projections[key], {"complete": True})
         scope = ("policy", (("AAA", "/synthetic", "generation", "receipt", id(restored_evidence)),), ())

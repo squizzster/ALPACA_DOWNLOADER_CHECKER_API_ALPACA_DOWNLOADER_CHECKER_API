@@ -1,5 +1,6 @@
-"""Retained fact envelopes and memberships keep their accepted producer scopes."""
+"""Retained observations and closed memberships keep their producer scopes."""
 
+import copy
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from libs.alpaca_lineage_build import (
     pricing,
     resume,
     source_work,
+    source_work_contract,
     storage,
     transform,
     universe_state,
@@ -32,83 +34,74 @@ from libs.alpaca_security_lineage import event_supplements, sourced_facts
 
 
 class RetainedFactEnvelopeTests(TestCase):
-    def test_new_fact_order_matches_the_metadata_producer_without_retry(self):
+    def retained(self, *, symbol="UNRELATED", field="sourced_public_common_continuations", envelope=None):
+        from libs.alpaca_security_lineage.lineage import report_from_observations
+
+        result = report_from_observations(
+            symbol,
+            {"present": True, "downloads": [], "counts_known": False},
+            [],
+            [],
+            [symbol],
+            start_date="2024-01-01",
+            end_date="2024-01-10",
+        )
+        result[field] = envelope if envelope is not None else {"version": 1, "facts": [common_fact()]}
+        return result
+
+    def test_new_factual_inputs_reject_before_ordering_or_projection(self):
         first, second = common_fact(), common_fact()
         first["match"]["source_id"], second["match"]["source_id"] = "z-last", "a-first"
-        client = metadata.EvidenceClient(None, event_supplements=[first, second])
-        evidence = {
-            "query": {"input_symbol": first["facts"]["predecessor"]["symbol"]},
-            "queried_symbols": [first["facts"]["predecessor"]["symbol"]],
-            "corporate_actions": [],
-            "asset_lookups": [],
-        }
-        # The actual producer consumes this ordering before attaching its fact
-        # extension. A later applicability check must accept that first output.
-        selected = sourced_facts.selected(client.all_event_supplements(), symbols=evidence["queried_symbols"])
-        evidence["sourced_public_common_continuations"] = {"schema_version": 1, "facts": selected}
-        self.assertEqual(["a-first", "z-last"], [item["match"]["source_id"] for item in selected])
-        self.assertTrue(client.evidence_current(evidence))
+        with (
+            patch.object(sourced_facts, "selected", side_effect=AssertionError("fact selection")),
+            patch.object(event_supplements, "_project_action", side_effect=AssertionError("event projection")),
+            self.assertRaisesRegex(LineageError, "inadmissible"),
+        ):
+            metadata.EvidenceClient(None, event_supplements=[first, second])
 
-    def test_conversion_recipient_lookup_does_not_expand_the_completed_fact_scope(self):
-        client = metadata.EvidenceClient(None, event_supplements=[conversion_fact(), common_fact()])
-        evidence = {
-            "query": {"input_symbol": "FUTURE"},
-            "queried_symbols": ["FUTURE"],
-            "corporate_actions": [],
-            "asset_lookups": [{"lookup_kind": "cusip", "lookup": "111111111"}],
-        }
-        selected = client.sourced_for(evidence)
-        self.assertEqual(["distinct_security_conversion"], [item["kind"] for item in selected])
+    def test_conversion_recipient_lookup_cannot_admit_researched_scope(self):
+        with self.assertRaisesRegex(LineageError, "inadmissible"):
+            metadata.EvidenceClient(None, event_supplements=[conversion_fact(), common_fact()])
 
-    def test_completed_group_fact_scope_survives_narrower_consumer_selection(self):
-        fact = event_supplements.accept_supplements([common_fact()])[0]
-        evidence = {
-            "query": {"input_symbol": "UNRELATED"},
-            "queried_symbols": ["UNRELATED"],
-            "corporate_actions": [],
-            "asset_lookups": [],
-            "sourced_public_common_continuations": {"version": 1, "facts": [fact]},
-        }
+    def test_narrower_consumer_keeps_raw_observation_scope_and_closed_provenance(self):
+        original = self.retained()
+        unchanged = copy.deepcopy(original)
         client = metadata.EvidenceClient(None)
-        client.retain_event_supplements([evidence])
-        self.assertIs(fact, client.sourced_for(evidence)[0])
-        changed = common_fact()
-        changed["facts"]["legal_effective_date"] = "2024-01-03"
-        newer = metadata.EvidenceClient(None, event_supplements=[changed])
-        newer.retain_event_supplements([evidence])
-        self.assertEqual("2024-01-03", newer.sourced_for(evidence)[0]["facts"]["legal_effective_date"])
+        projected = client.provider_view(original)
+        self.assertEqual(["UNRELATED"], projected["queried_symbols"])
+        self.assertEqual([], projected["asset_lookups"])
+        self.assertNotIn("sourced_public_common_continuations", projected)
+        self.assertEqual(unchanged, original)
 
-    def test_known_prepared_envelope_retains_facts_without_reproving_them(self):
-        fact = event_supplements.accept_supplements([common_fact()])[0]
-        evidence = {"sourced_public_common_continuations": {"version": 1, "facts": [fact]}}
+    def test_completed_provider_projection_is_cached_without_fact_reproof(self):
+        original = self.retained()
         client = metadata.EvidenceClient(None)
         with (
             patch.object(sourced_facts, "validate", side_effect=AssertionError("accepted fact revalidated")),
-            patch.object(
-                event_supplements, "_project_action", side_effect=AssertionError("accepted event replayed")
-            ),
+            patch.object(event_supplements, "_project_action", side_effect=AssertionError("event replayed")),
         ):
-            client.retain_event_supplements([evidence])
-            client.retain_event_supplements([evidence])
-        self.assertIs(fact, client.all_event_supplements()[0])
-        self.assertEqual({"version": 1, "facts": [fact]}, evidence["sourced_public_common_continuations"])
+            projected = client.provider_view(original)
+        with patch(
+            "libs.alpaca_security_lineage.lineage.report_from_observations",
+            side_effect=AssertionError("provider projection replayed"),
+        ):
+            self.assertIs(projected, client.provider_view(original))
+        self.assertEqual(
+            {"version": 1, "facts": [common_fact()]}, original["sourced_public_common_continuations"]
+        )
 
-    def test_envelope_spelling_alone_cannot_reopen_accepted_owners(self):
-        fact = event_supplements.accept_supplements([common_fact()])[0]
-        old = {"sourced_public_common_continuations": {"version": 1, "facts": [fact]}}
-        current = {"sourced_public_common_continuations": {"schema_version": 1, "facts": [fact]}}
-        self.assertEqual("none", resume.evidence_delta(old, current, append=True)["scope"])
-        changed_fact = common_fact()
-        changed_fact["match"]["source_id"] = "another-fact"
-        changed = {
-            "sourced_public_common_continuations": {
-                "schema_version": 1,
-                "facts": list(event_supplements.accept_supplements([changed_fact])),
-            }
-        }
-        self.assertEqual("complete_group", resume.evidence_delta(old, changed, append=True)["scope"])
+    def test_research_envelope_changes_do_not_reopen_accepted_provider_owners(self):
+        old = self.retained()
+        current = self.retained(envelope={"schema_version": 1, "facts": [common_fact()]})
+        changed = copy.deepcopy(current)
+        changed["sourced_public_common_continuations"]["facts"][0]["match"]["source_id"] = "another-fact"
+        client = metadata.EvidenceClient(None)
+        before = client.provider_view(old)
+        for retained in (current, changed):
+            after = client.provider_view(retained)
+            self.assertEqual("none", resume.evidence_delta(before, after, append=True)["scope"])
 
-    def test_unknown_empty_or_conflicting_envelopes_are_not_absence_authority(self):
+    def test_malformed_research_envelopes_are_never_runtime_absence_authority(self):
         for envelope in (
             {},
             {"facts": []},
@@ -117,12 +110,21 @@ class RetainedFactEnvelopeTests(TestCase):
             {"version": 1, "schema_version": 1, "facts": []},
             {"schema_version": 1, "facts": {}},
         ):
-            with self.subTest(envelope=envelope), self.assertRaisesRegex(LineageError, "unsupported retained"):
-                metadata.EvidenceClient(None).retain_event_supplements([{"sourced_market_occupancy": envelope}])
-        accepted = {"sourced_market_occupancy": {"schema_version": 1, "facts": []}}
-        client = metadata.EvidenceClient(None)
-        client.retain_event_supplements([accepted])
-        self.assertIs(accepted, client._retained_supplement_evidence[id(accepted)])
+            original = self.retained(field="sourced_market_occupancy", envelope=envelope)
+            unchanged = copy.deepcopy(original)
+            with (
+                self.subTest(envelope=envelope),
+                patch.object(
+                    sourced_facts, "validate", side_effect=AssertionError("research envelope interpreted")
+                ),
+            ):
+                projected = metadata.EvidenceClient(None).provider_view(original)
+                self.assertFalse(projected.get("sourced_market_occupancy"))
+                self.assertEqual([], projected["corporate_actions"])
+                self.assertEqual(unchanged, original)
+        missing_raw = self.retained(field="event_supplements", envelope=[{"legacy": True}])
+        with self.assertRaisesRegex(ValueError, "raw provider observations"):
+            metadata.EvidenceClient(None).provider_view(missing_raw)
 
 
 def identity(name, members):
@@ -138,7 +140,9 @@ class SourceMembershipScopeTests(TestCase):
             "OTHER": {"identity_memberships": []},
         }
         with patch.object(
-            source_work, "compose_memberships", side_effect=AssertionError("accepted components rejoined")
+            source_work_contract,
+            "compose_memberships",
+            side_effect=AssertionError("accepted components rejoined"),
         ):
             result = continuation.scoped_identity_memberships(previous, {})
         self.assertIs(pinned, result["PINNED"]["shared"])
@@ -479,8 +483,10 @@ class RetainedMetadataScopeTests(TestCase):
                 "end_exclusive": "2026-11-11T00:00:00Z",
             },
         }
-        view = SimpleNamespace(source=source)
-        client = SimpleNamespace(evidence_current=lambda value: value is evidence)
+        view = SimpleNamespace(source=source, local={})
+        client = SimpleNamespace(
+            evidence_current=lambda value: value is evidence, provider_view=lambda value, **_: value
+        )
         with patch.object(metadata, "acquire", side_effect=AssertionError("accepted metadata replayed")):
             self.assertIs(evidence, metadata.retained_metadata(view, client, {"evidence": evidence}))
             self.assertIsNone(metadata.retained_metadata(view, client, {"evidence": evidence}, refresh=True))
@@ -497,14 +503,15 @@ class RetainedMetadataScopeTests(TestCase):
             },
         }
         view = SimpleNamespace(
+            local={},
             source={
                 "history_start": "2016-01-01T00:00:00Z",
                 "latest_request": {
                     "end_exclusive": "2026-11-11T00:00:00Z",
                 },
-            }
+            },
         )
-        client = SimpleNamespace(evidence_current=lambda value: False)
+        client = SimpleNamespace(evidence_current=lambda value: False, provider_view=lambda value, **_: value)
         with patch.object(metadata, "acquire", return_value={"new": "projection"}) as owner:
             self.assertEqual(
                 {"new": "projection"}, metadata.retained_metadata(view, client, {"evidence": evidence})

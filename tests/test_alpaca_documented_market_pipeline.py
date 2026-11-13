@@ -67,6 +67,7 @@ class DocumentedMarketPipelineTests(TestCase):
                 client=FakeClient(informative_bars("2024-01-02", "2024-01-10")),
             )
         original = pipeline.correlate
+        self.completed_initial_reports = {}
 
         def unresolved_fixture(*args, **kwargs):
             reports = original(*args, **kwargs)
@@ -97,6 +98,7 @@ class DocumentedMarketPipelineTests(TestCase):
                     ],
                 }
                 report["correlated"] = {"row_count": 0, "segments": []}
+            self.completed_initial_reports.update(deepcopy(reports))
             return reports
 
         with patch.object(pipeline, "correlate", side_effect=unresolved_fixture):
@@ -123,21 +125,144 @@ class DocumentedMarketPipelineTests(TestCase):
         ]
 
     def repair(self):
+        from libs.alpaca_end_of_day_security_correlation.security_identity import (
+            security_identity_for_alpaca_assets,
+        )
+        from libs.alpaca_lineage_build.context import OperationContext
+        from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
+
+        if not hasattr(self, "completion_context"):
+            self.completion_context = OperationContext(self.store)
+        context = self.completion_context
+        context.completed_membership_plans[("FILL", "PEER")] = {
+            "store": str(self.store),
+            "plan": {"changes": []},
+        }
         loader = pipeline.load_pricing
 
         def selected(*args, **kwargs):
             self.assertEqual("FILL", args[1], "accepted peer pricing opened")
             return loader(*args, **kwargs)
 
+        def completed_decisions(controls, current, auxiliary, *, cache, **_):
+            # Literal completed output fixture: this tests publication and
+            # downstream consumption, not researched assertions or inference.
+            control = controls["FILL"]
+            key = "FILL", control.source_sha256
+            values = cache.setdefault("pricing", {})
+            if key not in values:
+                values[key] = selected(
+                    self.store,
+                    "FILL",
+                    source=control.source,
+                    source_sha256=control.source_sha256,
+                    partitions=cache.setdefault("partitions", {}).setdefault("FILL", {}),
+                )
+            view = values[key]
+            identities = {
+                key: security_identity_for_alpaca_assets(
+                    [key],
+                    [],
+                    tickers=["FILL"],
+                    basis="completed_provider_source_decision",
+                ).as_report_object()
+                for key in ("bank", "fund")
+            }
+            report = deepcopy(self.completed_initial_reports["FILL"])
+            template = deepcopy(self.completed_initial_reports["PEER"]["correlated"]["segments"][0])
+            positive, negative = [], []
+            for adjustment, rows in view.views.items():
+                for position, row in enumerate(rows, 1):
+                    day = row[0][:10]
+                    common = {
+                        "adjustment": adjustment,
+                        "row_start": position,
+                        "row_end": position,
+                        "row_count": 1,
+                        "first_timestamp": row[0],
+                        "last_timestamp": row[0],
+                    }
+                    if "2024-01-05" <= day < "2024-01-08":
+                        negative.append(
+                            {
+                                **common,
+                                "reason_codes": ["unresolved_uuid_candidates"],
+                                "candidate_securities": [],
+                            }
+                        )
+                        continue
+                    owner = "bank" if day < "2024-01-05" else "fund"
+                    identity = identities[owner]
+                    cusip = "111111111" if owner == "bank" else "222222222"
+                    positive.append(
+                        {
+                            **template,
+                            **common,
+                            "historical_symbol": "FILL",
+                            "security_identity": identity,
+                            "canonical_security": {
+                                "security_id": identity["security_id"],
+                                "alpaca_asset_id": owner,
+                                "cusip": cusip,
+                            },
+                            "ticker_ownership_interval": {
+                                "historical_symbol": "FILL",
+                                "asset_id": owner,
+                                "cusip": cusip,
+                                "start_date_inclusive": "2024-01-01" if owner == "bank" else "2024-01-08",
+                                "end_date_exclusive": "2024-01-05" if owner == "bank" else None,
+                                "security_description": {
+                                    "version": 1,
+                                    "name": "Completed Historical Owner" if owner == "bank" else "Later ETF",
+                                    "exchange": "NASDAQ",
+                                    "asset_class": "us_equity",
+                                    "instrument_kind": "common_stock" if owner == "bank" else "ETF",
+                                    "registrant_cik": None,
+                                },
+                            },
+                            "correlation_rule": {"name": "completed_provider_source_decision"},
+                            "observation_tickers": ["FILL"],
+                        }
+                    )
+            report.update(
+                source_row_count=len(positive) + len(negative),
+                source_downloads=view.local["downloads"],
+                correlated={"row_count": len(positive), "segments": positive},
+                uncorrelated={"row_count": len(negative), "segments": negative},
+            )
+            memberships = {
+                **identities,
+                **{
+                    identifier: identity
+                    for identity in self.prior["PEER"]["identity_memberships"]
+                    for identifier in identity["member_alpaca_asset_ids"]
+                },
+            }
+            empty = {"version": 1, "certificates": [], "issues": []}
+            relations = {"version": 1, "relations": [], "issues": []}
+            return SourceWorkPlan(
+                {"FILL": "B", "PEER": "retained"},
+                memberships,
+                empty,
+                empty,
+                relations,
+                relations,
+                {},
+                False,
+                prepared_reports={"FILL": report},
+            )
+
         with (
             patch.object(pipeline, "load_pricing", side_effect=selected),
-            patch.object(transform, "correlate", side_effect=AssertionError("old row cascade repeated")),
+            patch.object(pipeline, "prepare_group_evidence_and_source_work", side_effect=completed_decisions),
+            patch.object(
+                transform, "correlate", side_effect=AssertionError("completed owner decision repeated")
+            ),
             patch.object(row_correlation, "_decide_row", side_effect=AssertionError("old owner repeated")),
         ):
-            result = pipeline.run_lineage(
-                self.store, ["FILL"], identity_client=self.client, event_supplements=self.facts
-            )
+            result = pipeline.run_lineage(self.store, ["FILL"], identity_client=self.client, context=context)
         self.assertEqual(0, result["failed"], result)
+        context.completed_membership_plans.pop(("FILL", "PEER"), None)
         return result
 
     def test_first_owners_publish_separately_and_current_description_cannot_erase_bank(self):
@@ -162,7 +287,7 @@ class DocumentedMarketPipelineTests(TestCase):
         bank = next(
             item for item in DataLibrary(store=self.store).list_securities() if item.tickers == ("FILL",)
         )
-        self.assertEqual(("Earlier Bank",), bank.names)
+        self.assertEqual(("Completed Historical Owner",), bank.names)
 
     def test_append_consumes_completed_binding_and_choices(self):
         self.repair()
@@ -199,26 +324,25 @@ class DocumentedMarketPipelineTests(TestCase):
             result = pipeline.run_lineage(self.store, ["PEER"], identity_client=self.client)
         self.assertEqual(0, result["failed"], result)
 
-    def test_declared_binding_missing_or_unknown_requires_owning_recovery(self):
+    def test_generic_publication_needs_no_researched_binding_but_rejects_unknown_declared_schema(self):
         self.repair()
         receipt = storage.read_receipt(self.root, "FILL", storage.read_index(self.root))
-        for value in (None, {"version": 2, "owners": [], "source_routes": {}}):
-            changed = {**receipt, "documented_identity_membership": value}
-            with self.assertRaisesRegex(LineageError, "documented identity"):
-                validate_handoff(changed)
+        self.assertIsNone(receipt["documented_identity_membership"])
+        validate_handoff(receipt)
+        changed = {
+            **receipt,
+            "documented_identity_membership": {"version": 2, "owners": [], "source_routes": {}},
+        }
+        with self.assertRaisesRegex(LineageError, "documented identity"):
+            validate_handoff(changed)
 
     def test_changed_exact_owner_mapping_cannot_borrow_the_closed_scope(self):
-        from libs.alpaca_lineage_build import documented_work, pricing, source_work
-        from libs.alpaca_security_lineage.event_supplements import accept_supplements
+        from libs.alpaca_lineage_build import pricing, source_work
 
         self.repair()
         index = storage.read_index(self.root)
         prior = {name: storage.read_receipt(self.root, name, index) for name in ("FILL", "PEER")}
-        evidence = {name: deepcopy(receipt["evidence"]) for name, receipt in prior.items()}
-        added = deepcopy(self.facts[0])
-        added["match"]["source_id"] = "additional-primary-support"
-        extension = evidence["FILL"]["sourced_market_occupancy"]
-        extension["facts"] = [*extension["facts"], *accept_supplements([added])]
+        evidence = {name: dict(deepcopy(receipt["evidence"])) for name, receipt in prior.items()}
         for lookup in evidence["FILL"]["asset_lookups"]:
             if lookup["lookup_kind"] == "cusip" and lookup["lookup"] == "111111111":
                 lookup["asset"] = {**lookup["asset"], "id": "actually-changed-owner"}
@@ -226,38 +350,27 @@ class DocumentedMarketPipelineTests(TestCase):
         for name, receipt in prior.items():
             source = pricing.load_source(self.store / "end_of_day/pricing" / name, name)
             controls[name] = pricing.metadata_source_control(
-                self.store, name, source, receipt["source_sha256"], receipt, accepted_reuse=(True, True)
+                self.store,
+                name,
+                source,
+                receipt["source_sha256"],
+                receipt,
+                accepted_reuse=(True, True),
             )
-        with patch.object(documented_markets, "bind", side_effect=AssertionError("invalid old owner carried")):
-            plan = documented_work.prepare(
-                controls,
-                evidence,
-                {},
-                {},
-                lambda name: source_work._accepted_owners_apply(prior[name], evidence[name]),
-            )
-        self.assertIsNone(plan)
+        with patch.object(documented_markets, "bind", side_effect=AssertionError("retired fact binder used")):
+            plan = source_work.prepare_group_evidence_and_source_work(controls, evidence, {}, cache={})
+        self.assertEqual(plan.dispositions["FILL"], "C")
+        self.assertEqual(plan.dispositions["PEER"], "retained")
 
-    def test_old_policy_cannot_execute_new_first_owner_semantics(self):
-        from libs.alpaca_security_lineage.event_supplements import accept_supplements
-
-        facts = accept_supplements(self.facts)
+    def test_old_policy_cannot_execute_authored_first_owner_assertions(self):
         old = load_policy("resources/alpaca_security_correlation_v86_legacy_policy.yaml")
-        with patch.object(transform, "evaluate_policy", side_effect=AssertionError("old policy executed")):
-            with self.assertRaisesRegex(LineageError, "policy 87"):
-                transform.correlate(
-                    self.store,
-                    {},
-                    {
-                        "FILL": {
-                            "sourced_market_occupancy": {
-                                "schema_version": 1,
-                                "facts": facts,
-                            }
-                        }
-                    },
-                    policy=old,
-                )
+        with self.assertRaisesRegex(ValueError, "injection"):
+            transform.correlate(
+                self.store,
+                {},
+                {"FILL": {"sourced_market_occupancy": {"schema_version": 1, "facts": self.facts}}},
+                policy=old,
+            )
 
     def test_publication_acknowledgement_interruption_keeps_completed_first_owners(self):
         self.repair()
@@ -313,17 +426,6 @@ class DocumentedMarketPipelineTests(TestCase):
                             "2024-01-13",
                             client=FakeClient(informative_bars("2024-01-02", "2024-01-13")),
                         )
-                    fact = documented_fact(
-                        "documented-unchanged-public-common",
-                        ("SAME", "000000000"),
-                        ("SAME", "222222222"),
-                        [
-                            ("SAME", "000000000", "2024-01-01", "2024-01-03", "Original Company"),
-                            ("SAME", "111111111", "2024-01-03", "2024-01-05", "Continuing Company"),
-                            ("SAME", "222222222", "2024-01-05", None, "Continuing Company"),
-                        ],
-                        treatment="preexisting_common_remained_outstanding",
-                    )
                     select = observations._select_new_observations
 
                     def new_choices(inputs, reports, **kwargs):
@@ -346,9 +448,7 @@ class DocumentedMarketPipelineTests(TestCase):
                         ),
                         patch.object(observations, "_select_new_observations", side_effect=new_choices),
                     ):
-                        repaired = pipeline.run_lineage(
-                            case.store, ["SAME"], identity_client=case.client, event_supplements=[fact]
-                        )
+                        repaired = case.repair()
                     self.assertEqual(0, repaired["failed"], repaired)
                     check = policy._bar_reasons
 

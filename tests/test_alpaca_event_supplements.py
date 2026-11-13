@@ -1,19 +1,15 @@
-"""New sourced facts are acquired once, preserved, and invalidated by event changes."""
+"""Retired assertion inputs reject before work; legacy provenance stays inspectable."""
 
 import copy
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-import test_alpaca_lineage_build as fixtures
-from test_alpaca_lineage_build import IdentityClient, asset
-from test_alpaca_pricing_download import snapshot
-
 from libs.alpaca_lineage_build import pipeline
-from libs.alpaca_lineage_build.context import OperationContext, recover_and_accept_correlation_policy
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.metadata import EvidenceClient
-from libs.alpaca_security_lineage import event_supplements
+from libs.alpaca_security_lineage import event_supplements, lineage
 from libs.alpaca_security_lineage.event_supplements import (
     accept_supplements,
     load_supplements,
@@ -106,338 +102,120 @@ def succession_supplement():
 
 
 class SupplementTests(unittest.TestCase):
-    def test_completed_input_handoff_owns_immutable_values(self):
-        raw = succession_supplement()
-        accepted = validate_supplements([raw])
-        self.assertIs(accepted, accept_supplements(accepted))
-        self.assertIs(accepted, copy.deepcopy(accepted))
-        original = json.dumps(accepted)
-        raw["facts"]["new_cusip"] = "333333333"
-        self.assertEqual(original, json.dumps(accepted))
-        for change in (
-            lambda: accepted.append(raw),
-            lambda: accepted[0].update(kind="split_endpoints"),
-            lambda: accepted[0]["facts"].update(new_cusip="333333333"),
-            lambda: accepted[0]["sources"].clear(),
-            lambda: accepted[0]["sources"][0].update(title="changed"),
-        ):
-            with self.subTest(change=change), self.assertRaisesRegex(TypeError, "immutable"):
-                change()
+    def test_all_well_formed_legacy_kinds_are_rejected(self):
+        for item in (split_supplement(), derivative_supplement(), succession_supplement()):
+            with self.subTest(kind=item["kind"]), self.assertRaisesRegex(ValueError, "inadmissible"):
+                accept_supplements([item])
 
-    def test_sourced_succession_is_versioned_separate_from_provider_events(self):
-        item = succession_supplement()
-        self.assertEqual([item], validate_supplements([item]))
-        self.assertEqual("sourced:parent-substitution", supplement_key(item))
-        actions = [split_supplement()["match"]]
-        raw = copy.deepcopy(actions)
-        projected, applied = project_actions(actions, [item])
-        self.assertEqual(raw, projected)
-        self.assertEqual(raw, actions)
+    def test_validation_cannot_authorize_an_authored_fact(self):
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            validate_supplements([split_supplement()])
+
+    def test_old_accepted_container_cannot_bypass_rejection(self):
+        old = event_supplements._AcceptedSupplements([event_supplements._freeze(succession_supplement())])
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            accept_supplements(old)
+
+    def test_empty_placeholder_is_immutable_and_reused(self):
+        empty = accept_supplements([])
+        self.assertIs(empty, accept_supplements(empty))
+        self.assertIs(empty, copy.deepcopy(empty))
+        with self.assertRaisesRegex(TypeError, "immutable"):
+            empty.append(split_supplement())
+
+    def test_file_input_rejects_before_path_access(self):
+        with patch.object(Path, "open", side_effect=AssertionError("assertion file opened")):
+            for path in ("/does-not-exist.json", "", object()):
+                with self.subTest(path=type(path)), self.assertRaisesRegex(ValueError, "inadmissible"):
+                    load_supplements(path)
+
+    def test_projection_rejects_before_consuming_provider_actions(self):
+        class ForbiddenActions:
+            def __iter__(self):
+                raise AssertionError("provider actions consumed before rejection")
+
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            project_actions(ForbiddenActions(), [split_supplement()])
+
+    def test_empty_projection_preserves_provider_observations(self):
+        actions = [split_supplement()["match"], derivative_supplement()["match"]]
+        original = copy.deepcopy(actions)
+        projected, applied = project_actions(actions, [])
+        self.assertEqual(original, projected)
+        self.assertEqual(original, actions)
         self.assertEqual([], applied)
-        for key, value in (
-            ("schema_version", True),
-            ("schema_version", 2),
-            ("fact_kind", "cash_merger"),
-            ("old_rate", 2),
-            ("new_rate", True),
-            ("new_cusip", "111111111"),
-            ("share_class", "preferred_stock"),
-            ("automatic_exchange", False),
-            ("unchanged_rights", False),
-            ("legal_effective_date", "2026-10-02"),
-        ):
-            changed = copy.deepcopy(item)
-            changed["facts"][key] = value
-            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
-                validate_supplements([changed])
-        for match in ({"id": "invented-provider-event", "symbol": "GOOG"}, {"source_id": "x"}):
-            with self.subTest(match=match), self.assertRaises(ValueError):
-                validate_supplements([{**item, "match": match}])
 
-    def test_retained_succession_accepts_its_header_without_revalidating_facts(self):
+    def test_retained_negative_projection_cannot_filter_new_inference(self):
+        fact = derivative_supplement()
+        owner = event_supplements.EventProjection()
+        owner.retain(fact["match"], fact, None)
+        with patch.object(event_supplements, "_project_action", side_effect=AssertionError("overlay replay")):
+            self.assertEqual(([fact["match"]], []), owner.bind([])([fact["match"]]))
+
+    def test_retained_positive_projection_cannot_supply_new_endpoint(self):
+        fact = split_supplement()
+        owner = event_supplements.EventProjection()
+        owner.retain(fact["match"], fact, {**fact["match"], "new_cusip": "222222222"})
+        self.assertEqual(([fact["match"]], []), owner.bind([])([fact["match"]]))
+
+    def test_private_projection_entry_also_rejects(self):
+        fact = split_supplement()
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            event_supplements._project_action(fact["match"], fact)
+
+    def test_legacy_key_and_succession_readers_preserve_literal_provenance(self):
         item = succession_supplement()
-        evidence = {"sourced_successions": {"schema_version": 1, "facts": [item]}}
-        client = EvidenceClient(IdentityClient())
-        with patch(
-            "libs.alpaca_security_lineage.event_supplements.validate_supplements",
-            side_effect=AssertionError("accepted facts validated again"),
-        ):
-            client.retain_event_supplements([evidence])
-        self.assertEqual([item], client.all_event_supplements())
-        for version in (None, True, 2):
-            with self.subTest(version=version), self.assertRaisesRegex(LineageError, "succession schema"):
-                EvidenceClient(IdentityClient()).retain_event_supplements(
-                    [{"sourced_successions": {"schema_version": version, "facts": [item]}}]
-                )
-
-    def test_actual_sourced_fact_change_invalidates_only_its_selected_symbol(self):
-        item = succession_supplement()
-        evidence = {
-            "query": {"input_symbol": "GOOG"},
-            "asset_lookups": [],
-            "sourced_successions": {"schema_version": 1, "facts": [item]},
-        }
-        unrelated = {"query": {"input_symbol": "OTHER"}, "asset_lookups": []}
-        changed = copy.deepcopy(item)
-        changed["facts"]["legal_effective_date"] = "2026-09-29"
-        client = EvidenceClient(IdentityClient(), event_supplements=[changed])
-        client.retain_event_supplements([evidence, unrelated])
-        self.assertFalse(client.evidence_current(evidence))
-        self.assertTrue(client.evidence_current(unrelated))
-        self.assertEqual([], client.supplements_for(evidence))
-        self.assertEqual([changed], client.successions_for(evidence))
-        self.assertEqual([], client.successions_for(unrelated))
-
-    def test_listing_transfer_keeps_the_real_rename_and_rejects_changed_security(self):
-        item = derivative_supplement()
-        item["kind"] = "listing_transfer_only"
-        item["facts"] = {
-            "instrument_type": "equity",
-            "unchanged_symbol": "GOOG",
-            "effective_date": "2026-10-01",
-            "from_exchange": "NASDAQ",
-            "to_exchange": "NYSE",
-        }
-        item["sources"][0]["authority"] = "issuer"
-        validate_supplements([item])
-        real_rename = {**item["match"], "id": "earlier-rename", "process_date": "2026-01-02"}
-        projected, applied = project_actions([real_rename, item["match"]], [item])
-        self.assertEqual([real_rename], projected)
-        self.assertEqual([item], applied)
-        for key, value in (("new_cusip", "222222222"), ("process_date", "2026-10-02")):
-            changed = copy.deepcopy(item)
-            changed["match"][key] = value
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                validate_supplements([changed])
-        changed = copy.deepcopy(item)
-        changed["facts"]["unchanged_symbol"] = "OTHER"
-        with self.assertRaises(ValueError):
-            validate_supplements([changed])
-
-    def test_retained_supplement_schema_requires_an_explicit_supported_version(self):
-        for version in (None, True, 2):
-            with self.subTest(version=version), self.assertRaisesRegex(LineageError, "schema"):
-                EvidenceClient(IdentityClient()).retain_event_supplements(
-                    [{"event_supplement_schema_version": version, "event_supplements": [split_supplement()]}]
-                )
-
-    def test_split_projection_preserves_raw_evidence_and_provider_dates(self):
-        item = split_supplement()
-        validate_supplements([item])
-        raw = copy.deepcopy(item["match"])
-        projected, applied = project_actions([raw], [item])
-        self.assertEqual(raw, item["match"])
-        self.assertEqual(projected[0]["new_cusip"], "222222222")
-        self.assertEqual(projected[0]["ex_date"], raw["ex_date"])
-        self.assertEqual(applied, [item])
-        for changed in ({**raw, "new_rate": 20}, {**raw, "new_cusip": "333333333"}):
-            with self.assertRaises(ValueError):
-                project_actions([changed], [item])
-
-    def test_derivative_scope_is_exact_and_does_not_filter_similarly_named_equity(self):
-        item = derivative_supplement()
-        validate_supplements([item])
-        equity = {**item["match"], "id": "different-equity-event"}
-        projected, applied = project_actions([item["match"], equity], [item])
-        self.assertEqual(projected, [equity])
-        self.assertEqual(applied, [item])
-        with self.assertRaisesRegex(ValueError, "changed"):
-            project_actions([{**item["match"], "process_date": "2026-10-02"}], [item])
-
-    def test_invalid_and_speculative_facts_fail_at_input_boundary(self):
-        changes = [
-            ("sources", []),
-            ("kind", "merge_these_ids"),
-            ("facts", {**split_supplement()["facts"], "effective_date": "2026-10-02"}),
-            ("facts", {**split_supplement()["facts"], "new_cusip": "111111111"}),
-            ("match", {**split_supplement()["match"], "new_rate": "NaN"}),
-            ("match", {**split_supplement()["match"], "new_rate": 0}),
-        ]
-        for key, value in changes:
-            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
-                validate_supplements([{**split_supplement(), key: value}])
-        with self.assertRaisesRegex(ValueError, "duplicate"):
-            validate_supplements([split_supplement(), split_supplement()])
-
-
-class SupplementPipelineTests(unittest.TestCase):
-    setUp = fixtures.LineageBuildTests.setUp
-    download = fixtures.LineageBuildTests.download
-    run_build = fixtures.LineageBuildTests.run_build
-    receipt = fixtures.LineageBuildTests.receipt
-
-    def test_loaded_input_crosses_pipeline_and_metadata_without_another_validation(self):
-        self.download()
-        item = succession_supplement()
-        old, new = {**asset("GOOG", "old-id"), "status": "inactive"}, asset("GOOG", "new-id")
-        assets = {"GOOG": new, "111111111": old, "222222222": new}
-        path = self.store.parent / "succession.json"
-        path.write_text(json.dumps({"schema_version": 1, "supplements": [item]}))
-        # The separate canonical configuration is new ingress for this operation.
-        # Accept it before guarding the already accepted explicit input handoff.
-        context = OperationContext(self.store)
-        recover_and_accept_correlation_policy(self.store, context)
+        report = {"sourced_successions": {"schema_version": 1, "facts": [item]}}
         with patch.object(
-            event_supplements, "validate_supplements", wraps=event_supplements.validate_supplements
-        ) as validate:
-            accepted = load_supplements(path)
-            self.run_build(["GOOG"], client=IdentityClient(assets), event_supplements=accepted, context=context)
-        self.assertEqual(1, validate.call_count)
-        self.assertEqual([item], self.receipt()["evidence"]["sourced_successions"]["facts"])
-
-    def test_sourced_succession_reuses_actions_and_only_acquires_the_missing_endpoint(self):
-        self.download()
-        item = succession_supplement()
-        old, new = {**asset("GOOG", "old-id"), "status": "inactive"}, asset("GOOG", "new-id")
-        assets = {"GOOG": new, "111111111": old, "222222222": new}
-        dividend = {
-            "id": "old-distribution",
-            "action_type": "cash_dividend",
-            "symbol": "GOOG",
-            "cusip": "111111111",
-            "process_date": "2026-09-29",
-            "ex_date": "2026-09-29",
-            "record_date": "2026-09-29",
-            "payable_date": "2026-09-30",
-            "rate": 1,
-            "foreign": False,
-            "special": False,
-        }
-        self.run_build(["GOOG"], client=IdentityClient(assets, [dividend]))
-        raw = copy.deepcopy(self.receipt()["evidence"]["corporate_actions"])
-        pricing = snapshot(self.store / "end_of_day/pricing")
-        client = IdentityClient(assets)
-        with patch.object(pipeline, "download_pricing", side_effect=AssertionError("pricing changed")):
-            result = self.run_build(["GOOG"], client=client, event_supplements=[item])
-        self.assertEqual([], result["unmatched_event_supplements"])
-        self.assertEqual(1, client.request_count)
-        self.assertEqual([], client.calls)
-        evidence = self.receipt()["evidence"]
-        self.assertEqual({"schema_version": 1, "facts": [item]}, evidence["sourced_successions"])
-        self.assertEqual(raw, evidence["corporate_actions"])
-        self.assertEqual(raw, evidence["provider_corporate_actions"])
-        self.assertNotIn("event_supplements", evidence)
-        mappings = {
-            lookup["lookup"]: lookup["asset"]["id"]
-            for lookup in evidence["asset_lookups"]
-            if lookup["lookup_kind"] == "cusip"
-        }
-        self.assertEqual({"111111111": "old-id", "222222222": "new-id"}, mappings)
-        client = IdentityClient()
-        context = OperationContext(self.store)
-        recover_and_accept_correlation_policy(self.store, context)
-        with patch(
-            "libs.alpaca_security_lineage.event_supplements.validate_supplements",
-            side_effect=AssertionError("accepted fact validation repeated"),
+            event_supplements, "accept_supplements", side_effect=AssertionError("read admitted facts")
         ):
-            self.run_build(["GOOG"], client=client, context=context)
-        self.assertEqual(0, client.request_count)
-        self.assertEqual(evidence, self.receipt()["evidence"])
-        self.assertEqual(pricing, snapshot(self.store / "end_of_day/pricing"))
-        self.run_build(["GOOG"], client=IdentityClient(assets, [dividend]), refresh=True)
-        refreshed = self.receipt()["evidence"]
-        self.assertEqual(evidence["sourced_successions"], refreshed["sourced_successions"])
-        self.assertEqual(raw, refreshed["provider_corporate_actions"])
+            self.assertEqual("sourced:parent-substitution", supplement_key(item))
+            self.assertEqual("split", supplement_key(split_supplement()))
+            self.assertEqual([item], event_supplements.succession_items(report))
+        self.assertEqual(report, json.loads(json.dumps(report)))
 
-        changed = copy.deepcopy(item)
-        changed["facts"]["legal_effective_date"] = "2026-09-29"
-        client = IdentityClient()
-        with patch.object(pipeline, "download_pricing", side_effect=AssertionError("pricing changed")):
-            self.run_build(["GOOG"], client=client, event_supplements=[changed])
-        self.assertEqual(0, client.request_count)
-        self.assertEqual([changed], self.receipt()["evidence"]["sourced_successions"]["facts"])
-        self.assertEqual(raw, self.receipt()["evidence"]["provider_corporate_actions"])
-        self.assertEqual(pricing, snapshot(self.store / "end_of_day/pricing"))
-
-    def test_missing_sourced_endpoint_is_retained_without_a_repeat_lookup(self):
-        self.download()
-        item = succession_supplement()
-        old, new = {**asset("GOOG", "old-id"), "status": "inactive"}, asset("GOOG", "new-id")
-        assets = {"GOOG": new, "111111111": old}
-        action = {
-            **split_supplement()["match"],
-            "id": "older-split-without-identifier-change",
-            "ex_date": "2026-09-29",
-            "process_date": "2026-09-29",
-        }
-        self.run_build(["GOOG"], client=IdentityClient(assets, [action]))
-        client = IdentityClient(assets)
-        self.run_build(["GOOG"], client=client, event_supplements=[item])
-        self.assertEqual(1, client.request_count)
-        self.assertEqual([], client.calls)
-        evidence = self.receipt()["evidence"]
-        self.assertEqual(["222222222"], evidence["unresolved_cusips"])
-        missing = next(lookup for lookup in evidence["asset_lookups"] if lookup["lookup"] == "222222222")
-        self.assertEqual("not_found", missing["outcome"])
-        self.assertEqual(404, missing["http_status"])
-        self.assertIsNone(missing["asset"])
-        client = IdentityClient()
-        self.run_build(["GOOG"], client=client)
-        self.assertEqual(0, client.request_count)
-        self.assertEqual(evidence, self.receipt()["evidence"])
-
-    def test_new_split_endpoint_acquires_only_missing_mapping_and_survives_reuse(self):
-        self.download()
-        item = split_supplement()
-        old, new = {**asset("GOOG", "old-id"), "status": "inactive"}, asset("GOOG", "new-id")
-        assets = {"GOOG": new, "111111111": old, "222222222": new}
-        self.run_build(["GOOG"], client=IdentityClient(assets, [item["match"]]))
-        raw = copy.deepcopy(self.receipt()["evidence"]["corporate_actions"])
-        pricing = snapshot(self.store / "end_of_day/pricing")
-        client = IdentityClient(assets)
-        with patch.object(pipeline, "download_pricing", side_effect=AssertionError("pricing changed")):
-            result = self.run_build(["GOOG"], client=client, event_supplements=[item])
-        self.assertEqual(result["unmatched_event_supplements"], [])
-        self.assertEqual(client.request_count, 1)
-        self.assertEqual(client.calls, [])
-        evidence = self.receipt()["evidence"]
-        self.assertEqual(evidence["event_supplements"], [item])
-        self.assertEqual(evidence["provider_corporate_actions"], raw)
-        self.assertEqual(evidence["corporate_actions"][0]["new_cusip"], "222222222")
-        client = IdentityClient()
-        for kwargs in ({}, {"event_supplements": [item]}):
-            self.run_build(["GOOG"], client=client, **kwargs)
-            self.assertEqual(self.receipt()["evidence"], evidence)
-        self.assertEqual(client.request_count, 0)
-        self.assertEqual(snapshot(self.store / "end_of_day/pricing"), pricing)
-        # Explicit metadata refresh must preserve the fact and original action.
-        client = IdentityClient(assets, [item["match"]])
-        self.run_build(["GOOG"], client=client, refresh=True)
-        self.assertEqual(self.receipt()["evidence"]["event_supplements"], [item])
-        self.assertEqual(self.receipt()["evidence"]["provider_corporate_actions"], raw)
-        retained = snapshot(self.root)
-        changed = IdentityClient(assets, [{**item["match"], "new_rate": 20}])
-        failed = pipeline.run_lineage(self.store, ["GOOG"], identity_client=changed, refresh=True)
-        self.assertEqual(failed["failed"], 1)
-        self.assertEqual(snapshot(self.root), retained)
-
-    def test_derivative_action_retained_without_creating_equity_dependency(self):
-        self.download()
-        item = derivative_supplement()
-        client = IdentityClient({"GOOG": asset("GOOG"), "111111111": asset("GOOG")}, [item["match"]])
-        self.run_build(["GOOG"], client=client, event_supplements=[item])
-        evidence = self.receipt()["evidence"]
-        self.assertEqual(evidence["corporate_actions"], [])
-        self.assertEqual(evidence["provider_corporate_actions"], [item["match"]])
-        self.assertEqual(evidence["queried_symbols"], ["GOOG"])
-        self.assertEqual(set(self.receipt()["input_sources"]), {"GOOG"})
-
-    def test_unmatched_supplement_is_reported_and_requires_explicit_selection(self):
-        self.download()
-        with self.assertRaises(LineageError):
-            pipeline.run_lineage(
-                self.store, identity_client=IdentityClient(), event_supplements=[split_supplement()]
-            )
-        result = pipeline.run_lineage(
-            self.store, ["GOOG"], identity_client=IdentityClient(), event_supplements=[split_supplement()]
+    def test_raw_provider_union_is_selected_without_overlay(self):
+        raw = [split_supplement()["match"]]
+        self.assertIs(
+            raw, event_supplements.provider_actions({"provider_corporate_actions": raw, "corporate_actions": []})
         )
-        self.assertEqual(result["unmatched_event_supplements"], ["split"])
-        self.assertEqual(result["failed"], 1)
+        self.assertEqual(raw, event_supplements.provider_actions({"corporate_actions": raw}))
 
-    def test_document_schema_is_strict(self):
-        path = self.store.parent / "facts.json"
-        path.write_text(json.dumps({"schema_version": 1, "supplements": [split_supplement()]}))
-        self.assertEqual(load_supplements(path), [split_supplement()])
-        path.write_text(json.dumps({"schema_version": True, "supplements": [split_supplement()]}))
-        with self.assertRaises(ValueError):
-            load_supplements(path)
+    def test_metadata_constructor_rejects_before_client_access(self):
+        class ForbiddenClient:
+            def __getattribute__(self, name):
+                raise AssertionError("provider accessed")
+
+        with self.assertRaisesRegex(LineageError, "inadmissible"):
+            EvidenceClient(ForbiddenClient(), event_supplements=[succession_supplement()])
+
+    def test_identity_report_rejects_before_query_or_provider_work(self):
+        with patch.object(lineage, "local_query_dates", side_effect=AssertionError("query planning")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                lineage.build_identity_report("GOOG", {}, None, event_supplements=[split_supplement()])
+
+    def test_pipeline_rejects_before_context_storage_or_provider_work(self):
+        with patch.object(pipeline, "accept_context", side_effect=AssertionError("store accessed")):
+            with self.assertRaisesRegex(LineageError, "inadmissible"):
+                pipeline.run_lineage(
+                    "/unused", ["GOOG"], identity_client=None, event_supplements=[split_supplement()]
+                )
+
+    def test_retained_research_is_projected_once_from_raw_provider_inputs(self):
+        from tests.test_alpaca_sourced_rename import case
+
+        evidence, _ = case()
+        client = EvidenceClient(None)
+        with patch.object(
+            lineage, "report_from_observations", wraps=lineage.report_from_observations
+        ) as produce:
+            selected = client.provider_view(evidence)
+            self.assertIs(selected, client.provider_view(evidence))
+        self.assertEqual(1, produce.call_count)
+        self.assertNotIn("event_supplements", selected)
+        self.assertEqual(evidence["provider_corporate_actions"], selected["corporate_actions"])
+        self.assertTrue(evidence["event_supplements"])
+
+
+if __name__ == "__main__":
+    unittest.main()

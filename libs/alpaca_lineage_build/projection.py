@@ -61,6 +61,17 @@ def project_receipt(receipt):
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),
         "sourced_fact_applications": receipt["evidence"].get("sourced_fact_applications", {}),
         "membership_transfers_complete": receipt.get("membership_transfer_handoff_version") == 1,
+        "has_membership_rebind": bool(receipt.get("membership_only_rebind")),
+        "source_ownership_envelopes_complete": {
+            "current_source_ownership",
+            "sourced_rename_ownership",
+        }
+        <= receipt.keys(),
+        **(
+            {"closed_source_handoff_version": receipt["closed_source_handoff_version"]}
+            if "closed_source_handoff_version" in receipt
+            else {}
+        ),
         **({"retained_recovery": receipt["retained_recovery"]} if "retained_recovery" in receipt else {}),
     }
 

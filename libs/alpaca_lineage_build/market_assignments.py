@@ -88,6 +88,13 @@ def project_group(
     completed_labels=None,
 ):
     """Produce a label-only group from accepted inputs, with no price checks."""
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired researched plan")
+    if plan is not None or completed_labels is not None:
+        raise LineageError(
+            "researched market projection recipes are inadmissible; consume completed publication outputs directly"
+        )
     if policy.implementation_correlation_version not in (83, 84, 85, 86, 87, 88, 89, 90, 91):
         raise LineageError("dated assignment projection requires its authorized policy stage")
     baseline_reports = _reports(documents)

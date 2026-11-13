@@ -10,14 +10,14 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar
 
 from alpaca_end_of_day import StandaloneReader, standalone
-from libs.alpaca_lineage_build import pipeline, source_work, storage
+from libs.alpaca_lineage_build import pipeline, storage
+from libs.alpaca_lineage_build.assignment_handoff import produce
 from libs.alpaca_lineage_build.continuation import validate_handoff
-from libs.alpaca_lineage_build.contract import LineageError
+from libs.alpaca_lineage_build.contract import LineageError, document_digest
 from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_lineage_build.market_assignments import project_group
 from libs.alpaca_lineage_build.source_work import assignment_documents
 from libs.alpaca_pricing_download.download import download_pricing
-from libs.alpaca_security_lineage.event_supplements import accept_supplements
 from libs.alpaca_serving_catalogue import policy
 from libs.alpaca_serving_catalogue.producer import maintain
 
@@ -43,50 +43,55 @@ class MarketAssignmentProjectionTests(TestCase):
         prior = storage.read_receipt(root, "AAA", index)
         documents = assignment_documents(root, prior, {})
         evidence = deepcopy(prior["evidence"])
-        fact = market_fact()
-        fact["facts"]["predecessor"]["symbol"] = "OLD"
-        fact["facts"]["successor"]["symbol"] = "AAA"
-        fact["facts"]["episodes"] = [
-            {
-                "symbol": "OLD",
-                "cusip": "111111111",
-                "start_inclusive": "2016-01-01",
-                "end_exclusive": "2026-10-17",
-                "market": "regular_way",
+        # Literal completed label output. Neither a researched assertion nor a
+        # projection recipe creates this frozen publication fixture.
+        changed = {"AAA": deepcopy(documents)}
+        receipt = deepcopy(prior)
+        receipt["retained_base_policy"] = prior["correlation_policy"]
+        receipt["dated_market_projection_version"] = 1
+        pid = prior["identity_memberships"][0]["security_id"]
+        receipt["dated_market_projection"] = {
+            "version": 1,
+            "previous_receipt_generation": index["symbols"]["AAA"]["sha256"],
+            "pricing_generation": prior["source_sha256"],
+            "previous_boundaries": deepcopy(prior["boundaries"]),
+            "selection_unchanged": True,
+            "identities": {
+                pid: [
+                    {
+                        "symbol": "OLD",
+                        "cusip": "111111111",
+                        "start_inclusive": "2016-01-01",
+                        "end_exclusive": "2026-10-17",
+                        "market": "regular_way",
+                    },
+                    {
+                        "symbol": "AAA",
+                        "cusip": "222222222",
+                        "start_inclusive": "2026-10-17",
+                        "end_exclusive": None,
+                        "market": "regular_way",
+                    },
+                ]
             },
-            {
-                "symbol": "AAA",
-                "cusip": "222222222",
-                "start_inclusive": "2026-10-17",
-                "end_exclusive": None,
-                "market": "regular_way",
-            },
-        ]
-        fact = accept_supplements([fact])[0]
-        evidence["sourced_market_occupancy"] = {"version": 1, "facts": [fact]}
-        evidence["asset_lookups"].append(
-            {
-                **evidence["asset_lookups"][0],
-                "lookup_kind": "cusip",
-                "lookup": "222222222",
-                "asset": asset("AAA"),
-            }
-        )
-        evidence["asset_lookups"].append({**evidence["asset_lookups"][-1], "lookup": "111111111"})
-        with (
-            patch.object(pipeline, "correlate", side_effect=AssertionError("historical correlation replayed")),
-            patch.object(
-                pipeline, "select_observations", side_effect=AssertionError("numerical choice replayed")
-            ),
-        ):
-            receipts, changed = project_group(
-                {"AAA": prior},
-                {"AAA": evidence},
-                {"AAA": index["symbols"]["AAA"]["sha256"]},
-                {"AAA": documents},
-                load_authorized_policy(),
-                date_rows=lambda *_args: self.fail("whole accepted segment opened prices"),
-            )
+        }
+        for kind, document in changed["AAA"].items():
+            for entry in document["adjustments"]:
+                for segment in entry["segments"]:
+                    segment["historical_symbol"] = "OLD"
+                    segment["observation_tickers"] = ["OLD"]
+                    segment["ticker_ownership_interval"] = {
+                        **(segment.get("ticker_ownership_interval") or {}),
+                        "historical_symbol": "OLD",
+                        "start_date_inclusive": "2016-01-01",
+                        "end_date_exclusive": "2026-10-17",
+                    }
+            generation = document_digest(document)
+            receipt["boundaries"][kind] = {**prior["boundaries"][kind], "sha256": generation}
+            receipt["assignment_handoffs"][kind] = produce(document, generation)
+        receipt["assignment_handoff_kinds"] = sorted(receipt["assignment_handoffs"])
+        receipt["evidence"] = evidence
+        receipts = {"AAA": receipt}
         validate_handoff(receipts["AAA"])
         return root, index, prior, documents, receipts, changed
 
@@ -161,53 +166,29 @@ class MarketAssignmentProjectionTests(TestCase):
             with self.assertRaisesRegex(LineageError, "dated-market projection"):
                 validate_handoff(bad)
 
-    def test_ordinary_fact_ingress_selects_metadata_projection_without_replaying_history(self):
+    def test_ordinary_fact_ingress_rejects_before_reopening_accepted_history(self):
         with fixture() as case:
-            root, index, prior, _original, receipts, _changed = self.candidate(case)
-            fact = receipts["AAA"]["evidence"]["sourced_market_occupancy"]["facts"][0]
-            # The lookup is an accepted pre-existing observation; installing a
-            # dated fact does not require observing that endpoint again.
-            seeded = deepcopy(prior)
-            seeded["evidence"]["asset_lookups"] = receipts["AAA"]["evidence"]["asset_lookups"]
-            with storage.writer_lock(case.store), storage.pricing_locks(case.store, {"AAA"}):
-                storage.publish(
-                    case.store, root, index, {"AAA": seeded}, {"AAA": {}}, {}, previous={"AAA": prior}
-                )
-            plans = []
-            prepare = source_work.prepare_group_evidence_and_source_work
-
-            def capture(*args, **kwargs):
-                plan = prepare(*args, **kwargs)
-                plans.append(plan)
-                return plan
-
-            with (
-                patch.object(pipeline, "prepare_group_evidence_and_source_work", side_effect=capture),
-                patch.object(pipeline, "load_pricing", side_effect=AssertionError("historical prices loaded")),
-                patch.object(
-                    pipeline, "correlate", side_effect=AssertionError("historical correlation repeated")
-                ),
-                patch.object(
-                    source_work, "correlate", create=True, side_effect=AssertionError("old rules replayed")
-                ),
-                patch.object(
-                    source_work.public_common_continuation,
-                    "certify_group",
-                    side_effect=AssertionError("accepted membership repeated"),
-                ),
-                patch.object(
-                    source_work.security_relations,
-                    "certify_group",
-                    side_effect=AssertionError("accepted relations repeated"),
-                ),
+            _root, _index, prior, _documents, _receipts, _changed = self.candidate(case)
+            with patch.object(
+                pipeline, "accept_context", side_effect=AssertionError("accepted history reopened")
             ):
-                result = pipeline.run_lineage(
-                    case.store,
-                    ["AAA"],
-                    event_supplements=[fact],
-                    identity_client=IdentityClient({"AAA": asset("AAA"), "222222222": asset("AAA")}),
-                )
-            self.assertEqual(0, result["failed"], result)
-            self.assertTrue(plans)
-            self.assertTrue(plans[-1].market_projection, plans[-1])
-            self.assertEqual({"AAA": "M"}, plans[-1].dispositions)
+                with self.assertRaisesRegex(LineageError, "inadmissible"):
+                    pipeline.run_lineage(
+                        case.store, ["AAA"], event_supplements=[market_fact()], identity_client=IdentityClient()
+                    )
+            self.assertNotIn("sourced_market_occupancy", prior["evidence"])
+
+    def test_raw_plan_cannot_bypass_group_projection_ingress(self):
+        from libs.alpaca_end_of_day_security_correlation.market_occupancy import MarketPlan
+
+        plan = MarketPlan((("retired-fact", "public", ()),), {}, {})
+        with self.assertRaisesRegex((ValueError, LineageError), "inadmissible|not supported"):
+            project_group(
+                {},
+                {},
+                {},
+                {},
+                load_authorized_policy(),
+                plan=plan,
+                date_rows=lambda *_: self.fail("plan opened prices"),
+            )

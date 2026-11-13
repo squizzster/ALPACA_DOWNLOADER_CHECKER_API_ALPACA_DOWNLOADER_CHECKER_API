@@ -27,5 +27,10 @@
     "modifications": [
       "Add metadata-only published allocation coverage with explicit unresolved-reason detail scope, independent pending outcomes, and no price or rule replay; preserve compatible completed research reports."
     ]
+  },
+  {
+    "modifications": [
+      "Reject factual YAML applications, documented research assertions and fact-backed candidate reports before selected storage work; retain generic rule replay, membership studies and applicable completed generic reports."
+    ]
   }
 ]

@@ -68,12 +68,9 @@ def plan_update(
             "catalogue_records": 0,
             "selection_metadata_http_requests_observed": 0,
         }
-    ruleset = context.accept_ruleset()
-    applications, supplements = ruleset.applications, ruleset.supplements
     metadata_before = identity_client.request_count
     observation = observe_catalogue(identity_client)
-    evidence = EvidenceClient(identity_client, observation=observation, event_supplements=supplements)
-    evidence.rule_applications = applications
+    evidence = EvidenceClient(identity_client, observation=observation)
     selection = universe_plan.select_work(accepted, observation, evidence, end, retry_blocked=retry_blocked)
     report = universe_plan.preview(
         accepted,
@@ -191,8 +188,6 @@ def _prepare_locked(
     result,
 ):
     """Complete baseline restoration and initial selection under the operation lock."""
-    from libs.alpaca_serving_catalogue import work as serving_work
-
     registered = set()
 
     @traced("registration")
@@ -218,8 +213,6 @@ def _prepare_locked(
         result["failed"] = recovered["failed"]
         return result
     context.accept_correlation_policy()
-    ruleset = context.accept_ruleset()
-    applications, supplements = ruleset.applications, ruleset.supplements
 
     from .projection import require_complete
 
@@ -228,26 +221,33 @@ def _prepare_locked(
     # only after authorizing the policy for all new work.
     context.index = None
     with storage.writer_lock(store, accepted_store=context.accept_store()), storage.publication_lock(root):
-        pending_serving = serving_work.read(store)
         context.index = storage.read_index(root)
         require_complete(context.index)
-    from .closed_source_recovery import recover as recover_closed_sources
+    from libs.alpaca_serving_catalogue import work as serving_work
 
-    with storage.writer_lock(store, accepted_store=context.accept_store()):
-        repaired = recover_closed_sources(store, root, context.index, pending_serving, applications)
-    if repaired:
-        result["stages"]["closed_source_recovery"] = {"symbols": repaired, "failed": 0}
-    from .membership_transfer_recovery import recover as recover_membership_transfers
+    pending_serving = serving_work.read(store)
+    if pending_serving:
+        from .closed_source_recovery import recover as recover_closed_sources
+        from .membership_transfer_recovery import recover as recover_membership_transfers
 
-    with storage.writer_lock(store, accepted_store=context.accept_store()):
-        repaired_transfers = recover_membership_transfers(
-            store, root, context.index, pending_serving, applications, context.select_serving()
-        )
-    if repaired_transfers:
-        result["stages"]["membership_transfer_recovery"] = {
-            "symbols": repaired_transfers,
-            "failed": 0,
-        }
+        with storage.writer_lock(store, accepted_store=context.accept_store()):
+            repaired = recover_closed_sources(store, root, context.index, pending_serving)
+            if repaired:
+                pending_serving = {
+                    **pending_serving,
+                    **{name: context.index["symbols"][name]["sha256"] for name in repaired},
+                }
+            repaired_transfers = recover_membership_transfers(
+                store, root, context.index, pending_serving, context.select_serving()
+            )
+        if repaired:
+            result["stages"]["closed_source_recovery"] = {"symbols": repaired, "failed": 0}
+        if repaired_transfers:
+            pending_serving = {
+                **pending_serving,
+                **{name: context.index["symbols"][name]["sha256"] for name in repaired_transfers},
+            }
+            result["stages"]["membership_transfer_recovery"] = {"symbols": repaired_transfers, "failed": 0}
     if not read_checks(store)["complete"]:
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
     pending = pending_symbols(store)
@@ -258,17 +258,7 @@ def _prepare_locked(
         # every durable obligation, including ordinary next-session appends.
         # Never plan a universe against a missing/temporarily pending summary.
         recovery_policy = command_policy(store, end, context=context, retry_blocked=retry_blocked)
-        recovery_policy.rule_applications = applications
-        recovery_evidence = EvidenceClient(identity_client, event_supplements=supplements)
-        from .selection import DependencyGraph
-        from .sourced_rules import configure
-
-        configure(
-            recovery_evidence,
-            applications,
-            DependencyGraph(context.index["symbols"]),
-            context.index["symbols"],
-        )
+        recovery_evidence = EvidenceClient(identity_client)
         callback = (lambda stage, values: progress("recovery_" + stage, values)) if progress else None
         recoverable = [symbol for symbol in pending if recovery_policy.allowed({symbol})]
         if recoverable:
@@ -292,6 +282,19 @@ def _prepare_locked(
             if recoverable
             else {"failed": 0, "results": []}
         )
+        published = {
+            name
+            for completed in value.get("results", ())
+            if completed["status"] == "processed"
+            for name in completed["processed"]
+        }
+        published.update(
+            name
+            for completion in context.group_completions.values()
+            for name in completion.get("effects", {}).get("published", {})
+        )
+        for name in published:
+            pending_serving[name] = context.index["symbols"][name]["sha256"]
         recovery_policy.acknowledge()
         result["stages"]["recovery_lineage"] = value
         remaining = pending_symbols(store)
@@ -308,12 +311,13 @@ def _prepare_locked(
                     if not recovery_policy.allowed({symbol})
                 ],
             }
-    accepted = universe_plan.boundaries(store, registry, context=context, coalesce_late_bars=coalesce_late_bars)
+    accepted = universe_plan.boundaries(
+        store, registry, context=context, coalesce_late_bars=coalesce_late_bars, pending_serving=pending_serving
+    )
     metadata_before = identity_client.request_count
     if progress:
         progress("catalogue", {"state": "started"})
-    evidence = recovery_evidence or EvidenceClient(identity_client, event_supplements=supplements)
-    evidence.rule_applications = applications
+    evidence = recovery_evidence or EvidenceClient(identity_client)
     # Retain every accepted observation and lookup across recovery. Only the
     # scheduling policy is replaced by the newly accepted work selection.
     evidence.work_policy = None
@@ -397,7 +401,6 @@ def _prepare_locked(
         context=context,
         completed_work=accepted["state"]["work"],
     )
-    policy.rule_applications = applications
     # Reuse the accepted work policy's graph instead of reconstructing the
     # entire membership graph just to enforce its selected storage scope.
     for symbol in seeds:
@@ -578,7 +581,7 @@ def histories_locked(
             or item["invalidate_pricing"]
             or item["refresh_metadata"]
             or symbol in accepted["checks"]["checks"]
-            or set(item.get("reasons", ())) & {"changed_rules", "sourced_facts"}
+            or "changed_rules" in item.get("reasons", ())
         )
     }
     lineage_results = []

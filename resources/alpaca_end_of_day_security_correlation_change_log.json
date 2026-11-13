@@ -577,5 +577,12 @@
     "modifications": [
       "Honor explicit per-application dated refinement intent while retaining the existing correlation-91 cascade and completed ownership outside the selected factual scope."
     ]
+  },
+  {
+    "modifications": [
+      "Reject authored research assertions and certificate capabilities in fresh correlation; retain generic provider-evidence rules and completed scoped decisions.",
+      "Prevent retained research recipes from extending ownership into new observations; remove assertion-based postprocessing from the common policy flow.",
+      "Reject legacy ticker-exclusion assertions and direct researched row recipes before allocation, carrying the same accepted evidence identity across phases without repeating its checks."
+    ]
   }
 ]

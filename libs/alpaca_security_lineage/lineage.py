@@ -4,8 +4,6 @@ from datetime import date
 from typing import Any
 
 from .alpaca_http import AlpacaIdentityClient
-from .event_supplements import SCHEMA_VERSION as EVENT_SUPPLEMENT_SCHEMA_VERSION
-from .event_supplements import SUCCESSION_KIND, SUCCESSION_SCHEMA_VERSION, EventProjection, supplement_key
 from .query_dates import local_query_dates
 from .settings import (
     CUSIP_FIELD_PATTERN,
@@ -13,8 +11,6 @@ from .settings import (
     SYMBOL_FIELD_PATTERN,
     SYMBOL_PATTERN,
 )
-from .sourced_facts import EXTENSIONS, PUBLIC_COMMON_KIND
-from .sourced_facts import selected as selected_facts
 from .symbol_disposition import classify_symbol_disposition
 
 
@@ -169,33 +165,19 @@ def build_identity_report(
     query_dates: tuple[str, str] | None = None,
     event_supplements=(),
 ) -> dict[str, Any]:
-    # Metadata can exist for an entitlement which the bars endpoint rejects.
-    # Explicit bounds avoid inventing a local download just to query that metadata.
-    # Evidence acquisition ends here; it does not establish row ownership or
-    # public identity membership. Consumers retain explicit lookup outcomes and
-    # provider dates; DO NOT turn a present-day symbol/CUSIP lookup into history.
-    project_actions = getattr(client, "event_projection", None) or EventProjection()
-    project_actions = project_actions.bind(event_supplements)
+    """Discover related provider observations without authored assertions."""
+    if event_supplements:
+        raise ValueError("research event supplements are inadmissible in lineage inference")
+    from .inference_evidence import accept_provider_evidence, reject_assertions
+
     start_date, end_date = query_dates or local_query_dates(local_report)
     pending_symbols = deque([symbol])
     queued_symbols = {symbol}
     queried_symbols = []
-    actions_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    asset_lookups_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    sourced_successions = sorted(
-        (
-            item
-            for item in event_supplements
-            if item["kind"] == SUCCESSION_KIND and item["match"]["symbol"] == symbol
-        ),
-        key=supplement_key,
-    )
-    sourced = []
-    succession_cusips = {
-        item["facts"][key] for item in sourced_successions for key in ("old_cusip", "new_cusip")
-    }
+    actions_by_key = {}
+    asset_lookups_by_key = {}
 
-    def queue_symbol(candidate: str) -> None:
+    def queue_symbol(candidate):
         if candidate in queued_symbols:
             return
         if len(queued_symbols) >= MAX_NAME_CHANGE_SYMBOLS:
@@ -213,9 +195,10 @@ def build_identity_report(
             for _ in range(len(pending_symbols)):
                 queried_symbol = pending_symbols.popleft()
                 queried_symbols.append(queried_symbol)
-                queried_actions = client.get_corporate_actions(queried_symbol, start_date, end_date)
+                observed = client.get_corporate_actions(queried_symbol, start_date, end_date)
+                reject_assertions(observed, where="provider corporate actions")
                 for action in sorted(
-                    queried_actions,
+                    observed,
                     key=lambda item: (
                         action_date(item),
                         str(item.get("action_type")),
@@ -224,66 +207,78 @@ def build_identity_report(
                     ),
                 ):
                     actions_by_key[action_identity_key(action)] = action
-                    projected, _ = project_actions([action])
-                    for equity_action in projected:
-                        for related_symbol in sorted(related_name_change_symbols(equity_action)):
-                            queue_symbol(related_symbol)
+                    for related_symbol in sorted(related_name_change_symbols(action)):
+                        queue_symbol(related_symbol)
 
-        provider_corporate_actions = sorted(
+        actions = sorted(
             actions_by_key.values(),
-            key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
+            key=lambda item: (
+                action_date(item),
+                str(item.get("action_type")),
+                str(item.get("id")),
+            ),
         )
-        actions, applied_supplements = project_actions(provider_corporate_actions)
-        sourced = selected_facts(event_supplements, symbols=queued_symbols, cusips=extract_cusips(actions))
-        for item in sourced:
-            if item["kind"] == PUBLIC_COMMON_KIND:
-                for role in ("predecessor", "successor"):
-                    queue_symbol(item["facts"][role]["symbol"])
-        fact_cusips = {item["facts"][role]["cusip"] for item in sourced for role in ("predecessor", "successor")}
-        cusips = sorted(set(extract_cusips(actions)) | succession_cusips | fact_cusips)
-        for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips)):
+        for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", extract_cusips(actions))):
             for identifier in identifiers:
-                lookup_key = (lookup_kind, identifier)
-                if lookup_key in asset_lookups_by_key:
+                key = (lookup_kind, identifier)
+                if key in asset_lookups_by_key:
                     continue
                 lookup = (
                     getattr(client, "get_symbol_lookup", client.get_asset_lookup)
                     if lookup_kind == "symbol"
                     else client.get_asset_lookup
                 )
-                lookup_result = lookup(identifier)
-                asset = lookup_result["asset"]
-                asset_lookups_by_key[lookup_key] = {
+                observed = lookup(identifier)
+                asset = observed["asset"]
+                asset_lookups_by_key[key] = {
                     "lookup": identifier,
                     "lookup_kind": lookup_kind,
                     "found": asset is not None,
-                    "outcome": lookup_result["outcome"],
-                    "http_status": lookup_result["http_status"],
+                    "outcome": observed["outcome"],
+                    "http_status": observed["http_status"],
                     "asset": compact_asset(asset) if asset is not None else None,
                 }
-
-        authoritative_symbols = sorted(
+        for candidate in sorted(
             {
-                authoritative_symbol
+                candidate
                 for action in actions
-                for authoritative_symbol in (_authoritative_name_change_symbol(action, asset_lookups_by_key),)
-                if authoritative_symbol is not None
+                for candidate in (_authoritative_name_change_symbol(action, asset_lookups_by_key),)
+                if candidate is not None
             }
-        )
-        for authoritative_symbol in authoritative_symbols:
-            queue_symbol(authoritative_symbol)
+        ):
+            queue_symbol(candidate)
 
-    provider_corporate_actions = sorted(
-        actions_by_key.values(),
-        key=lambda item: (action_date(item), str(item.get("action_type")), str(item.get("id"))),
+    return accept_provider_evidence(
+        report_from_observations(
+            symbol,
+            local_report,
+            actions,
+            [
+                asset_lookups_by_key[key]
+                for key in sorted(asset_lookups_by_key, key=lambda key: (key[0] != "symbol", key[1]))
+            ],
+            queried_symbols,
+            start_date=start_date,
+            end_date=end_date,
+            request_count=client.request_count,
+        )
     )
-    actions, applied_supplements = project_actions(provider_corporate_actions)
-    cusips = sorted(set(extract_cusips(actions)) | succession_cusips | fact_cusips)
-    asset_lookups = [
-        asset_lookups_by_key[(lookup_kind, identifier)]
-        for lookup_kind, identifiers in (("symbol", sorted(queued_symbols)), ("cusip", cusips))
-        for identifier in identifiers
-    ]
+
+
+def report_from_observations(
+    symbol,
+    local_report,
+    actions,
+    asset_lookups,
+    queried_symbols,
+    *,
+    start_date,
+    end_date,
+    request_count=0,
+    local_evidence=None,
+):
+    """Assemble derived metadata once from held provider observations, without I/O."""
+    cusips = extract_cusips(actions)
     assets_by_id: dict[str, dict[str, Any]] = {}
     asset_id_by_cusip = {}
 
@@ -320,19 +315,6 @@ def build_identity_report(
     evidence_by_symbol_cusip: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in symbol_cusip_evidence(actions):
         evidence_by_symbol_cusip.setdefault((item["symbol"], item["cusip"]), []).append(item)
-    for item in sourced_successions:
-        for role in ("old", "new"):
-            cusip = item["facts"][role + "_cusip"]
-            evidence_by_symbol_cusip.setdefault((symbol, cusip), []).append(
-                {
-                    "evidence_type": "sourced_holding_company_succession",
-                    "source_id": item["match"]["source_id"],
-                    "symbol": symbol,
-                    "cusip": cusip,
-                    "role": role,
-                    "exchange_effective_date": item["facts"]["exchange_effective_date"],
-                }
-            )
     occupancy_evidence = [
         {
             "symbol": evidence_symbol,
@@ -389,6 +371,7 @@ def build_identity_report(
         asset_lookups,
         identities,
         input_symbol_occupants,
+        local_evidence=local_evidence,
     )
 
     result = {
@@ -398,7 +381,7 @@ def build_identity_report(
             "corporate_actions_end": end_date,
             "corporate_actions_data_quality": "complete",
         },
-        "api_request_count": client.request_count,
+        "api_request_count": request_count,
         "queried_symbols": queried_symbols,
         "corporate_action_count": len(actions),
         "corporate_actions": actions,
@@ -411,21 +394,4 @@ def build_identity_report(
         "symbol_disposition": symbol_disposition,
         "warnings": warnings,
     }
-    if applied_supplements:
-        result.update(
-            event_supplement_schema_version=EVENT_SUPPLEMENT_SCHEMA_VERSION,
-            event_supplements=applied_supplements,
-            provider_corporate_actions=provider_corporate_actions,
-        )
-    if sourced_successions:
-        result["sourced_successions"] = {
-            "schema_version": SUCCESSION_SCHEMA_VERSION,
-            "facts": sourced_successions,
-        }
-        result["provider_corporate_actions"] = provider_corporate_actions
-    for kind, extension in EXTENSIONS.items():
-        facts = [item for item in sourced if item["kind"] == kind]
-        if facts:
-            result[extension] = {"schema_version": 1, "facts": facts}
-            result["provider_corporate_actions"] = provider_corporate_actions
     return result

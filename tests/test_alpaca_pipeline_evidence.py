@@ -6,9 +6,6 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from test_alpaca_documented_markets import documented_fact
-
-from libs.alpaca_lineage_build import sourced_rules
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_pipeline.codec import Decoder, Encoder
@@ -68,47 +65,20 @@ def transport(evidence, *, extra=None):
 
 
 class PipelineEvidenceTests(unittest.TestCase):
-    def test_application_projection_survives_json_and_only_new_application_is_projected(self):
-        first = documented_fact(
-            "first",
-            ("AAA", "111111111"),
-            ("AAA", "111111111"),
-            [("AAA", "111111111", "2024-01-01", None, "First Common")],
-        )
-        second = documented_fact(
-            "second",
-            ("BBB", "222222222"),
-            ("BBB", "222222222"),
-            [("BBB", "222222222", "2024-01-01", None, "Second Common")],
-        )
-        applications, facts = sourced_rules.accept_applications(
-            [
-                {"id": "first-app", "symbols": ["AAA"], "supplements": [first], "refine_accepted_dates": False},
-                {"id": "second-app", "symbols": ["BBB"], "supplements": [second], "refine_accepted_dates": True},
-            ]
-        )
-        original = observed_client()
-        original.rule_applications = applications[:1]
-        before = {"sourced_market_occupancy": {"schema_version": 1, "facts": facts}}
-        projected = sourced_rules.project_application_intents(original, before)
-        restored, (before, projected, additional) = transport(
-            original, extra=(before, projected, applications[1])
-        )
-        with patch.object(
-            sourced_rules, "incorporated", side_effect=AssertionError("accepted incorporation replay")
+    def test_active_authored_fact_fields_cannot_be_exported(self):
+        for field in (
+            "event_supplements",
+            "retained_event_supplements",
+            "rule_applications",
+            "rule_fact_scopes",
+            "application_projections",
+            "_retained_supplement_evidence",
         ):
-            self.assertIs(sourced_rules.project_application_intents(restored, before), projected)
-            self.assertIs(sourced_rules.project_application_intents(restored, projected), projected)
-        restored.rule_applications = [*restored.rule_applications, additional]
-        with patch.object(sourced_rules, "incorporated", wraps=sourced_rules.incorporated) as incorporate:
-            current = sourced_rules.project_application_intents(restored, projected)
-        self.assertEqual(incorporate.call_count, 1)
-        self.assertEqual(incorporate.call_args.kwargs["applications"], [additional])
-        self.assertEqual(
-            current["sourced_fact_applications"],
-            {app["id"]: app["fingerprint"] for app in restored.rule_applications},
-        )
-        self.assertEqual(current["sourced_fact_intents"], {"first": False, "second": True})
+            with self.subTest(field=field):
+                original = observed_client()
+                setattr(original, field, {"authored": True})
+                with self.assertRaisesRegex(LineageError, "research assertions"):
+                    export_evidence(original, Encoder().encode)
 
     def test_positive_negative_unattempted_and_coverage_survive_without_producer_calls(self):
         original = observed_client()
@@ -118,7 +88,6 @@ class PipelineEvidenceTests(unittest.TestCase):
             patch.object(EvidenceClient, "__init__", side_effect=AssertionError("constructor replay")),
             patch.object(EvidenceClient, "_load_catalogue", side_effect=AssertionError("catalogue assembly")),
             patch.object(EvidenceClient, "_checked_actions", side_effect=AssertionError("action acceptance")),
-            patch("libs.alpaca_lineage_build.metadata.accept_supplements", side_effect=AssertionError("facts")),
         ):
             restored, _ = transport(original)
             self.assertEqual(restored.observe_catalogue(), original.observation)
@@ -153,53 +122,125 @@ class PipelineEvidenceTests(unittest.TestCase):
             self.assertEqual(failure_outcome(caught.exception), failure_outcome(denied))
         self.assertIs(restored.assets["DENIED"], restored.catalogue_error)
 
-    def test_projection_aliases_survive_and_changed_observation_selects_new_work(self):
-        original = observed_client()
-        action = original.actions["AAA", "2026-01-01", "2026-01-31"][0]
-        supplement = {"kind": "issuer_capital_repayment", "match": {"id": "event-1"}}
-        projected = {**action, "accepted_projection": True}
-        original.event_supplements["event-1"] = supplement
-        original.event_projection.retain(action, supplement, projected)
-        original.rule_applications = [
-            {
-                "id": "rule",
-                "symbols": ("AAA",),
-                "fingerprint": "accepted",
-                "keys": frozenset({"event-1"}),
-                "facts": (supplement,),
-            }
-        ]
-        original.rule_fact_scopes = {"event-1": {"AAA"}}
-        original.applied_event_supplements.add("event-1")
-        restored, _ = transport(original)
-        actions = restored.actions["AAA", "2026-01-01", "2026-01-31"]
-        fact = restored.event_supplements["event-1"]
-        with patch(
-            "libs.alpaca_security_lineage.event_supplements._project_action",
-            side_effect=AssertionError("completed projection replay"),
-        ):
-            selected, facts = restored.event_projection.bind([fact])(actions)
-            self.assertEqual(selected, [projected])
-            self.assertIs(facts[0], restored.rule_applications[0]["facts"][0])
-        changed = {**actions[0], "new_symbol": "OTHER"}
-        with patch(
-            "libs.alpaca_security_lineage.event_supplements._project_action", return_value=changed
-        ) as produce:
-            self.assertEqual(restored.event_projection.bind([fact])([changed])[0], [changed])
-            produce.assert_called_once_with(changed, fact)
-        self.assertEqual(restored.rule_fact_scopes, {"event-1": {"AAA"}})
+    def test_event_projection_cannot_be_exported(self):
+        from types import SimpleNamespace
 
-    def test_retained_evidence_identity_is_shared_with_other_handoff_sections(self):
-        original = EvidenceClient(NoRequests())
-        accepted = {"sourced_successions": {"schema_version": 1, "facts": []}}
-        original.retain_event_supplements([accepted])
-        restored, external = transport(original, extra=accepted)
+        original = observed_client()
+        original.event_projection = SimpleNamespace(accepted={"action": ("fact", "projected")})
+        with self.assertRaisesRegex(LineageError, "event projections"):
+            export_evidence(original, Encoder().encode)
+
+    def test_closed_legacy_provenance_can_travel_without_active_fact_types(self):
+        from libs.alpaca_security_lineage.event_supplements import _freeze
+
+        closed = _freeze({"evidence": {"sourced_successions": {"schema_version": 1, "facts": []}}})
+        restored, external = transport(observed_client(), extra=closed)
+        self.assertEqual(external, closed)
+        self.assertEqual(type(external), dict)
+        self.assertEqual(restored.get_symbol_lookup("AAA")["asset"], asset())
+
+    def test_restored_legacy_active_fields_are_rejected_before_observation(self):
+        from libs.alpaca_pipeline.evidence import _FIELDS
+
+        original = observed_client()
+        state = {field: getattr(original, field) for field in _FIELDS}
+        encoder = Encoder()
+        state["accepted_event_projections"] = [{"authored": True}]
+        document = {
+            "schema": "alpaca.pipeline.evidence",
+            "schema_version": 1,
+            "state": encoder.encode(state),
+            "provider_evidence_views": encoder.encode([]),
+        }
+        with self.assertRaisesRegex(LineageError, "research assertion state"):
+            import_evidence(document, NoRequests(), Decoder(encoder.objects).decode)
+
+    def test_authored_action_annotation_cannot_enter_provider_cache(self):
+        original = observed_client()
+        original.actions["AAA", "2026-01-01", "2026-01-31"][0]["identity_interpretation"] = {
+            "automatic_exchange": True
+        }
+        with self.assertRaisesRegex(LineageError, "assertion|research|authored"):
+            export_evidence(original, Encoder().encode)
+        from libs.alpaca_pipeline.evidence import _FIELDS
+
+        encoder = Encoder()
+        state = {field: getattr(original, field) for field in _FIELDS}
+        document = {
+            "schema": "alpaca.pipeline.evidence",
+            "schema_version": 1,
+            "state": encoder.encode(state),
+            "provider_evidence_views": encoder.encode([]),
+        }
+        with self.assertRaisesRegex(LineageError, "assertion|research|authored"):
+            import_evidence(document, NoRequests(), Decoder(encoder.objects).decode)
+
+    def test_provider_projection_cache_retains_original_alias_without_reassembly(self):
+        original = observed_client()
+        closed = {"sourced_successions": {"facts": [{"legacy": True}]}}
+        projected = {"corporate_actions": [], "asset_lookups": []}
+        original._provider_evidence_views[id(closed)] = (closed, projected)
+        restored, (closed, projected) = transport(original, extra=(closed, projected))
         with patch(
-            "libs.alpaca_lineage_build.metadata.canonical_extension",
-            side_effect=AssertionError("retained fact validation replay"),
+            "libs.alpaca_lineage_build.metadata.provider_evidence",
+            side_effect=AssertionError("projection replay"),
         ):
-            restored.retain_event_supplements([external])
-        self.assertIs(restored._retained_supplement_evidence[id(external)], external)
+            self.assertIs(restored.provider_view(closed), projected)
+
+    def test_completed_cache_restores_without_repeating_assertion_acceptance(self):
+        from libs.alpaca_pipeline import evidence as evidence_transport
+        from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence
+
+        original = observed_client()
+        closed = {"sourced_successions": {"facts": [{"legacy": True}]}}
+        projected = {"corporate_actions": [], "asset_lookups": []}
+        original._provider_evidence_views[id(closed)] = closed, projected
+        encoder = Encoder()
+        guard = evidence_transport.reject_assertions
+        with patch.object(evidence_transport, "reject_assertions", wraps=guard) as accept:
+            document = export_evidence(original, encoder.encode)
+        self.assertEqual(2, accept.call_count)  # Fresh cache state and its plain projection.
+        external = encoder.encode((original.assets, original.catalogue, closed, projected))
+        wire = json.loads(json.dumps({"document": document, "objects": encoder.objects, "extra": external}))
+        with (
+            patch.object(
+                evidence_transport,
+                "_require_provider_state",
+                side_effect=AssertionError("cache acceptance repeated"),
+            ),
+            patch.object(
+                ProviderEvidence, "__init__", side_effect=AssertionError("acceptance constructor repeated")
+            ),
+            patch.object(
+                EvidenceClient, "_load_catalogue", side_effect=AssertionError("catalogue acceptance repeated")
+            ),
+        ):
+            decoder = Decoder(wire["objects"])
+            restored = import_evidence(wire["document"], NoRequests(), decoder.decode)
+            assets, catalogue, closed, projected = decoder.decode(wire["extra"])
+        self.assertIs(restored.assets, assets)
+        self.assertIs(restored.catalogue, catalogue)
+        self.assertIs(restored.provider_view(closed), projected)
+
+    def test_plain_fresh_projection_rejects_assertions_before_cache_acceptance(self):
+        from libs.alpaca_pipeline.evidence import _FIELDS
+
+        original = observed_client()
+        closed = {"completed": True}
+        projected = {"identity_interpretation": {"authored": True}}
+        original._provider_evidence_views[id(closed)] = closed, projected
+        with self.assertRaisesRegex(LineageError, "assertion|research|authored"):
+            export_evidence(original, Encoder().encode)
+        encoder = Encoder()
+        state = {field: getattr(original, field) for field in _FIELDS}
+        document = {
+            "schema": "alpaca.pipeline.evidence",
+            "schema_version": 1,
+            "state": encoder.encode(state),
+            "provider_evidence_views": encoder.encode([(closed, projected)]),
+        }
+        with self.assertRaisesRegex(LineageError, "assertion|research|authored"):
+            import_evidence(document, NoRequests(), Decoder(encoder.objects).decode)
 
     def test_conflicts_and_restrictions_do_not_disappear(self):
         original = observed_client()

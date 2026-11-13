@@ -9,7 +9,7 @@ from dataclasses import field as dataclass_field
 
 from libs.alpaca_end_of_day_security_correlation.security_identity import security_identity_for_alpaca_assets
 
-from .contract import reusable_decision
+from .contract import LineageError, reusable_decision
 from .resume import continuing_request, unchanged_rows
 
 
@@ -35,6 +35,28 @@ class SourceWorkPlan:
     closed_report_projections: dict = dataclass_field(default_factory=dict, repr=False, compare=False)
     stable_numerical_identities: frozenset = dataclass_field(default_factory=frozenset)
     membership_refinement: dict | None = None
+
+
+def require_generic_plan(plan):
+    """Fresh work may not execute legacy researched source recipes."""
+    for name in (
+        "market_projection",
+        "market_binding",
+        "market_labels_complete",
+        "recapitalization_graphs",
+        "documented_membership",
+        "refine_accepted_dates",
+        "refinement_fact_ids",
+    ):
+        if getattr(plan, name):
+            raise LineageError("source-work research recipe is not supported: " + name)
+    for name, field in (
+        ("rename_membership", "certificates"),
+        ("common_membership", "certificates"),
+        ("relation_certificate", "relations"),
+    ):
+        if (getattr(plan, name) or {}).get(field):
+            raise LineageError("source-work research certificate is not supported: " + name)
 
 
 def binding_applies(control):
@@ -98,7 +120,7 @@ def compose_memberships(prior_members, edges):
             )
         else:
             completed = security_identity_for_alpaca_assets(
-                members, [], tickers=tickers, basis="sourced_public_common_or_unchanged_security"
+                members, [], tickers=tickers, basis="provider_supported_component_union"
             ).as_report_object()
         for identifier in members:
             memberships[identifier] = completed

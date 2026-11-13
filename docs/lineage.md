@@ -5,32 +5,49 @@ profiles and read-only comparisons. These contracts govern completed-group reuse
 
 ## Ownership allocation criterion
 
-Publish the most likely ownership, historical labels, identity membership, continuity and numerical source
-authority supported by the available evidence.
-The objective is to become less wrong as evidence improves, rather than wait for certainty. Incorrect
-allocation and withholding history that credibly belongs to an identity are both errors. An unallocated
-result is one candidate explanation: choose it when it fits the evidence better than the plausible owners,
-not as the automatic consequence of incomplete evidence or a missing certificate.
+Every decision asks which outcome is most likely to be correct given the available API evidence.
+Explicitly compare plausible connections and leaving history unconnected; choose the best supported
+interpretation. Both outcomes can be correct, but neither is an automatic default.
 
-Evaluate the complete affected group. Weigh prior accepted ownership, dated marketplace occupancy, security
-class and identifiers, provider mappings, continuity or conversion terms, and evidence for competing owners
-together. A certificate carries a completed rule decision; its absence means that particular proof is absent,
-not that every credible allocation is false. Missing evidence must be weighed alongside the positive evidence
-and alternatives. Use generic, explainable rules, record provenance and applicable confidence, reasons and
-warnings, and retain genuine ambiguity when the alternatives cannot be distinguished. Do not invent numerical
-probabilities or make ticker spelling, issuer identity or price equality sufficient security-identity evidence.
+Use generic rules to choose the most likely ownership, historical labels, identity membership,
+continuity and numerical source authority supported by provider observations and applicable completed
+producer decisions. Absolute proof or a particular certificate is not required when the combined
+admissible evidence reasonably favors an owner over its alternatives.
+
+Research establishes an external reference for improving and testing those generic rules. It may
+corroborate a connection or show that the API evidence cannot reasonably establish ownership; both
+findings can improve or validate a generic rule. It must not
+supply runtime facts, ticker-specific exceptions, factual applications, event supplements, assertion
+overlays or research certificates. This restriction applies to production, debug, lab and fresh recovery
+decisions. YAML selects registered generic rules and generic parameters only. The same admissible
+evidence conditions select the same inference logic regardless of ticker spelling.
+
+The objective is the best supported interpretation of the available admissible source evidence.
+Connect and publish when a connection is reasonably supported; leave history ownerless when it cannot
+reasonably be connected. Both outcomes can be correct. Do not force an allocation because history must
+belong somewhere, or withhold a reasonably supported connection because absolute proof is unavailable.
+An ownerless outcome is completed, processed lineage: persist its unresolved disposition and evidence
+limits, keep that history unpublished to consumers, acknowledge processing and let independent work
+continue. It is not a workflow failure or blocker.
+
+Evaluate the complete affected group. Weigh prior accepted ownership, dated provider observations,
+security class and identifiers, provider mappings, continuity and competing owners together. Research
+can corroborate an expected result and expose a missing generic rule; the rule must establish its result
+from admissible runtime inputs. Record reasons, applicable confidence, material weaknesses and genuine
+alternatives without inventing numerical probabilities. Ticker spelling, issuer identity or price
+equality alone does not establish security identity.
 
 Keep technical publication integrity separate from ownership inference. Selected generations, readable
-handoffs, coherent numerical bundles and interruption recovery remain required. Repair a missing technical
-capability through its owner while preserving applicable completed decisions; do not treat the missing
-capability as proof that the history has no owner or repeat accepted historical checks.
-Owning recovery must produce a valid publication of the best-supported decision; missing technical capability
-is not a terminal ownership outcome.
+handoffs, coherent numerical bundles and interruption recovery remain required. Missing technical
+capabilities select their owning recovery path while preserving applicable completed decisions; they
+do not prove that history has no owner or authorize repeated historical checks. Frozen journals install
+completed outputs under their recorded provenance; retained research assertions cannot be extended to
+justify new rows.
 
-The certificate-specific rules below describe the current implementation. Some still leave rows unresolved
-or take an identity offline when a particular proof is missing. Those gates do not by themselves establish
-that nonallocation is the most likely result. The [implementation review](trust-boundary-handoff.html#f64)
-records this remaining policy gap; offline containment alone does not resolve disputed ownership.
+Fresh inference rejects authored assertions and selects provider observations separately from retained
+legacy provenance. [F67](trust-boundary-handoff.html#f67) records the implementation review and its remaining
+limits. Existing certificate gates can still withhold reasonably supported ownership;
+[F64](trust-boundary-handoff.html#f64) remains open. Mechanism tests do not establish correct ownership in every case.
 
 ## Lineage reuse
 
@@ -42,11 +59,11 @@ records exact YAML bytes; formatting is not reuse identity.
 
 Authorize the canonical policy once after journal recovery, before new selection/evaluation/network work.
 Recovery validates frozen journal provenance without reinterpreting it through newly installed policy.
-The [ruleset loader](../libs/alpaca_lineage_build/ruleset.py) accepts the canonical YAML's executable policy,
-scoped factual applications and optional producers as one operation configuration. Their identities remain
-separate: a container or formatting change does not establish new ownership or invalidate an applicable
-prior policy. Its [completed value contract](../libs/alpaca_lineage_build/ruleset_contract.py) crosses stage
-JSON without reopening YAML, compiling rules or accepting the same facts again.
+The [ruleset loader](../libs/alpaca_lineage_build/ruleset.py) accepts the schema-2 canonical YAML's registered
+generic policy and optional generic producers as one operation configuration. Their identities remain separate:
+a container or formatting change does not establish new ownership or invalidate an applicable prior policy.
+Its [completed value contract](../libs/alpaca_lineage_build/ruleset_contract.py) crosses stage JSON without
+reopening YAML or compiling rules again. It carries no active factual applications or supplements.
 Evidence fingerprints are independent of history approval. [Workflow completion](technical-contracts.md#universe-observation-and-work-state)
 consumes fresh source-bound approval without republishing an unchanged decision. A completed producer handoff
 does not need its group reopened merely to acknowledge that approval. Rule-only changes reuse approved evidence.
@@ -78,82 +95,19 @@ publication. Its completion handoff is independent of computation revision and o
 
 ## Policy migration
 
-Correlation-91 composes a separately evidenced public-common exchange with primary dated security episodes.
-It can refine positive labels and identifiers within that completed continuing component, including a new
-public parent whose legal identity and governance differ. Earlier completed correlation-90 decisions retain
-their exact provenance until selected inputs change; frozen execution cannot consume the new refinement plan.
+Publication compatibility and executable runtime behavior are distinct. Removing fact-injection inputs
+does not change the canonical ordered rule-policy identity or revoke completed assignments, membership,
+labels or numerical choices. Supported earlier publication formats and policy identities remain readable
+under their recorded provenance. They authorize reuse within their accepted scope, never new inference from
+legacy assertions or a promotion obtained by rewriting a header. Runtime changes and exact compatibility
+identities belong to the [version contracts](../VERSION_TRACKER.md#compatibility).
 
-Correlation-90 admits explicitly documented automatic one-for-one exchange into a new public holding
-company. Version-5 primary chronology can refine dated labels and identifiers inside that continuing public
-component while preserving explicit numerical decisions and source positions. Exact completed correlation-89
-decisions keep their original provenance until actual selected inputs change; earlier frozen execution cannot
-consume the new assertion.
-
-Correlation-89 admits explicitly documented automatic one-for-one reclassification of a continuing public
-common holding. It records the actual legal instant and changed share rights separately from provider
-identifier dates. Exact completed correlation-88 decisions retain their original provenance until actual
-selected inputs change; frozen earlier execution cannot consume the new fact version.
-
-Correlation-88 lets a documented security binding consume one completed public component that contains every
-earlier source-scoped component for that observed UUID. It does not union incomparable components merely
-because they share a UUID. Earlier completed correlation-87 decisions retain their original provenance:
-those bindings had already resolved without this previously blocked containing-component case.
-
-Correlation-87 admits version-3 documented public-security trading episodes. Exact completed CUSIP
-observations and explicit security continuity can establish a first owner without a previously owned row.
-Earlier exact revision-2 decisions, including correlation-86, retain their original provenance until actual
-input changes select work. The new fact schema cannot execute under an earlier policy.
-
-Correlation-86 interprets exactly observed own-common capital repayments using separately sourced
-consolidation terms and dated CUSIPs. Existing correlation-85 revision-2 decisions retain their original
-policy and generations until actual changed inputs select work. Missing provider UUIDs do not negate
-documented common ownership; the dated identifier can remain explicit without inventing a UUID.
-
-Correlation-85 admits explicitly sourced new-public-parent listing succession and component conversion terms.
-A distinct legal registrant can continue the eligible public-common lineage under the version-2 conditions
-below. Earlier exact revision-2 decisions retain their original policy and generations outside newly submitted
-facts; correlation-82/83/84 are reusable authorities, not current production execution profiles.
-
-Correlation-84 distinguishes dated market occupancy from same-security adjustment continuity. Exact observed
-CUSIP bindings select an existing owner; regular-way and when-issued episodes supply historical labels.
-The stage creates no UUID membership or observations. Explicit version-2 same-security/CUSIP facts can
-retain a continuing bundle when matching non-dividend observations and accepted later cash dividends
-establish missing adjustments in a temporary source. Existing correlation-82/83 revision-2 decisions retain
-their original provenance until actual input changes, including a newly submitted scoped fact, select work.
-
-Correlation-82 adds separately sourced public-common continuity and distinct-security conversion relations.
-New facts select their complete affected group; earlier correlation-81/revision-2 decisions retain original
-provenance when those facts are absent. No computation revision or blanket header promotion is introduced.
-
-Correlation-81 adds the sourced identity-preserving rename described below. Its behavior requires the new
-fact kind, which correlation-80 could not publish. Completed correlation-80/revision-2 decisions therefore
-retain their original provenance and generations until their actual inputs change. Newly submitted facts
-invalidate the selected group through the metadata owner; they cannot promote an earlier decision by changing
-its header. Preserved earlier policy identities authorize reuse only, not new production execution.
-
-Correlation-80 adds the bounded current-source exception after a closed label departure described below.
-Completed correlation-79/revision-2 decisions retain their original provenance and generations when the accepted
-receipt or compact index proves zero unresolved rows, a known UUID count other than two, or a completed group
-size other than two. The exception requires exactly two labels and two UUIDs and cannot change those decisions.
-Missing applicability proof selects owning evaluation; no implicit header
-promotion, metadata crawl or historical audit establishes compatibility. Actual changed inputs still enter their
-ordinary reconciliation gates. New format-35 output carries its completed current-source ownership handoff.
-
-Correlation-79 added the explicitly sourced holding-company succession described below. Computation revision 2
-requires owning reconstruction of all earlier completed decisions, including exact 34/78 revision-1 outputs.
-Their approved metadata and pricing remain usable inputs with original provenance; an updated header cannot
-establish a completed calculation. Newly computed output uses the current authorized policy and revision.
-Completed revision-2 groups remain reusable and are skipped before upstream body reads on rebuild retries.
-Newly submitted facts independently invalidate their selected group. Earlier policy identities are not
-accepted for new production execution.
-
-Correlation-78 scopes continuing-acquirer and terminal evidence and consumes completed related-symbol queries. Earlier
-policy-less 33/59 and correlation-60 through 75 decisions still require selected complete-group evaluation;
-the historical 33/59→34/60 proof remains restricted to its original production target.
+The explicit computation-revision rebuild remains the owner of obsolete calculations. It does not make
+a retained research assertion admissible, select a store-wide migration implicitly or authorize repeating
+applicable completed work. Fresh evaluation uses retained provider observations and current generic rules.
 
 [Migration](../libs/alpaca_lineage_build/certificate_migration.py) retains the exact 34/76 or 34/77 applicability
-proof for the current target. The sourced-only extension cannot apply to those older inputs.
-It tests changed-rule prerequisites and concrete mapping-dependency conflicts using accepted complete-group
+proof under its recorded target and prerequisites. It tests changed-rule prerequisites and concrete mapping-dependency conflicts using accepted complete-group
 metadata, including unavailable auxiliaries. This is an applicability decision, never a prediction of row
 ownership. A complete singleton group with at most one accepted UUID cannot invoke the changed certificates.
 Affected or unproved groups use the existing evaluator; unchanged groups keep their evidence, assignment
@@ -170,9 +124,8 @@ to consume compatible header handoffs. This transition does not authorize any ot
 
 [observations.py](../libs/alpaca_lineage_build/observations.py), `select_observations`, owns numerical selection
 separately from identity assignment. Each identity/session takes all numerical views from one complete eight-view
-bundle. A complete dedicated source for a documented temporary market normally takes precedence there.
-The positive adjustment-continuity exception below can preserve the continuing bundle. Outside those
-markets, the latest independently observed own-label source wins. This selects observations, not historical completeness.
+bundle. Applicable completed market and source decisions keep their accepted scope. For fresh selection,
+the latest independently observed own-label source normally wins. This selects observations, not historical completeness.
 Equal complete bundles can collapse; unresolved authority stays explicit. All accepted dated labels survive
 independently, including ambiguity. Readers/exports consume decisions without repeating selection/activity checks.
 
@@ -185,36 +138,13 @@ Pricing publishes correction before lineage selection; failure leaves the new se
 An older occupant's closure does not disprove source-wide mapping when the same source independently observes a
 later own-label occupant. Per-identity selection remains valid without replacement.
 
-[Dated-market occupancy](../libs/alpaca_end_of_day_security_correlation/market_occupancy.py) separates actual
-marketplace labels from later provider aliases. Version-1 sourced facts bind exact CUSIPs to an existing group
-identity and carry contiguous dated episodes. A supported own-label observation can recover a withheld row;
-a contradictory observed mapping prevents that direct authority. An incomplete temporary source cannot
-displace a complete bundle. Whole accepted segments receive labels from metadata; interior label boundaries
-require their exact stored timestamps. Unknown document publication dates remain explicitly null.
-
-Version-2 facts additionally assert that delivery-basis markets represent the same security and CUSIP.
-They can preserve a complete continuing bundle only when all non-dividend views match the temporary
-source, the temporary dividend views omit their adjustments, and the continuing views differ. An accepted
-same-CUSIP cash dividend must fall after temporary trading closes and before both acquisition cutoffs,
-with a continuing own-label observation on or after that event. A later route or broader coverage alone
-cannot establish this exception. The temporary historical labels remain intact.
-
-For regular-way label corrections with applicable accepted owners and unchanged non-market evidence,
-[market_assignments.py](../libs/alpaca_lineage_build/market_assignments.py) constructs dated assignments from
-selected metadata. It preserves explicit numerical states and unrelated assignment references. The completed
-generation-bound label projection carries into serving without historical numerical checks.
-
-When newly documented temporary-market authority changes numerical source choice,
-[market_observations.py](../libs/alpaca_lineage_build/market_observations.py) selects only its exact competing
-sessions. The physical year/month overlap consumes that completed decision. The producer retains every
-outside choice, source membership and the session grid. Exact complete-bundle equality carries its numerical
-approval forward; serving checks only newly selected values that differ. Generation-bound revision metadata
-and alias-preserving selected-bundle handoffs survive prepared publication and bounded journal recovery.
-A completed unpublished label projection survives a changed adjustment decision: the refinement consumes
-its labels and assignment artifacts, reselects only the invalidated dates, and measures numerical changes
-against the original published states. Unchanged artifacts retain their completed handoffs.
-Unknown choice flags require owning selection. A legacy negative outcome without its scoped projection
-requires owning recovery; it cannot trigger an implicit audit of the remaining accepted history.
+Completed dated-market label projections and bounded numerical-source revisions remain consumable
+producer decisions. Their accepted generation, exact sessions and selected source bindings carry into
+serving without replaying ownership, comparing accepted prices or reconstructing assignment artifacts.
+A completed unpublished projection can carry through interruption under those same bindings. Only a
+genuinely invalidated numerical scope enters owning selection; unknown choice flags or missing declared
+capabilities require owning recovery, never an audit of the remaining accepted history. These closed
+results do not authorize accepting new market assertions or extending legacy chronology to new rows.
 
 Ordinary source work also retains its first completed equal-bundle result with explicit previously selected
 donors, independently of public-component changes. The [source-equivalence contract](technical-contracts.md#standalone-artifacts)
@@ -314,67 +244,40 @@ earliest or next-session dates, bar boundaries, researched marketplace dates or 
 certified source span may date only its own observed rows; it does not replace the action endpoint. The current
 certificate paths can leave missing or conflicting inputs unresolved; their applicability limits are not a
 general preference for nonallocation over the [most likely owner](#ownership-allocation-criterion).
-Research may supply the exact sourced event facts below; it cannot
-establish an opaque provider UUID, move provider dates or directly assign rows.
+Research can improve and test a generic rule when retained provider observations reasonably support its
+result. It cannot supply event assertions, establish an opaque provider UUID, move provider dates or assign rows.
 
 ### Sourced event facts
 
-`dated_market_occupancy` version 3 separately supplies `documented_public_security` support: primary dated
-names, exchanges, instrument kind, optional registrant CIK, and either the same CUSIP security or explicit
-preexisting common shares that remained outstanding. The latter can span changed CUSIPs; it cannot join
-unlike instruments or turn acquisition consideration into continuity. A bank and a later fund using its ticker
-remain separate owners. A source's documented continuing provider identity outranks a different security's
-historical use of its current ticker. Tied documented owners remain ambiguous; positions outside the known
-episodes remain unallocated. Missing exact observations select owning metadata recovery. A completed 404 can
-leave the dated UUID null when another observed UUID establishes the documented public owner.
+Fresh classification also excludes hardcoded ticker snapshots as evidence. Reserved-looking labels and names
+receive the same provider-evidence rules as other labels; no pattern substitute is used. The legacy exchange-test
+classification remains readable within completed publications, but is inadmissible as fresh inference evidence.
 
-Version 4 separately records `automatic_public_common_reclassification`: the legal entity continues and
-each existing public common share automatically becomes one successor common or ordinary share. Its
-`public_share_reclassification` records the timezone-qualified legal instant, explicit one-for-one units,
-continued public holders and nullable unchanged-rights assertion. Governance may change. This treatment
-does not claim that the earlier legal share class remained outstanding. Private targets, subsidiaries,
-rights, units and funds cannot supply this public-common assertion. Dated provider identifier episodes
-remain separate from legal effectiveness; a retained provider transition is not presented as an independently
-confirmed exchange-effective date.
+Authored factual applications, event supplements, assertion overlays and research certificates are rejected
+in production, debug, lab and fresh recovery decisions. The schema-2 canonical YAML contains generic policy
+and producer selection only; no JSON fact import or legacy configuration fallback is an inference authority.
+The removed `--event-supplements` input cannot select a repair. Research remains external to runtime under
+the [generic research loop](development.md#lineage-research-and-rule-improvement-loop).
 
-Version 5 records `automatic_public_holding_company_exchange`. Each outstanding public common share is
-automatically exchanged one-for-one into a new parent, with the same proportional ownership and rights;
-the operating predecessor becomes a subsidiary. `public_share_exchange` retains the actual legal date
-separately from marketplace identifier episodes. This describes a different legal corporation and does not
-assert continued legal existence. Private-target shares, subsidiary sales, CVRs, rights and units do not
-inherit this public-common treatment. Earlier dated share changes require their own documented chronology
-and retained provider observations.
+The [provider-evidence owner](../libs/alpaca_security_lineage/inference_evidence.py) selects retained raw
+provider actions and exact observations for new inference. Where a legacy receipt retains a separate raw
+provider union, it rebuilds only the derived provider projection, preserving accepted query coverage and
+local-market evidence. Missing required raw observations select owning metadata recovery. A completed
+`ProviderEvidence` result is accepted once and lent to all downstream consumers without another traversal,
+projection, store read or provider request. Fresh externally supplied assertions are rejected rather than
+silently converted into evidence.
 
-The [documented ownership producer](../libs/alpaca_end_of_day_security_correlation/documented_markets.py)
-fills unresolved positions and preserves explicit numerical states. Correlation-91 can refine positive
-labels, CUSIPs, dated UUIDs and descriptions from a new primary chronology within its completed continuing
-component. A separate public-common certificate can establish a new-parent exchange; each dated fact still
-describes its actual security and registrant. Only newly submitted continuity proofs are certified;
-accepted earlier proofs remain authoritative. Conflicting assertions or changes to an accepted fact require
-owning reconciliation. Foreign owners remain outside the metadata refinement; competing primary
-chronologies require owning reconciliation. This metadata refinement preserves row positions, values and
-every explicit numerical state, including superseded, conflicted and incomplete observations. Unknown states
-do not become numerical approval. New ownership
-does not approve a numerical bundle. The owning selector evaluates only the newly owned positions and actual
-new contests. Production and explicit documented research use the same
-[documented-update owner](../libs/alpaca_lineage_build/documented_updates.py) for completed-plan merging,
-new-fact binding, positive-date projection and numerical change scope. It performs no storage or provider
-I/O and does not publish. [Source-work planning](../libs/alpaca_lineage_build/documented_work.py) closes unchanged peers
-before payload access. Its completed version-1 identity binding and row projection survive publication and
-ordinary suffix work under their original mappings and evidence. An interior episode boundary selects exact
-timestamp assembly; endpoint ranges alone cannot establish sparse interior membership. Primary descriptions
-travel in versioned dated assignment metadata; serving consumes them without accepting today's reused-ticker
-description as historical issuer evidence. Other contradicted positive owners require their owning reconciliation.
+Published assignments, component membership, dated labels, descriptions, numerical states and applicable
+completed handoffs remain authoritative in their accepted scope. Legacy research provenance may be inspected;
+it does not become active assertions, supply new generic-rule predicates or extend an old certificate into
+new rows. Frozen journals install their completed artifacts under their recorded provenance. Removing an
+injection input neither rolls back those publications nor selects historical replay or a storage crawl.
 
-When accepted source scopes contain different generations of one documented public component, the binding
-can select the unique completed component containing all of them. A membership-only projection preserves
-dated asset owners, labels and positions. Newly evidenced public-continuity edges compose complete accepted
-components as an undirected relation; a shared UUID alone does not select a union. An already completed
-containing component supplies its public ID without another identity calculation. Only newly joined numerical
-overlap reopens its dated source contest. Incomparable components require owning membership recovery, not
-a union inferred from a shared UUID. Completed bindings, numerical decisions and per-source publication parts
-remain cached under actual receipt/pricing generations, accepted metadata and policy through construction or
-publication interruption; a new phase or acknowledgement does not repeat them.
+An unresolved legacy fact-application obligation without an applicable completed output requires explicit
+owning generic recovery. It cannot be satisfied by rebinding the old research fact, copying a new assertion
+or treating a missing handoff as permission to reconstruct accepted history. Independent completed work
+continues. A new generic assessment may connect reasonably supported ownership or complete ownerless lineage;
+its reasons, evidence limits and competing interpretations remain recorded.
 
 The optional `accepted_same_security_containing_component_v1` membership producer consumes completed
 same-security rename evidence, a containing accepted component and certified extension edges. It remains
@@ -386,170 +289,14 @@ generations. It applies the recorded positions without repeating the route or UU
 internal operation-context handoff, not a CLI plan-import option. Its completed values cross stage JSON;
 only actually changed membership intervals and their new numerical overlap reopen selection.
 
-For a version-5 public holding exchange that preserves rights and proportional ownership, a newly allocated
-peer is superseded where exact retained timestamps already have
-an explicitly selected complete eight-view donor bundle for the same public identity. This consumes the
-numerical selection independently of serving eligibility. It reads no price values, compares no accepted
-prices and requires no new certificate. Equal sparse endpoints or row counts do not establish overlap;
-complementary partial donors cannot supply a complete bundle. Only actual new dates and a new overlap between
-previously distinct accepted numerical owners enter selection. Completed timestamp keys carry into that
-selection. Unchanged peer metadata also retains its original producer object through retry; another accepted
-copy of the same receipt does not replace that binding.
 
-An entirely superseded history with no unresolved positions stays closed to prices when its accepted dated
-runs need no interior timestamp subdivision. Its completed primary metadata projection supplies the new
-assignments, including canonical public references, labels, descriptions and dated identifiers. The numerical
-supersession remains unchanged. Actual interior boundaries select their owning timestamp assembly; absent
-numerical flags cannot supply this closed capability.
-
-`issuer_capital_repayment` version 1 binds a recorded cash dividend or same-symbol stock-and-cash event
-to documented continuing-issuer common-share consolidation terms, cash repayment and legal/exchange dates.
-The metadata producer preserves raw provider records and supplies a separate split interpretation for
-identity reasoning. A documented endpoint discrepancy remains explicit. This interpretation constructs no
-prices or adjustment factors. Exact lookup results and the documented CUSIP chronology select dated owners;
-alternatives already within one public identity do not create competing public owners. A completed 404 may
-leave the dated predecessor UUID null while its CUSIP and public owner remain supported. Unknown lookups,
-foreign candidates and tied or conflicting chronology remain unresolved.
-
-When new interpretations all precede accepted later ownership, unchanged raw observations, endpoint mappings
-and pricing permit a scoped carry into the documented enlarged component. Accepted owners, labels and explicit
-numerical states remain closed. Only unresolved or freshly appended rows enter the sourced chronological
-projection. A complete projection bypasses the ordinary row cascade and its source-grid calculations; any
-residual alternatives retain those completed assignments during owning reconciliation.
-
-`public_common_continuation` version 1 describes positively evidenced participation of non-redeemed public
-common holders in the continuing registrant's public common security. Exact predecessor/successor CUSIP
-lookups and documented one-for-one continued/reclassified units establish membership. Unreported unchanged
-rights and express-exchange clauses remain null. Founder/private shares, redeemed shares, units, warrants,
-ADSs, unknown ratios, branches and contradictory same-transaction cash treatment cannot use this rule.
-An independent later cash termination does not revoke the earlier continuation.
-
-Version 2 separately describes a new public parent. It requires an explicit non-continuing legal registrant,
-different CIKs, exactly one already-public common predecessor, a privately held operating target, a listed
-successor, and a documented one-for-one eligible public-share exchange. The exchange's dated public-market
-succession and resolved provider endpoints establish the public lineage. A 1:1 acquisition ratio alone cannot
-establish it; private-target, founder, right and unit paths remain distinct. This route does not assert that
-the legal issuer or legal security is unchanged. Conflicting endpoints and competing public branches retain
-explicit ambiguity. Excluded redemptions do not contradict the eligible non-redeemed holder path.
-
-`distinct_security_conversion` version 1 records consideration between distinct securities without joining
-their UUIDs. External or ambiguous endpoints retain identifiers and null resolved IDs. Legal effectiveness,
-first-successor trading labels, alternative final sessions, consideration and settlement dates remain separate.
-A real provider event, when explicitly named, must match its endpoint roles, ownership dates and jointly
-reported ratios; each reported rate must be finite and positive. Missing target mappings and unreported rates
-remain unknown. Only an exact continuing-acquirer certificate can exempt that acquisition from a later
-same-security rename's conflict check; settlement timing does not move ownership.
-Version-2 conversion terms can identify each unit constituent and holder-aggregate downward rounding without
-cash for fractional entitlements. The relation declares `consideration_schema_version: 2`; the common and
-right components retain separate terms rather than a fabricated unit-share price or an unconditional 1.2-share
-execution. Neither the relation nor common consideration unions historical right/unit identities.
-
-Both kinds use `match.source_id` and their own `facts.schema_version`, and require sourced provenance.
-Ordinary updates load scoped applications from `evidence.applications` in the
-[canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml) once. Each entry has a unique
-`id`, explicit `symbols`, complete `supplements`, and optional boolean `refine_accepted_dates` (default true).
-`policy` contains the executable cascade; `producers.membership_refinement` is an explicit optional producer
-selection, null by default. These are configuration of generic implementations and sourced assertions,
-not ticker-specific branches in Python. The legacy JSON loader remains an explicit compatibility adapter,
-not a fallback or a second live registry.
-
-Application symbols explicitly select existing source groups; historical ticker spellings do not select
-unrelated current occupants. The compact lineage index records exact incorporated application fingerprints,
-so new facts select their named anchors without reopening every receipt. Workflow completion requires those
-facts and their applicable refinement intent in the journaled publication independently of price approval.
-Omitted intent and explicit true have the same meaning and fingerprint. False preserves accepted positive
-dates and labels while permitting the documented owner to assess unresolved positions; it does not retract
-already published decisions. Changing only an explicit intent selects its affected owning projection even
-when the fact body is unchanged. Accepted owner bindings remain inputs, not work to repeat.
-This inventory records incorporation; the published certificates and assignments establish the resulting
-lineage. Applications are additive: removing an entry does not retract already published evidence; a changed
-or withdrawn accepted fact requires its owning reconciliation.
-They retain separate metadata extensions and never manufacture provider events. A mapped successor history
-claim is a separate source-bound producer result, restricted to accepted predecessor ownership and accepted
-same-CUSIP label routes. It feeds the existing ordered row cascade; the production rule order is unchanged.
-Accepted predecessor rows retain their UUIDs and dated labels when only public membership changes.
-The source-work owner scopes new metadata to the prior source's accepted owners and source-bound
-certificates, independently of the enlarged public component. Added foreign actions, occupancy and unresolved
-endpoints cannot reopen those rows. Existing observations still participate in change/removal detection;
-new contradictory own-label or exact-owner evidence, changed effective mappings and unapproved pricing
-generations select owning reconciliation. Completed metadata and ownership survive a peer's prepublication
-failure within their operation bindings. Newly selected numerical overlaps may assemble bounded counterpart
-values while retaining their accepted owners. Completed donor checkpoints embedded in an offline decision
-remain available under that selecting body's token; their applicable complete-grid result can cover a newly
-owned duplicate without reopening the accepted donor. Source-work retains that selection within the operation.
-The [format-37 contract](technical-contracts.md#standalone-artifacts) defines projection and recovery boundaries.
-
-`lineage update --symbol SYMBOL --event-supplements FILE.json` accepts a bounded schema-1 JSON document with
-`schema_version` and a nonempty `supplements` array. Each item has `kind`, `match`, `facts` and `sources`;
-[event_supplements.py](../libs/alpaca_security_lineage/event_supplements.py) defines the exact fields. Each source
-records an HTTPS document URL, title, document date and issuer/exchange/clearinghouse/regulator authority.
-The operator establishes those facts through the [research loop](development.md#lineage-research-and-rule-improvement-loop).
-Runtime does not fetch or interpret web pages. Facts must match the provider event ID, type, labels, identifiers,
-dates and applicable ratios; changed or conflicting events fail rather than silently inheriting the disposition.
-The following event-backed kinds use a real provider action ID:
-
-- `split_endpoints` adds issuer-documented old/new CUSIPs to an ordinary forward/reverse split. The existing
-  continuity rule still requires actual exact provider lookups for both endpoints; the supplement supplies no UUID.
-- `derivative_only` identifies an option-root consolidation by exact underlying CUSIP, effective date and affected
-  option series. The original provider action remains retained, but contributes no equity occupancy, rename,
-  UUID edge or acquisition dependency. Similar labels alone never establish this scope.
-- `listing_transfer_only` identifies a researched exchange transfer with unchanged equity ticker and CUSIP.
-  An exactly matched, incorrectly classified rename stays in raw evidence but contributes no identity event.
-  Distinct exchanges and the provider event date must match the sourced facts; a transfer alone creates no UUID edge.
-- `identity_preserving_rename` supplies documented continuity of the same common security with unchanged
-  shareholder rights and no share exchange. It matches the complete recorded rename, including its ID, endpoint
-  labels/CUSIPs and processing date; its exchange-effective date must agree, while legal effectiveness remains
-  separate. Version-1 facts include a bounded contiguous `prior_labels` sequence, each with `symbol`, the same
-  old `cusip`, `start_inclusive` and `end_exclusive`. The final label must be the provider predecessor and end
-  at its retained boundary. These are sourced historical labels, not fabricated provider events or present-day
-  symbol lookup/acquisition dependencies.
-
-The identity-preserving rename producer binds exact accepted CUSIP lookups to the documented endpoints and
-reconciles conflicting endpoint/action observations from the complete selected group, including unavailable
-peers. Unsupported conversions, structural branches, ambiguous mappings and contradictory chronology leave
-membership unresolved. A completed certificate joins only the continuing security's UUIDs into one public ID;
-current owners of reused labels and acquisition targets remain separate. Current descriptive names alone
-establish neither continuity nor historical ownership.
-
-A separate mapped-source handoff binds the source generation, actual current effective mapping and supported
-dated labels to the observed complete source. Its predecessor rows enter the existing as-of machinery before
-requested-label fallback. A dated historical occupant of the request label cannot redirect this mapped history
-outside the selected continuing component. In disputed current-mapped scope, missing membership or source proof
-leaves the prefix explicitly unresolved in the current implementation; this certificate-specific outcome
-does not establish that no allocation is most likely. Historically pinned mappings retain their existing ownership rules.
-Neither an identity certificate alone nor a matching price series authorizes arbitrary historical rows.
-
-Metadata membership results, including empty or negative results, remain separate from source-history results.
-Price-only changes cannot revoke that completed metadata decision. Changed prices/mappings select a new source
-proof; changed applicable metadata selects the membership owner. Compatible append and recovery carry both
-handoffs without historical row-rule execution, membership recalculation or source-payload reconstruction.
-
-`holding_company_succession` supplies an independently documented missing parent substitution. Its
-`match` contains an independent `source_id` and unchanged `symbol`, never a fabricated provider action ID.
-Its version-1 `facts` record distinct old/new common-share CUSIPs, the legal and exchange effective dates,
-an automatic one-for-one exchange and unchanged rights. The exchange date must be a market session and
-cannot precede legal effectiveness. The metadata producer retains these facts under the separately versioned
-`sourced_successions` extension and selects exact endpoint lookups; provider actions remain unchanged.
-
-The correlation owner certifies only a direct same-ticker, same-exchange substitution between exactly two
-known equity UUIDs. Exact CUSIP lookups must identify the inactive, nontradable predecessor and active,
-tradable successor; the exact current-symbol lookup must agree with the successor. Complete retained action
-coverage must span both dates. Additional or unknown occupants, related structural actions and contradictory
-dated distributions veto certification. Distributions without a CUSIP supply neither endpoint support nor a
-conflict. Legal effectiveness and exchange substitution remain separate facts; only the latter supplies the
-row-ownership boundary. No prices or source-document fetches participate in this certificate.
-
-One completed certificate crosses into established ownership and UUID membership before the frozen baseline.
-Both phases and all views retain it, including a retry after later preparation fails. Ownership support names
-the sourced fact explicitly; it never reports a provider corporate-action ID. Earlier policies do not consume
-this new fact kind. Missing or conflicting endpoint mappings leave the history unresolved.
-
-The metadata producer retains the raw action union, applied facts and equity projection in its completed receipt.
-Newly submitted input crosses validation once; an immutable accepted handoff spans CLI, pipeline and metadata.
-New facts trigger selected complete-group calculation; unchanged updates reuse the receipt and never reread the
-input file or source documents. Metadata refresh reapplies retained facts to the raw provider events. Only missing
-or invalidated exact mappings require acquisition. Explicit symbol selection is required; unmatched submitted
-facts are reported as failure. Frozen price payloads are unaffected by this input mechanism.
+Closed source-work and publication mechanics remain separate from fresh inference. Applicable accepted owners
+and numerical choices stay closed; only selected new rows, newly joined overlap or genuinely changed bindings
+open their owning work. Entirely superseded histories whose accepted runs need no interior timestamp assembly
+remain closed to prices. Completed source projections, timestamp keys, assignment artifacts and numerical
+choices survive construction/publication interruption under their actual generation, metadata and policy
+bindings. Missing or incomparable component capabilities require owning recovery, never a union inferred
+from shared UUIDs or a repeated completed calculation.
 
 ### Name changes
 
@@ -756,21 +503,17 @@ Explicit numerical states remain separate from row ownership. A dated market wit
 sources retains its accepted public binding even though suffix reports contain no segments. This supplies no row
 template or new allocation; fresh unresolved rows and conflicting memberships still select owning resolution.
 
-Retained sourced-fact envelopes accept the known `version: 1` prepared spelling as the canonical
-`schema_version: 1` envelope without replaying its completed facts. This transport spelling alone is not new
-evidence. Unknown or conflicting headers fail into owning recovery. A selected catalogue observation is likewise
-read by its persisted observation ID and timestamp; recovery consumes its accepted records and digest without
-requesting or calculating them again.
-The owning post-correlation publication consumer can finish from held source inputs, reports and retained-choice
-scope under the normal writer and pricing locks. Current selector bindings establish applicability; acquisition,
-materialization and correlation are not repeated after an interruption.
+Retained legacy envelopes and publication bodies remain readable as completed provenance. Their known
+transport spellings do not authorize fresh fact applications or repeat their old proofs. Unknown or conflicting
+required handoffs fail into owning recovery. A selected catalogue observation is read by its persisted ID and
+timestamp; recovery consumes its accepted records and digest without requesting or calculating them again.
+The owning post-correlation consumer can finish from held source inputs, reports and retained-choice scope
+under normal writer/pricing locks. Applicability checks do not repeat acquisition, materialization or correlation.
 
-Selected retained-input recovery can carry that completed action-query scope when it covers every market date
-admitted by the selected pricing request. It keeps the actual query bounds. Current descriptions or sourced
-facts may require a new metadata projection using the retained action union; a later admitted market date or
-an explicit refresh cannot inherit this scope. Broader sourced facts attached by a completed group producer retain
-their accepted per-source scope; narrower consumer discovery cannot delete that evidence. Explicitly updated facts
-remain actual changes. Conversion-recipient lookup outputs do not expand newly discovered fact scope by themselves.
+Selected retained-input recovery can carry completed action-query coverage when it covers every admitted
+market date in the selected pricing request. It retains the actual query bounds. A later admitted date or
+explicit refresh cannot inherit that scope. New metadata projections consume retained provider observations
+only; old research provenance cannot expand the source scope or become a new continuity assertion.
 
 Any compatible completed group may retain its accepted prefix when pricing ancestry proves that prefix unchanged.
 Group size, cross-label membership, structural events and an initially empty history describe the completed

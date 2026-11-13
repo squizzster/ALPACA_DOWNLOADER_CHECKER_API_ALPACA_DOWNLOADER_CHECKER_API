@@ -806,6 +806,10 @@ def publish(
     application_inventory_recovery=False,
     selection_inputs=None,
 ) -> None:
+    if application_inventory_recovery:
+        raise LineageError(
+            "fresh researched application publication is inadmissible; use owning generic recovery"
+        )
     if not receipts:
         raise LineageError("lineage publication requires at least one receipt")
     if application_inventory_recovery:

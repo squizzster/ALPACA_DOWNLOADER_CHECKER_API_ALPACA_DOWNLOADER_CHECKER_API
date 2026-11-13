@@ -23,6 +23,7 @@ def carry_prefix(previous, current_receipt, prefix, *, unchanged_selection=False
         return {**prior, "pricing_generation": current_receipt["source_sha256"]}
     runs = []
     for original in prior["runs"]:
+        first_fragment = len(runs)
         offset, covered = 0, 0
         adjustment = original["adjustment"]
         for kind in ("completed_years", "current_year", "current_month"):
@@ -57,6 +58,11 @@ def carry_prefix(previous, current_receipt, prefix, *, unchanged_selection=False
             offset += count
         if covered != original["row_end"] - original["row_start"] + 1:
             raise LineageError("missing membership-transfer positions require owning transfer recovery")
+        if all(item["boundary"] == original["boundary"] for item in runs[first_fragment:]):
+            # Newly recovered ownership can subdivide assignment metadata beside
+            # an unchanged donor. Its completed run remains the authority while
+            # those accepted positions still occupy the same physical boundary.
+            runs[first_fragment:] = [original]
     return {**prior, "pricing_generation": current_receipt["source_sha256"], "runs": runs}
 
 

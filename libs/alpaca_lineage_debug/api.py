@@ -195,10 +195,7 @@ def dispatch(command, request):
             control = control_view(control)
         if ("screen_report" in request or "reuse_report" in request) and control is None:
             raise ValueError("screen and completed-report consumption require an explicit control_policy")
-        if (
-            getattr(policy, "membership_refinement", None)
-            or getattr(policy, "control_mode", "replay") in {"accepted_publication", "documented_scopes"}
-        ) and control is None:
+        if getattr(policy, "membership_refinement", None) and control is None:
             raise ValueError("membership refinement requires an explicit control_policy")
         if control is not None and getattr(control, "membership_refinement", None):
             raise ValueError("the control policy must disable experimental membership refinement")

@@ -109,5 +109,10 @@
     "modifications": [
       "Consume already captured selected assignment bodies alongside held receipts when constructing a generation-bound research input; no repeat metadata reads or historical authentication."
     ]
+  },
+  {
+    "modifications": [
+      "Reject direct assertion-bearing candidates and supplied research evidence before storage or pricing work; replay selected retained provider observations while preserving published receipts as comparison data and carrying one completed evidence projection through paired evaluation."
+    ]
   }
 ]

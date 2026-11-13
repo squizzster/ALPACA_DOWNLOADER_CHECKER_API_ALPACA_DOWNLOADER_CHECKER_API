@@ -29,6 +29,11 @@ from libs.alpaca_lineage_build.storage import reader_snapshot, select_inputs
 from libs.alpaca_lineage_build.transform import correlate, make_publication
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, symbol_label, timestamp
 from libs.alpaca_pricing_download.storage import load_source, read_update, regular_path
+from libs.alpaca_security_lineage.inference_evidence import (
+    ProviderEvidence,
+    provider_evidence,
+    reject_assertions,
+)
 
 from .contract import (
     LAB_REPORT_BOUNDARY,
@@ -39,7 +44,7 @@ from .contract import (
     validate_change_log,
 )
 from .fallbacks import CORRECTED_PROFILE
-from .policy import CompiledPolicy
+from .policy import CompiledPolicy, require_generic_candidate
 
 _SEMANTIC_FIELDS = (
     "branch",
@@ -64,6 +69,25 @@ _GROUP_DIAGNOSTIC_FIELDS = (
     "row_correlation_rule_order",
     "row_partition_complete",
 )
+
+
+def _select_provider_evidence(evidence, *, cache=None):
+    cache = {} if cache is None else cache
+    selected = {}
+    for symbol, original in evidence.items():
+        accepted = cache.get(id(original))
+        if accepted is None:
+            accepted = original, provider_evidence(original)
+            cache[id(original)] = accepted
+        selected[symbol] = accepted[1]
+    return selected
+
+
+def _candidate_evidence(evidence, *, where):
+    # The shared ProviderEvidence values carry their completed acceptance;
+    # only previously unaccepted, direct values require the ingress guard.
+    reject_assertions(evidence, where=where)
+    return evidence
 
 
 def _canonical_bytes(value) -> bytes:
@@ -341,14 +365,24 @@ def _load_group(
     *,
     selection=None,
     held_receipts=None,
+    held_inference_evidence=None,
     held_boundaries=None,
     accepted_store=None,
-    materialize_symbols=None,
 ):
     # Explicit comparison owns this selected complete-group replay. The snapshot
     # selects and locks its publications; input generation checks bind the replay
     # to those facts. DO NOT repair pending work, fetch replacement evidence or
     # expand into unrelated groups when an input cannot be consumed.
+    if held_inference_evidence is not None and held_receipts is None:
+        raise PolicyLabError("held inference evidence requires its selected completed receipts")
+    if held_receipts is not None:
+        if held_inference_evidence is None:
+            for receipt in held_receipts.values():
+                reject_assertions(receipt.get("evidence", {}), where="supplied research receipt evidence")
+        elif set(held_inference_evidence) != set(held_receipts) or any(
+            not isinstance(value, ProviderEvidence) for value in held_inference_evidence.values()
+        ):
+            raise PolicyLabError("held inference evidence requires its completed provider-only handoff")
     select = selection if selection is not None else lambda root: select_inputs(root, seed_symbol)
     options = {} if accepted_store is None else {"accepted_store": accepted_store}
     if held_receipts is None:
@@ -394,9 +428,20 @@ def _load_group(
                 raise PolicyLabError(f"{symbol}: published receipt has no normalized evidence")
             receipts[symbol] = receipt
 
-        needed = set(receipts) if materialize_symbols is None else set(materialize_symbols(receipts))
-        if not needed <= set(receipts):
-            raise PolicyLabError("research materialization selected an unavailable source")
+        projection_cache = {}
+        if held_inference_evidence is not None:
+            for name, receipt in receipts.items():
+                original = receipt["evidence"]
+                projection_cache[id(original)] = original, held_inference_evidence[name]
+        inference_evidence = held_inference_evidence
+        if inference_evidence is None:
+            inference_evidence = _select_provider_evidence(
+                {symbol: receipt["evidence"] for symbol, receipt in receipts.items()}, cache=projection_cache
+            )
+        auxiliary_evidence = _select_provider_evidence(
+            {name: item["evidence"] for name, item in unavailable.items()}, cache=projection_cache
+        )
+        needed = set(receipts)
         sources = {}
         inputs = {}
         for symbol, expected_generation in sorted(expected_sources.items()):
@@ -420,17 +465,18 @@ def _load_group(
             symbol: snapshot["entries"][symbol]["sha256"] for symbol in sorted(expected_sources)
         }
         evidence_generations = {
-            symbol: document_digest(receipts[symbol]["evidence"]) for symbol in sorted(expected_sources)
+            symbol: document_digest(inference_evidence[symbol]) for symbol in sorted(expected_sources)
         }
         yield {
             "inputs": inputs,
             "receipts": receipts,
+            "inference_evidence": inference_evidence,
             "boundaries": boundaries,
             "receipt_generations": receipt_generations,
             "evidence_generations": evidence_generations,
             "pricing_generations": dict(sorted(expected_sources.items())),
             "unavailable_pricing": sorted(unavailable),
-            "auxiliary_evidence": {name: item["evidence"] for name, item in unavailable.items()},
+            "auxiliary_evidence": auxiliary_evidence,
             "selected_group": sorted(selected_group),
             "materialized_sources": sorted(needed),
         }
@@ -448,12 +494,25 @@ def _compare_loaded_group(
     refine=None,
 ) -> dict[str, Any]:
     """Evaluate one already selected complete group without further storage reads."""
+    require_generic_candidate(policy)
+    if refine is not None:
+        from libs.alpaca_end_of_day_security_correlation.component_refinement import refine as generic_refine
+
+        if refine is not generic_refine:
+            raise PolicyLabError("research refinement must use the registered generic producer")
     inputs = selected["inputs"]
     receipts = selected["receipts"]
+    raw_evidence = selected.get("inference_evidence")
+    if raw_evidence is None:
+        raw_evidence = {symbol: receipt["evidence"] for symbol, receipt in receipts.items()}
+    raw_evidence = _candidate_evidence(raw_evidence, where="supplied research evidence")
+    auxiliary_evidence = _candidate_evidence(
+        selected.get("auxiliary_evidence", {}), where="supplied auxiliary research evidence"
+    )
     evidence_generations = selected.get("evidence_generations")
     if evidence_generations is None:
         evidence_generations = {
-            symbol: document_digest(receipt["evidence"]) for symbol, receipt in sorted(receipts.items())
+            symbol: document_digest(evidence) for symbol, evidence in sorted(raw_evidence.items())
         }
     if policy.policy_role in {
         "historical_reference",
@@ -498,7 +557,6 @@ def _compare_loaded_group(
             for receipt in receipts.values()
         ):
             raise PolicyLabError("baseline and candidate lineage versions differ")
-    raw_evidence = {symbol: receipt["evidence"] for symbol, receipt in receipts.items()}
     fallback_execution = None
     if policy.schema_version == 4:
         evidence = raw_evidence
@@ -528,7 +586,7 @@ def _compare_loaded_group(
             policy=policy,
             selected_group=selected["selected_group"],
             unavailable_pricing=selected["unavailable_pricing"],
-            auxiliary_evidence=selected.get("auxiliary_evidence", {}),
+            auxiliary_evidence=auxiliary_evidence,
             evidence_generations=evidence_generations,
             pricing_generations=selected["pricing_generations"],
             execution_trace=fallback_execution,
@@ -552,7 +610,7 @@ def _compare_loaded_group(
             policy=policy,
             selected_group=selected["selected_group"],
             unavailable_pricing=selected["unavailable_pricing"],
-            auxiliary_evidence=selected.get("auxiliary_evidence", {}),
+            auxiliary_evidence=auxiliary_evidence,
             evidence_generations=evidence_generations,
             pricing_generations=selected["pricing_generations"],
             execution_trace=execution,
@@ -707,6 +765,7 @@ def compare(
         raise PolicyLabError("max_differences must be an integer between 0 and 1000")
     if not isinstance(policy, CompiledPolicy):
         raise PolicyLabError("policy must be a compiled policy")
+    require_generic_candidate(policy)
     validate_change_log()
     store = Path(store).absolute()
     seed_symbol = symbol_label(seed_symbol)

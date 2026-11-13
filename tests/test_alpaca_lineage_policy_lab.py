@@ -94,7 +94,6 @@ from libs.alpaca_lineage_policy_lab.fallbacks import (
 )
 from libs.alpaca_lineage_policy_lab.policy import load_policy
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
-from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1909,10 +1908,26 @@ class ActiveSuffixPolicyTests(TestCase):
 class PolicyInjectionTests(TestCase):
     def setUp(self):
         self.policy = _load_running_single_phase_policy(POLICY)
-        self.lineage = correlation_fixtures.RowCorrelationTests._overlapping_asof_lineage()
-        self.lineage["symbol_disposition"] = {"classification": EXCHANGE_TEST_SYMBOL}
-        self.rows = [{"t": "2024-01-03T12:00:00Z"}]
-        self.source = correlation_fixtures.correlation_source("CURRENT", asof="2026-10-15")
+        current = correlation_fixtures.asset("provider-id", "CURRENT", "Supported provider owner")
+        self.lineage = {
+            "corporate_actions": [],
+            "identities": [current],
+            "symbol_occupancy_evidence": [],
+            "asset_lookups": [
+                {
+                    "lookup_kind": "symbol",
+                    "lookup": "CURRENT",
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": current,
+                }
+            ],
+        }
+        self.rows = [{"t": "2024-01-08T12:00:00Z"}]
+        self.source = {
+            **correlation_fixtures.correlation_source("CURRENT", asof="2024-01-09"),
+            "request_to": "2024-01-09T00:00:00Z",
+        }
 
     def test_current_policy_is_identical_to_default_correlation(self):
         default_intervals = build_ticker_ownership_intervals(self.lineage)
@@ -1936,18 +1951,15 @@ class PolicyInjectionTests(TestCase):
             row_rules=self.policy.row_rules,
         )
         self.assertEqual(default, candidate)
-        self.assertEqual(
-            "exchange_test_symbol_exclusion",
-            candidate["uncorrelated"][0]["correlation_rule"]["name"],
-        )
+        self.assertFalse(candidate["uncorrelated"])
+        self.assertEqual("provider-id", candidate["correlated"][0]["canonical_security"]["alpaca_asset_id"])
 
     def test_v58_profile_is_single_phase_and_cannot_enter_v59_fallbacks(self):
         policy = load_policy(POLICY)
-        evidence = correlation_fixtures.RowCorrelationTests._overlapping_asof_lineage()
-        evidence["symbol_disposition"] = {"classification": EXCHANGE_TEST_SYMBOL}
+        evidence = self.lineage
         inputs = inputs_for(
-            {"CURRENT": bars(["2024-01-03"])},
-            asofs={"CURRENT": "2026-10-15"},
+            {"CURRENT": bars(["2024-01-08"])},
+            asofs={"CURRENT": "2024-01-09"},
         )
 
         with (
@@ -1971,12 +1983,12 @@ class PolicyInjectionTests(TestCase):
             "action_anchored_current_ticker_occupancy",
             {item["name"] for item in report["ownership_interval_rule_order"]},
         )
-        self.assertEqual(0, report["correlated"]["row_count"])
-        self.assertEqual(len(ADJUSTMENTS), report["uncorrelated"]["row_count"])
+        self.assertEqual(len(ADJUSTMENTS), report["correlated"]["row_count"])
+        self.assertEqual(0, report["uncorrelated"]["row_count"])
         self.assertTrue(
             all(
-                segment["correlation_rule"]["name"] == "exchange_test_symbol_exclusion"
-                for segment in report["uncorrelated"]["segments"]
+                segment["correlation_rule"]["name"] == "unique_uuid_candidate_with_warnings"
+                for segment in report["correlated"]["segments"]
             )
         )
 
@@ -1984,9 +1996,9 @@ class PolicyInjectionTests(TestCase):
         document = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
         document["implementation"]["correlation_version"] = versions()["correlation"]
         rules = document["stages"]["row_assignment"]["rules"]
-        rules.remove("exchange_test_symbol_exclusion")
+        rules.remove("unique_uuid_candidate_with_warnings")
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "without-exclusion.yaml"
+            path = Path(directory) / "without-unique-candidate.yaml"
             path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
             policy = load_policy(path)
 
@@ -2009,13 +2021,13 @@ class PolicyInjectionTests(TestCase):
         self.assertEqual(first, second)
         self.assertFalse(first["correlated"])
         self.assertEqual(
-            "requested_symbol_dated_uuid_interval",
+            "unresolved_uuid_candidates",
             first["uncorrelated"][0]["correlation_rule"]["name"],
         )
-        self.assertNotIn("exchange_test_symbol_excluded", first["uncorrelated"][0]["reason_codes"])
+        self.assertEqual(1, len(first["uncorrelated"]))
 
         key = ("CURRENT", "raw", self.rows[0]["t"])
-        before = {key: baseline["uncorrelated"][0]}
+        before = {key: baseline["correlated"][0]}
         after = {key: first["uncorrelated"][0]}
         first_diff = _difference(before, after, 20)
         self.assertEqual(first_diff, _difference(before, after, 20))

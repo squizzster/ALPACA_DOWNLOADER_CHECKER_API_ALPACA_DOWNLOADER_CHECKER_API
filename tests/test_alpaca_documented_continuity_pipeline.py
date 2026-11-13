@@ -1,4 +1,4 @@
-"""Compose a public-parent exchange with chronology and keep superseded peers closed."""
+"""Closed generic source decisions preserve superseded peers through publication."""
 
 import json
 import tempfile
@@ -33,7 +33,6 @@ from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.correlation_policy import load_policy
 from libs.alpaca_lineage_build.recovery_handoffs import operation
 from libs.alpaca_pricing_download.download import download_pricing
-from libs.alpaca_security_lineage.event_supplements import accept_supplements, supplement_key
 from libs.alpaca_serving_catalogue import policy
 from libs.alpaca_serving_catalogue.producer import maintain
 
@@ -57,10 +56,10 @@ def continuity_facts():
 
 
 class DocumentedContinuityPipelineTests(TestCase):
-    def test_public_parent_chronology_recovers_prefix_without_opening_superseded_peer_prices(self):
+    def test_closed_source_prefix_preserves_superseded_peer_prices(self):
         self.exercise()
 
-    def test_publication_interruption_keeps_completed_parent_and_metadata_projections(self):
+    def test_publication_interruption_keeps_completed_source_and_metadata_projections(self):
         self.exercise(interruption=True)
 
     def exercise(self, *, interruption=False):
@@ -108,15 +107,12 @@ class DocumentedContinuityPipelineTests(TestCase):
                     },
                 ],
             )
-            identities = {
-                "OLD": security_identity_for_alpaca_assets(
-                    ["old", "middle"], [], tickers=["OLD", "NEW"], basis="accepted_predecessor_scope"
-                ).as_report_object(),
-                "NEW": security_identity_for_alpaca_assets(
-                    ["middle", "latest"], [], tickers=["NEW"], basis="accepted_successor_scope"
-                ).as_report_object(),
-            }
+            accepted_identity = security_identity_for_alpaca_assets(
+                ["old", "middle", "latest"], [], tickers=["OLD", "NEW"], basis="accepted_provider_components"
+            ).as_report_object()
+            identities = {"OLD": accepted_identity, "NEW": accepted_identity}
             correlate, select = pipeline.correlate, pipeline.select_observations
+            held_reports = {}
 
             def retained_fixture(*args, **kwargs):
                 reports = correlate(*args, **kwargs)
@@ -148,8 +144,16 @@ class DocumentedContinuityPipelineTests(TestCase):
                                         "security_identity": identities[name],
                                         "canonical_security": {
                                             "security_id": identities[name]["security_id"],
-                                            "alpaca_asset_id": "old" if name == "OLD" else "middle",
-                                            "cusip": "111111111" if name == "OLD" else "222222222",
+                                            "alpaca_asset_id": "old"
+                                            if name == "OLD"
+                                            else "latest"
+                                            if row[0][:10] >= "2024-01-10"
+                                            else "middle",
+                                            "cusip": "111111111"
+                                            if name == "OLD"
+                                            else "333333333"
+                                            if row[0][:10] >= "2024-01-10"
+                                            else "222222222",
                                         },
                                         "ticker_ownership_interval": {
                                             "historical_symbol": name,
@@ -164,6 +168,7 @@ class DocumentedContinuityPipelineTests(TestCase):
                                 )
                     report["correlated"] = {"row_count": len(positive), "segments": positive}
                     report["uncorrelated"] = {"row_count": len(negative), "segments": negative}
+                    held_reports[name] = deepcopy(report)
                 return reports
 
             def retained_supersession(*args, **kwargs):
@@ -187,17 +192,94 @@ class DocumentedContinuityPipelineTests(TestCase):
             self.assertTrue(maintain(store, bootstrap=True)["complete"])
             prior = {name: storage.read_receipt(root, name, storage.read_index(root)) for name in ("OLD", "NEW")}
             self.assertEqual(32, prior["NEW"]["unresolved_rows"])
-            facts = accept_supplements(continuity_facts())
-            evidence_client.event_supplements.update((supplement_key(fact), fact) for fact in facts)
+            # Start at a closed generic source-decision boundary. These literal
+            # reports and membership choices are fixture producer outputs, not
+            # researched assertions, and numerical/publication owners still run.
+            completed_reports = deepcopy(held_reports)
+            whole = identities["NEW"]
+            changes = []
+            for name, report in completed_reports.items():
+                for segment in report["correlated"]["segments"]:
+                    if identities[name]["security_id"] != whole["security_id"]:
+                        change = {
+                            "source": name,
+                            "adjustment": segment["adjustment"],
+                            "row_start": segment["row_start"],
+                            "row_end": segment["row_end"],
+                            "old_public_id": identities[name]["security_id"],
+                            "new_public_id": whole["security_id"],
+                        }
+                        changes.append(change)
+                        segment["security_identity"] = whole
+                        segment["canonical_security"]["security_id"] = whole["security_id"]
+                        segment["completed_membership_refinement"] = change
+                    if name == "OLD":
+                        segment["observation_selection"] = "superseded"
+                    if name == "NEW" and segment["first_timestamp"][:10] >= "2024-01-10":
+                        segment["canonical_security"].update(alpaca_asset_id="latest", cusip="333333333")
+            by_date = {
+                (item["adjustment"], item["first_timestamp"]): item
+                for item in completed_reports["OLD"]["correlated"]["segments"]
+            }
+            recovered = []
+            for missing in completed_reports["NEW"]["uncorrelated"]["segments"]:
+                template = by_date[missing["adjustment"], missing["first_timestamp"]]
+                recovered.append(
+                    {
+                        **{
+                            k: v for k, v in missing.items() if k not in {"reason_codes", "candidate_securities"}
+                        },
+                        **{k: deepcopy(template[k]) for k in transform.ASSIGNMENT_FIELDS if k in template},
+                        "security_identity": whole,
+                    }
+                )
+            completed_reports["NEW"]["correlated"]["segments"] = sorted(
+                [*recovered, *completed_reports["NEW"]["correlated"]["segments"]],
+                key=lambda item: (item["adjustment"], item["row_start"]),
+            )
+            completed_reports["NEW"]["correlated"]["row_count"] += len(recovered)
+            completed_reports["NEW"]["uncorrelated"] = {"row_count": 0, "segments": []}
+            empty = {"version": 1, "certificates": [], "issues": []}
+            relations = {"version": 1, "relations": [], "issues": []}
+            completed_plan = source_work_contract.SourceWorkPlan(
+                {"NEW": "B", "OLD": "A"},
+                {identifier: whole for identifier in ("old", "middle", "latest")},
+                empty,
+                empty,
+                relations,
+                relations,
+                {},
+                False,
+                prepared_reports=completed_reports,
+                membership_refinement={
+                    "changes": changes,
+                    "execution_sha256": context.accept_ruleset().execution_sha256,
+                },
+            )
+            context.completed_membership_plans[("NEW", "OLD")] = {
+                "store": str(store),
+                "plan": {"changes": changes},
+            }
             scope.enter_context(operation(store))
             load, choose = pipeline.load_pricing, observations._select_new_observations
             loaded, plans = [], []
-            prepare = pipeline.prepare_group_evidence_and_source_work
 
-            def capture(*args, **kwargs):
-                plan = prepare(*args, **kwargs)
-                plans.append(plan)
-                return plan
+            def capture(controls, current, auxiliary, *, cache, **_):
+                for name, control in controls.items():
+                    completed_reports[name]["retained_observation_routes"] = control.previous[
+                        "observation_routes"
+                    ]
+                binding = tuple((name, id(value)) for name, value in sorted({**current, **auxiliary}.items()))
+                key = (
+                    binding,
+                    tuple(
+                        (name, control.store, control.source_sha256, control.previous_receipt_generation)
+                        for name, control in sorted(controls.items())
+                    ),
+                )
+                cache.setdefault("plans", {})[key] = completed_plan
+                plans.append(completed_plan)
+                return completed_plan
 
             def selected_prices(store, name, **kwargs):
                 self.assertEqual("NEW", name, "fully superseded peer prices opened")
@@ -226,7 +308,9 @@ class DocumentedContinuityPipelineTests(TestCase):
                     transform, "correlate", side_effect=AssertionError("accepted row cascade repeated")
                 ),
                 patch.object(
-                    public_common_continuation, "certify_group", wraps=public_common_continuation.certify_group
+                    public_common_continuation,
+                    "certify_group",
+                    side_effect=AssertionError("research certifier called"),
                 ) as certify,
             ):
                 if interruption:
@@ -259,7 +343,7 @@ class DocumentedContinuityPipelineTests(TestCase):
                         result = repair()
                 else:
                     result = repair()
-                self.assertEqual(1, certify.call_count)
+                self.assertEqual(0, certify.call_count)
             self.assertEqual(0, result["failed"], result)
             self.assertEqual(["NEW"], loaded)
             self.assertTrue(all(plan.dispositions == {"NEW": "B", "OLD": "A"} for plan in plans))
@@ -267,8 +351,6 @@ class DocumentedContinuityPipelineTests(TestCase):
                 name: storage.read_receipt(root, name, storage.read_index(root)) for name in ("OLD", "NEW")
             }
             self.assertEqual(0, current["NEW"]["unresolved_rows"])
-            self.assertIsNone(current["OLD"]["membership_only_rebind"])
-            self.assertEqual(3, current["NEW"]["membership_only_rebind"]["version"])
             public_id = current["NEW"]["identity_memberships"][0]["security_id"]
             for name, receipt in current.items():
                 for kind, document in source_work.assignment_documents(root, receipt, {}).items():
@@ -340,7 +422,7 @@ class DocumentedContinuityAuthorityTests(TestCase):
             ["a", "b", "c"], [], tickers=["OLD", "NEW"], basis="completed_containing_scope"
         ).as_report_object()
         prior = {"a": narrow, "b": narrow, "c": whole}
-        self.assertEqual(prior, source_work.compose_memberships(prior, []))
+        self.assertEqual(prior, source_work_contract.compose_memberships(prior, []))
         edge = SimpleNamespace(
             predecessor_asset_id="a", successor_asset_id="b", predecessor_symbol="OLD", successor_symbol="NEW"
         )
@@ -349,20 +431,19 @@ class DocumentedContinuityAuthorityTests(TestCase):
             "security_identity_for_alpaca_assets",
             side_effect=AssertionError("completed public ID recalculated"),
         ):
-            selected = source_work.compose_memberships(prior, [edge])
+            selected = source_work_contract.compose_memberships(prior, [edge])
         self.assertTrue(all(value is whole for value in selected.values()))
 
-    def test_accepted_continuation_does_not_repeat_certification_or_membership_calculation(self):
-        fact = accept_supplements(continuity_facts())[0]
+    def test_closed_research_recipe_cannot_be_reopened_as_fresh_membership(self):
+        fact = continuity_facts()[0]
         evidence = {"sourced_public_common_continuations": {"schema_version": 1, "facts": [fact]}}
-        certificate = {"source_fact_id": fact["match"]["source_id"], "accepted": "prior-proof"}
         controls = {
             "OLD": SimpleNamespace(
                 previous={
                     "evidence": evidence,
                     "public_common_continuation_membership": {
                         "version": 1,
-                        "certificates": [certificate],
+                        "certificates": [{"source_fact_id": fact["match"]["source_id"]}],
                         "issues": [],
                     },
                 }
@@ -372,66 +453,57 @@ class DocumentedContinuityAuthorityTests(TestCase):
             patch.object(
                 public_common_continuation,
                 "certify_group",
-                side_effect=AssertionError("accepted proof repeated"),
+                side_effect=AssertionError("retired certifier called"),
             ),
             patch.object(
-                source_work,
+                source_work_contract,
                 "compose_memberships",
-                side_effect=AssertionError("accepted membership calculated again"),
+                side_effect=AssertionError("research composed a new owner"),
             ),
         ):
-            common, members = documented_continuity.bind(controls, {"OLD": evidence}, {})
-        self.assertEqual([certificate], common["certificates"])
-        self.assertIsNone(members)
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                documented_continuity.bind(controls, {"OLD": evidence}, {})
 
-    def test_actual_changed_accepted_fact_requires_owning_reconciliation(self):
+    def test_changed_researched_fact_cannot_select_owning_reconciliation(self):
         before = continuity_facts()[0]
         after = deepcopy(before)
         after["facts"]["legal_effective_date"] = "2024-01-04"
-        left = {
-            "sourced_public_common_continuations": {
-                "schema_version": 1,
-                "facts": [accept_supplements([before])[0]],
-            }
+        controls = {
+            "OLD": SimpleNamespace(
+                previous={
+                    "evidence": {"sourced_public_common_continuations": {"schema_version": 1, "facts": [before]}}
+                }
+            )
         }
-        right = {
-            "sourced_public_common_continuations": {
-                "schema_version": 1,
-                "facts": [accept_supplements([after])[0]],
-            }
-        }
-        controls = {"OLD": SimpleNamespace(previous={"evidence": left})}
-        with self.assertRaisesRegex(LineageError, "changed accepted public continuation"):
-            documented_continuity.bind(controls, {"OLD": right}, {})
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            documented_continuity.bind(
+                controls,
+                {"OLD": {"sourced_public_common_continuations": {"schema_version": 1, "facts": [after]}}},
+                {},
+            )
 
     def test_conflicting_new_assertions_do_not_select_the_last_peer(self):
-        before = continuity_facts()[0]
-        after = deepcopy(before)
-        after["facts"]["legal_effective_date"] = "2024-01-04"
-        controls = {"OLD": SimpleNamespace(previous={"evidence": {}})}
+        first = continuity_facts()[0]
+        second = deepcopy(first)
+        second["facts"]["legal_effective_date"] = "2024-01-04"
         evidence = {
-            name: {
-                "sourced_public_common_continuations": {
-                    "schema_version": 1,
-                    "facts": [accept_supplements([fact])[0]],
-                }
-            }
-            for name, fact in (("OLD", before), ("NEW", after))
+            name: {"sourced_public_common_continuations": {"schema_version": 1, "facts": [fact]}}
+            for name, fact in (("OLD", first), ("NEW", second))
         }
         with patch.object(
             public_common_continuation,
             "certify_group",
-            side_effect=AssertionError("conflicting assertions reached certification"),
+            side_effect=AssertionError("assertions reached certification"),
         ):
-            with self.assertRaisesRegex(LineageError, "conflicting public continuation assertions"):
-                documented_continuity.bind(controls, evidence, {})
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                documented_continuity.bind({"OLD": SimpleNamespace(previous={"evidence": {}})}, evidence, {})
 
     def test_frozen_policy_cannot_execute_new_refinement_plan(self):
         frozen = load_policy("resources/alpaca_security_correlation_v90_legacy_policy.yaml")
         plan = source_work.SourceWorkPlan(
             {}, {}, {}, {}, {}, {}, {}, False, refine_accepted_dates=True, refinement_policy_version=91
         )
-        with self.assertRaisesRegex(LineageError, "policy 91"):
+        with self.assertRaisesRegex(LineageError, "research recipe"):
             source_work.execute_source_work(
                 None,
                 None,

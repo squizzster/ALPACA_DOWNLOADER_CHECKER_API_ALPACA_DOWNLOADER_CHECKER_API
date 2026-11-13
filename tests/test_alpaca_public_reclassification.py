@@ -1,13 +1,11 @@
-"""A public holding can continue while its legal share class changes."""
+"""Retained public metadata remains readable; fresh authored treatments reject."""
 
-from copy import deepcopy
 from unittest import TestCase
 from unittest.mock import patch
 
 from test_alpaca_documented_markets import documented_fact
 
 from libs.alpaca_end_of_day_security_correlation import documented_markets as documented
-from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
 from libs.alpaca_lineage_build import source_work, transform
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.correlation_policy import load_policy
@@ -41,69 +39,66 @@ def reclassification_fact():
 
 
 class PublicReclassificationTests(TestCase):
-    def test_actual_one_for_one_public_treatment_allows_changed_governance(self):
-        fact = accept_supplements([reclassification_fact()])[0]
-        evidence = {
+    def test_completed_dated_metadata_survives_without_new_reclassification_inference(self):
+        reports = {
             "SOURCE": {
-                "sourced_market_occupancy": {"schema_version": 1, "facts": [fact]},
-                "asset_lookups": [
-                    {
-                        "lookup_kind": "cusip",
-                        "lookup": cusip,
-                        "outcome": "found",
-                        "http_status": 200,
-                        "asset": {"id": identifier},
-                    }
-                    for cusip, identifier in (("111111111", "earlier"), ("222222222", "later"))
-                ],
+                "correlated": {
+                    "segments": [
+                        {"historical_symbol": "BEFORE", "security_description": {"name": "Earlier Common"}}
+                    ]
+                },
+                "public_common_continuation_membership": {"version": 1, "certificates": [], "issues": []},
             }
         }
-        plan = documented.bind(evidence, allow_reclassification=True)
-        self.assertEqual(["earlier", "later"], plan["owners"][0]["identity"]["member_alpaca_asset_ids"])
-        self.assertEqual("2024-01-08", plan["owners"][0]["episodes"][-1]["start_inclusive"])
-        with self.assertRaisesRegex(SecurityCorrelationError, "policy 89"):
-            documented.bind(evidence)
+        with patch.object(documented, "bind", side_effect=AssertionError("completed metadata rebound")):
+            self.assertIs(reports, documented.project({}, reports, {}))
+        self.assertEqual(
+            "Earlier Common", reports["SOURCE"]["correlated"]["segments"][0]["security_description"]["name"]
+        )
 
-    def test_unknown_holder_treatment_private_or_unlike_instruments_do_not_join(self):
-        for field, value in (
-            ("public_holders_continue", False),
-            ("same_legal_entity", False),
-            ("successor_units", "2"),
-            ("legal_effective_at", "2024-01-04T16:45:00"),
-        ):
-            item = reclassification_fact()
-            item["facts"]["public_share_reclassification"][field] = value
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                accept_supplements([item])
-        for kind in ("right", "ETF", "private_common", "unit"):
+    def test_authored_reclassification_terms_are_rejected_regardless_of_holder_treatment(self):
+        for kind in ("common_stock", "right", "ETF", "private_common", "unit"):
             item = reclassification_fact()
             for role in ("predecessor", "successor"):
                 item["facts"][role]["instrument_kind"] = kind
-            with self.subTest(kind=kind), self.assertRaises(ValueError):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "inadmissible"):
                 accept_supplements([item])
-        item = reclassification_fact()
-        item["facts"].pop("public_share_reclassification")
-        with self.assertRaises(ValueError):
-            accept_supplements([item])
+            evidence = {"SOURCE": {"sourced_market_occupancy": {"schema_version": 1, "facts": [item]}}}
+            with self.assertRaisesRegex(ValueError, "fact injection"):
+                documented.bind(evidence, allow_reclassification=True)
 
-    def test_frozen_policy_rejects_new_treatment_before_owning_execution(self):
-        fact = accept_supplements([reclassification_fact()])[0]
-        frozen = load_policy("resources/alpaca_security_correlation_v88_legacy_policy.yaml")
-        evidence = {"SOURCE": {"sourced_market_occupancy": {"schema_version": 1, "facts": [fact]}}}
-        with patch.object(
-            transform, "evaluate_policy", side_effect=AssertionError("frozen rule acquired new semantics")
+    def test_current_and_frozen_profiles_reject_authored_input_before_rows_or_prices(self):
+        from libs.alpaca_end_of_day_security_correlation import correlation
+        from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
+
+        evidence = {
+            "SOURCE": {"sourced_market_occupancy": {"schema_version": 1, "facts": [reclassification_fact()]}}
+        }
+        for path in (
+            "resources/alpaca_security_correlation_v88_legacy_policy.yaml",
+            "resources/alpaca_security_correlation_policy.yaml",
         ):
-            with self.assertRaisesRegex(LineageError, "policy 89"):
-                transform.correlate(None, {}, deepcopy(evidence), policy=frozen)
-        with self.assertRaisesRegex(LineageError, "policy 89"):
-            source_work.execute_source_work(
-                None,
-                None,
-                {},
-                evidence,
-                {},
-                None,
-                frozen,
-                {},
-                loader=lambda *args, **kwargs: self.fail("frozen source work opened prices"),
-            )
+            policy = load_policy(path)
+            empty = {"version": 1, "certificates": [], "issues": []}
+            relations = {"version": 1, "relations": [], "issues": []}
+            plan = SourceWorkPlan({}, {}, empty, empty, relations, relations, {}, False)
+            with (
+                self.subTest(path=path),
+                patch.object(
+                    correlation, "correlate_download_rows", side_effect=AssertionError("authored row inference")
+                ),
+                self.assertRaises((ValueError, LineageError)),
+            ):
+                transform.correlate(None, {}, evidence, policy=policy)
+            with self.assertRaises((ValueError, LineageError)):
+                source_work.execute_source_work(
+                    None,
+                    None,
+                    {},
+                    evidence,
+                    {},
+                    plan,
+                    policy,
+                    {},
+                    loader=lambda *args: self.fail("prices opened"),
+                )

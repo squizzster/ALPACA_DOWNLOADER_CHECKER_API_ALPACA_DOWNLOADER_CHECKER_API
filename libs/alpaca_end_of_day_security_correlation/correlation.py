@@ -121,6 +121,17 @@ def build_security_correlation_report(
     include_action_anchored_current_suffix: bool = False,
     established_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence, accept_provider_evidence
+
+    if not isinstance(lineage_report, dict):
+        raise SecurityCorrelationError("lineage API returned a non-object report")
+    if isinstance(lineage_report.get("lineage"), dict):
+        lineage_report = {
+            **lineage_report,
+            "lineage": cache.provider_evidence(lineage_report["lineage"])
+            if cache is not None
+            else accept_provider_evidence(lineage_report["lineage"], where="fresh correlation evidence"),
+        }
     validate_correlation_change_log()
     # TRUST BOUNDARY: the caller supplies selected input readers and one immutable
     # group cache. This owner calculates new assignments; it does not reacquire
@@ -158,6 +169,9 @@ def build_security_correlation_report(
     ):
         raise SecurityCorrelationError("lineage API report is missing symbol, local, or lineage objects")
     lineage = _without_reconciled_occupancy_actions(supplied_lineage, occupancy_reconciliations)
+    if lineage is not supplied_lineage:
+        # The reconciliation owner constructs this provider-only projection.
+        lineage = ProviderEvidence(lineage)
 
     intervals, evidence_issues, uuid_lineage_edges, uuid_lineage_issues = cache.lineage_analysis(
         lineage,

@@ -96,6 +96,10 @@ def refines_adjustment_basis(before, after):
 
 def adjustment_bridges(bound, facts, evidence):
     """Select new cross-market adjustment evidence from accepted action facts."""
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(facts, where="retired cross-market assertion facts")
+    reject_assertions(evidence, where="retired cross-market assertion evidence")
     subjects = {identifier: pid for identifier, pid, _episodes in bound}
     result = []
     for identifier, item in facts.items():
@@ -134,6 +138,10 @@ def adjustment_bridges(bound, facts, evidence):
 
 def bind(reports, evidence, auxiliary=None, *, inactive_memberships=None):
     """Resolve submitted market facts against accepted group identities once."""
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired researched plan")
+    reject_assertions(auxiliary, where="retired auxiliary assertion evidence")
     facts = {}
     evidence = tuple(evidence.values()) + tuple((auxiliary or {}).values())
     for value in evidence:
@@ -197,6 +205,12 @@ def project(
     allow_adjustment_continuity=False,
     inactive_memberships=None,
 ):
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired assertion projector")
+    reject_assertions(auxiliary, where="retired auxiliary assertion evidence")
+    if plan is not None:
+        raise ValueError("researched ownership plans are inadmissible for new inference")
     plan = (
         bind(reports, evidence, auxiliary, inactive_memberships=inactive_memberships) if plan is None else plan
     )
@@ -358,6 +372,8 @@ def project(
 
 def apply_adjustment_authority(reports, source_names, plan):
     """Add the completed new evidence without replaying owners or dated labels."""
+    if plan.adjustment_bridges:
+        raise ValueError("researched adjustment bridge recipes are inadmissible for new inference")
     result = dict(reports)
     for key, report in reports.items():
         name = source_names.get(key, key)

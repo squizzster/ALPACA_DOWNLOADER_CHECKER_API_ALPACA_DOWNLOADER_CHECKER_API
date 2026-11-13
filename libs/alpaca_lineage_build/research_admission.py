@@ -1,21 +1,20 @@
-"""Explicitly review completed research output for selected production publication.
+"""Admit reviewed generic producer output without admitting research assertions.
 
-Preparation establishes metadata equivalence once without storage/provider I/O.
-Approval consumes that held review scope; publication remains with the existing
-generation-bound prepared publisher and its journal. Research stays research:
-the admitted output records its original identity and the separate approval.
+Research facts remain an external evaluation reference. Approval can select an
+already computed, assertion-free result under exact generation bindings; it
+cannot make authored evidence admissible or authorize replaying completed work.
 """
 
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from libs.alpaca_security_lineage.event_supplements import _freeze, supplement_key
-from libs.alpaca_security_lineage.sourced_facts import MARKET_KIND, items
+from libs.alpaca_security_lineage.event_supplements import _freeze
+from libs.alpaca_security_lineage.inference_evidence import reject_assertions
 
 from .assignment_handoff import AcceptedObservationChoices
 from .contract import COMPUTATION_REVISION, LineageError, document_digest
-from .prepared_recovery import PreparedCandidate
+from .prepared_recovery import PreparedCandidate, require_assertion_free_outputs
 from .retained_recovery import RECOVERY_BOUNDARY, accept_selection
 
 APPROVAL_SCHEMA = "alpaca.lineage.research_admission_approval"
@@ -56,25 +55,6 @@ def _identity(policy):
             "file_sha256",
         )
     }
-
-
-def _fact_records(entries, group, *, canonical=False):
-    records = {}
-    for entry in entries:
-        scope = set(entry["symbols"])
-        if not scope.intersection(group):
-            continue
-        _require(scope <= group, "factual application crosses the selected complete group")
-        facts = entry["facts"] if canonical else entry["supplements"]
-        for fact in facts:
-            _require(
-                fact["kind"] == MARKET_KIND and fact["facts"]["schema_version"] in {3, 4, 5},
-                "unsupported research evidence producer in selected scope",
-            )
-            key = supplement_key(fact), tuple(sorted(scope))
-            _require(key not in records, "duplicate selected research fact scope")
-            records[key] = fact, entry.get("refine_accepted_dates", True)
-    return records
 
 
 def _restore_choices(receipt):
@@ -164,12 +144,11 @@ def prepare_admission(report, ruleset, store, baseline_receipts, *, group_index=
         and options.get("control_mode") in {"accepted_publication", "documented_scopes"},
         "candidate producer selection differs from canonical production",
     )
-    applications = [app for app in ruleset.applications if set(app["symbols"]).intersection(members)]
-    _require(
-        _fact_records(options.get("documented_facts", ()), set(members))
-        == _fact_records(applications, set(members), canonical=True),
-        "candidate facts or date intent differ from canonical scoped applications",
-    )
+    try:
+        reject_assertions(candidate, where="research admission candidate")
+        reject_assertions(handoff.get("policy", {}), where="research admission handoff")
+    except ValueError as error:
+        raise LineageError("research admission: " + str(error)) from error
     comparison = group.get("comparison", {})
     _require(
         comparison.get("candidate_partition_complete") is True
@@ -196,6 +175,10 @@ def prepare_admission(report, ruleset, store, baseline_receipts, *, group_index=
         ),
         "separate selected baseline receipts and complete candidate outputs are required",
     )
+    try:
+        require_assertion_free_outputs(receipts, baseline_receipts, candidate)
+    except LineageError as error:
+        raise LineageError("research admission: " + str(error)) from error
     proposed, changed, assignments = deepcopy(receipts), {}, {}
     provenance = ruleset.policy.provenance()
     for name, receipt in proposed.items():
@@ -224,21 +207,6 @@ def prepare_admission(report, ruleset, store, baseline_receipts, *, group_index=
             ),
             name + ": incomplete completed output or selected baseline binding",
         )
-        documented = receipt.get("documented_identity_membership")
-        needs_documented = any(
-            fact["kind"] == MARKET_KIND and fact["facts"]["schema_version"] in {3, 4, 5}
-            for fact in items(receipt["evidence"])
-        )
-        if needs_documented or documented is not None:
-            _require(
-                isinstance(documented, dict)
-                and set(documented) == {"version", "owners", "source_routes"}
-                and type(documented["version"]) is int
-                and documented["version"] == 1
-                and isinstance(documented["owners"], list)
-                and isinstance(documented["source_routes"], dict),
-                name + ": missing completed documented ownership handoff",
-            )
         assignments[name] = bodies[name]
         changed[name] = {
             kind: body
@@ -253,19 +221,6 @@ def prepare_admission(report, ruleset, store, baseline_receipts, *, group_index=
                 name + ": missing completed assignment projection",
             )
         _restore_choices(receipt)
-        # This is new production bookkeeping for the reviewed canonical fact,
-        # not another ownership/numerical evaluation of its completed result.
-        observed = {supplement_key(fact): fact for fact in items(receipt["evidence"])}
-        fingerprints = dict(receipt["evidence"].get("sourced_fact_applications", {}))
-        intents = dict(receipt["evidence"].get("sourced_fact_intents", {}))
-        for app in applications:
-            if all(observed.get(supplement_key(fact)) == fact for fact in app["facts"]):
-                fingerprints[app["id"]] = app["fingerprint"]
-                for fact in app["facts"]:
-                    intents[fact["match"]["source_id"]] = app.get("refine_accepted_dates", True)
-        receipt["evidence"] = {**receipt["evidence"], "sourced_fact_applications": fingerprints}
-        if intents:
-            receipt["evidence"]["sourced_fact_intents"] = intents
         receipt["correlation_policy"] = deepcopy(provenance)
         receipt["input_sources"] = dict(pricing)
     scope = _freeze(
@@ -280,11 +235,10 @@ def prepare_admission(report, ruleset, store, baseline_receipts, *, group_index=
                 key: value for key, value in _identity(production).items() if key != "file_sha256"
             },
             "production_execution_sha256": ruleset.execution_sha256,
-            "canonical_applications": {app["id"]: app["fingerprint"] for app in applications},
             "pricing_generations": pricing,
             "baseline_receipt_generations": baseline,
             "candidate_boundaries": {name: receipt["boundaries"] for name, receipt in receipts.items()},
-            "equivalence": "unchanged_rule_cascade_and_exact_canonical_scoped_facts_and_intents",
+            "equivalence": "unchanged_generic_rule_cascade_and_producer_selection",
             "numerical_choices": "completed_result_consumed_without_replay",
             "optional_equality_capture": handoff.get("equality_capture"),
         }
@@ -310,6 +264,9 @@ def approve_admission(admission, approval):
         and approval["conclusion"]
         and approval.get("scope") == admission.scope,
         "publication requires an explicit approval of this exact review scope",
+    )
+    _require(
+        not admission.scope.get("canonical_applications"), "authored facts cannot be approved for inference"
     )
     receipts = deepcopy(admission.proposed.receipts)
     origin = {
@@ -338,12 +295,8 @@ def require_canonical_applicability(prepared, ruleset):
         "incomplete approved group provenance",
     )
     scope = origin["approved_scope"]
-    members = set(scope["members"])
-    current = {
-        app["id"]: app["fingerprint"] for app in ruleset.applications if members.intersection(app["symbols"])
-    }
+    _require(not scope.get("canonical_applications"), "authored facts cannot be approved for inference")
     _require(
-        current == scope["canonical_applications"]
-        and ruleset.execution_sha256 == scope["production_execution_sha256"],
-        "approved canonical applications or producer selection changed",
+        ruleset.execution_sha256 == scope["production_execution_sha256"],
+        "approved producer selection changed",
     )

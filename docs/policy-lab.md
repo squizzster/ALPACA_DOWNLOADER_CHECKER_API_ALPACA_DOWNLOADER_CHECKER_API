@@ -20,10 +20,18 @@ pending, changed or incompatible handoffs fail closed. Comparison never scans re
 Both commands use the [shared stderr heartbeat protocol](cli-reporting.md#shared-lifecycle);
 their final JSON reports and parity/timeout exit meanings remain the same.
 
-Published assignments are comparison data, never candidate facts. Candidates consume normalized evidence/pricing
-accepted by receipts, run correlation and observation selection in memory, normalize by symbol/view/session and
+Published assignments are comparison data, never candidate facts. Candidates consume retained provider observations
+and accepted pricing, run correlation and observation selection in memory, normalize by symbol/view/session and
 emit deterministic differences. Authorities: [compare](../libs/alpaca_lineage_policy_lab/comparison.py),
 [audit](../libs/alpaca_lineage_policy_lab/audit.py), [CLI](../libs/alpaca_lineage_policy_lab/command_line.py).
+
+YAML and direct compiled candidates admit registered generic rules and parameters only. Authored factual
+applications, supplements, overlays, documented candidates and unregistered refinement callbacks are rejected
+before store selection. Direct selected evidence with active assertions is rejected before pricing or correlation.
+Legacy stored assertions remain baseline provenance; new inference uses one provider-only projection from the
+selected retained observations. The projection carries through audit prefilters and paired comparisons without
+repeating its assembly. Missing raw observations require owning metadata recovery rather than reconstructing facts.
+Research chronology remains an external reference for generic rule design and evaluation.
 
 ## Current schema-4 policies
 

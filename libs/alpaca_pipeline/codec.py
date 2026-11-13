@@ -14,7 +14,6 @@ from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from urllib.error import HTTPError, URLError
 
-from libs.alpaca_end_of_day_security_correlation.market_occupancy import MarketPlan
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import UuidLineageEdge
 from libs.alpaca_lineage_build.assignment_handoff import AcceptedObservationChoices, _FrozenDict
 from libs.alpaca_lineage_build.context import HistoryScope
@@ -42,9 +41,9 @@ from libs.alpaca_pricing_download.full_publication import (
     PublicationAcceptance,
 )
 from libs.alpaca_pricing_download.responses import CompletedBars
-from libs.alpaca_security_lineage import event_supplements as facts
+from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence
 
-from .source_state import ADAPTER_EXTRAS, IdentityKey
+from .source_state import ADAPTER_EXTRAS, IdentityKey, require_generic_plan
 
 
 class HandoffError(ValueError):
@@ -82,7 +81,6 @@ DATACLASSES = {
         AcquisitionFailure,
         PreparedCandidate,
         SourceWorkPlan,
-        MarketPlan,
         PricingInput,
         MetadataSourceControl,
         ClosedAcceptedSource,
@@ -100,9 +98,6 @@ CONTAINERS = {
     "frozenset": frozenset,
     "accepted_rows": _AcceptedRows,
     "assignment_mapping": _FrozenDict,
-    "fact_mapping": facts._FrozenDict,
-    "fact_list": facts._FrozenList,
-    "accepted_facts": facts._AcceptedSupplements,
     "source_equivalence": AcceptedSourceEquivalence,
     "equality_frame": AcceptedEqualityFrame,
 }
@@ -186,6 +181,20 @@ class Encoder:
 
     def _record(self, value):
         encode = self.encode
+        if isinstance(value, SourceWorkPlan):
+            require_generic_plan(value)
+        # Legacy closed outputs may retain immutable provenance mappings. Carry
+        # their plain values without reconstituting an active fact capability.
+        if type(value).__module__ == "libs.alpaca_security_lineage.event_supplements":
+            kind = {"_FrozenDict": "dict", "_FrozenList": "list"}.get(type(value).__name__)
+            if kind is None:
+                raise HandoffError("research assertion containers cannot cross stage JSON")
+            return {
+                "kind": kind,
+                "items": [[encode(k), encode(v)] for k, v in value.items()]
+                if isinstance(value, dict)
+                else [encode(v) for v in value],
+            }
         if isinstance(value, SimpleNamespace):
             names = ("path", "manifest", "rows", "pipeline_state", "pipeline_diagnostic", "integrity_failure")
             if set(value.__dict__) != set(names):
@@ -194,6 +203,8 @@ class Encoder:
                 "kind": "pricing_descriptor",
                 "fields": {name: encode(getattr(value, name)) for name in names},
             }
+        if isinstance(value, ProviderEvidence):
+            return {"kind": "provider_evidence", "items": [[encode(k), encode(v)] for k, v in value.items()]}
         if isinstance(value, IdentityKey):
             return {"kind": "identity_key", "owner": encode(value.owner)}
         if isinstance(value, MappingProxyType):
@@ -334,6 +345,12 @@ class Decoder:
             }:
                 raise HandoffError("incomplete pricing descriptor")
             return SimpleNamespace(**{name: decode(value) for name, value in record["fields"].items()})
+        if kind == "provider_evidence":
+            if set(record) != {"kind", "items"} or not isinstance(record["items"], list):
+                raise HandoffError("incomplete provider-evidence record")
+            value = ProviderEvidence.__new__(ProviderEvidence)
+            dict.__init__(value, ((decode(k), decode(v)) for k, v in record["items"]))
+            return value
         if kind == "identity_key":
             return id(decode(record["owner"]))
         if kind == "mapping_proxy":
@@ -374,6 +391,8 @@ class Decoder:
             if set(record["fields"]) != {f.name for f in fields(cls)}:
                 raise HandoffError("incomplete producer record")
             result = cls(**{k: decode(v) for k, v in record["fields"].items()})
+            if isinstance(result, SourceWorkPlan):
+                require_generic_plan(result)
             extras = record.get("extras", {})
             if (
                 not isinstance(extras, dict)

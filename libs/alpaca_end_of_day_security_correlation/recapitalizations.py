@@ -12,6 +12,9 @@ from libs.alpaca_security_lineage.event_supplements import RECAPITALIZATION_KIND
 
 
 def project(inputs, reports, evidence):
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired recapitalization projector")
     result = dict(reports)
     for name, original in reports.items():
         facts = [

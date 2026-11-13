@@ -12,34 +12,26 @@ from .continuation import validate_handoff
 from .contract import LineageError
 from .membership_transfer import build
 from .recovery_handoffs import remember
-from .selection import DependencyGraph
 from .source_observations import preserve_selection, selected_donor_scopes
 from .source_work import assignment_documents
 
 
-def recover(store, root, index, pending_serving, applications, serving):
-    graph = DependencyGraph(index["symbols"])
+def recover(store, root, index, pending_serving, serving):
+    """Select only compact pending groups advertising incomplete closed transfers."""
+    entries = index["symbols"]
     groups, seen = [], set()
-    for application in applications:
-        for symbol in set(application["symbols"]) & index["symbols"].keys():
-            entry = index["symbols"][symbol]
-            if (
-                entry["projection"].get("sourced_fact_applications", {}).get(application["id"])
-                != application["fingerprint"]
-            ):
-                continue
-            group = graph.closure({symbol})
-            selected = group & index["symbols"].keys()
-            if (
-                group & pending_serving.keys()
-                and not group & seen
-                and any(
-                    not index["symbols"][name]["projection"].get("membership_transfers_complete")
-                    for name in selected
-                )
-            ):
-                groups.append(group)
-                seen.update(group)
+    for symbol in sorted(pending_serving.keys() & entries.keys()):
+        if entries[symbol]["sha256"] != pending_serving[symbol]:
+            raise LineageError(f"{symbol}: pending serving generation changed before transfer recovery")
+        if symbol in seen:
+            continue
+        group = set(entries[symbol]["group_members"])
+        seen.update(group)
+        selected = group & entries.keys()
+        if any(entries[name]["projection"].get("has_membership_rebind") for name in selected) and any(
+            not entries[name]["projection"].get("membership_transfers_complete") for name in selected
+        ):
+            groups.append(group)
     repaired = []
     for group in groups:
         repaired.extend(_recover_group(store, root, index, group, serving))

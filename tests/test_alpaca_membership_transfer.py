@@ -5,11 +5,12 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from test_alpaca_lineage_build import IdentityClient, asset, informative_bars
 from test_alpaca_pricing_download import FakeClient, direct_adjustment_observations
-from test_alpaca_public_common_continuation import common_fact
+from test_alpaca_public_common_pipeline import install_completed_common
 
 from alpaca_end_of_day import standalone
 from libs.alpaca_lineage_build import (
@@ -127,19 +128,8 @@ class MembershipTransferTests(unittest.TestCase):
                 for group in accepted_groups.values()
                 if "BUSINESS" in group["history_validation"]["inputs"]
             )
-            fact = common_fact()
-            fact["facts"]["successor"]["symbol"] = "ALIAS"
-            plans = []
-            prepare = source_work.prepare_group_evidence_and_source_work
-
-            def capture(*args, **kwargs):
-                plan = prepare(*args, **kwargs)
-                plans.append(plan.dispositions)
-                return plan
-
+            fixture = SimpleNamespace(store=store, root=root, assets=assets, closed_fixture_rows=rows)
             with (
-                patch.object(source_work, "prepare_group_evidence_and_source_work", side_effect=capture),
-                patch.object(pipeline, "prepare_group_evidence_and_source_work", side_effect=capture),
                 patch.object(
                     source_observations,
                     "select_observations",
@@ -151,11 +141,10 @@ class MembershipTransferTests(unittest.TestCase):
                     side_effect=AssertionError("accepted counterpart prices read"),
                 ),
             ):
-                result = pipeline.run_lineage(
-                    store, names, identity_client=IdentityClient(assets, [action]), event_supplements=[fact]
-                )
+                result = install_completed_common(fixture, names=names)
             self.assertEqual(0, result["failed"], result)
-            self.assertTrue(any(plan["ALIAS"] == "A" and plan["BUSINESS"] == "B" for plan in plans), plans)
+            self.assertEqual("A", result["dispositions"]["ALIAS"])
+            self.assertEqual("B", result["dispositions"]["BUSINESS"])
             after = {name: storage.read_receipt(root, name, storage.read_index(root)) for name in names}
             self.assertIsNone(after["ALIAS"]["membership_only_rebind"])
             transfer = after["BUSINESS"]["membership_only_rebind"]
@@ -193,6 +182,7 @@ class MembershipTransferTests(unittest.TestCase):
                 current_receipt=after["BUSINESS"],
                 current_documents=source_work.assignment_documents(root, after["BUSINESS"], {}),
                 preserves_pricing=True,
+                allow_label_changes=transfer["version"] == 3,
             )
             self.assertEqual(transfer, membership_transfer.build(**arguments))
             preserved = dict(
@@ -312,7 +302,7 @@ class MembershipTransferTests(unittest.TestCase):
                                 else:
                                     segment["row_start"] += 100
                                     segment["row_end"] += 100
-                    self.assertIsNone(membership_transfer.build(**changed))
+                    self.assertIsNone(membership_transfer.build(**{**changed, "allow_label_changes": False}))
 
     def _damage_and_recover(self, store, root, names, before_index, before, after):
         bad = copy.deepcopy(after)

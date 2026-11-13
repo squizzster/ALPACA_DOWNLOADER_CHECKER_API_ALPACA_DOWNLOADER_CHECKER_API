@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 40
+VERSION = 41
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -209,12 +209,6 @@ def build_parser():
             _selection(p)
             _dates(p, start=False, pricing=True)
             p.add_argument("--no-pricing-acquisition", action="store_true")
-            p.add_argument(
-                "--event-supplements",
-                type=Path,
-                metavar="FILE.json",
-                help="sourced event facts for explicitly selected symbols; retained with their evidence",
-            )
         elif name == "inspect":
             p.add_argument("--symbol", required=True)
         elif name == "migrate-index":
@@ -374,6 +368,8 @@ def _store_operation(args):
 def dispatch(args):
     # CLI dispatch delegates to domain owners. DO NOT add receipt/payload audits
     # or independent work selection here; accepted handoffs belong to those owners.
+    if getattr(args, "event_supplements", None):
+        raise ValueError("CLI event supplements are not supported; research fact injection is inadmissible")
     from .command_progress import count_callback, progress_callback
     from .update_eta import UpdateEstimate, measured_request
 
@@ -471,13 +467,6 @@ def dispatch(args):
 
             return output_evidence(args.store, args.symbol, offline=True)
         end = _pricing_end(args)
-        supplements = ()
-        if args.event_supplements:
-            from libs.alpaca_security_lineage.event_supplements import load_supplements
-
-            if not (args.symbol or args.symbols_file):
-                raise ValueError("--event-supplements requires --symbol or --symbols-file")
-            supplements = load_supplements(args.event_supplements)
         pricing, identity = clients()
         from libs.alpaca_lineage_build.pipeline import run_lineage
         from libs.alpaca_lineage_build.registration import standalone_registration
@@ -494,7 +483,6 @@ def dispatch(args):
                 work_policy=policy,
                 progress=progress,
                 on_pricing=progress,
-                event_supplements=supplements,
             )
         selected = {
             symbol

@@ -31,6 +31,10 @@ def binding(controls, evidence):
 
 
 def prepare(controls, evidence, auxiliary, cache, unchanged_owners):
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired researched plan")
+    reject_assertions(auxiliary, where="retired auxiliary assertion evidence")
     new_facts = any(
         fact not in items((controls[name].previous or {}).get("evidence", {}), MARKET_KIND)
         for name, report in evidence.items()

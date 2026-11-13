@@ -7,11 +7,13 @@ from libs.alpaca_lineage_build import storage
 
 from . import accept_report
 from .paired import same_cascade
-from .policy import policy_applies, policy_applies_to_group, require_research_application_support
+from .policy import policy_applies, policy_applies_to_group, require_generic_policy
 from .research import failure, select
 
 
 def screen(store, policy, control):
+    require_generic_policy(policy)
+    require_generic_policy(control)
     if (
         control is None
         or getattr(control, "membership_refinement", None) is not None
@@ -29,12 +31,8 @@ def screen(store, policy, control):
         storage.assert_index_current(root, index)
         for group in groups:
             available = [source for source in group if source in index["symbols"]]
-            documented = any(
-                set(entry["symbols"]).intersection(group) for entry in getattr(policy, "documented_facts", ())
-            )
             try:
-                require_research_application_support(policy, control, group)
-                if len(available) < 2 and not documented:
+                if len(available) < 2:
                     unaffected.append({"group": list(group), "reason": "no_different_indexed_donor_source"})
                     continue
                 receipts = {}
@@ -45,7 +43,7 @@ def screen(store, policy, control):
                 record = {"group": list(group), "receipts": receipts}
                 if pairs is None:
                     unknown.append(record)
-                elif pairs or documented:
+                elif pairs:
                     record["membership_pairs"] = [
                         {
                             "source": pair["source"],

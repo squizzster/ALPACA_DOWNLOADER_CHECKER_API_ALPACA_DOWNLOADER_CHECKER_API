@@ -63,11 +63,12 @@ Ordered authorities: [ownership intervals](../libs/alpaca_end_of_day_security_co
 Lineage's compiler/evaluator serve production and offline replay; correlation owns ordered rule registries and
 certificate-backed rule factories. [Lineage](lineage.md) owns policy authorization, reuse and evidence constraints;
 the [policy lab](policy-lab.md) owns read-only candidate comparison/audit.
-The [canonical YAML](../resources/alpaca_security_correlation_policy.yaml) contains executable `policy`,
-scoped factual `evidence.applications`, and explicit `producers` selection. The
+The [canonical YAML](../resources/alpaca_security_correlation_policy.yaml) contains registered generic
+`policy` and explicit generic `producers` selection in a schema-2 envelope. The
 [ruleset owner](../libs/alpaca_lineage_build/ruleset.py) accepts them once after frozen-journal recovery.
-Executable rules, factual applications and optional producer selection have separate identities; moving
-facts into this container does not invalidate accepted lineage. Python implements the named generic rules.
+Policy semantics and producer selection have separate identities; a container-format change does not
+invalidate applicable accepted lineage. Python implements the named generic rules. Authored assertions
+are rejected before new store or provider work; retained research provenance is never fresh inference input.
 The [lineage rule tool](lineage-debug.md) exposes recorded explanations and explicit selected/all-group
 research through the public JSON API. Its paired comparison separates stored/control drift from candidate
 impact on one loaded group; it never publishes production output.
@@ -80,13 +81,18 @@ consumer for journaled publication, receipt-cache/index updates and exact workfl
 [accepted ruleset contracts](../libs/alpaca_lineage_build/ruleset_contract.py) carry completed values without
 importing their executors or recompiling configuration during JSON restoration.
 
-Production and documented research share the storage-free
-[documented-update owner](../libs/alpaca_lineage_build/documented_updates.py): bind newly supplied facts,
-retain accepted owner plans, apply per-fact positive-date refinement intent, and identify genuinely new
-numerical contests. Metadata-only changes preserve completed numerical choices. The correlation-owned
-[component refinement](../libs/alpaca_end_of_day_security_correlation/component_refinement.py) is an optional
-named producer, explicitly selected in the canonical YAML. Its evidence conditions and selected overlap
-scope remain separate from dated ownership and serving eligibility.
+The [metadata owner](../libs/alpaca_lineage_build/metadata.py) and
+[provider-evidence boundary](../libs/alpaca_security_lineage/inference_evidence.py) select retained provider
+observations for new inference. Their completed provider-only result crosses consumers without repeating
+validation or assembly. Original published receipts remain comparison and recovery data. Frozen journals
+install completed outputs under their original provenance; accepted assignments, membership and numerical
+choices retain their actual scope.
+
+The correlation-owned [component refinement](../libs/alpaca_end_of_day_security_correlation/component_refinement.py)
+is an optional generic producer, explicitly selected in the canonical YAML. It consumes completed components,
+provider rename observations and accepted extension edges. Its selected numerical overlap remains separate
+from dated ownership and serving eligibility. [Lineage](lineage.md#sourced-event-facts) owns legacy provenance,
+fresh inference and pending-obligation limits.
 
 ## Serving and consumption
 

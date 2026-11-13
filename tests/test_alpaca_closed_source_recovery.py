@@ -4,13 +4,11 @@ import copy
 import json
 import unittest
 from contextlib import ExitStack
-from dataclasses import replace
 from unittest.mock import patch
 
 import test_alpaca_public_common_pipeline as common_fixture
 from test_alpaca_closed_departure_compatibility import prior_decision, prior_policy
-from test_alpaca_lineage_build import IdentityClient, informative_bars
-from test_alpaca_public_common_continuation import common_fact
+from test_alpaca_lineage_build import informative_bars
 from test_alpaca_universe_update import CatalogueClient
 
 from alpaca_end_of_day import DataLibrary, standalone
@@ -20,17 +18,14 @@ from libs.alpaca_lineage_build import (
     closed_source_recovery,
     pipeline,
     pricing,
-    sourced_rules,
     storage,
     universe_update,
-)
-from libs.alpaca_lineage_build import (
-    ruleset as lineage_ruleset,
 )
 from libs.alpaca_lineage_build.check_summary import rebuild
 from libs.alpaca_lineage_build.continuation import validate_handoff
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_pricing_download import check_summary as pricing_summary
+from libs.alpaca_pricing_download import update_checks
 from libs.alpaca_pricing_download.contract import timestamp
 from libs.alpaca_pricing_download.http import BarsClient
 from libs.alpaca_serving_catalogue import work as serving_work
@@ -44,21 +39,17 @@ class ClosedSourceRecoveryTests(unittest.TestCase):
     def _daily_inputs(self):
         self.registry = self.store.parent / "ticker.csv"
         self.registry.write_text("BUSINESS,SPAC\n")
-        self.assertEqual(
-            0, pipeline.run_lineage(self.store, identity_client=IdentityClient(self.assets))["failed"]
-        )
+        # Install an already completed generic component result. No authored
+        # facts, scoped applications or legacy JSON import enter fresh inference.
+        completed = common_fixture.install_completed_common(self)
+        self.assertEqual(0, completed["failed"], completed)
+        self.assertEqual(0, maintain(self.store)["failed"])
+        # These two completed sources are the entire synthetic universe. Lend
+        # its completed scheduling boundary without an unrelated fallback scan.
+        checks = update_checks.begin_checks(self.store)
+        update_checks.complete_checks(self.store, checks["epoch"])
         rebuild(self.store)
         universe_update.rebuild_universe(self.store)
-        path = self.store.parent / "facts.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "applications": [{"id": "common", "symbols": ["SPAC"], "supplements": [common_fact()]}],
-                }
-            )
-        )
-        self.applications, self.supplements = sourced_rules.load_applications(path)
         self.identity = CatalogueClient([self.assets["SPAC"], self.assets["BUSINESS"]], exact=self.assets)
         self.client = BarsClient("fake", "fake")
         rows = {
@@ -79,17 +70,6 @@ class ClosedSourceRecoveryTests(unittest.TestCase):
             }
 
         self.enterContext(patch.object(self.client, "_get", side_effect=response))
-        self.enterContext(
-            patch.object(
-                lineage_ruleset,
-                "load_ruleset",
-                return_value=replace(
-                    lineage_ruleset.load_ruleset(authorize=True),
-                    applications=tuple(self.applications),
-                    supplements=self.supplements,
-                ),
-            )
-        )
 
     def _daily(self):
         return universe_update.run_update(
@@ -169,7 +149,6 @@ class ClosedSourceRecoveryTests(unittest.TestCase):
                 self.root,
                 storage.read_index(self.root),
                 serving_work.read(self.store),
-                self.applications,
             )
 
     def test_legacy_closed_source_lift_emits_null_envelopes_and_serves(self):
@@ -285,7 +264,19 @@ class ClosedSourceRecoveryTests(unittest.TestCase):
             self.assertTrue((self.root / ".pending.json").exists())
             self.assertTrue(storage.recover(self.store, self.root))
             self.assertFalse((self.root / ".pending.json").exists())
-            self.assertEqual([], self._recover())
+            with (
+                patch.object(
+                    closed_source_recovery,
+                    "selected_document",
+                    side_effect=AssertionError("completed peer reopened"),
+                ),
+                patch.object(
+                    closed_source_recovery,
+                    "accept_observation_choices",
+                    side_effect=AssertionError("completed choices repeated"),
+                ),
+            ):
+                self.assertEqual([], self._recover())
             self.assertEqual(0, maintain(self.store)["failed"])
         repaired = self._receipt()
         for field in (
@@ -304,6 +295,56 @@ class ClosedSourceRecoveryTests(unittest.TestCase):
         with self._forbid_replay(), self.assertRaises(LineageError):
             self._recover()
         self.assertFalse((self.root / ".pending.json").exists())
+
+    def test_compact_selection_opens_only_unknown_legacy_pending_groups(self):
+        def entry(name, correlation=82, projection=None):
+            return {
+                "sha256": name + "-generation",
+                "versions": {"lineage": 37, "correlation": correlation},
+                "group_members": [name],
+                "projection": projection or {},
+            }
+
+        index = {
+            "symbols": {
+                "LEGACY": entry("LEGACY"),
+                "MODERN": entry("MODERN", correlation=91),
+                "COMPLETE": entry("COMPLETE", projection={"source_ownership_envelopes_complete": True}),
+                "UNSELECTED": entry("UNSELECTED"),
+            }
+        }
+        pending = {name: index["symbols"][name]["sha256"] for name in ("LEGACY", "MODERN", "COMPLETE")}
+        with (
+            patch.object(closed_source_recovery, "_recover_group", return_value=[]) as recover,
+            patch("pathlib.Path.open", side_effect=AssertionError("selection touched storage")),
+        ):
+            self.assertEqual([], closed_source_recovery.recover(self.store, self.root, index, pending))
+        self.assertEqual(1, recover.call_count)
+        self.assertEqual({"LEGACY"}, recover.call_args.args[-1])
+
+    def test_changed_pending_generation_and_missing_group_fail_before_storage(self):
+        entry = {
+            "sha256": "current",
+            "versions": {"lineage": 37, "correlation": 82},
+            "group_members": ["LEGACY"],
+            "projection": {},
+        }
+        for change in ("generation", "membership"):
+            value = copy.deepcopy(entry)
+            pending = {"LEGACY": "changed" if change == "generation" else "current"}
+            if change == "membership":
+                value.pop("group_members")
+            with (
+                self.subTest(change=change),
+                patch("pathlib.Path.open", side_effect=AssertionError("invalid selection touched storage")),
+                patch.object(
+                    closed_source_recovery,
+                    "_recover_group",
+                    side_effect=AssertionError("invalid group recovered"),
+                ),
+                self.assertRaises(LineageError),
+            ):
+                closed_source_recovery.recover(self.store, self.root, {"symbols": {"LEGACY": value}}, pending)
 
     def test_missing_proof_on_newly_mapped_source_is_not_repaired(self):
         self._daily_inputs()

@@ -1,236 +1,123 @@
-"""Application incorporation belongs to its exact selected input component."""
+"""Retired factual ingress and scoped continuation of completed legacy output."""
 
-from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
-from test_alpaca_documented_markets import documented_fact
-
 from libs.alpaca_lineage_build import sourced_rules
 from libs.alpaca_lineage_build.contract import LineageError
-from libs.alpaca_lineage_build.work_contract import WorkDeferred, WorkPolicy
-from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS
+from libs.alpaca_lineage_build.work_contract import WorkDeferred, WorkPolicy, obligation, restriction
 
 
 class ApplicationComponentScopeTests(TestCase):
     def setUp(self):
-        self.fact = documented_fact(
-            "generic-common-chronology",
-            ("COMMON", "111111111"),
-            ("CONTINUING", "111111111"),
-            [("COMMON", "111111111", "2024-01-01", None, "Continuing Common")],
-        )
-        self.other_fact = documented_fact(
-            "generic-right-chronology",
-            ("RIGHT", "222222222"),
-            ("CONTINUING", "222222222"),
-            [("RIGHT", "222222222", "2024-01-01", None, "Separate Right")],
-        )
-
-    def setup_group(self, facts, *, members=("COMMON", "UNIT"), split_components=False):
-        applications, _ = sourced_rules.accept_applications(
-            [{"id": "generic-component-application", "symbols": list(members), "supplements": facts}]
-        )
-        self.application = applications[0]
-        self.sources = {name: {"latest_request": {"end_exclusive": "2024-01-10T00:00:00Z"}} for name in members}
-        self.receipts = {
-            name: {
-                "symbol": name,
-                "source_sha256": "pricing-" + name,
-                "input_sources": {
-                    member: "pricing-" + member for member in ((name,) if split_components else members)
-                },
-                "evidence": {"asset_lookups": []},
-            }
-            for name in members
+        self.application = {
+            "id": "legacy-application",
+            "symbols": ["COMMON", "UNIT"],
+            "supplements": [{"kind": "retained_research_provenance"}],
         }
-        self.policy = WorkPolicy(
-            Path("/synthetic/no-store"),
-            {"symbols": {}},
-            {
-                name: {
-                    "obligation_id": "obligation-" + name,
-                    "end_exclusive": "2024-01-10",
-                    "required_sourced_facts": {self.application["id"]: self.application["fingerprint"]},
-                }
-                for name in members
+        self.fingerprint = "a" * 64
+
+    def test_application_and_json_imports_reject_before_files_or_fact_parsing(self):
+        with (
+            patch.object(Path, "open", side_effect=AssertionError("retired fact file opened")),
+            patch(
+                "libs.alpaca_security_lineage.event_supplements.accept_supplements",
+                side_effect=AssertionError("fact parser"),
+            ),
+        ):
+            for operation in (
+                lambda: sourced_rules.accept_applications([self.application]),
+                lambda: sourced_rules.load_applications("/must/not/read/facts.json"),
+                lambda: sourced_rules.load_applications("/must/not/read/legacy.yaml"),
+            ):
+                with self.subTest(operation=operation), self.assertRaisesRegex(LineageError, "inadmissible"):
+                    operation()
+
+    def test_configure_install_and_incorporation_cannot_enable_factual_inference(self):
+        client = SimpleNamespace(rule_applications=[self.application])
+        operations = (
+            lambda: sourced_rules.configure(client, [self.application], None, {}),
+            lambda: sourced_rules.incorporated(client, {}, applications=[self.application]),
+            lambda: sourced_rules.incorporated_group(client, {}, applications=[self.application]),
+            lambda: sourced_rules.project_application_intents(client, {}),
+            lambda: sourced_rules.install_ruleset_facts(client, SimpleNamespace()),
+            lambda: sourced_rules.install_ruleset_facts(SimpleNamespace(), SimpleNamespace(supplements=[{}])),
+        )
+        with patch.object(Path, "open", side_effect=AssertionError("retired helper touched storage")):
+            for operation in operations:
+                with self.subTest(operation=operation), self.assertRaisesRegex(LineageError, "inadmissible"):
+                    operation()
+
+    def test_read_only_legacy_fingerprint_keeps_default_spelling_and_scope(self):
+        original = sourced_rules.application_fingerprint(self.application)
+        self.assertEqual(
+            original, sourced_rules.application_fingerprint({**self.application, "refine_accepted_dates": True})
+        )
+        self.assertNotEqual(
+            original, sourced_rules.application_fingerprint({**self.application, "refine_accepted_dates": False})
+        )
+        self.assertNotEqual(
+            original, sourced_rules.application_fingerprint({**self.application, "symbols": ["OTHER"]})
+        )
+        with self.assertRaisesRegex(LineageError, "generic lineage recovery"):
+            sourced_rules.accept_applications([self.application])
+
+    def policy(self, *, published=False):
+        item = {
+            "obligation_id": "legacy-obligation",
+            "status": "pending",
+            "end_exclusive": "2024-01-10",
+            "required_group": ["COMMON", "UNIT"],
+            "required_sourced_facts": {"legacy-application": self.fingerprint},
+        }
+        entry = {
+            "sha256": "closed-receipt",
+            "source_sha256": "closed-pricing",
+            "dependencies": [],
+            "asset_ids": [],
+            "group_members": ["COMMON", "UNIT"],
+            "projection": {
+                "processed_through": "2024-01-10",
+                "update_obligation_id": "legacy-obligation",
+                "pricing_request": {},
             },
-            [],
-            "2024-01-10",
-        )
-        self.policy.rule_applications = applications
-
-    def attach(self, name, *facts):
-        evidence = self.receipts[name]["evidence"]
-        for fact in facts:
-            extension = EXTENSIONS[fact["kind"]]
-            evidence.setdefault(extension, {"schema_version": 1, "facts": []})["facts"].append(fact)
-
-    def assert_complete(self):
-        for name, receipt in self.receipts.items():
-            self.assertEqual(receipt["update_obligation_id"], "obligation-" + name)
-            self.assertEqual(
-                receipt["evidence"]["sourced_fact_applications"][self.application["id"]],
-                self.application["fingerprint"],
-            )
-
-    def test_common_fact_is_incorporated_for_selected_unit_without_copying_ownership_evidence(self):
-        self.setup_group([self.fact])
-        self.attach("COMMON", self.fact)
-        self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
-        self.assertNotIn(EXTENSIONS[self.fact["kind"]], self.receipts["UNIT"]["evidence"])
-
-    def test_application_bundle_can_be_completed_across_distinct_selected_source_evidence(self):
-        self.setup_group([self.fact, self.other_fact], members=("COMMON", "RIGHT", "UNIT"))
-        self.attach("COMMON", self.fact)
-        self.attach("RIGHT", self.other_fact)
-        self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
-
-    def test_co_publication_cannot_borrow_facts_from_a_different_selected_component(self):
-        self.setup_group([self.fact], split_components=True)
-        self.attach("COMMON", self.fact)
-        with self.assertRaisesRegex(WorkDeferred, "UNIT: required sourced facts"):
-            self.policy.stamp(self.receipts, self.sources)
-        self.assertNotIn("sourced_fact_applications", self.receipts["UNIT"]["evidence"])
-
-    def test_missing_or_changed_fact_cannot_satisfy_the_current_application(self):
-        for changed in (False, True):
-            with self.subTest(changed=changed):
-                self.setup_group([self.fact, self.other_fact])
-                self.attach("COMMON", self.fact)
-                if changed:
-                    other = deepcopy(self.other_fact)
-                    other["facts"]["episodes"][0]["name"] = "Different Source Assertion"
-                    self.attach("UNIT", other)
-                with self.assertRaisesRegex(WorkDeferred, "required sourced facts"):
-                    self.policy.stamp(self.receipts, self.sources)
-
-    def test_conflicting_peer_facts_fail_without_choosing_an_arbitrary_assertion(self):
-        self.setup_group([self.fact])
-        self.attach("COMMON", self.fact)
-        changed = deepcopy(self.fact)
-        changed["facts"]["episodes"][0]["name"] = "Competing Source Assertion"
-        self.attach("UNIT", changed)
-        with self.assertRaisesRegex(LineageError, "conflicting sourced"):
-            self.policy.stamp(self.receipts, self.sources)
-
-    def test_current_peer_marker_is_authoritative_without_rechecking_any_fact_body(self):
-        self.setup_group([self.fact])
-        self.receipts["COMMON"]["evidence"]["sourced_fact_applications"] = {
-            self.application["id"]: self.application["fingerprint"]
         }
-        with (
-            patch.object(sourced_rules, "items", side_effect=AssertionError("accepted facts reread")),
-            patch.object(
-                sourced_rules, "supplement_key", side_effect=AssertionError("accepted fact keys recalculated")
-            ),
-            patch.object(
-                sourced_rules, "incorporated", side_effect=AssertionError("source-local acceptance replayed")
-            ),
-        ):
-            self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
-        with patch.object(
-            sourced_rules,
-            "incorporated_group",
-            side_effect=AssertionError("completed group projection repeated"),
-        ):
-            self.policy.stamp(self.receipts, self.sources)
+        index = {"symbols": {"UNIT": entry} if published else {}}
+        work = {"UNIT": item, "PEER": {"obligation_id": "peer-obligation", "end_exclusive": "2024-01-10"}}
+        return WorkPolicy(Path("/synthetic/no-store"), index, work, [], "2024-01-10"), item, entry
 
-    def test_later_pricing_failure_preserves_completed_group_incorporation_for_retry(self):
-        self.setup_group([self.fact])
-        self.attach("COMMON", self.fact)
-        self.policy.work["UNIT"].update(
-            invalidate_pricing=True,
-            acquisition_evidence_fingerprint="selected-mapping-obligation",
-        )
-        with self.assertRaisesRegex(WorkDeferred, "pricing replacement is incomplete"):
-            self.policy.stamp(self.receipts, self.sources)
-        for receipt in self.receipts.values():
-            self.assertEqual(
-                receipt["evidence"]["sourced_fact_applications"][self.application["id"]],
-                self.application["fingerprint"],
-            )
-        self.sources["UNIT"]["acquisition_evidence_sha256"] = "selected-mapping-obligation"
-        with (
-            patch.object(
-                sourced_rules,
-                "incorporated_group",
-                side_effect=AssertionError("completed group projection repeated"),
-            ),
-            patch.object(
-                sourced_rules, "incorporated", side_effect=AssertionError("source-local acceptance replayed")
-            ),
-        ):
-            self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
+    def test_unresolved_legacy_obligation_requires_generic_recovery_and_independent_peer_continues(self):
+        policy, item, _ = self.policy()
+        self.assertEqual("generic_lineage_recovery_required", restriction(item, policy.end))
+        self.assertFalse(policy.allowed({"COMMON", "UNIT"}))
+        self.assertTrue(policy.allowed({"PEER"}))
+        with self.assertRaises(WorkDeferred):
+            policy.stamp({"UNIT": {}}, {})
+        receipt = {"symbol": "PEER", "source_sha256": "peer-generation", "evidence": {"asset_lookups": []}}
+        source = {"latest_request": {"end_exclusive": "2024-01-10"}}
+        self.assertEqual({"PEER": "PEER"}, policy.stamp({"PEER": receipt}, {"PEER": source}))
+        self.assertEqual("peer-obligation", receipt["update_obligation_id"])
 
-    def test_a_failed_independent_component_does_not_reopen_its_completed_peer(self):
-        self.setup_group([self.fact], members=("COMMON", "UNIT", "OTHER"))
-        self.attach("COMMON", self.fact)
-        self.receipts["COMMON"]["input_sources"].pop("OTHER")
-        self.receipts["UNIT"]["input_sources"].pop("OTHER")
-        self.receipts["OTHER"]["input_sources"] = {"OTHER": "pricing-OTHER"}
-        with self.assertRaisesRegex(WorkDeferred, "OTHER: required sourced facts"):
-            self.policy.stamp(self.receipts, self.sources)
-        self.attach("OTHER", self.fact)
-        original = sourced_rules.incorporated_group
+    def test_peer_or_auxiliary_application_markers_cannot_manufacture_new_completion(self):
+        for field in ("peer", "auxiliary", "changed_scope"):
+            policy, item, _ = self.policy()
+            receipt = {"evidence": {"sourced_fact_applications": {"legacy-application": self.fingerprint}}}
+            if field == "auxiliary":
+                receipt["unavailable_pricing"] = {"COMMON": {"evidence": receipt["evidence"]}}
+            if field == "changed_scope":
+                item["required_sourced_facts"] = {"legacy-application": "b" * 64}
+            with self.subTest(field=field), self.assertRaises(WorkDeferred):
+                policy.stamp({"UNIT": receipt}, {})
+            self.assertNotIn("update_obligation_id", receipt)
+        with self.assertRaisesRegex(LineageError, "generic lineage recovery"):
+            obligation(item)
 
-        def failed_component_only(client, evidence, **kwargs):
-            self.assertEqual(set(evidence), {"OTHER"}, "successful component recalculated")
-            return original(client, evidence, **kwargs)
-
-        with patch.object(sourced_rules, "incorporated_group", side_effect=failed_component_only):
-            self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
-
-    def test_selected_auxiliary_evidence_can_complete_the_owning_component(self):
-        self.setup_group([self.fact])
-        self.attach("COMMON", self.fact)
-        auxiliary = self.receipts.pop("COMMON")["evidence"]
-        self.sources.pop("COMMON")
-        self.policy.work.pop("COMMON")
-        self.receipts["UNIT"]["input_sources"] = {"UNIT": "pricing-UNIT"}
-        self.receipts["UNIT"]["unavailable_pricing"] = {
-            "COMMON": {"evidence": auxiliary, "outcome": "invalid_symbol", "request": {}}
-        }
-        self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
-
-    def test_changed_selected_source_binding_cannot_lend_even_a_completed_peer_marker(self):
-        self.setup_group([self.fact])
-        self.receipts["COMMON"]["evidence"]["sourced_fact_applications"] = {
-            self.application["id"]: self.application["fingerprint"]
-        }
-        self.receipts["UNIT"]["input_sources"]["COMMON"] = "different-generation"
-        with self.assertRaisesRegex(WorkDeferred, "UNIT: required sourced facts"):
-            self.policy.stamp(self.receipts, self.sources)
-
-    def test_changed_application_intent_needs_its_completed_projection(self):
-        self.setup_group([self.fact])
-        self.attach("COMMON", self.fact)
-        self.policy.stamp(self.receipts, self.sources)
-        old_fingerprint = self.application["fingerprint"]
-        applications, _ = sourced_rules.accept_applications(
-            [
-                {
-                    "id": self.application["id"],
-                    "symbols": ["COMMON", "UNIT"],
-                    "supplements": [self.fact],
-                    "refine_accepted_dates": False,
-                }
-            ]
-        )
-        self.policy.rule_applications = applications
-        self.application = applications[0]
-        self.assertNotEqual(old_fingerprint, self.application["fingerprint"])
-        for item in self.policy.work.values():
-            item["required_sourced_facts"] = {self.application["id"]: self.application["fingerprint"]}
-        with self.assertRaisesRegex(WorkDeferred, "required sourced facts"):
-            self.policy.stamp(self.receipts, self.sources)
-        self.receipts["COMMON"]["evidence"]["sourced_fact_intents"] = {self.fact["match"]["source_id"]: False}
-        self.policy.stamp(self.receipts, self.sources)
-        self.assert_complete()
+    def test_matching_completed_stamp_is_consumed_without_reopening_old_provenance(self):
+        policy, _, entry = self.policy(published=True)
+        with patch.object(sourced_rules, "items", side_effect=AssertionError("completed fact body reread")):
+            self.assertIs(entry, policy.satisfying_entry("UNIT", {"UNIT": entry}, {}))
+            self.assertIs(entry, policy.satisfying_entry("UNIT", {"UNIT": entry}, {}))
+            changed = {**entry, "projection": {**entry["projection"], "processed_through": "2024-01-09"}}
+            self.assertIsNone(policy.satisfying_entry("UNIT", {"UNIT": changed}, {}))

@@ -205,7 +205,7 @@ class PhaseHandoffTests(unittest.TestCase):
         complete = cache.lineage_analysis(evidence, include_action_anchored_current_suffix=True)
         anchor = next(i for i in complete[0] if i.asset_id == "later-id")
         conflicting = replace(anchor, start_date_inclusive=anchor.start_date_inclusive.replace(day=2))
-        key = (id(evidence), True)
+        key = (id(cache.provider_evidence(evidence)), True)
         stored = cache._lineage[key]
         cache._lineage[key] = (stored[0], [conflicting if i == anchor else i for i in stored[1]], *stored[2:])
         with self.assertRaisesRegex(SecurityCorrelationError, "conflicts with established"):

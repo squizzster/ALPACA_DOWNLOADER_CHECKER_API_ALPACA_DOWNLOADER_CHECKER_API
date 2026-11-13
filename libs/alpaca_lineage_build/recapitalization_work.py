@@ -18,6 +18,10 @@ from .source_work_contract import binding_applies as _binding_applies
 
 
 def prepare(controls, evidence, auxiliary, cache):
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired researched plan")
+    reject_assertions(auxiliary, where="retired auxiliary assertion evidence")
     if auxiliary:
         return None
     if not any(

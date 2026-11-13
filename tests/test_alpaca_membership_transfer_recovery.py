@@ -6,11 +6,9 @@ import unittest
 from unittest.mock import patch
 
 import test_alpaca_public_common_pipeline as fixture
-from test_alpaca_lineage_build import IdentityClient
-from test_alpaca_public_common_continuation import common_fact
 
 from alpaca_end_of_day import DataLibrary, standalone
-from libs.alpaca_lineage_build import membership_transfer_recovery, pipeline, recovery_handoffs, storage
+from libs.alpaca_lineage_build import membership_transfer_recovery, recovery_handoffs, storage
 from libs.alpaca_lineage_build.context import OperationContext
 from libs.alpaca_lineage_build.continuation import validate_handoff
 from libs.alpaca_lineage_build.contract import LineageError
@@ -26,12 +24,7 @@ class TransferRecoveryTests(unittest.TestCase):
         fixture.PublicCommonPipelineTests.setUp(self)
         self.assertEqual(
             0,
-            pipeline.run_lineage(
-                self.store,
-                ["BUSINESS"],
-                identity_client=IdentityClient(self.assets),
-                event_supplements=[common_fact()],
-            )["failed"],
+            fixture.install_completed_common(self)["failed"],
         )
         index = storage.read_index(self.root)
         before = {s: storage.read_receipt(self.root, s, index) for s in ("SPAC", "BUSINESS")}
@@ -42,10 +35,8 @@ class TransferRecoveryTests(unittest.TestCase):
         broken["BUSINESS"]["membership_only_rebind"] = None
         for receipt in broken.values():
             receipt.pop("membership_transfer_handoff_version", None)
-            receipt["evidence"]["sourced_fact_applications"] = {"common": "fingerprint"}
         with storage.writer_lock(self.store), storage.pricing_locks(self.store, set(broken)):
             storage.publish(self.store, self.root, index, broken, {s: {} for s in broken}, {}, previous=before)
-        self.applications = [{"symbols": ["SPAC"], "id": "common", "fingerprint": "fingerprint"}]
 
     def _recover(self, context):
         from libs.alpaca_serving_catalogue import work
@@ -56,7 +47,6 @@ class TransferRecoveryTests(unittest.TestCase):
                 self.root,
                 storage.read_index(self.root),
                 work.read(self.store),
-                self.applications,
                 context.select_serving(),
             )
 

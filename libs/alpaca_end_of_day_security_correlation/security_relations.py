@@ -29,6 +29,10 @@ def endpoint(evidences, fact):
 
 
 def certify_group(evidences, *, complete=True, extended_terms=True):
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    evidences = tuple(evidences)
+    reject_assertions(evidences, where="retired security-relation certifier")
     evidences = tuple(evidences)
     submitted = {}
     for evidence in evidences:
@@ -90,6 +94,8 @@ def certify_group(evidences, *, complete=True, extended_terms=True):
 
 
 def acquirer_nonconflicts(relations, rename):
+    if relations.get("relations"):
+        raise ValueError("researched relation exemptions are inadmissible for new inference")
     """Produce exact action/rename/component/date exemptions, never action flags."""
     result = set()
     for relation in relations["relations"]:

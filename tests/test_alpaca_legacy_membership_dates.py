@@ -7,7 +7,6 @@ from unittest.mock import patch
 import test_alpaca_public_common_pipeline as common_fixture
 from test_alpaca_lineage_build import IdentityClient, informative_bars
 from test_alpaca_pricing_download import FakeClient, direct_adjustment_observations
-from test_alpaca_public_common_continuation import common_fact
 
 from alpaca_end_of_day import DataLibrary, _standalone_group, standalone
 from libs.alpaca_end_of_day_security_correlation import correlation, public_common_continuation
@@ -53,12 +52,7 @@ class LegacyMembershipDateTests(unittest.TestCase):
                 record.pop("session_dates")
                 record.pop("session_projection_version")
         storage.commit(self.store, groups, list(groups.values()))
-        result = pipeline.run_lineage(
-            self.store,
-            ["BUSINESS"],
-            identity_client=IdentityClient(self.assets),
-            event_supplements=[common_fact()],
-        )
+        result = common_fixture.install_completed_common(self)
         self.assertEqual(0, result["failed"], result)
 
     def _groups(self):

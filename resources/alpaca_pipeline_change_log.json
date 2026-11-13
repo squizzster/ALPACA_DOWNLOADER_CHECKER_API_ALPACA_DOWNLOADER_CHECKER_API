@@ -28,5 +28,10 @@
     "modifications": [
       "Carry the once-accepted canonical ruleset and explicitly supplied completed membership applicability plans through existing stage JSON, preserving aliases and consuming acceptance without policy reload or historical reconstruction."
     ]
+  },
+  {
+    "modifications": [
+      "Exclude active authored research facts, application registries, event projections and sourced recipes from stage JSON while retaining completed provider and publication handoffs without replay, including once-accepted provider cache state and aliased projections."
+    ]
   }
 ]

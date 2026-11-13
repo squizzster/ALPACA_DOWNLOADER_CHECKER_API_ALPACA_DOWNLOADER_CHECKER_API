@@ -605,12 +605,8 @@ def run_lineage(
         raise LineageError(
             "retained lineage rebuild requires explicit symbols and no provider acquisition or refresh"
         )
-    if event_supplements and symbols is None:
-        raise LineageError("event supplements require explicit selected symbols")
     if event_supplements:
-        from libs.alpaca_security_lineage.event_supplements import accept_supplements
-
-        event_supplements = accept_supplements(event_supplements)
+        raise LineageError("research event supplements are inadmissible in lineage inference")
     context = accept_context(store, context, work_policy)
     metadata_before = identity_client.request_count
     pricing_metrics = {}
@@ -700,18 +696,8 @@ def run_lineage(
                     visited.update(graph.closure({symbol}))
                     groups += 1
             progress("lineage_selection", {"symbols": len(selected), "groups": groups})
-        if evidence_client is not None and event_supplements:
-            raise LineageError(
-                "supply event supplements when constructing the evidence client or the run, not both"
-            )
         if evidence_client is None:
-            evidence_client = EvidenceClient(identity_client, event_supplements=event_supplements)
-            if not retained_rebuild:
-                from .sourced_rules import configure, install_ruleset_facts
-
-                ruleset = context.accept_ruleset()
-                install_ruleset_facts(evidence_client, ruleset)
-                configure(evidence_client, ruleset.applications, graph, index["symbols"])
+            evidence_client = EvidenceClient(identity_client)
         if work_policy is not None:
             evidence_client.work_policy = work_policy
             for label in selected:
@@ -918,14 +904,4 @@ def run_lineage(
     if retained_recovery is not None:
         result["previously_completed_groups"] = len(recovered_groups)
         result["recomputed_groups"] = sum(item["status"] == "processed" for item in results)
-    if event_supplements:
-        from libs.alpaca_security_lineage.event_supplements import supplement_key
-
-        unmatched = sorted(
-            {supplement_key(fact) for fact in event_supplements} - evidence_client.applied_event_supplements
-        )
-        result["unmatched_event_supplements"] = unmatched
-        result["failed"] += bool(unmatched)
-        if unmatched and work_policy is not None:
-            work_policy.command_failures.append({"stage": "lineage", "unmatched_event_supplements": unmatched})
     return result

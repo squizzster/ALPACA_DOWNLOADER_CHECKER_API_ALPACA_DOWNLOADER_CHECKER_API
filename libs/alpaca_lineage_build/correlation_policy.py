@@ -90,6 +90,38 @@ CANONICAL_POLICY_PATH = (
 _ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _RULE_ID = re.compile(r"[A-Z][A-Z0-9_]{0,95}\Z")
 _VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
+RULESET_SCHEMA_VERSION = 2
+_INJECTED_EVIDENCE_KEYS = frozenset(
+    {
+        "evidence",
+        "applications",
+        "supplements",
+        "event_supplements",
+        "documented_facts",
+        "assertions",
+        "assertion_overlays",
+        "research_certificates",
+        "rule_applications",
+        "rule_fact_scopes",
+    }
+)
+
+
+def reject_injected_evidence(document):
+    """Reject authored inference inputs while retaining computed typed predicates."""
+    if type(document) is dict:
+        forbidden = _INJECTED_EVIDENCE_KEYS.intersection(document)
+        if forbidden:
+            raise CorrelationPolicyError(
+                f"fact injection is not supported: {sorted(forbidden)}; use registered generic rules"
+            )
+        if document.get("control_mode", "replay") != "replay":
+            raise CorrelationPolicyError("fact-backed research control modes are not supported")
+        for value in document.values():
+            reject_injected_evidence(value)
+    elif type(document) in (list, tuple):
+        for value in document:
+            reject_injected_evidence(value)
 
 
 class _UniqueSafeLoader(yaml.SafeLoader):
@@ -815,17 +847,19 @@ def read_policy_document(path: str | Path) -> tuple[bytes, dict]:
         raise CorrelationPolicyError("policy must be a mapping")
     if "ruleset_schema_version" not in document and len(raw) > MAX_POLICY_BYTES:
         raise CorrelationPolicyError(f"policy exceeds {MAX_POLICY_BYTES} bytes")
+    reject_injected_evidence(document)
     return raw, document
 
 
 def policy_document(document: dict) -> dict:
     """Select the policy section; its executable meaning keeps its own identity."""
+    reject_injected_evidence(document)
     if "ruleset_schema_version" not in document:
         return document
     if (
-        set(document) != {"ruleset_schema_version", "policy", "evidence", "producers"}
+        set(document) != {"ruleset_schema_version", "policy", "producers"}
         or type(document["ruleset_schema_version"]) is not int
-        or document["ruleset_schema_version"] != 1
+        or document["ruleset_schema_version"] != RULESET_SCHEMA_VERSION
         or type(document["policy"]) is not dict
     ):
         raise CorrelationPolicyError("unsupported lineage ruleset envelope")
@@ -847,7 +881,8 @@ def load_policy(path: str | Path) -> CompiledPolicy:
 
 def compile_policy_document(document: dict, *, raw: bytes, path: Path) -> CompiledPolicy:
     # The producer already parsed these bytes. Do not reopen the file to compile
-    # its policy after accepting the surrounding evidence application registry.
+    # its generic policy after accepting the surrounding producer selection.
+    reject_injected_evidence(document)
     schema_version = _integer(document.get("schema_version"), "schema_version")
     if schema_version not in SUPPORTED_POLICY_SCHEMA_VERSIONS:
         raise CorrelationPolicyError(f"unsupported policy schema_version {schema_version}")

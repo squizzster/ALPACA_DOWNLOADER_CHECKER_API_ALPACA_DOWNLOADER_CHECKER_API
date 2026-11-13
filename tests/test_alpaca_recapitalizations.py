@@ -1,6 +1,7 @@
-"""Documented own-common continuation is distinct from an acquisition label."""
+"""Recapitalization assertions cannot rewrite provider observations or allocate rows."""
 
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
@@ -55,44 +56,9 @@ def recap_fact(action=None):
 
 
 class RecapitalizationTests(TestCase):
-    def test_metadata_interpretation_preserves_raw_action_and_first_acceptance(self):
-        raw = cash_action()
-        old = deepcopy(raw)
-        fact = event_supplements.accept_supplements([recap_fact()])[0]
-        owner = event_supplements.EventProjection()
-        project = owner.bind([fact])
-        interpreted, applied = project([raw])
-        self.assertEqual(old, raw)
-        self.assertEqual([fact], applied)
-        self.assertEqual("reverse_split", interpreted[0]["action_type"])
-        with patch.object(
-            event_supplements,
-            "_project_action",
-            side_effect=AssertionError("accepted action interpretation repeated"),
-        ):
-            self.assertEqual(interpreted, project([raw])[0])
-        with self.assertRaisesRegex(ValueError, "changed"):
-            project([{**raw, "rate": 2}])
-
-    def test_cash_acquisition_different_symbol_or_class_cannot_supply_this_fact(self):
-        for field, value in (
-            ("same_issuer", False),
-            ("same_public_common", False),
-            ("cash_purpose", "acquisition"),
-            ("share_class", "right"),
-        ):
-            item = recap_fact()
-            item["facts"][field] = value
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                event_supplements.accept_supplements([item])
-        item = recap_fact()
-        item["facts"]["symbol"] = "OTHER"
-        with self.assertRaises(ValueError):
-            event_supplements.accept_supplements([item])
-
     def case(self):
-        fact = event_supplements.accept_supplements([recap_fact()])[0]
-        event = event_supplements.project_actions([cash_action()], [fact])[0][0]
+        fact = recap_fact()
+        event = cash_action()
         rows = (("2016-01-04T05:00:00Z", "1"), ("2017-01-25T05:00:00Z", "1"))
         inputs = {
             "SAME": SimpleNamespace(
@@ -168,86 +134,85 @@ class RecapitalizationTests(TestCase):
         }
         return inputs, reports, evidence
 
-    def test_missing_predecessor_uuid_preserves_documented_owner_without_fabrication(self):
-        inputs, reports, evidence = self.case()
-        old = deepcopy(reports)
-        chosen = recapitalizations.project(inputs, reports, evidence)
-        self.assertEqual(old, reports)
-        self.assertEqual(0, chosen["SAME"]["uncorrelated"]["row_count"])
-        recovered = [s for s in chosen["SAME"]["correlated"]["segments"] if s["row_start"] == 1]
-        self.assertEqual(8, len(recovered))
-        self.assertTrue(
-            all(
-                s["canonical_security"]["alpaca_asset_id"] is None
-                and s["canonical_security"]["cusip"] == "111111111"
-                and s["security_identity"]["security_id"] == "public"
-                for s in recovered
-            )
-        )
-        self.assertTrue(all("provider_predecessor_uuid_unavailable" in s["warnings"] for s in recovered))
+    def test_authored_recapitalization_rejects_before_action_interpretation(self):
+        raw = cash_action()
+        original = deepcopy(raw)
+        with patch.object(event_supplements, "_project_action", side_effect=AssertionError("action rewritten")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                event_supplements.project_actions([raw], [recap_fact()])
+        self.assertEqual(original, raw)
 
-    def test_a_competing_mapping_or_actual_rival_owner_stays_unallocated(self):
-        for change in ("current_mapping", "old_cusip", "rival"):
-            inputs, reports, evidence = self.case()
-            if change == "current_mapping":
-                evidence["SAME"]["asset_lookups"][0]["asset"]["id"] = "unrelated"
-            elif change == "old_cusip":
-                evidence["SAME"]["asset_lookups"][1]["asset"] = {"id": "unrelated"}
-            else:
-                for s in reports["SAME"]["uncorrelated"]["segments"]:
-                    s["candidate_securities"] = [{"asset_id": "unrelated"}]
-            chosen = recapitalizations.project(inputs, reports, evidence)
-            self.assertEqual(8, chosen["SAME"]["uncorrelated"]["row_count"])
+    def test_all_share_treatments_reject_without_schema_authorization(self):
+        for field, value in (
+            ("same_issuer", True),
+            ("same_issuer", False),
+            ("share_class", "common_stock"),
+            ("share_class", "right"),
+        ):
+            fact = recap_fact()
+            fact["facts"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "inadmissible"):
+                event_supplements.accept_supplements([fact])
 
-    def test_unknown_lookup_is_not_an_accepted_negative(self):
+    def test_research_cannot_fill_a_missing_provider_predecessor(self):
         inputs, reports, evidence = self.case()
-        evidence["SAME"]["asset_lookups"][1].pop("outcome")
+        original = deepcopy(reports)
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            recapitalizations.project(inputs, reports, evidence)
+        self.assertEqual(original, reports)
+
+    def test_conflicting_mapping_cannot_bypass_projection_rejection(self):
+        _, reports, evidence = self.case()
+        evidence["SAME"]["asset_lookups"][0]["asset"]["id"] = "rival"
+        with patch.object(Path, "open", side_effect=AssertionError("prices opened")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                recapitalizations.project(None, reports, evidence)
+
+    def test_provider_only_projection_does_not_invent_continuity(self):
+        inputs, reports, evidence = self.case()
+        evidence["SAME"].pop("event_supplements")
+        result = recapitalizations.project(inputs, reports, evidence)
+        self.assertEqual(reports, result)
+        self.assertEqual(8, result["SAME"]["uncorrelated"]["row_count"])
+
+    def test_cash_dividend_remains_cash_and_creates_no_uuid_exchange(self):
+        raw = cash_action()
+        projected, applied = event_supplements.project_actions([raw], [])
+        self.assertEqual([raw], projected)
+        self.assertEqual([], applied)
+        self.assertEqual("cash_dividend", projected[0]["action_type"])
         self.assertEqual(
-            8, recapitalizations.project(inputs, reports, evidence)["SAME"]["uncorrelated"]["row_count"]
+            ([], []), build_uuid_lineage_edges({"corporate_actions": projected, "asset_lookups": []})
         )
 
-    def test_alternatives_within_one_public_identity_do_not_invent_public_ambiguity(self):
-        inputs, reports, evidence = self.case()
-        for segment in reports["SAME"]["uncorrelated"]["segments"]:
-            segment["candidate_securities"] = [{"asset_id": "known"}]
-        self.assertEqual(
-            0, recapitalizations.project(inputs, reports, evidence)["SAME"]["uncorrelated"]["row_count"]
-        )
-
-    def test_two_observations_of_one_consolidation_do_not_create_two_equity_generations(self):
+    def test_duplicate_actual_provider_split_observations_keep_one_public_component(self):
         raw = {
-            "id": "recorded",
-            "action_type": "stock_and_cash_merger",
-            "acquiree_symbol": "SAME",
-            "acquirer_symbol": "SAME",
-            "acquiree_cusip": "111111111",
-            "acquirer_cusip": "222222222",
-            "acquiree_rate": 27,
-            "acquirer_rate": 26,
-            "cash_rate": 1.04,
-            "effective_date": "2017-01-25",
+            "id": "actual-split",
+            "action_type": "reverse_split",
+            "symbol": "SAME",
+            "old_cusip": "111111111",
+            "new_cusip": "222222222",
+            "old_rate": 27,
+            "new_rate": 26,
+            "ex_date": "2017-01-25",
+            "process_date": "2017-01-25",
         }
-        item = recap_fact(raw)
-        fact = event_supplements.accept_supplements([item])[0]
-        projected = event_supplements.project_actions([raw], [fact])[0][0]
-        assets = [
+        lookups = [
             {
                 "lookup_kind": "cusip",
                 "found": True,
                 "outcome": "found",
                 "http_status": 200,
-                "lookup": c,
-                "asset": {"id": i, "symbol": "SAME", "class": "us_equity", "exchange": "NYSE"},
+                "lookup": cusip,
+                "asset": {"id": identifier, "symbol": "SAME", "class": "us_equity", "exchange": "NYSE"},
             }
-            for c, i in (("111111111", "old"), ("222222222", "new"))
+            for cusip, identifier in (("111111111", "old"), ("222222222", "new"))
         ]
-        lineage = {
-            "corporate_actions": [projected, {**projected, "id": "provider-split"}],
-            "asset_lookups": assets,
-        }
-        edges, issues = build_uuid_lineage_edges(lineage)
+        edges, issues = build_uuid_lineage_edges(
+            {"corporate_actions": [raw, {**raw, "id": "other-provider-observation"}], "asset_lookups": lookups}
+        )
         self.assertFalse(issues)
         identity = security_identity_for_alpaca_assets(
-            ["new"], edges, tickers=["SAME"], basis="explicit_uuid_lineage"
+            ["new"], edges, tickers=["SAME"], basis="provider_uuid_lineage"
         ).as_report_object()
         self.assertEqual(["new", "old"], identity["member_alpaca_asset_ids"])

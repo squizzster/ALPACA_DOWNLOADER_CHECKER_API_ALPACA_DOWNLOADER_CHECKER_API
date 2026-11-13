@@ -4,10 +4,10 @@ import urllib.error
 from unittest import mock
 
 from libs.alpaca_security_lineage import (
-    EXCHANGE_TEST_SYMBOL,
     HISTORICAL_MARKET_DATA_ONLY,
     INACTIVE_EMPTY_ASSET_OUT_OF_SCOPE,
     JUST_SKIP,
+    KNOWN_EXCHANGE_TEST_SYMBOLS,
     OTC_ASSET_OUT_OF_SCOPE,
     UNSUPPORTED_EMPTY_SYMBOL,
     AlpacaIdentityClient,
@@ -516,28 +516,75 @@ class IdentityReportTests(unittest.TestCase):
         self.assertEqual("skip", disposition["recurring_pipeline_action"])
         self.assertIsNone(disposition["market_data_series_identity"])
 
-    def test_known_exchange_test_symbol_is_excluded_with_source_evidence(self) -> None:
-        local_report = {
-            "present": True,
-            "downloads": [
-                {
-                    "rows": 10,
-                    "request_from": "2016-01-01T00:00:00Z",
-                    "asof": "2026-10-06",
-                    "sidecar_readable": True,
-                    "gzip_present": True,
-                    "stat_matches_sidecar": True,
-                    "pipeline_receipt_matches": True,
+    def test_reserved_looking_and_future_labels_follow_identical_missing_asset_evidence(self) -> None:
+        labels = ("ZXZZT", "ATEST", "ATEST.A", "ZTEST", "ZXYZ.A", "ZNEW", "FUTURE")
+        for rows, expected, policy, action in (
+            (10, HISTORICAL_MARKET_DATA_ONLY, "retain", "run"),
+            (0, UNSUPPORTED_EMPTY_SYMBOL, "quarantine", "skip"),
+        ):
+            for symbol in labels:
+                with (
+                    self.subTest(symbol=symbol, rows=rows),
+                    mock.patch("pathlib.Path.open", side_effect=AssertionError("classification opened storage")),
+                ):
+                    disposition = build_identity_report(
+                        symbol,
+                        {"present": True, "downloads": complete_sip_downloads(rows)},
+                        MissingIdentityClient(),
+                    )["symbol_disposition"]
+                self.assertEqual(expected, disposition["classification"])
+                self.assertEqual(policy, disposition["data_policy"])
+                self.assertEqual(action, disposition["recurring_pipeline_action"])
+                self.assertIsNone(disposition["test_symbol_evidence"])
+                if rows:
+                    self.assertFalse(disposition["market_data_series_identity"]["is_security_identity"])
+
+    def test_reserved_looking_and_future_labels_keep_api_supported_active_identity(self) -> None:
+        class ActiveIdentityClient(MissingIdentityClient):
+            def get_asset_lookup(self, identifier):
+                self.request_count += 1
+                return {
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": {
+                        **META_ASSET,
+                        "id": "same-api-owner",
+                        "symbol": identifier,
+                        "name": "NASDAQ TEST STOCK",
+                    },
                 }
-            ],
-        }
 
-        disposition = build_identity_report("ZXZZT", local_report, MissingIdentityClient())["symbol_disposition"]
+        for symbol in ("ZXZZT", "ATEST.A", "ZNEW", "FUTURE"):
+            with self.subTest(symbol=symbol):
+                disposition = build_identity_report(
+                    symbol, {"present": True, "downloads": complete_sip_downloads(10)}, ActiveIdentityClient()
+                )["symbol_disposition"]
+            self.assertEqual("alpaca_asset_identity_available", disposition["classification"])
+            self.assertEqual(["same-api-owner"], disposition["resolved_alpaca_asset_ids"])
+            self.assertEqual("run", disposition["recurring_pipeline_action"])
+            self.assertIsNone(disposition["test_symbol_evidence"])
 
-        self.assertEqual(EXCHANGE_TEST_SYMBOL, disposition["classification"])
-        self.assertEqual("exclude", disposition["data_policy"])
-        self.assertTrue(disposition["test_symbol_evidence"]["test_issue"])
-        self.assertFalse(disposition["market_data_series_identity"]["is_security_identity"])
+    def test_empty_inactive_evidence_is_generic_across_reserved_and_future_labels(self) -> None:
+        for symbol in ("ZXZZT", "ZTEST", "FUTURE"):
+            with self.subTest(symbol=symbol):
+                disposition = build_identity_report(
+                    symbol, {"present": True, "downloads": complete_sip_downloads(0)}, InactiveIdentityClient()
+                )["symbol_disposition"]
+            self.assertEqual(INACTIVE_EMPTY_ASSET_OUT_OF_SCOPE, disposition["classification"])
+            self.assertTrue(recurring_pipeline_should_skip(disposition))
+            self.assertIsNone(disposition["test_symbol_evidence"])
+
+    def test_legacy_registry_export_is_inert_even_if_a_caller_populates_it(self) -> None:
+        self.assertEqual({}, KNOWN_EXCHANGE_TEST_SYMBOLS)
+        with mock.patch.dict(
+            KNOWN_EXCHANGE_TEST_SYMBOLS, {"ZXZZT": {"test_issue": True, "source": "external assertion"}}
+        ):
+            disposition = build_identity_report(
+                "ZXZZT", {"present": True, "downloads": complete_sip_downloads(10)}, MissingIdentityClient()
+            )["symbol_disposition"]
+        self.assertEqual(HISTORICAL_MARKET_DATA_ONLY, disposition["classification"])
+        self.assertEqual("run", disposition["recurring_pipeline_action"])
+        self.assertIsNone(disposition["test_symbol_evidence"])
 
     def test_empty_otc_asset_on_sip_is_out_of_scope_without_ticker_pattern_inference(self) -> None:
         local_report = {

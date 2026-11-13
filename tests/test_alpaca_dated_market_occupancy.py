@@ -1,8 +1,8 @@
-"""Dated market evidence owns labels and temporary-market source authority."""
+"""Retired dated facts reject; closed source labels retain generic bundle behavior."""
 
-import json
 from copy import deepcopy
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
@@ -10,7 +10,7 @@ from unittest.mock import patch
 from test_alpaca_end_of_day_api import valid_bars
 from test_alpaca_observation_authority import views_of
 
-from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
+from libs.alpaca_end_of_day_security_correlation import market_occupancy
 from libs.alpaca_end_of_day_security_correlation.market_occupancy import project
 from libs.alpaca_lineage_build import transform
 from libs.alpaca_lineage_build.observations import select_observations
@@ -63,7 +63,7 @@ def market_fact():
 
 
 def case():
-    fact = accept_supplements([market_fact()])[0]
+    fact = market_fact()
     inputs, reports, evidence = {}, {}, {}
     identity = {
         "security_id": "public",
@@ -146,7 +146,6 @@ def continuous_case():
     fact["facts"]["adjustment_basis"] = "continuous_same_security_and_cusip"
     fact["facts"]["predecessor"]["cusip"] = "222222222"
     fact["facts"]["episodes"][0]["cusip"] = "222222222"
-    fact = accept_supplements([fact])[0]
     for name in inputs:
         values = {}
         for view, rows in inputs[name].views.items():
@@ -174,11 +173,59 @@ def continuous_case():
     return inputs, reports, evidence
 
 
+def completed_market_reports(inputs, reports):
+    """Literal completed source/label outputs, never produced by a fact recipe."""
+    result = deepcopy(reports)
+    for name, view in inputs.items():
+        template = reports[name]["correlated"]["segments"][0]
+        segments = []
+        for adjustment, rows in view.views.items():
+            for index, row in enumerate(rows, 1):
+                day = row[0][:10]
+                temporary = "2026-10-02" <= day < "2026-10-07"
+                label = "ALT" if temporary else "MAIN"
+                first, last = (
+                    ("2026-10-02", "2026-10-07")
+                    if temporary
+                    else ("2016-01-01", "2026-10-02")
+                    if day < "2026-10-02"
+                    else ("2026-10-07", None)
+                )
+                segments.append(
+                    {
+                        **deepcopy(template),
+                        "adjustment": adjustment,
+                        "row_start": index,
+                        "row_end": index,
+                        "row_count": 1,
+                        "first_timestamp": row[0],
+                        "last_timestamp": row[0],
+                        "historical_symbol": label,
+                        "ticker_ownership_interval": {
+                            "historical_symbol": label,
+                            "start_date_inclusive": first,
+                            "end_date_exclusive": last,
+                        },
+                        "observation_authority": {
+                            "version": 1,
+                            "market": "when_issued" if temporary else "regular_way",
+                            "direct_market_source": name == label,
+                            "from": first,
+                            "to": last,
+                        },
+                    }
+                )
+        result[name]["correlated"] = {"row_count": len(segments), "segments": segments}
+        result[name]["uncorrelated"] = {"row_count": 0, "segments": []}
+    return result
+
+
 class DatedMarketTests(TestCase):
-    def test_empty_market_suffixes_keep_accepted_binding_without_old_rows(self):
+    def test_empty_provider_suffixes_keep_completed_membership_without_rows(self):
         inputs, reports, evidence = case()
         identity = reports["MAIN"]["correlated"]["segments"][0]["security_identity"]
         for name, view in inputs.items():
+            evidence[name].pop("sourced_market_occupancy")
             view.accepted_identity_memberships = dict.fromkeys(identity["member_alpaca_asset_ids"], identity)
             view.views = None
             reports[name] = {
@@ -187,50 +234,34 @@ class DatedMarketTests(TestCase):
                 "uncorrelated": {"row_count": 0, "segments": []},
             }
         with patch.object(transform, "evaluate_policy", return_value=reports):
-            result = transform.correlate(
-                None, inputs, evidence, policy=SimpleNamespace(implementation_correlation_version=83)
+            self.assertEqual(
+                reports,
+                transform.correlate(
+                    None, inputs, evidence, policy=SimpleNamespace(implementation_correlation_version=97)
+                ),
             )
-        self.assertEqual(reports, result)
 
-    def test_inactive_binding_cannot_resolve_fresh_unallocated_rows_or_ambiguous_membership(self):
+    def test_inactive_membership_cannot_authorize_a_new_fact(self):
         inputs, reports, evidence = case()
-        identity = reports["MAIN"]["correlated"]["segments"][0]["security_identity"]
-        for name in inputs:
-            reports[name] = {
-                "source_row_count": 0,
-                "correlated": {"row_count": 0, "segments": []},
-                "uncorrelated": {"row_count": 0, "segments": []},
-            }
-        accepted = {name: dict.fromkeys(identity["member_alpaca_asset_ids"], identity) for name in inputs}
-        reports["ALT"]["source_row_count"] = 1
-        reports["ALT"]["uncorrelated"] = {"row_count": 1, "segments": [{"row_start": 1, "row_end": 1}]}
-        with self.assertRaisesRegex(SecurityCorrelationError, "lacks one observed"):
-            project(inputs, reports, evidence, inactive_memberships=accepted)
-        reports["ALT"] = {
-            "source_row_count": 0,
-            "correlated": {"row_count": 0, "segments": []},
-            "uncorrelated": {"row_count": 0, "segments": []},
-        }
-        accepted["ALT"] = {
-            key: {**identity, "security_id": "rival"} for key in identity["member_alpaca_asset_ids"]
-        }
-        with self.assertRaisesRegex(SecurityCorrelationError, "lacks one observed"):
-            project(inputs, reports, evidence, inactive_memberships=accepted)
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            project(inputs, reports, evidence, inactive_memberships={"ALT": {"public": {}}})
 
-    def test_unknown_document_publication_date_does_not_reject_dated_market_evidence(self):
+    def test_unknown_document_date_does_not_make_research_admissible(self):
         fact = market_fact()
         fact["sources"][0]["document_date"] = None
-        self.assertIsNone(accept_supplements([fact])[0]["sources"][0]["document_date"])
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            accept_supplements([fact])
 
-    def test_temporary_market_recovers_first_day_and_supplies_one_bundle_despite_later_route(self):
-        inputs, reports, evidence = case()
-        old = deepcopy(reports)
-        projected = project(inputs, reports, evidence)
-        self.assertEqual(old, reports)
-        self.assertEqual(0, projected["ALT"]["uncorrelated"]["row_count"])
-        self.assertEqual(24, projected["ALT"]["correlated"]["row_count"])
-        chosen, corrections = select_observations(inputs, projected)
+    def test_completed_temporary_labels_supply_a_coherent_numerical_bundle(self):
+        inputs, reports, _ = case()
+        completed = completed_market_reports(inputs, reports)
+        original = deepcopy(completed)
+        with patch.object(
+            market_occupancy, "project", side_effect=AssertionError("completed labels recalculated")
+        ):
+            chosen, corrections = select_observations(inputs, completed)
         self.assertFalse(corrections)
+        self.assertEqual(original, completed)
         self.assertEqual(
             {"selected"}, {s["observation_selection"] for s in chosen["ALT"]["correlated"]["segments"]}
         )
@@ -239,108 +270,59 @@ class DatedMarketTests(TestCase):
                 "superseded" if segment["historical_symbol"] == "ALT" else "selected",
                 segment["observation_selection"],
             )
-        self.assertEqual(
-            "2026-10-02",
-            chosen["ALT"]["correlated"]["segments"][0]["ticker_ownership_interval"]["start_date_inclusive"],
-        )
 
-    def test_partial_temporary_source_cannot_displace_complete_bundle(self):
-        inputs, reports, evidence = case()
+    def test_partial_temporary_bundle_cannot_displace_a_complete_source(self):
+        inputs, reports, _ = case()
         inputs["ALT"].views["all"] = inputs["ALT"].views["all"][1:]
-        reports["ALT"]["uncorrelated"]["segments"] = [
-            s for s in reports["ALT"]["uncorrelated"]["segments"] if s["adjustment"] != "all"
-        ]
-        for segment in reports["ALT"]["correlated"]["segments"]:
-            if segment["adjustment"] == "all":
-                segment.update(row_start=1, row_end=2)
-        chosen, corrections = select_observations(inputs, project(inputs, reports, evidence))
+        chosen, corrections = select_observations(inputs, completed_market_reports(inputs, reports))
         self.assertFalse(corrections)
-        for segment in chosen["MAIN"]["correlated"]["segments"]:
-            if segment["row_start"] == 2:
-                self.assertEqual("selected", segment["observation_selection"])
+        first = [
+            s for s in chosen["MAIN"]["correlated"]["segments"] if s["first_timestamp"][:10] == "2026-10-02"
+        ]
+        self.assertEqual(set(ADJUSTMENTS), {s["adjustment"] for s in first})
+        self.assertTrue(all(s["observation_selection"] == "selected" for s in first))
 
-    def test_actual_changed_mapping_cannot_acquire_direct_market_authority(self):
-        inputs, reports, evidence = case()
-        evidence["ALT"]["asset_lookups"][-1]["asset"]["id"] = "other-id"
-        projected = project(inputs, reports, evidence)
-        self.assertEqual(8, projected["ALT"]["uncorrelated"]["row_count"])
-        self.assertTrue(
-            all(
-                not s["observation_authority"]["direct_market_source"]
-                for s in projected["ALT"]["correlated"]["segments"]
-            )
-        )
+    def test_explicit_raw_market_plan_cannot_bypass_the_input_guard(self):
+        plan = market_occupancy.MarketPlan((("old-fact", "public", ()),), {}, {})
+        with patch.object(Path, "open", side_effect=AssertionError("price access")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                project(None, None, {}, plan=plan)
 
-    def test_malformed_or_overlapping_market_facts_fail_at_ingress(self):
-        for change in ("class", "overlap", "unbounded_temporary"):
-            with self.subTest(change=change):
-                fact = market_fact()
-                if change == "class":
-                    fact["facts"]["successor"]["instrument_kind"] = "warrant"
-                elif change == "overlap":
-                    fact["facts"]["episodes"][1]["start_inclusive"] = "2026-10-01"
-                else:
-                    fact["facts"]["episodes"][1]["end_exclusive"] = None
-                with self.assertRaises(ValueError):
-                    accept_supplements([fact])
+    def test_all_authored_market_shapes_reject_at_ingress(self):
+        for change in ("valid", "different_class", "overlap", "unbounded"):
+            fact = market_fact()
+            if change == "different_class":
+                fact["facts"]["successor"]["instrument_kind"] = "warrant"
+            elif change == "overlap":
+                fact["facts"]["episodes"][1]["start_inclusive"] = "2026-10-01"
+            elif change == "unbounded":
+                fact["facts"]["episodes"][1]["end_exclusive"] = None
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "inadmissible"):
+                accept_supplements([fact])
 
 
 class AdjustmentContinuityTests(TestCase):
-    def test_same_issue_keeps_complete_adjustments_and_temporary_market_labels(self):
+    def test_adjusted_prices_do_not_turn_an_authored_basis_into_evidence(self):
         inputs, reports, evidence = continuous_case()
-        projected = project(inputs, reports, evidence, allow_adjustment_continuity=True)
-        chosen, corrections = select_observations(inputs, projected)
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            project(inputs, reports, evidence, allow_adjustment_continuity=True)
+
+    def test_same_cusip_authored_assertion_always_rejects(self):
+        for same in (True, False):
+            fact = market_fact()
+            fact["facts"].update(schema_version=2, adjustment_basis="continuous_same_security_and_cusip")
+            if same:
+                fact["facts"]["predecessor"]["cusip"] = "222222222"
+            with self.subTest(same=same), self.assertRaisesRegex(ValueError, "inadmissible"):
+                accept_supplements([fact])
+
+    def test_changed_bundle_keeps_labels_and_one_source_for_all_views(self):
+        inputs, reports, _ = continuous_case()
+        completed = completed_market_reports(inputs, reports)
+        with patch.object(market_occupancy, "project", side_effect=AssertionError("labels recomputed")):
+            chosen, corrections = select_observations(inputs, completed)
         self.assertFalse(corrections)
-        for name in inputs:
-            for segment in chosen[name]["correlated"]["segments"]:
-                self.assertEqual(
-                    "selected" if name == "MAIN" else "superseded", segment["observation_selection"]
-                )
-                if segment.get("observation_authority", {}).get("market") == "when_issued":
-                    self.assertEqual("ALT", segment["historical_symbol"])
-
-    def test_same_cusip_assertion_rejects_different_identifiers_at_ingress(self):
-        fact = market_fact()
-        fact["facts"].update(schema_version=2, adjustment_basis="continuous_same_security_and_cusip")
-        with self.assertRaisesRegex(ValueError, "same security and CUSIP"):
-            accept_supplements([fact])
-
-    def test_later_route_without_positive_adjustment_evidence_cannot_win(self):
-        for missing in (
-            "explicit_basis",
-            "same_dividend_cusip",
-            "applicable_ex_date",
-            "equal_raw",
-            "temporary_omission",
-        ):
-            with self.subTest(missing=missing):
-                inputs, reports, evidence = continuous_case()
-                if missing == "explicit_basis":
-                    for value in evidence.values():
-                        fact = json.loads(json.dumps(value["sourced_market_occupancy"]["facts"][0]))
-                        fact["facts"]["schema_version"] = 1
-                        fact["facts"].pop("adjustment_basis", None)
-                        value["sourced_market_occupancy"]["facts"] = [fact]
-                elif missing == "same_dividend_cusip":
-                    evidence["MAIN"]["corporate_actions"][0]["cusip"] = "333333333"
-                elif missing == "applicable_ex_date":
-                    evidence["MAIN"]["corporate_actions"][0]["ex_date"] = "2026-10-15"
-                elif missing == "equal_raw":
-                    row = list(inputs["ALT"].views["raw"][0])
-                    row[4] = "99"
-                    inputs["ALT"].views["raw"] = (tuple(row), *inputs["ALT"].views["raw"][1:])
-                else:
-                    rows = inputs["ALT"].views["dividend"]
-                    row = list(rows[0])
-                    row[4] = "99"
-                    inputs["ALT"].views["dividend"] = (tuple(row), *rows[1:])
-                chosen, corrections = select_observations(
-                    inputs, project(inputs, reports, evidence, allow_adjustment_continuity=True)
-                )
-                self.assertFalse(corrections)
-                first = next(
-                    s
-                    for s in chosen["ALT"]["correlated"]["segments"]
-                    if s["adjustment"] == "raw" and s["row_start"] == 1
-                )
-                self.assertEqual("selected", first["observation_selection"])
+        first = [s for s in chosen["ALT"]["correlated"]["segments"] if s["first_timestamp"][:10] == "2026-10-02"]
+        self.assertEqual(set(ADJUSTMENTS), {s["adjustment"] for s in first})
+        self.assertTrue(all(s["observation_selection"] == "selected" for s in first))
+        self.assertTrue(all(s["historical_symbol"] == "ALT" for s in first))

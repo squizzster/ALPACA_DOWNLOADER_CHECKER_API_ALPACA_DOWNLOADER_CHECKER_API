@@ -12,6 +12,14 @@ Semantic ownership decisions follow the [allocation criterion](lineage.md#owners
 Missing historical evidence is weighed with plausible owners and prior accepted ownership; missing technical
 publication metadata remains an owning recovery obligation rather than evidence against an owner.
 
+Fresh inference accepts provider observations and applicable completed producer decisions. The
+[provider-evidence boundary](../libs/alpaca_security_lineage/inference_evidence.py) rejects supplied authored
+assertions and carries its completed `ProviderEvidence` value through consumers without repeating validation
+or projection. A selected legacy receipt can supply its retained raw provider observations; its research
+provenance remains frozen baseline data. [Lineage](lineage.md#sourced-event-facts) owns the evidence and
+pending-obligation limits. Removing fact inputs changes neither accepted numerical decisions nor the frozen
+journal's installation authority.
+
 [OperationContext](../libs/alpaca_lineage_build/context.py) retains coherent accepted compatibility, index and
 summary views per invocation. Revisions/publisher-returned changes refresh them; no persistent context cache or
 alternative authority. Changed inputs invalidate dependent work only.
@@ -66,25 +74,23 @@ not reconstruct them. A prepared numerical source revision may additionally carr
 exact sessions and chosen sources. Ingress accepts that transport once and retains its immutable aliases.
 Publication carries those selected values into serving rather than opening their pricing payloads again.
 
-Completed accepted-publication research can enter a separate explicit admission through
-[research_admission.py](../libs/alpaca_lineage_build/research_admission.py). Preparation consumes separately
-selected baseline receipts, the completed candidate, and the accepted canonical ruleset. It establishes
-equivalent executable rules, exact scoped facts and date intent, complete assignments and no outstanding
-mapping correction once. Approval consumes that exact review scope; it does not rerun preparation. The
-original research remains unpublishable and unchanged. Newly admitted receipts record its origin and the
-separate approval, while the normal prepared publisher and journal install the selected result. Only changed
-assignment selectors are written; unchanged legacy bodies and omitted optional equality remain as supplied.
-The operation token binds this specific approved candidate. A changed selected application, producer,
-receipt or pricing generation stops publication; unrelated factual scopes do not invalidate the admission.
+The separate [research-admission owner](../libs/alpaca_lineage_build/research_admission.py) can prepare an
+already completed generic result under its exact review, store, complete-group, policy and receipt/pricing
+bindings. It rejects active candidate assertions and new assertion-bearing outputs. Separately selected
+baseline bodies are required; a candidate cannot manufacture its baseline or omitted numerical decisions.
+Approval consumes the prepared review scope once, and the normal prepared publisher/journal installs the
+selected outputs without repeating ownership, numerical selection or assignment construction. Original
+research reports remain unchanged and are not publication authority by themselves. Missing required outputs
+or changed selected bindings stop admission; generic runtime changes do not turn factual candidates into
+admissible evidence.
 
-The [application-inventory owner](../libs/alpaca_lineage_build/application_inventory.py) separately repairs
-missing application bookkeeping from an already accepted peer marker in the exact selected input component.
-It cannot bind new facts or select owners or prices. Its journal mode permits changes only to
-`evidence.sourced_fact_applications`, preserves summary/notices/checks, and carries unchanged serving decisions.
-Its explicit metadata-completion handoff admits only sourced-fact or lineage-evidence jobs without pricing,
-history-check or correction requirements. That job can complete without advancing a retired source's pricing
-coverage. Exact obligations, required lookups and group/generation bindings still apply. Actual pricing work
-remains outstanding and cannot inherit this metadata-only completion.
+Legacy application-inventory markers remain publication provenance. Fresh application preparation,
+publication and metadata acknowledgement are retired and reject before I/O. Frozen journals still install
+completed metadata outputs directly under their recorded provenance, without calling those retired functions.
+An unresolved legacy fact obligation without an applicable completed output requires owning generic recovery;
+a peer marker cannot manufacture new completion. Matching completed publication stamps remain consumable
+within their accepted obligation and coverage scope. Pricing, history-check and correction requirements
+retain their own independent completion boundaries.
 
 The [correction-binding owner](../libs/alpaca_lineage_build/correction_binding.py) can carry completed
 ownership and numerical source choices through a narrowly supported latest-session count correction.
@@ -145,7 +151,9 @@ completed handoffs. The latter is null or a version-1 source scope naming its sy
 and a certificate's `action_id`. It references the membership handoff rather than duplicating that certificate.
 Receipt ingress validates these envelopes once. Metadata applicability governs membership independently of
 pricing ancestry; source applicability governs row ownership. Missing or incompatible required handoffs fail
-closed into owning recovery. [Sourced event facts](lineage.md#sourced-event-facts) own their evidence gates.
+closed into owning recovery. These legacy fields preserve completed outputs within their accepted scope;
+they cannot supply new sourced assertions or extend historical certificates into new rows.
+[Lineage](lineage.md#sourced-event-facts) owns that distinction.
 
 Lineage format 37 also requires `public_common_continuation_membership`,
 `public_common_continuation_ownership`, `security_relations` and `membership_only_rebind`.
@@ -164,44 +172,42 @@ generation. Later readers consume that schema acceptance without reopening the s
 
 Closed-source format-37 publications explicitly carry both earlier source-ownership fields, including null
 where their legacy publication asserted no certificate, and mark the completed lift with
-`closed_source_handoff_version: 1`. Ordinary-update recovery can repair the known earlier lift omission only
-in pending serving groups selected by exact incorporated rule applications. The owner rejects missing other
+`closed_source_handoff_version: 1`. Ordinary-update recovery selects only pending serving groups whose
+accepted compact index identifies the exact lineage-37/correlation-82 legacy shape. It uses recorded group
+membership and optional `source_ownership_envelopes_complete` / `closed_source_handoff_version` flags;
+known complete groups stay closed to receipt reads. Missing older flags remain unknown and select only that
+bounded legacy pending group, never an application registry or universe receipt scan. The owner rejects missing other
 required envelopes, malformed present certificates and indications of a missing newly calculated source proof.
 It journals only the missing null fields and lift marker, preserving assignments, membership, pricing references
 and donor-generation references. The metadata-only journal leaves pricing summaries, notices and checks intact.
 Consumers remain strict; recovery does not reconstruct history or repeat continuity certification.
 
-New sourced metadata closes its dependency group before payload loading. `ClosedAcceptedSource` carries true
-accepted counts, generations and request context and has no pricing-reader interface. Membership-only work
-assembles selected assignment projections; changed row work and newly exposed numerical contests name their
-source/date scopes separately. Numerical counterparts retain their accepted owners. A no-new-row update still
-publishes changed membership and relation projections through the existing journal.
+The compact `has_membership_rebind` flag separately identifies a completed source rebind, while
+`membership_transfers_complete` records its completed projection. Pending-group recovery uses these producer
+flags to select exact metadata work; absence of required selection capability fails into explicit owning
+recovery rather than opening every pending receipt to discover it. These optional compact fields do not
+change dated ownership, numerical choices or the existing receipt format.
 
-Version-3/4/5 documented public-security facts can select first ownership for unresolved positions while preserving
-explicit numerical choices. The versioned primary chronology can also refine dated metadata within its continuing
-public component, as described in the lineage guide. The metadata-only binding produces a version-1
-`documented_identity_membership` with owners and source routes. Receipt ingress accepts its envelope once;
-ordinary continuation borrows it only under applicable evidence and mappings. Missing or unknown declared
-handoffs require owning recovery, never a new implicit historical audit. Newly owned positions still require
-their numerical source decision. Version-1 `security_description` inside a dated ownership interval supplies
-primary name, exchange, class, instrument and registrant metadata. Serving consumes its existing descriptive
-fields without replaying primary documents or exact provider lookups. The [lineage guide](lineage.md#sourced-event-facts)
-owns the semantic conditions and limits.
-The source-work producer can compose that chronology with a separately completed public-common exchange.
-Accepted continuity certificates and existing containing component IDs are consumed without re-proving them.
-Fully superseded source histories can publish a metadata-only projection when no interior timestamp lookup
-is required; unknown numerical states still select owning selection.
+Selected generic source work closes its dependency group before payload loading. `ClosedAcceptedSource`
+carries true accepted counts, generations and request context and has no pricing-reader interface.
+Applicable completed membership work assembles selected assignment projections; genuinely changed row work
+and new numerical contests name their source/date scopes separately. Numerical counterparts retain accepted
+owners. A no-new-row update can publish a completed generic membership plan through the existing journal.
 
-Regular-way dated-market facts select a separate metadata projection when accepted pricing, owners and
-non-market evidence still apply. Exact observed CUSIPs bind existing public IDs before any assignment body
-is opened; only sources contributing those IDs need assignment assembly. Historical labels and their dated
-provenance change while ownership, row/date positions and explicit numerical choices remain accepted.
-Whole segments need no pricing reads. A genuinely interior cut selects its exact stored timestamp assembly.
-`dated_market_projection_version: 1` declares a complete `dated_market_projection`, bound to the prior
-receipt, pricing generation and boundary map. Its `selection_unchanged` result and dated identity episodes
-allow serving to retain numerical outcomes and project labels from accepted session dates. An unmarked
-legacy checkpoint may assemble only its selected raw dates after those bindings apply; a declared projection
-missing dates requires owning recovery. This path does not authorize numerical reselection or UUID unions.
+Existing format-37 publications may retain `documented_identity_membership`, source routes and version-1
+`security_description` in dated ownership intervals. These are completed legacy outputs, not new evidence
+assertions. Receipt ingress accepts required envelopes once; serving consumes accepted owners, names,
+exchanges, classes, instrument and registrant descriptions without replaying primary documents or lookups.
+Their historical scope remains fixed. Missing required capabilities select owning recovery rather than a new
+implicit historical audit or reconstruction of the researched conclusion.
+
+An existing `dated_market_projection_version: 1` declares a completed `dated_market_projection`, bound to its
+prior receipt, pricing generation and boundary map. Its accepted unchanged-selection result, identity episodes
+and dates allow serving to retain numerical outcomes and project labels from accepted session dates. Whole
+accepted segments need no pricing reads; an actually selected interior cut may require exact stored timestamps.
+An unmarked legacy checkpoint may assemble only its selected raw dates after those bindings apply; a declared
+projection missing dates requires owning recovery. This consumes a completed projection and authorizes neither
+new market assertions, numerical reselection nor UUID unions.
 
 `numerical_source_revision_version: 1` declares the separate bounded source-choice result. It binds prior
 receipt/pricing generations, exact changed sessions, selected sources, contributing-source membership and

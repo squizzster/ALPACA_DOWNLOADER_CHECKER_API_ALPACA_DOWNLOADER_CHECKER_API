@@ -201,5 +201,10 @@
     "modifications": [
       "Exit successfully with a warning diagnostic when daily pipeline execution finishes with unresolved work; preserve explicit incomplete data results, fatal execution errors and complete-only registry bookkeeping."
     ]
+  },
+  {
+    "modifications": [
+      "Remove researched event-supplement CLI input and reject nonempty legacy dispatch arguments before file, provider or store work; pass only provider-driven lineage inputs to the owning pipeline."
+    ]
   }
 ]

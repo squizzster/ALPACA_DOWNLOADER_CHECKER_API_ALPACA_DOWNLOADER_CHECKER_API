@@ -468,10 +468,10 @@ def maintain(
     return result
 
 
-def status(store, *, controls=None):
+def status(store, *, controls=None, pending=None):
     store = Path(store).absolute()
     controls = storage.controls(store, incomplete=True) if controls is None else controls
-    pending = work.read(store)
+    pending = work.read(store) if pending is None else pending
     groups = controls["groups"]
     return {
         "generation": controls["state"]["generation"],

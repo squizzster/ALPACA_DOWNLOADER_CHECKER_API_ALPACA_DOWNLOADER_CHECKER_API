@@ -9,13 +9,16 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from types import MappingProxyType
 
 from libs.alpaca_lineage_build.contract import LineageError
-from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
+from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan, require_generic_plan
+from libs.alpaca_security_lineage.inference_evidence import reject_assertions
 
 # Mutable adapters attach these completed decisions after construction. Their
 # presence is meaningful and is retained independently of dataclass defaults.
 ADAPTER_EXTRAS = (
     "_accepted_binding_applies",
     "accepted_report",
+    "accepted_provider_evidence",
+    "completed_source_metadata",
     "accepted_identity_memberships",
     "accepted_public_common_membership",
     "accepted_security_relations",
@@ -30,6 +33,42 @@ ADAPTER_EXTRAS = (
     "previous",
     "observation_instant_keys",
 )
+
+
+_RETIRED_RECIPES = frozenset(
+    {
+        "documented_plans",
+        "market_plans",
+        "recapitalization_plans",
+        "recapitalization_graphs",
+        "documented_memberships",
+        "documented_reports",
+        "documented_continuities",
+    }
+)
+
+
+def require_generic_sourced(value):
+    """Inspect only inputs and recipes that can enter fresh source inference."""
+    if not isinstance(value, dict) or set(value) - {"metadata", "source_work", "pricing_prefix"}:
+        raise LineageError("unsupported sourced-operation cache capability")
+    source_work = value.get("source_work", {})
+    if not isinstance(source_work, dict):
+        raise LineageError("invalid source-work cache")
+    for name in _RETIRED_RECIPES:
+        cache = source_work.get(name, {})
+        if not isinstance(cache, dict) or any(body is not None for body in cache.values()):
+            raise LineageError("pipeline source-work research recipe is not supported: " + name)
+    # Metadata caches are fresh inference inputs. Completed receipt/assignment
+    # caches and closed output projections are deliberately outside this check.
+    try:
+        reject_assertions(value.get("metadata", {}), where="pipeline source metadata")
+        reject_assertions(source_work.get("metadata", {}), where="pipeline source metadata")
+    except ValueError as error:
+        raise LineageError(str(error)) from error
+    for body in source_work.get("plans", {}).values():
+        if isinstance(body, SourceWorkPlan):
+            require_generic_plan(body)
 
 
 @dataclass(frozen=True, eq=False)
@@ -72,11 +111,11 @@ def _references(roots):
 
 def export_sourced(value, *, roots):
     """Replace every named process-ID slot with its actual held producer value."""
-    if not isinstance(value, dict) or set(value) - {"metadata", "source_work", "pricing_prefix"}:
-        raise LineageError("unsupported sourced-operation cache capability")
-    source_work = value.get("source_work", {})
-    if not isinstance(source_work, dict):
-        raise LineageError("invalid source-work cache")
+    require_generic_sourced(value)
+    source_work = {
+        name: body for name, body in value.get("source_work", {}).items() if name not in _RETIRED_RECIPES
+    }
+    value = {**value, "source_work": source_work}
     if not any(source_work.values()):
         # Ordinary preparation has no identity-bound producer work. Its compact
         # universe selectors must not incur an identity-registry traversal.
@@ -96,17 +135,6 @@ def export_sourced(value, *, roots):
 
     def bindings(key):
         return tuple((name, identity(token)) for name, token in key)
-
-    def selected_group(key):
-        return tuple(
-            (name, generation, prior(receipt), identity(evidence)) for name, generation, receipt, evidence in key
-        )
-
-    def market(key):
-        evidence, controls = key
-        return bindings(evidence), tuple(
-            (name, prior(receipt), generation) for name, receipt, generation in controls
-        )
 
     def scope(key):
         policy, controls, auxiliary = key
@@ -152,15 +180,8 @@ def export_sourced(value, *, roots):
     }
     keyed = {
         "owner_applicability": lambda k: (k[0], prior(k[1]), identity(k[2])),
-        "documented_plans": market,
-        "market_plans": market,
-        "recapitalization_plans": market,
         "metadata": bindings,
         "plans": lambda k: (bindings(k[0]), tuple((n, s, g, prior(p)) for n, s, g, p in k[1])),
-        "recapitalization_graphs": lambda k: (k[0], identity(k[1])),
-        "documented_memberships": selected_group,
-        "documented_reports": lambda k: (k[0], k[1], prior(k[2]), identity(k[3])),
-        "documented_continuities": bindings,
         "donor_grid_ids": lambda k: (k[0], k[1], identity(k[2]), k[3]),
         "completed_source_work": scope,
         "membership_plans": scope,

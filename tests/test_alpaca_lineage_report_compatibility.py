@@ -91,15 +91,19 @@ class ReportBindingCompatibilityTests(TestCase):
         empty = ResearchPolicy(**values)
         self.assertTrue(policy_applies(control.as_report_object(), empty))
         self.assertTrue(policy_applies(empty.as_report_object(), control))
+        recorded = {
+            **control.as_report_object(),
+            "research": {"membership_refinement": "accepted_same_security_containing_component_v1"},
+        }
+        self.assertFalse(policy_applies(recorded, control))
         for options in (
-            {"membership_refinement": "accepted_same_security_containing_component_v1"},
             {"control_mode": "accepted_publication"},
             {"documented_facts": [{"symbols": ["GOOG"], "supplements": []}]},
             {"unknown_option": False},
         ):
             recorded = {**control.as_report_object(), "research": options}
-            with self.subTest(options=options):
-                self.assertFalse(policy_applies(recorded, control))
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "research inputs"):
+                policy_applies(recorded, control)
         changed_policy = replace(empty, semantic_sha256="f" * 64)
         self.assertFalse(policy_applies(control.as_report_object(), changed_policy))
 

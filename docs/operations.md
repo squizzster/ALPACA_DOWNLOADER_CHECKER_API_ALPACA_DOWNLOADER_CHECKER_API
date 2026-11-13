@@ -34,12 +34,13 @@ Omission proves neither inactivity nor removable history. Known active empty/par
 outside the live-check summary. SIP acquisition does not promise a separate OTC feed.
 
 The update consumes the [canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml):
-`policy` selects implemented rules, `evidence.applications` carries explicitly scoped accepted facts and
-per-application refinement intent, and `producers` selects optional producers. There is no separate live
-JSON fact registry. Unapplied named groups enter lineage through this same update even when their prices
-are unchanged; no separate repair command is needed. Application incorporation is distinct from successful
-ownership and numerical selection. See the [lineage contract](lineage.md#sourced-event-facts) before changing
-facts or their scope; the [rule tool](lineage-debug.md) tests candidates without publication.
+`policy` selects registered generic rules and parameters, and `producers` selects optional generic producers.
+The schema-2 envelope contains no factual applications or supplement registry. Authored assertions are
+rejected before new store or provider work. Applicable published decisions and frozen journals retain their
+accepted provenance and scope. A pending legacy fact-application obligation that lacks an admissible completed
+handoff requires owning generic recovery; it is not silently acknowledged or replayed as a research assertion.
+See [lineage inference and retained provenance](lineage.md#sourced-event-facts); the
+[rule tool](lineage-debug.md) tests generic candidates without publication.
 
 Every invocation checks live; saved experiments are not inputs. Failed history checks block append;
 independent successes remain recoverable. Published unresolved identity is completed processing, distinct
@@ -227,13 +228,11 @@ Initialize once. Acquisition requires an explicit compatible/empty store and pub
 start is 2016 unless later `--from`; reject starts before 2016, after the resolved final session or excluding
 held observations before registration/requests. Finish missing boundaries through [setup](#adopt-or-reconstruct-an-existing-store).
 
-Selected lineage updates may include `--event-supplements FILE.json` for researched split endpoints, exact
-derivative-event scope, unchanged-symbol listing transfers or a documented holding-company succession. See the
-[sourced event contract](lineage.md#sourced-event-facts) before preparing that input.
-Use explicit selected symbols and `--no-pricing-acquisition` for an evidence-only repair over retained prices.
-The owner reuses completed metadata and requests only missing or invalidated mappings. Changed facts select
-complete affected-group evaluation and ordinary journaled lineage/serving publication. A retained-input rebuild
-does not accept new supplements. Unchanged repeated work reuses the retained facts without the input file.
+Selected lineage updates use provider observations and applicable completed decisions. The removed
+`--event-supplements` input and fact-backed API inputs are rejected; research documents cannot supply runtime
+owners or event interpretations. Use the [research loop](development.md#lineage-research-and-rule-improvement-loop)
+to improve generic rules from external references. `--no-pricing-acquisition` keeps its normal selected scope;
+metadata requests remain possible, and missing required observations remain explicit owning work.
 
 | Command | Scope |
 |---|---|

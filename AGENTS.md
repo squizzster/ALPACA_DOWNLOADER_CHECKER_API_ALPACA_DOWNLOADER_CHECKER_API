@@ -1,5 +1,53 @@
 # Agent instructions
 
+## Generic lineage inference
+
+These are fundamental correctness requirements for every lineage decision.
+
+For every lineage decision ask: **Given the evidence available, which outcome is most likely to be
+correct?** Compare plausible connections with leaving history unconnected and choose the best supported
+interpretation. Both outcomes can be correct; their relative support in the available API evidence
+must determine the choice. Neither publication nor nonpublication is automatically preferred.
+
+Connect and publish when the admissible source evidence reasonably supports the most likely owner.
+Absolute proof, complete specificity or a particular certificate is not required. Withholding such a
+connection solely because certainty is unavailable is a failure. Leave history ownerless when the
+available API evidence cannot reasonably establish a connection: that is a correct result, not a
+failure. Knowing that a history belongs somewhere does not justify forcing an unsupported match.
+Record the rule's reasons, material evidence limits and competing plausible interpretations. Work
+with the data the API actually provides; do not assume a perfect answer is available.
+
+Research improves generic rules and tests their results. It can corroborate a reasonable connection,
+expose a missed or incorrect connection, or establish that the API data cannot determine ownership.
+All are valid uses of research. Research is an external reference for rule design and evaluation only;
+it must never supply runtime facts or ticker-specific exceptions. A rule informed by research must
+reach its result from admissible API/store evidence and apply equally to future securities with the
+same evidence conditions, whether the result is connected or ownerless lineage.
+
+No fact-injection mechanism or candidate is admissible anywhere, including production, debug, lab or
+fresh recovery decisions. This includes researched factual applications, event supplements, assertion
+overlays and research certificates, whether supplied directly, loaded from configuration or recovered
+from retained metadata for new inference. YAML contains registered generic rules and generic parameters
+only. Runtime inference uses provider observations and applicable completed producer decisions, never
+the researched conclusion as an extra input.
+
+An assessment that cannot establish an owner is completed, processed lineage. Record its unresolved
+disposition and evidence limits, leave ownerless history unpublished to consumers, acknowledge completed
+processing and let independent work continue. It must not block the update or be confused with an
+acquisition, execution or publication error. When research supports a different result, improve and
+test a generic rule only if admissible retained inputs can reasonably establish that result.
+
+Preserve published assignments, membership and numerical decisions within their accepted scope.
+Frozen journals install completed outputs under their recorded provenance. Legacy research provenance
+may remain inspectable, but it must not become assertions or extended certificates for new inference.
+Removing injection paths does not authorize replaying accepted work, crawling stores or rolling back
+publications. Tests must cover reasonably supported connections, correct ownerless outcomes, competing
+owners, future matching securities and absence of research/fact-injection access during inference.
+
+Read this file before starting work, reread it after context compaction or a material scope change,
+and reread it before handing off. Require every participating agent to do the same. These instruction
+rereads do not authorize repeating accepted producer checks, storage reads or calculations.
+
 Applies throughout the repository. The user's instructions take precedence.
 You **MUST** always seek user confirmed permission to edit this file.
 

@@ -32,64 +32,9 @@ _COMPLETE_ADJUSTMENT_SET = frozenset(
 )
 
 
-# This is deliberately an evidence-backed, exact-symbol snapshot rather than a
-# pattern match. Exchange test symbols can share shapes with genuine tickers.
-_NASDAQ_LISTED_TEST_SYMBOLS = frozenset(
-    {"ZAZZT", "ZBZZT", "ZCZZT", "ZJZZT", "ZVZZT", "ZWZZT", "ZXYZ.A", "ZXZZT"}
-)
-_OTHER_EXCHANGE_LISTED_TEST_SYMBOLS = frozenset(
-    {
-        "ATEST",
-        "ATEST.A",
-        "ATEST.B",
-        "ATEST.C",
-        "CBO",
-        "CBX",
-        "CTEST",
-        "CTEST.E",
-        "CTEST.G",
-        "CTEST.L",
-        "CTEST.O",
-        "CTEST.S",
-        "CTEST.V",
-        "IGZ",
-        "MTEST",
-        "NTEST",
-        "NTEST.A",
-        "NTEST.B",
-        "NTEST.C",
-        "ZBZX",
-        "ZEXIT",
-        "ZIEXT",
-        "ZTEST",
-        "ZVV",
-        "ZXIET",
-        "ZZZTA",
-        "ZZZTE",
-        "ZZZTT",
-        "ZZZTX",
-    }
-)
-KNOWN_EXCHANGE_TEST_SYMBOLS: dict[str, dict[str, Any]] = {
-    **{
-        symbol: {
-            "source": "Nasdaq Symbol Directory: Nasdaq-Listed",
-            "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
-            "verified_as_of": "2026-10-08",
-            "test_issue": True,
-        }
-        for symbol in _NASDAQ_LISTED_TEST_SYMBOLS
-    },
-    **{
-        symbol: {
-            "source": "Nasdaq Symbol Directory: Other Exchange-Listed",
-            "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
-            "verified_as_of": "2026-10-08",
-            "test_issue": True,
-        }
-        for symbol in _OTHER_EXCHANGE_LISTED_TEST_SYMBOLS
-    },
-}
+# Compatibility export only. External ticker registries never supply fresh
+# classification evidence, and mutating this value grants no runtime capability.
+KNOWN_EXCHANGE_TEST_SYMBOLS: dict[str, dict[str, Any]] = {}
 
 
 def market_data_series_identity(symbol: str) -> dict[str, Any]:
@@ -234,11 +179,14 @@ def classify_symbol_disposition(
     asset_lookups: list[dict[str, Any]],
     identities: list[dict[str, Any]],
     input_symbol_occupants: list[dict[str, Any]],
+    *,
+    local_evidence=None,
 ) -> dict[str, Any]:
     """Classify recurring treatment without inventing missing asset identity."""
     lookup_evidence = _input_symbol_asset_lookup(symbol, asset_lookups)
     input_asset = _input_symbol_asset(symbol, asset_lookups)
-    local_evidence = _local_market_data_evidence(local_report, symbol)
+    if local_evidence is None:
+        local_evidence = _local_market_data_evidence(local_report, symbol)
     usable_asset_ids = sorted(
         {
             identity["id"]
@@ -247,8 +195,6 @@ def classify_symbol_disposition(
         }
     )
     has_rows = bool(local_evidence["nonempty_download_count"])
-    known_test_symbol_evidence = KNOWN_EXCHANGE_TEST_SYMBOLS.get(symbol)
-    test_symbol_evidence = dict(known_test_symbol_evidence) if known_test_symbol_evidence is not None else None
     otc_scope_evidence = None
     if (
         isinstance(input_asset, dict)
@@ -331,11 +277,7 @@ def classify_symbol_disposition(
                 "adjustments": sorted(_COMPLETE_ADJUSTMENT_SET),
             }
 
-    if test_symbol_evidence is not None:
-        classification = EXCHANGE_TEST_SYMBOL
-        data_policy = "exclude"
-        recurring_pipeline_action = RECURRING_PIPELINE_SKIP
-    elif otc_scope_evidence is not None:
+    if otc_scope_evidence is not None:
         classification = OTC_ASSET_OUT_OF_SCOPE
         data_policy = "out_of_scope"
         recurring_pipeline_action = RECURRING_PIPELINE_SKIP
@@ -374,7 +316,7 @@ def classify_symbol_disposition(
 
     series_identity = (
         market_data_series_identity(symbol)
-        if has_rows and classification in {EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY}
+        if has_rows and classification == HISTORICAL_MARKET_DATA_ONLY
         else None
     )
 
@@ -386,7 +328,7 @@ def classify_symbol_disposition(
         "resolved_alpaca_asset_ids": usable_asset_ids,
         "local_market_data": local_evidence,
         "market_data_series_identity": series_identity,
-        "test_symbol_evidence": test_symbol_evidence,
+        "test_symbol_evidence": None,
     }
     if otc_scope_evidence is not None:
         disposition["out_of_scope_evidence"] = otc_scope_evidence

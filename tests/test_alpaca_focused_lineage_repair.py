@@ -1,4 +1,4 @@
-"""Selected evidence repair restores history without pricing or peer work."""
+"""Research cannot repair source gaps; completed provider work survives recovery and append."""
 
 import copy
 import tempfile
@@ -79,7 +79,7 @@ class FocusedLineageRepairTests(unittest.TestCase):
         )
         self.rows = informative_bars("2023-01-03", "2026-11-07")
 
-    def seed(self, symbol, *, split=False, current_dividend=False):
+    def seed(self, symbol, *, split=False, current_dividend=False, provider_transition=False, interrupted=False):
         old = {**asset(symbol, symbol + "-old"), "status": "inactive", "tradable": False}
         new = asset(symbol, symbol + "-new")
         actions = [
@@ -118,13 +118,25 @@ class FocusedLineageRepairTests(unittest.TestCase):
                     "process_date": "2024-12-23",
                 }
             )
+        if provider_transition:
+            actions.append(
+                {
+                    "id": symbol + "-provider-transition",
+                    "action_type": "name_change",
+                    "old_symbol": symbol,
+                    "new_symbol": symbol,
+                    "old_cusip": "111111111",
+                    "new_cusip": "222222222",
+                    "process_date": "2024-10-02",
+                }
+            )
         download_pricing(self.store, symbol, "2026-11-07", from_date="2023-01-03", client=FakeClient(self.rows))
         result = pipeline.run_lineage(
             self.store,
             [symbol],
             identity_client=IdentityClient({symbol: new, "111111111": old, "222222222": new}, actions),
         )
-        self.assertEqual(0, result["failed"], result)
+        self.assertEqual(1 if interrupted else 0, result["failed"], result)
         if split:
             return {
                 "kind": "split_endpoints",
@@ -164,38 +176,43 @@ class FocusedLineageRepairTests(unittest.TestCase):
                 security_id_for_alpaca_asset_ids([symbol + "-old", symbol + "-new"]), security.public_id
             )
 
-    def test_split_shapes_restore_complete_history_with_only_missing_mapping(self):
-        symbols = ("SPLITA", "SPLITB", "SPLITC")
-        for symbol in symbols:
-            with self.subTest(symbol=symbol):
-                known = symbol == "SPLITA"
-                fact, new = self.seed(symbol, split=True, current_dividend=known)
-                client = OnlyMissingMappings({} if known else {"222222222": new})
-                result = self.repair(symbol, fact, client)
-                self.assertEqual([] if known else ["222222222"], client.calls)
-                self.assertEqual(0, result["results"][0]["unresolved_rows"])
-                with (
-                    patch.object(pipeline, "load_pricing", side_effect=AssertionError("accepted prices")),
-                    patch.object(pipeline, "correlate", side_effect=AssertionError("accepted calculation")),
-                    patch.object(storage, "publish", side_effect=AssertionError("unchanged publication")),
-                ):
-                    repeat = pipeline.run_lineage(self.store, [symbol], identity_client=OnlyMissingMappings())
-                self.assertEqual(0, repeat["failed"], repeat)
-        self.assert_online_history(symbols)
-
-    def test_succession_journal_recovery_preserves_completed_metadata_and_calculation(self):
-        symbol = "PARENT"
-        fact, _ = self.seed(symbol, current_dividend=True)
+    def test_missing_provider_endpoints_cannot_be_supplied_by_research(self):
+        symbol = "SPLITFUTURE"
+        fact, _ = self.seed(symbol, split=True)
+        index = storage.read_index(self.root)
+        before = storage.read_receipt(self.root, symbol, index)
+        self.assertGreater(before["unresolved_rows"], 0)
         client = OnlyMissingMappings()
-        with patch.object(storage, "finish_publication", side_effect=RuntimeError("interrupted journal")):
-            failed = pipeline.run_lineage(self.store, [symbol], identity_client=client, event_supplements=[fact])
-        self.assertEqual(1, failed["failed"], failed)
+        with patch.object(
+            pipeline, "accept_context", side_effect=AssertionError("store reopened before rejection")
+        ):
+            with self.assertRaisesRegex(Exception, "inadmissible"):
+                self.repair(symbol, fact, client)
         self.assertEqual([], client.calls)
+        self.assertEqual(index, storage.read_index(self.root))
+        self.assertEqual(before, storage.read_receipt(self.root, symbol, index))
+        # The unsupported result was processed and may be reused without another
+        # historical owner calculation, publication or provider request.
+        with (
+            patch.object(pipeline, "load_pricing", side_effect=AssertionError("accepted prices reopened")),
+            patch.object(
+                pipeline, "correlate", side_effect=AssertionError("accepted ownerless decision repeated")
+            ),
+            patch.object(storage, "publish", side_effect=AssertionError("unchanged publication")),
+        ):
+            repeated = pipeline.run_lineage(self.store, [symbol], identity_client=OnlyMissingMappings())
+        self.assertEqual(0, repeated["failed"], repeated)
+        self.assertEqual(before, storage.read_receipt(self.root, symbol, index))
+
+    def test_provider_transition_journal_recovery_preserves_completed_work(self):
+        symbol = "PARENT"
+        with patch.object(storage, "finish_publication", side_effect=RuntimeError("interrupted journal")):
+            self.seed(symbol, current_dividend=True, provider_transition=True, interrupted=True)
         self.assertTrue((self.root / ".pending.json").exists())
         with (
-            patch.object(pipeline, "acquire", side_effect=AssertionError("completed metadata")),
-            patch.object(pipeline, "load_pricing", side_effect=AssertionError("completed prices")),
-            patch.object(pipeline, "correlate", side_effect=AssertionError("completed calculation")),
+            patch.object(pipeline, "acquire", side_effect=AssertionError("completed metadata repeated")),
+            patch.object(pipeline, "load_pricing", side_effect=AssertionError("completed prices reopened")),
+            patch.object(pipeline, "correlate", side_effect=AssertionError("completed calculation repeated")),
             patch.object(pipeline, "download_pricing", side_effect=AssertionError("pricing acquisition")),
         ):
             completed = pipeline.run_lineage(self.store, [symbol], identity_client=OnlyMissingMappings())
@@ -203,10 +220,9 @@ class FocusedLineageRepairTests(unittest.TestCase):
         self.assertFalse((self.root / ".pending.json").exists())
         self.assert_online_history([symbol])
 
-    def test_succession_membership_and_retained_facts_survive_an_ordinary_append(self):
+    def test_provider_supported_membership_survives_ordinary_append(self):
         symbol = "PARENT"
-        fact, new = self.seed(symbol, current_dividend=True)
-        self.repair(symbol, fact, OnlyMissingMappings())
+        _, new = self.seed(symbol, current_dividend=True, provider_transition=True)
         self.assert_online_history([symbol])
         prior = DataLibrary(store=self.store).resolve_ticker(symbol)[0].public_id
         added = informative_bars("2026-11-09", "2026-11-10")

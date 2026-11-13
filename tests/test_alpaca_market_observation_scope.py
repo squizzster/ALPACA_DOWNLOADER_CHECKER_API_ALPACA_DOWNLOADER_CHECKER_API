@@ -4,17 +4,17 @@ from copy import deepcopy
 from unittest import TestCase
 from unittest.mock import patch
 
-from test_alpaca_dated_market_occupancy import case
+from test_alpaca_dated_market_occupancy import case, completed_market_reports
 
-from libs.alpaca_end_of_day_security_correlation.market_occupancy import bind, project
+from libs.alpaca_end_of_day_security_correlation.market_occupancy import MarketPlan
 from libs.alpaca_lineage_build import market_observations
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 
 
 class MarketObservationScopeTests(TestCase):
     def prepared(self, *, hot=False):
-        inputs, reports, evidence = case()
-        reports = project(inputs, reports, evidence)
+        inputs, reports, _evidence = case()
+        reports = completed_market_reports(inputs, reports)
         for name, report in reports.items():
             for segment in report["correlated"]["segments"]:
                 segment["from"] = segment["first_timestamp"][:10]
@@ -22,7 +22,27 @@ class MarketObservationScopeTests(TestCase):
                 segment["row_count"] = segment["row_end"] - segment["row_start"] + 1
                 segment["observation_selection"] = "selected" if name == "MAIN" else "superseded"
         original = deepcopy(reports)
-        plan = bind(reports, evidence)
+        # Closed labels and the selected numerical scope are producer outputs.
+        # No authored fact or retired market binder establishes their authority.
+        plan = MarketPlan(
+            (
+                (
+                    "completed-numerical-scope",
+                    "public",
+                    (
+                        {
+                            "symbol": "ALT",
+                            "cusip": "222222222",
+                            "start_inclusive": "2026-10-02",
+                            "end_exclusive": "2026-10-07",
+                            "market": "when_issued",
+                        },
+                    ),
+                ),
+            ),
+            {},
+            {},
+        )
         keyed_reports, keyed_inputs, names = {}, {}, {}
         for kind in ("current_year", "current_month") if hot else ("current_year",):
             for name, report in reports.items():

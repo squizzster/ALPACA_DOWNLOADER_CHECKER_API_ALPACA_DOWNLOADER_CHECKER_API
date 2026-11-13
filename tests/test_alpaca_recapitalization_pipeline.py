@@ -81,7 +81,16 @@ class RecapitalizationPipelineTests(TestCase):
             from_date="2024-01-01",
             client=FakeClient(informative_bars("2024-01-02", "2024-01-12")),
         )
-        built = pipeline.run_lineage(self.store, ["SAME"], identity_client=self.client)
+        held = pipeline.correlate
+        self.completed_initial_reports = {}
+
+        def initial_reports(*args, **kwargs):
+            reports = held(*args, **kwargs)
+            self.completed_initial_reports.update(copy.deepcopy(reports))
+            return reports
+
+        with patch.object(pipeline, "correlate", side_effect=initial_reports):
+            built = pipeline.run_lineage(self.store, ["SAME"], identity_client=self.client)
         self.assertEqual(0, built["failed"], built)
         self.prior = storage.read_receipt(self.root, "SAME", storage.read_index(self.root))
         self.assertGreater(self.prior["unresolved_rows"], 0)
@@ -123,21 +132,108 @@ class RecapitalizationPipelineTests(TestCase):
                     )
             return select(inputs, reports, **kwargs)
 
+        from libs.alpaca_end_of_day_security_correlation.security_identity import (
+            security_identity_for_alpaca_assets,
+        )
+        from libs.alpaca_lineage_build import pricing
+        from libs.alpaca_lineage_build.context import OperationContext
+        from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
+
+        if not hasattr(self, "completion_context"):
+            self.completion_context = OperationContext(self.store)
+            self.generic_completion_done = False
+        context = self.completion_context
+        if not self.generic_completion_done:
+            context.completed_membership_plans[("SAME",)] = {"store": str(self.store), "plan": {"changes": []}}
+
+        def completed_decisions(controls, evidence, auxiliary, *, cache, **_):
+            # This consumer fixture begins at a completed generic source-decision
+            # boundary. Its exact positions and owner result are literals, not
+            # researched assertions supplied to an inference engine.
+            control = controls["SAME"]
+            key = "SAME", control.source_sha256
+            values = cache.setdefault("pricing", {})
+            if key not in values:
+                values[key] = pricing.load_pricing(
+                    self.store,
+                    "SAME",
+                    source=control.source,
+                    source_sha256=control.source_sha256,
+                    partitions=cache.setdefault("partitions", {}).setdefault("SAME", {}),
+                )
+            view = values[key]
+            identity = security_identity_for_alpaca_assets(
+                ["earliest", "old", "new"],
+                [],
+                tickers=["SAME"],
+                basis="completed_provider_component",
+            ).as_report_object()
+            report = copy.deepcopy(self.completed_initial_reports["SAME"])
+            template = report["correlated"]["segments"][0]
+            segments = []
+            for adjustment, rows in view.views.items():
+                for position, row in enumerate(rows, 1):
+                    day = row[0][:10]
+                    dated = (
+                        ("earliest", "000000000")
+                        if day < "2024-01-03"
+                        else (("old", "111111111") if day < "2024-01-05" else ("new", "222222222"))
+                    )
+                    segments.append(
+                        {
+                            **template,
+                            "adjustment": adjustment,
+                            "row_start": position,
+                            "row_end": position,
+                            "row_count": 1,
+                            "first_timestamp": row[0],
+                            "last_timestamp": row[0],
+                            "security_identity": identity,
+                            "historical_symbol": "SAME",
+                            "canonical_security": {
+                                "security_id": identity["security_id"],
+                                "alpaca_asset_id": dated[0],
+                                "cusip": dated[1],
+                            },
+                            "correlation_rule": {"name": "completed_provider_source_decision"},
+                            "observation_tickers": ["SAME"],
+                        }
+                    )
+            report.update(
+                source_row_count=len(segments),
+                source_downloads=view.local["downloads"],
+                correlated={"row_count": len(segments), "segments": segments},
+                uncorrelated={"row_count": 0, "segments": []},
+                retained_observation_routes=control.previous["observation_routes"],
+            )
+            empty = {"version": 1, "certificates": [], "issues": []}
+            relations = {"version": 1, "relations": [], "issues": []}
+            return SourceWorkPlan(
+                {"SAME": "B"},
+                dict.fromkeys(identity["member_alpaca_asset_ids"], identity),
+                empty,
+                empty,
+                relations,
+                relations,
+                {},
+                False,
+                prepared_reports={"SAME": report},
+                stable_numerical_identities=frozenset({identity["security_id"]}),
+            )
+
         with (
             patch.object(row_correlation, "_decide_row", side_effect=new_owner),
             patch.object(observations, "_select_new_observations", side_effect=new_choice),
             patch.object(
-                transform,
-                "correlate",
-                side_effect=AssertionError("completed chronology replayed through row cascade"),
+                transform, "correlate", side_effect=AssertionError("completed owner decision repeated")
             ),
+            patch.object(pipeline, "prepare_group_evidence_and_source_work", side_effect=completed_decisions),
         ):
-            return pipeline.run_lineage(
-                self.store,
-                ["SAME"],
-                identity_client=self.client,
-                event_supplements=[self.earlier_fact, self.fact],
-            )
+            result = pipeline.run_lineage(self.store, ["SAME"], identity_client=self.client, context=context)
+        if result["failed"] == 0:
+            self.generic_completion_done = True
+            context.completed_membership_plans.pop(("SAME",), None)
+        return result
 
     def test_recovered_prefix_and_new_append_share_the_accepted_middle(self):
         download_pricing(
@@ -278,9 +374,7 @@ class RecapitalizationPipelineTests(TestCase):
         download_pricing(
             self.store, "SAME", "2024-01-13", client=FakeClient(informative_bars("2024-01-02", "2024-01-13"))
         )
-        result = pipeline.run_lineage(
-            self.store, ["SAME"], identity_client=self.client, event_supplements=[self.earlier_fact, self.fact]
-        )
+        result = pipeline.run_lineage(self.store, ["SAME"], identity_client=self.client)
         self.assertEqual(0, result["failed"], result)
         check = policy._bar_reasons
 
@@ -293,38 +387,17 @@ class RecapitalizationPipelineTests(TestCase):
         self.assertTrue(served["complete"], served)
         self.assertEqual(8, served["checked_bars"])
 
-    def test_changed_binding_or_independent_evidence_cannot_inherit_retained_scope(self):
-        from libs.alpaca_lineage_build import pricing, recapitalization_work
-        from libs.alpaca_security_lineage.event_supplements import accept_supplements, project_actions
+    def test_authored_interpretation_is_rejected_without_mutating_completed_lineage(self):
+        from libs.alpaca_lineage_build.contract import LineageError
 
-        source = pricing.load_source(self.store / "end_of_day/pricing/SAME", "SAME")
-        control = pricing.metadata_source_control(
-            self.store, "SAME", source, self.prior["source_sha256"], self.prior
-        )
-        facts = accept_supplements([self.earlier_fact, self.fact])
-        evidence = copy.deepcopy(self.prior["evidence"])
-        evidence["provider_corporate_actions"] = evidence["corporate_actions"]
-        evidence["corporate_actions"], evidence["event_supplements"] = project_actions(
-            evidence["corporate_actions"], facts
-        )
-        baseline = recapitalization_work.prepare({"SAME": copy.deepcopy(control)}, {"SAME": evidence}, {}, {})
-        self.assertEqual({"SAME": "B"}, baseline.dispositions)
-        for change in ("mapping", "generation", "independent_occupancy", "other_fact"):
-            current, observed = copy.deepcopy(control), copy.deepcopy(evidence)
-            if change == "mapping":
-                observed["asset_lookups"][0]["asset"]["id"] = "rival"
-            elif change == "generation":
-                current.source_sha256 = "f" * 64
-            elif change == "independent_occupancy":
-                observed["symbol_occupancy_evidence"].append(
-                    {
-                        "symbol": "SAME",
-                        "cusip": "999999999",
-                        "asset_id": "rival",
-                        "evidence": [{"action_id": "independent-contradiction"}],
-                    }
-                )
-            else:
-                observed["sourced_market_occupancy"] = {"version": 1, "facts": [{"changed": True}]}
-            with self.subTest(change=change):
-                self.assertIsNone(recapitalization_work.prepare({"SAME": current}, {"SAME": observed}, {}, {}))
+        before = storage.read_index(self.root)["symbols"]["SAME"]["sha256"]
+        count = self.client.request_count
+        with self.assertRaisesRegex(LineageError, "inadmissible"):
+            pipeline.run_lineage(
+                self.store,
+                ["SAME"],
+                identity_client=self.client,
+                event_supplements=[self.earlier_fact, self.fact],
+            )
+        self.assertEqual(self.client.request_count, count)
+        self.assertEqual(storage.read_index(self.root)["symbols"]["SAME"]["sha256"], before)

@@ -1,13 +1,11 @@
-"""Generic public holder facts: no ticker, price, legal-clause or exchange shortcut."""
+"""Fresh public-common assertions reject; completed component outputs remain closed."""
 
 import copy
 import unittest
-from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 
 from libs.alpaca_end_of_day_security_correlation import public_common_continuation as common
-from libs.alpaca_lineage_build import source_work
-from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_security_lineage.event_supplements import accept_supplements
 from libs.alpaca_security_lineage.sourced_facts import PUBLIC_COMMON_KIND
 
@@ -59,7 +57,7 @@ def common_fact():
 
 
 def evidence(fact=None):
-    fact = accept_supplements([fact or common_fact()])[0]
+    fact = copy.deepcopy(fact or common_fact())
     return {
         "sourced_public_common_continuations": {"schema_version": 1, "facts": [fact]},
         "asset_lookups": [
@@ -78,106 +76,64 @@ def evidence(fact=None):
     }
 
 
+def parent_fact():
+    item = common_fact()
+    item["facts"].update(
+        schema_version=2,
+        continuing_registrant=False,
+        listing_succession={
+            "kind": "new_public_parent",
+            "publicly_traded_predecessor_count": 1,
+            "successor_common_is_listed": True,
+            "operating_target_was_private": True,
+        },
+    )
+    item["facts"]["successor"]["registrant_cik"] = "456"
+    item["facts"]["public_share_treatment"]["kind"] = "exchanged_one_for_one"
+    return item
+
+
+def completed_certificate():
+    # Literal closed producer output: never run the retired fact certifier to seed it.
+    return {
+        "source_fact_id": "public-holder-transition",
+        "predecessor": {"asset_id": "predecessor-id", "historical_symbol": "SPAC", "cusip": "111111111"},
+        "successor": {"asset_id": "successor-id", "historical_symbol": "BUSINESS", "cusip": "222222222"},
+        "legal_date": "2024-01-04",
+        "boundary": "2024-01-05",
+        "public_share_treatment": copy.deepcopy(common_fact()["facts"]["public_share_treatment"]),
+    }
+
+
 class PublicCommonTests(unittest.TestCase):
-    def test_changed_or_removed_membership_support_cannot_carry_old_union(self):
-        original = evidence()
-        completed = common.certify_group([original])
-        control = SimpleNamespace(
-            store="synthetic",
-            source_sha256="accepted-generation",
-            previous={"public_common_continuation_membership": completed},
-        )
-        for change in ("mapped_uuid", "removed", "changed_fact"):
-            changed = copy.deepcopy(original)
-            if change == "mapped_uuid":
-                changed["asset_lookups"][1]["asset"]["id"] = "third-id"
-            elif change == "removed":
-                changed["sourced_public_common_continuations"]["facts"] = []
-            else:
-                fact = common_fact()
-                fact["facts"]["successor"]["cusip"] = "333333333"
-                changed = evidence(fact)
-            with (
-                self.subTest(change=change),
-                patch.object(
-                    source_work, "compose_memberships", side_effect=AssertionError("obsolete union reused")
-                ),
-            ):
-                with self.assertRaisesRegex(LineageError, "membership support changed"):
-                    source_work.prepare_group_evidence_and_source_work(
-                        {"SOURCE": control}, {"SOURCE": changed}, {}, cache={}
-                    )
+    def test_nullable_rights_and_one_document_do_not_authorize_input(self):
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            common.certify_group([evidence()])
 
-    def test_one_document_nullable_rights_later_spelling_and_exchange(self):
-        result = common.certify_group([evidence()])
-        self.assertEqual([], result["issues"])
-        certificate = common.CommonCertificate(**result["certificates"][0])
-        self.assertEqual("predecessor-id", certificate.identity_edge().predecessor_asset_id)
-        self.assertEqual("successor-id", certificate.identity_edge().successor_asset_id)
-        self.assertIsNone(certificate.public_share_treatment["rights_unchanged"])
+    def test_changed_rights_and_unknown_units_also_reject_at_ingress(self):
+        for key, value in (("rights_unchanged", False), ("successor_units", None), ("successor_units", "2")):
+            fact = common_fact()
+            fact["facts"]["public_share_treatment"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, "inadmissible"):
+                accept_supplements([fact])
 
-    def test_wrong_holder_or_instrument_and_unknown_units(self):
-        for key, value in (
-            ("holder_scope", "founders"),
-            ("public_common_participates_in_successor", False),
-            ("continuing_registrant", False),
-        ):
-            with self.subTest(key=key):
-                item = common_fact()
-                item["facts"][key] = value
-                with self.assertRaises(ValueError):
-                    accept_supplements([item])
-        for instrument in ("ADS", "unit", "warrant", "private_common", "founder_shares"):
-            item = common_fact()
-            item["facts"]["predecessor"]["instrument_kind"] = instrument
-            with self.assertRaises(ValueError):
-                accept_supplements([item])
-        for units in (None, "0.8", "2"):
-            item = common_fact()
-            item["facts"]["public_share_treatment"]["successor_units"] = units
-            with self.assertRaises(ValueError):
-                accept_supplements([item])
+    def test_parent_option_cannot_reenable_assertion_certification(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled), self.assertRaisesRegex(ValueError, "inadmissible"):
+                common.certify_group([evidence(parent_fact())], new_public_parent=enabled)
 
-    def test_accepted_container_is_immutable_without_revalidation(self):
-        accepted = accept_supplements([common_fact()])
-        with patch(
-            "libs.alpaca_security_lineage.event_supplements.validate_supplements",
-            side_effect=AssertionError("revalidation"),
-        ):
-            self.assertIs(accepted, accept_supplements(accepted))
-        with self.assertRaises(TypeError):
-            accepted[0]["facts"]["holder_scope"] = "founders"
+    def test_competing_or_incomplete_group_does_not_accept_research(self):
+        peer = evidence()
+        peer["asset_lookups"][0]["asset"]["id"] = "competing-id"
+        for group, complete in (([evidence(), peer], True), ([evidence()], False)):
+            with self.subTest(complete=complete), self.assertRaisesRegex(ValueError, "inadmissible"):
+                common.certify_group(group, complete=complete)
 
-    def test_conflicting_unavailable_peer_and_cash_terminal(self):
-        facts = evidence()
-        peer = copy.deepcopy(facts)
-        peer["asset_lookups"][0]["asset"]["id"] = "other-id"
-        self.assertFalse(common.certify_group([facts, peer])["certificates"])
-        facts["corporate_actions"] = [
-            {"action_type": "cash_merger", "acquiree_cusip": "111111111", "effective_date": "2024-01-04"}
-        ]
-        self.assertFalse(common.certify_group([facts])["certificates"])
-
-    def test_branch_and_incomplete_group_cannot_join(self):
-        first = evidence()
-        second = common_fact()
-        second["match"]["source_id"] = "other-branch"
-        second["facts"]["successor"]["cusip"] = "333333333"
-        second = evidence(second)
-        second["asset_lookups"].append(
-            {"lookup_kind": "cusip", "lookup": "333333333", "asset": {"id": "branch-id"}}
-        )
-        self.assertFalse(common.certify_group([first, second])["certificates"])
-        self.assertFalse(common.certify_group([first], complete=False)["certificates"])
-
-
-class PublicCommonProviderBindingTests(unittest.TestCase):
-    def test_explicit_event_must_exist_and_match_roles(self):
-        item = common_fact()
-        item["facts"]["provider_event_match"] = {"id": "transaction", "action_type": "stock_merger"}
-        facts = evidence(item)
-        self.assertFalse(common.certify_group([facts])["certificates"])
-        facts["corporate_actions"] = [
+    def test_matching_provider_event_cannot_admit_an_external_assertion(self):
+        fact = common_fact()
+        fact["facts"]["provider_event_match"] = {"id": "transaction", "action_type": "stock_merger"}
+        supplied = evidence(fact)
+        supplied["corporate_actions"] = [
             {
                 "id": "transaction",
                 "action_type": "stock_merger",
@@ -186,21 +142,63 @@ class PublicCommonProviderBindingTests(unittest.TestCase):
                 "effective_date": "2024-01-04",
             }
         ]
-        self.assertTrue(common.certify_group([facts])["certificates"])
-        facts["corporate_actions"][0]["acquiree_cusip"] = "999999999"
-        self.assertFalse(common.certify_group([facts])["certificates"])
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            common.certify_group([supplied])
 
-    def test_later_exit_does_not_erase_earlier_continuation(self):
-        facts = evidence()
-        facts["corporate_actions"] = [
-            {
-                "id": "later",
-                "action_type": "cash_merger",
-                "acquiree_cusip": "111111111",
-                "effective_date": "2025-01-02",
-            }
-        ]
-        self.assertTrue(common.certify_group([facts])["certificates"])
+    def test_holder_and_instrument_assertions_are_never_runtime_evidence(self):
+        for field, value in (
+            ("holder_scope", "founders"),
+            ("holder_scope", "non_redeemed_public_common"),
+            ("continuing_registrant", True),
+        ):
+            fact = common_fact()
+            fact["facts"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "inadmissible"):
+                common.certify_group([evidence(fact)])
+
+    def test_empty_provider_only_request_performs_no_endpoint_or_price_work(self):
+        provider = evidence()
+        provider.pop("sourced_public_common_continuations")
+        with patch.object(Path, "open", side_effect=AssertionError("price opened")):
+            self.assertEqual({"version": 1, "certificates": [], "issues": []}, common.certify_group([provider]))
+
+    def test_nested_bare_fact_cannot_bypass_named_envelope(self):
+        with self.assertRaisesRegex(ValueError, "inadmissible"):
+            common.certify_group([{"unexpected": [common_fact()]}])
+
+    def test_literal_completed_certificate_remains_inspectable(self):
+        report = completed_certificate()
+        with patch.object(common, "certify_group", side_effect=AssertionError("closed certificate rechecked")):
+            certificate = common.CommonCertificate(**report)
+            self.assertEqual(report, certificate.to_report())
+            self.assertEqual("predecessor-id", certificate.identity_edge().predecessor_asset_id)
+            self.assertEqual("successor-id", certificate.identity_edge().successor_asset_id)
+            self.assertIsNone(certificate.public_share_treatment["rights_unchanged"])
+
+    def test_researched_recipe_rejects_before_source_or_price_access(self):
+        with patch.object(Path, "open", side_effect=AssertionError("source prices opened")):
+            with self.assertRaisesRegex(ValueError, "inadmissible"):
+                common.source_history(
+                    "BUSINESS", None, None, None, None, complete=True, informative=True, accepted_bounds={}
+                )
+
+    def test_completed_source_bounds_are_consumed_without_proof_or_storage(self):
+        membership = {"version": 1, "certificates": [completed_certificate()], "issues": []}
+        handoff = {
+            "version": 1,
+            "symbol": "BUSINESS",
+            "source_fact_id": "public-holder-transition",
+            "route": [],
+            "first": "2024-01-02",
+            "last": "2024-01-04",
+        }
+        with (
+            patch.object(common, "certify_group", side_effect=AssertionError("closed proof repeated")),
+            patch.object(Path, "open", side_effect=AssertionError("closed prices opened")),
+        ):
+            histories = common.histories(handoff, membership)
+        self.assertEqual(1, len(histories))
+        self.assertEqual("predecessor-id", histories[0].interval.asset_id)
 
 
 class AcceptedComponentCompositionTests(unittest.TestCase):
@@ -245,52 +243,3 @@ class AcceptedComponentCompositionTests(unittest.TestCase):
             self.assertEqual({a, a2, b, b2}, set(result[a]["member_alpaca_asset_ids"]))
             self.assertEqual({"FIRST", "EARLIER", "SECOND", "LATEST"}, set(result[a]["member_tickers"]))
             self.assertTrue(all(value is result[a] for value in result.values()))
-
-
-def parent_fact():
-    item = common_fact()
-    item["facts"].update(
-        schema_version=2,
-        continuing_registrant=False,
-        listing_succession={
-            "kind": "new_public_parent",
-            "publicly_traded_predecessor_count": 1,
-            "successor_common_is_listed": True,
-            "operating_target_was_private": True,
-        },
-    )
-    item["facts"]["successor"]["registrant_cik"] = "456"
-    item["facts"]["public_share_treatment"]["kind"] = "exchanged_one_for_one"
-    return item
-
-
-class PublicParentTests(unittest.TestCase):
-    def test_documented_public_listing_successor_is_distinct_from_same_legal_registrant(self):
-        facts = evidence(parent_fact())
-        self.assertEqual(1, len(common.certify_group([facts])["certificates"]))
-        self.assertFalse(common.certify_group([facts], new_public_parent=False)["certificates"])
-        fact = facts["sourced_public_common_continuations"]["facts"][0]
-        self.assertNotEqual(
-            fact["facts"]["predecessor"]["registrant_cik"], fact["facts"]["successor"]["registrant_cik"]
-        )
-
-    def test_one_for_one_acquisition_or_multiple_public_predecessors_cannot_use_parent_route(self):
-        for key, value in (
-            ("operating_target_was_private", False),
-            ("publicly_traded_predecessor_count", 2),
-            ("publicly_traded_predecessor_count", True),
-            ("successor_common_is_listed", False),
-        ):
-            with self.subTest(key=key, value=value):
-                item = parent_fact()
-                item["facts"]["listing_succession"][key] = value
-                with self.assertRaises(ValueError):
-                    accept_supplements([item])
-        for key, value in (("continuing_registrant", True), ("holder_scope", "founders")):
-            item = parent_fact()
-            item["facts"][key] = value
-            with self.assertRaises(ValueError):
-                accept_supplements([item])
-        facts = evidence(parent_fact())
-        facts["asset_lookups"].append({**facts["asset_lookups"][1], "asset": {"id": "competing-parent"}})
-        self.assertFalse(common.certify_group([facts])["certificates"])

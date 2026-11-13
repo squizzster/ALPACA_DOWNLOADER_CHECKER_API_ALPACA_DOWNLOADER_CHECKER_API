@@ -206,5 +206,10 @@
     "modifications": [
       "Include outstanding export-input invalidations for published serving components in maintenance completion, preserving scoped component boundaries without upstream reads or schema changes; atomically consume exact held superseded lineage intentions with new component publication while retaining renewed intentions and rollback obligations."
     ]
+  },
+  {
+    "modifications": [
+      "Consume an explicitly supplied completed serving-work selection in status/planning after owning recovery, preserving its pending generations without rereading the queue."
+    ]
   }
 ]

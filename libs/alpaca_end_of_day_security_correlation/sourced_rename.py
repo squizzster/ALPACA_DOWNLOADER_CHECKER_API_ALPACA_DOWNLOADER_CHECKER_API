@@ -1,22 +1,15 @@
-"""Sourced unchanged-equity membership and source-scoped mapped label history.
-
-Metadata owns submitted fact validation. This producer binds those facts to exact
-provider endpoints once for the selected group. Neither names nor matching prices
-prove membership. An independently selected current mapping owns only its actual
-complete observations; unrelated users of its labels retain their own sources.
-"""
+"""Inert readers for completed same-security rename outputs; fresh assertions reject."""
 
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from functools import cached_property
 
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_security_lineage.event_supplements import RENAME_KIND
-from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
+from libs.alpaca_security_lineage.inference_evidence import reject_assertions
 
 from .action_identity import exact_cusip_lookup_asset
 from .closed_departure import current_asset
-from .name_change import _action_dates, _complete_action_query_covers
+from .name_change import _action_dates
 from .uuid_lineage import UuidLineageEdge
 
 CORRELATION_VERSION = 81
@@ -143,138 +136,10 @@ def _structural_conflict(action, certificate):
 
 
 def certify_group(evidences, *, complete=True, relations=None):
-    """Bind each selected fact once, with conflicting group observations vetoed."""
-    evidences = tuple({id(item): item for item in evidences}.values())
-    submitted = {}
-    for lineage in evidences:
-        for item in rename_facts(lineage):
-            submitted.setdefault(item["match"]["id"], []).append((lineage, item))
-    accepted, issues = [], []
-    for action_id, observations in submitted.items():
-        reference = observations[0][1]
-        match, fact = reference["match"], reference["facts"]
-        old, new = match["old_cusip"], match["new_cusip"]
-        boundary = fact["exchange_effective_date"]
-        endpoints = None
-        endpoint_observations = {old: set(), new: set()}
-        valid = complete
-        from .security_relations import acquirer_nonconflicts
-
-        reference_pair = tuple(exact_cusip_lookup_asset(observations[0][0], cusip) for cusip in (old, new))
-        nonconflicts = ()
-        if relations is not None and all(reference_pair):
-            tentative = RenameCertificate(
-                action_id,
-                match["old_symbol"],
-                match["new_symbol"],
-                old,
-                new,
-                reference_pair[0]["id"],
-                reference_pair[1]["id"],
-                boundary,
-                fact["legal_effective_date"],
-                tuple((p["symbol"], p["start_inclusive"], p["end_exclusive"]) for p in fact["prior_labels"]),
-            )
-            nonconflicts = acquirer_nonconflicts(relations, tentative)
-        exempt = {item[1] for item in nonconflicts}
-        if any(item != reference for _, item in observations):
-            valid = False
-        # Metadata has already matched each submitted fact to the raw provider
-        # event. Consume that result; group eligibility adds only cross-evidence
-        # endpoint consistency, query completeness and structural conflicts.
-        for lineage in evidences:
-            pair = tuple(exact_cusip_lookup_asset(lineage, cusip) for cusip in (old, new))
-            observed = [
-                lookup
-                for lookup in lineage.get("asset_lookups", ())
-                if lookup.get("lookup_kind") == "cusip" and lookup.get("lookup") in {old, new}
-            ]
-            carries_fact = any(candidate is lineage for candidate, _ in observations)
-            if carries_fact and any(
-                not _complete_action_query_covers(lineage, label, date.fromisoformat(boundary))
-                for label in (match["old_symbol"], match["new_symbol"])
-            ):
-                valid = False
-            if carries_fact or observed:
-                relation_peer = bool(exempt) and any(
-                    action.get("id") in exempt
-                    for action in lineage.get("provider_corporate_actions", lineage.get("corporate_actions", ()))
-                )
-                selected_pair = (
-                    pair
-                    if carries_fact or not relation_peer
-                    else tuple(
-                        pair[index]
-                        for index, cusip in enumerate((old, new))
-                        if any(item["lookup"] == cusip for item in observed)
-                    )
-                )
-                if any(
-                    asset is None
-                    or asset.get("class") != "us_equity"
-                    or asset.get("exchange") in (None, "", "OTC")
-                    for asset in selected_pair
-                ):
-                    valid = False
-                    break
-                for index, cusip in enumerate((old, new)):
-                    if pair[index] is not None:
-                        endpoint_observations[cusip].add((pair[index]["id"], pair[index]["exchange"]))
-                if any(len(values) > 1 for values in endpoint_observations.values()):
-                    valid = False
-                    break
-            if not valid:
-                break
-        if valid and all(endpoint_observations.values()):
-            old_endpoint, new_endpoint = (next(iter(endpoint_observations[cusip])) for cusip in (old, new))
-            valid = old_endpoint[1] == new_endpoint[1]
-            endpoints = old_endpoint[0], new_endpoint[0]
-        certificate = None
-        if valid and endpoints is not None:
-            certificate = RenameCertificate(
-                action_id,
-                match["old_symbol"],
-                match["new_symbol"],
-                old,
-                new,
-                *endpoints,
-                boundary,
-                fact["legal_effective_date"],
-                tuple((p["symbol"], p["start_inclusive"], p["end_exclusive"]) for p in fact["prior_labels"]),
-            )
-            for lineage in evidences:
-                owners = dict(zip((old, new), endpoints))
-                if any(
-                    item.get("cusip") in owners and item.get("asset_id") != owners[item["cusip"]]
-                    for item in lineage.get("symbol_occupancy_evidence", ())
-                ):
-                    valid = False
-                if any(
-                    action.get("id") not in exempt and _structural_conflict(action, certificate)
-                    for action in lineage.get("provider_corporate_actions", lineage.get("corporate_actions", ()))
-                ):
-                    valid = False
-        if valid and certificate is not None:
-            accepted.append(certificate)
-        else:
-            issues.append(
-                {
-                    "reason_code": "sourced_rename_requires_unambiguous_unchanged_security",
-                    "corporate_action_id": action_id,
-                }
-            )
-    # Multiple sourced successors/overlapping histories cannot silently join.
-    conflicted = {
-        c.action_id
-        for c in accepted
-        for other in accepted
-        if c != other and {c.old_id, c.new_id}.intersection({other.old_id, other.new_id})
-    }
-    issues.extend(
-        {"reason_code": "conflicting_sourced_rename_chain", "corporate_action_id": key}
-        for key in sorted(conflicted)
-    )
-    return tuple(c for c in accepted if c.action_id not in conflicted), tuple(issues)
+    """Reject authored assertions; no fresh researched certificate is produced."""
+    reject_assertions(tuple(evidences), where="same-security rename certification")
+    reject_assertions(relations, where="same-security rename relations")
+    return (), ()
 
 
 def apply_chronology(intervals, certificates):
@@ -305,6 +170,8 @@ class DisputedMapping:
 
 
 def mapped_certificate(symbol, lineage, certificates, work):
+    if certificates:
+        raise ValueError("researched rename mapping recipes are inadmissible for new inference")
     applicable = [c for c in certificates if c.new_symbol == symbol]
     submitted = [item for item in rename_facts(lineage) if item["match"]["new_symbol"] == symbol]
     if (len(applicable) != 1 and len(submitted) != 1) or not work:
@@ -331,37 +198,8 @@ def mapped_certificate(symbol, lineage, certificates, work):
 
 
 def source_history(symbol, certificate, work, consensus, *, complete, informative):
-    """Select observed history under the source's actual current entity mapping.
-
-    Complete session/grid facts come from the current source producer. The dated
-    labels and UUID membership are the independent sourced certificate above.
-    A source mapped to today's unrelated predecessor label is never a donor.
-    """
-    if not isinstance(certificate, RenameCertificate) or not complete or not informative or not work:
-        return None
-    _, source, sessions = work[0]
-    if (
-        not sessions
-        or not consensus.all_authenticated_adjustments_agree
-        or consensus.authenticated_adjustment_count != len(ADJUSTMENTS)
-    ):
-        return None
-    if {context["adjustment"] for _, context, _ in work} != set(ADJUSTMENTS):
-        return None
-    if sessions[0].isoformat() < certificate.labels[0][1] or sessions[-1].isoformat() < certificate.boundary:
-        return None
-    if source["request_from"][:10] > certificate.boundary:
-        return None
-    expected = expected_market_session_coverage(sessions[0].isoformat(), source["request_to"])
-    if tuple(day.isoformat() for day in sessions) != expected.session_dates:
-        return None
-    return {
-        "version": 1,
-        "symbol": symbol,
-        "first": sessions[0].isoformat(),
-        "last": sessions[-1].isoformat(),
-        "action_id": certificate.action_id,
-    }
+    """Retired recipes cannot establish new source ownership bounds."""
+    raise ValueError("researched source-history assertions are inadmissible for new inference")
 
 
 def histories(handoff, certificate):

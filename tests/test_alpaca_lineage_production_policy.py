@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
-import test_alpaca_end_of_day_security_correlation as correlation_fixtures
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_name_change_evidence import bars, inputs_for
 from test_alpaca_pricing_download import FakeClient, bar, snapshot
@@ -49,7 +48,6 @@ from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_lineage_build.refresh import refresh_existing
 from libs.alpaca_lineage_build.universe_update import run_update
 from libs.alpaca_pricing_download.download import download_pricing
-from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL
 
 ROOT = Path(__file__).resolve().parents[1]
 V58_POLICY = ROOT / "resources/alpaca_security_correlation_v58_legacy_policy.yaml"
@@ -198,15 +196,28 @@ class ProductionPolicyAuthorizationTests(TestCase):
         self.assertEqual("corrected_v59", load_lab_policy(CORRECTED_POLICY).fallback_profile)
 
     def test_current_policy_preserves_unaffected_frozen_v59_assignments(self):
-        evidence = correlation_fixtures.RowCorrelationTests._overlapping_asof_lineage()
-        evidence["symbol_disposition"] = {"classification": EXCHANGE_TEST_SYMBOL}
+        current_asset = asset("CURRENT", "provider-id")
+        evidence = {
+            "corporate_actions": [],
+            "identities": [current_asset],
+            "symbol_occupancy_evidence": [],
+            "asset_lookups": [
+                {
+                    "lookup_kind": "symbol",
+                    "lookup": "CURRENT",
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": current_asset,
+                }
+            ],
+        }
 
         def evaluate(policy):
             reports = policy_engine.evaluate_policy(
                 Path("/unused-policy-store"),
                 inputs_for(
-                    {"CURRENT": bars(["2024-01-03"])},
-                    asofs={"CURRENT": "2026-10-15"},
+                    {"CURRENT": bars(["2024-01-08"])},
+                    asofs={"CURRENT": "2024-01-09"},
                 ),
                 {"CURRENT": copy.deepcopy(evidence)},
                 policy=policy,
@@ -225,8 +236,8 @@ class ProductionPolicyAuthorizationTests(TestCase):
 
         current = load_authorized_policy()
         frozen = load_policy(V59_POLICY)
-        # The dated-market stage has a new semantic identity, but inputs with
-        # no such sourced fact retain exactly the established core decisions.
+        # Registered generic rules preserve this unaffected provider-supported
+        # owner across implementation versions, without an exclusion shortcut.
         self.assertNotEqual(frozen.semantic_sha256, current.semantic_sha256)
         self.assertEqual(evaluate(frozen), evaluate(current))
 

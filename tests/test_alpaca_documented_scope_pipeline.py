@@ -1,5 +1,6 @@
-"""A dated common continuation reconciles nested accepted source scopes."""
+"""Closed source decisions retain numerical and publication handoffs across peers."""
 
+import copy
 import json
 import tempfile
 from contextlib import ExitStack
@@ -9,10 +10,8 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from test_alpaca_documented_markets import documented_fact
 from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_pricing_download import FakeClient, bar, direct_adjustment_observations
-from test_alpaca_public_reclassification import reclassification_fact
 
 from alpaca_end_of_day import DataLibrary
 from libs.alpaca_end_of_day_security_correlation import row_correlation
@@ -20,8 +19,8 @@ from libs.alpaca_end_of_day_security_correlation.security_identity import securi
 from libs.alpaca_lineage_build import metadata, observations, pipeline, source_work, storage, transform
 from libs.alpaca_lineage_build.context import OperationContext
 from libs.alpaca_lineage_build.recovery_handoffs import operation
+from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
 from libs.alpaca_pricing_download.download import download_pricing
-from libs.alpaca_security_lineage.event_supplements import accept_supplements, supplement_key
 from libs.alpaca_serving_catalogue import policy
 from libs.alpaca_serving_catalogue.producer import maintain
 
@@ -165,6 +164,7 @@ class DocumentedScopePipelineTests(TestCase):
             context = OperationContext(store)
             evidence_client = metadata.EvidenceClient(client)
             correlate = pipeline.correlate
+            held_reports = {}
 
             def accepted_scope_fixture(*args, **kwargs):
                 reports = correlate(*args, **kwargs)
@@ -216,6 +216,7 @@ class DocumentedScopePipelineTests(TestCase):
                                 )
                     report["correlated"] = {"row_count": len(positive), "segments": positive}
                     report["uncorrelated"] = {"row_count": len(negative), "segments": negative}
+                    held_reports[name] = copy.deepcopy(report)
                 return reports
 
             with patch.object(pipeline, "correlate", side_effect=accepted_scope_fixture):
@@ -229,25 +230,99 @@ class DocumentedScopePipelineTests(TestCase):
                 )
             self.assertEqual(0, initial["failed"], initial)
             self.assertTrue(maintain(store, bootstrap=True)["complete"])
-            facts = [
-                documented_fact(
-                    "old-cusip",
-                    ("BEFORE", "111111111"),
-                    ("AFTER", "111111111"),
-                    [
-                        ("BEFORE", "111111111", "2024-01-01", "2024-01-05", "Earlier Common"),
-                        ("AFTER", "111111111", "2024-01-05", "2024-01-08", "Continuing Common"),
-                    ],
-                ),
-                documented_fact(
-                    "new-cusip",
-                    ("AFTER", "222222222"),
-                    ("AFTER", "222222222"),
-                    [("AFTER", "222222222", "2024-01-08", None, "Continuing Common")],
-                ),
-            ]
-            accepted = accept_supplements([reclassification_fact()] if reclassification else facts)
-            evidence_client.event_supplements.update((supplement_key(fact), fact) for fact in accepted)
+            # This fixture starts at a completed source-decision boundary. Its
+            # synthetic producer owns the selected full-source positions; no
+            # researched document, asserted event or live inference supplies them.
+            # Numerical contests and publication still run through their actual
+            # owners below, including every interruption/no-repeat assertion.
+            completed_reports = copy.deepcopy(held_reports)
+            prefix = {
+                (segment["adjustment"], segment["first_timestamp"]): segment
+                for segment in completed_reports["BEFORE"]["correlated"]["segments"]
+            }
+            changes = []
+            for segment in completed_reports["BEFORE"]["correlated"]["segments"]:
+                change = {
+                    "source": "BEFORE",
+                    "adjustment": segment["adjustment"],
+                    "row_start": segment["row_start"],
+                    "row_end": segment["row_end"],
+                    "old_public_id": before["security_id"],
+                    "new_public_id": after["security_id"],
+                }
+                changes.append(change)
+                segment["security_identity"] = after
+                segment["canonical_security"] = {
+                    **segment["canonical_security"],
+                    "security_id": after["security_id"],
+                }
+                segment["completed_membership_refinement"] = change
+            recovered = []
+            for old in completed_reports["AFTER"]["uncorrelated"]["segments"]:
+                template = prefix[old["adjustment"], old["first_timestamp"]]
+                recovered.append(
+                    {
+                        **{
+                            key: value
+                            for key, value in old.items()
+                            if key not in {"reason_codes", "candidate_securities"}
+                        },
+                        **{
+                            key: copy.deepcopy(template[key])
+                            for key in transform.ASSIGNMENT_FIELDS
+                            if key in template
+                        },
+                        "security_identity": after,
+                        "canonical_security": {
+                            **template["canonical_security"],
+                            "security_id": after["security_id"],
+                        },
+                    }
+                )
+            completed_reports["AFTER"]["correlated"]["segments"] = sorted(
+                [*recovered, *completed_reports["AFTER"]["correlated"]["segments"]],
+                key=lambda segment: (segment["adjustment"], segment["row_start"]),
+            )
+            completed_reports["AFTER"]["correlated"]["row_count"] += len(recovered)
+            completed_reports["AFTER"]["uncorrelated"] = {"row_count": 0, "segments": []}
+            ruleset = context.accept_ruleset()
+            empty = {"version": 1, "certificates": [], "issues": []}
+            relations = {"version": 1, "relations": [], "issues": []}
+            completed_plan = SourceWorkPlan(
+                {"BEFORE": "B", "AFTER": "B"},
+                {"old": after, "new": after},
+                empty,
+                empty,
+                relations,
+                relations,
+                {},
+                False,
+                prepared_reports=completed_reports,
+                membership_refinement={"changes": changes, "execution_sha256": ruleset.execution_sha256},
+            )
+            # An explicit bound generic producer completion selects source work.
+            # The plan object below is the fixture producer's completed output.
+            context.completed_membership_plans[("AFTER", "BEFORE")] = {
+                "store": str(store),
+                "plan": {"changes": changes},
+            }
+
+            def completed_source_decisions(controls, current, auxiliary, *, cache, **_):
+                for name, control in controls.items():
+                    completed_reports[name]["retained_observation_routes"] = control.previous[
+                        "observation_routes"
+                    ]
+                binding = tuple((name, id(value)) for name, value in sorted({**current, **auxiliary}.items()))
+                key = (
+                    binding,
+                    tuple(
+                        (name, control.store, control.source_sha256, control.previous_receipt_generation)
+                        for name, control in sorted(controls.items())
+                    ),
+                )
+                cache.setdefault("plans", {})[key] = completed_plan
+                return completed_plan
+
             select = observations._select_new_observations
 
             def newly_joined_only(inputs, reports, **kwargs):
@@ -266,6 +341,13 @@ class DocumentedScopePipelineTests(TestCase):
             handoffs = ExitStack()
             self.addCleanup(handoffs.close)
             handoffs.enter_context(operation(store))
+            handoffs.enter_context(
+                patch.object(
+                    pipeline,
+                    "prepare_group_evidence_and_source_work",
+                    side_effect=completed_source_decisions,
+                )
+            )
             with (
                 patch.object(
                     transform, "correlate", side_effect=AssertionError("accepted owner cascade repeated")

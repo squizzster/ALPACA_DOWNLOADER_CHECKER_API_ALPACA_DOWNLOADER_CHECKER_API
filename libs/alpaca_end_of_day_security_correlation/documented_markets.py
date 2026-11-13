@@ -28,6 +28,9 @@ def bind(
     allow_holding_exchange=False,
 ):
     """Produce a completed identity handoff from selected metadata, without rows."""
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired researched plan")
     accepted_memberships = accepted_memberships or {}
     facts, lookups, routes = {}, {}, {}
     for name, report in evidence.items():
@@ -276,6 +279,11 @@ def project(
     allow_report_memberships=False,
 ):
     """Fill unresolved dated positions, keeping all accepted positives intact."""
+    from libs.alpaca_security_lineage.inference_evidence import reject_assertions
+
+    reject_assertions(evidence, where="retired assertion projector")
+    if plan is not None:
+        raise ValueError("researched ownership plans are inadmissible for new inference")
     if plan is None and not any(facts_for(value) for value in evidence.values()):
         return reports
     if plan is None:

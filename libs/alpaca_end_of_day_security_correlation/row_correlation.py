@@ -261,12 +261,25 @@ class CorrelationCache:
         active_successor_prefixes=True,
         closed_prior_action_anchored_suffixes=True,
         stable_phase_handoffs=True,
-        sourced_succession_certificates=True,
-        sourced_rename_certificates=True,
-        public_common_certificates=True,
-        new_public_parent_continuations=True,
+        sourced_succession_certificates=False,
+        sourced_rename_certificates=False,
+        public_common_certificates=False,
+        new_public_parent_continuations=False,
         closed_departure_current_sources=True,
     ):
+        if any(
+            (
+                sourced_succession_certificates,
+                sourced_rename_certificates,
+                public_common_certificates,
+                new_public_parent_continuations,
+            )
+        ):
+            from .errors import SecurityCorrelationError
+
+            raise SecurityCorrelationError(
+                "researched assertion certificates are inadmissible for new inference"
+            )
         self.ownership_interval_rules = ownership_interval_rules
         self.row_correlation_rules = row_correlation_rules
         self.exact_same_symbol_handoffs = exact_same_symbol_handoffs
@@ -309,6 +322,7 @@ class CorrelationCache:
         self.accepted_rename_sources = {}
         self.accepted_rename_membership = None
         self._rename_membership_report = None
+        self.emit_empty_rename_membership = True
         self.selected_evidence = None
         self.rename_scope_complete = True
         self.closed_departure_current_sources = closed_departure_current_sources
@@ -316,6 +330,7 @@ class CorrelationCache:
         self._downloads = {}
         self._decisions = {}
         self._lineage = {}
+        self._provider_evidence_acceptance = {}
         self._name_change_sources = {}
         self._name_changes = {}
         self._continuity = {}
@@ -326,6 +341,19 @@ class CorrelationCache:
         self.accepted_current_source_ownership = {}
         self._current_source_ownership = {}
         self._session_consensus = {}
+
+    def provider_evidence(self, lineage):
+        """Accept fresh evidence once; every phase consumes the same object."""
+        from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence, accept_provider_evidence
+
+        if isinstance(lineage, ProviderEvidence):
+            return lineage
+        key = id(lineage)
+        if key not in self._provider_evidence_acceptance:
+            self._provider_evidence_acceptance[key] = (lineage, accept_provider_evidence(lineage))
+        # Chronology caches are bound to this exact producer input identity.
+        # Acceptance is retained by the owner; do not replace that identity.
+        return lineage
 
     def common_membership(self, lineage):
         if self._public_common_membership is None:
@@ -400,6 +428,8 @@ class CorrelationCache:
 
     def rename_membership_report(self, lineage):
         if not self.sourced_rename_certificates:
+            if self.emit_empty_rename_membership:
+                return {"version": 1, "certificates": [], "issues": []}
             return None
         if self._rename_membership_report is None:
             certificates, issues = self.rename_certificates(lineage)
@@ -423,7 +453,7 @@ class CorrelationCache:
                 )
             )
             self._rename_sources[symbol] = (
-                {**accepted[0], "last": max(accepted[0]["last"], accepted[1] or accepted[0]["last"])}
+                accepted[0]
                 if accepted is not None
                 else sourced_rename.source_history(symbol, self._rename_mappings[symbol], *args, **kwargs)
             )
@@ -484,6 +514,7 @@ class CorrelationCache:
         self._rename_sources = dict(established._rename_sources)
         self._rename_mappings = dict(established._rename_mappings)
         self._rename_histories = dict(established._rename_histories)
+        self._provider_evidence_acceptance = dict(established._provider_evidence_acceptance)
         self._continuity = dict(established._continuity)
         self._uuid_candidates = dict(established._uuid_candidates)
         self._sourced_successions = dict(established._sourced_successions)
@@ -507,6 +538,7 @@ class CorrelationCache:
 
     def lineage_analysis(self, lineage, *, include_action_anchored_current_suffix=False):
         """Build immutable evidence structure once for the complete rule group."""
+        lineage = self.provider_evidence(lineage)
         # Cache identity is safe only while the caller retains these immutable
         # inputs and the bound rules. DO NOT add filesystem freshness probes or
         # replay the analysis for each adjustment view; discard on input reload.
@@ -1637,6 +1669,11 @@ def correlate_download_rows(
     sourced_rename_histories=(),
     sourced_rename_mapping=None,
 ) -> dict[str, list[dict[str, Any]]]:
+    from libs.alpaca_security_lineage.inference_evidence import accept_provider_evidence
+
+    if sourced_rename_histories or sourced_rename_mapping is not None:
+        raise SecurityCorrelationError("researched rename source recipes are inadmissible for fresh rows")
+    lineage = cache.provider_evidence(lineage) if cache is not None else accept_provider_evidence(lineage)
     # This owner allocates rows from supplied intervals and bounded certificates.
     # Those proofs belong to the same selected group; DO NOT reacquire evidence
     # per row/view or promote a dependency link into identity membership. Output

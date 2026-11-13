@@ -42,7 +42,7 @@ from libs.alpaca_pricing_download.storage import (
 )
 
 from .active_suffix import _evaluate_symbol
-from .comparison import _compare_loaded_group
+from .comparison import _candidate_evidence, _compare_loaded_group, _select_provider_evidence
 from .contract import (
     LAB_AUDIT_BOUNDARY,
     LAB_SCHEMA_VERSION,
@@ -56,7 +56,7 @@ from .fallbacks import (
     CORRECTED_PROFILE,
     PUBLISHED_PROFILE,
 )
-from .policy import CompiledPolicy
+from .policy import CompiledPolicy, require_generic_candidate
 
 MAX_AUDIT_SECONDS = 3600
 MAX_GROUP_TRACE_ITEMS = 10
@@ -84,6 +84,28 @@ class _PreparedGroup:
     evidence_generations: dict[str, str]
     pricing_generations: dict[str, str]
     preliminary_rules: tuple[str, ...] = ()
+    inference_evidence: dict[str, dict[str, Any]] | None = None
+    auxiliary_evidence: dict[str, dict[str, Any]] | None = None
+
+
+def _group_evidence(group):
+    accepted = getattr(group, "inference_evidence", None)
+    if accepted is not None:
+        return accepted
+    # Direct diagnostic inputs have no stored producer selection authorizing
+    # reconstruction from legacy provenance.
+    evidence = {symbol: receipt["evidence"] for symbol, receipt in group.receipts.items()}
+    return _candidate_evidence(evidence, where="supplied audit evidence")
+
+
+def _group_auxiliary_evidence(group):
+    evidence = getattr(group, "auxiliary_evidence", None)
+    if evidence is None:
+        unavailable = getattr(group, "unavailable", None)
+        if unavailable is None:
+            unavailable = unavailable_pricing(next(iter(group.receipts.values()), {}))
+        evidence = {symbol: item["evidence"] for symbol, item in unavailable.items()}
+    return _candidate_evidence(evidence, where="supplied auxiliary audit evidence")
 
 
 class _Deadline:
@@ -216,6 +238,8 @@ def _validate_receipt_group(
     receipts: dict[str, dict[str, Any]],
     index: dict[str, Any],
     policy: CompiledPolicy,
+    *,
+    projection_cache=None,
 ) -> _PreparedGroup:
     available = tuple(symbol for symbol in group if symbol in index["symbols"])
     if not receipts or set(receipts) != set(available):
@@ -247,13 +271,22 @@ def _validate_receipt_group(
             raise PolicyLabError(f"{symbol}: receipt is not a complete reusable audit input")
         if index["symbols"][symbol].get("source_sha256") != expected_sources[symbol]:
             raise PolicyLabError(f"{symbol}: selector and receipt pricing generations differ")
+    projection_cache = {} if projection_cache is None else projection_cache
+    inference_evidence = _select_provider_evidence(
+        {symbol: receipts[symbol]["evidence"] for symbol in available}, cache=projection_cache
+    )
+    auxiliary_evidence = _select_provider_evidence(
+        {symbol: item["evidence"] for symbol, item in absent.items()}, cache=projection_cache
+    )
     return _PreparedGroup(
         symbols=available,
         receipts=receipts,
         unavailable=absent,
         receipt_generations={symbol: index["symbols"][symbol]["sha256"] for symbol in available},
-        evidence_generations={symbol: document_digest(receipts[symbol]["evidence"]) for symbol in available},
+        evidence_generations={symbol: document_digest(inference_evidence[symbol]) for symbol in available},
         pricing_generations=dict(sorted(expected_sources.items())),
+        inference_evidence=inference_evidence,
+        auxiliary_evidence=auxiliary_evidence,
     )
 
 
@@ -261,7 +294,7 @@ def _quality_prefilter(group: _PreparedGroup, policy: CompiledPolicy) -> bool:
     if policy.schema_version == 4:
         if len(group.symbols) < 2:
             return False
-        evidence = {symbol: receipt["evidence"] for symbol, receipt in group.receipts.items()}
+        evidence = _group_evidence(group)
         if policy.fallback_profile == PUBLISHED_PROFILE:
             return any(
                 may_have_duplicate_foreign_occupancy(evidence[symbol], symbol) for symbol in group.symbols
@@ -285,7 +318,7 @@ def _quality_prefilter(group: _PreparedGroup, policy: CompiledPolicy) -> bool:
         return False
     if not policy.evidence_rules or len(group.symbols) < 2:
         return False
-    evidence = {symbol: receipt["evidence"] for symbol, receipt in group.receipts.items()}
+    evidence = _group_evidence(group)
     local_reports = {symbol: None for symbol in evidence}
     for pair in _candidate_pairs(evidence):
         facts, _ = _facts_for_pair(
@@ -308,7 +341,20 @@ def _event_scope_prefilter(group: _PreparedGroup, policy: CompiledPolicy) -> lis
         receipt["versions"]["correlation"] >= 78 for receipt in group.receipts.values()
     ):
         return []
-    return affected_inputs(group.receipts)["reasons"]
+    evidence = _group_evidence(group)
+    auxiliary = _group_auxiliary_evidence(group)
+    receipts = {
+        symbol: {
+            **receipt,
+            "evidence": evidence[symbol],
+            "unavailable_pricing": {
+                name: {**item, "evidence": auxiliary[name]}
+                for name, item in unavailable_pricing(receipt).items()
+            },
+        }
+        for symbol, receipt in group.receipts.items()
+    }
+    return affected_inputs(receipts)["reasons"]
 
 
 def _suffix_prefilter(
@@ -316,11 +362,12 @@ def _suffix_prefilter(
     index: dict[str, Any],
     policy: CompiledPolicy,
 ) -> bool:
+    evidence = _group_evidence(group)
     if policy.schema_version == 4:
         if policy.fallback_profile == PUBLISHED_PROFILE:
             candidates = [
                 may_have_action_anchored_current_suffix(
-                    group.receipts[symbol]["evidence"],
+                    evidence[symbol],
                     allow_closed_prior=(
                         policy.implementation_correlation_version
                         >= CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION
@@ -354,7 +401,7 @@ def _suffix_prefilter(
     }
     _, facts, _, _ = _evaluate_symbol(
         symbol,
-        group.receipts[symbol]["evidence"],
+        evidence[symbol],
         view,
         report,
         evidence_sha256=group.evidence_generations[symbol],
@@ -658,6 +705,7 @@ def _run_audit(
     progress["index_candidate_group_count"] = len(index_candidate_groups)
 
     retained: list[_PreparedGroup] = []
+    projection_cache = {}
     selected_receipt_count = 0
     for group_symbols in index_candidate_groups:
         deadline.check("receipt loading and evidence prefilter")
@@ -667,7 +715,9 @@ def _run_audit(
             raise PolicyLabError(f"{group_symbols[0]}: selected receipt disappeared")
         selected_receipt_count += len(receipts)
         progress["selected_receipt_count"] = selected_receipt_count
-        prepared = _validate_receipt_group(group_symbols, receipts, index, policy)
+        prepared = _validate_receipt_group(
+            group_symbols, receipts, index, policy, projection_cache=projection_cache
+        )
         preliminary = _event_scope_prefilter(prepared, policy)
         if _quality_prefilter(prepared, policy):
             preliminary.append(
@@ -689,6 +739,8 @@ def _run_audit(
                     evidence_generations=prepared.evidence_generations,
                     pricing_generations=prepared.pricing_generations,
                     preliminary_rules=tuple(preliminary),
+                    inference_evidence=prepared.inference_evidence,
+                    auxiliary_evidence=prepared.auxiliary_evidence,
                 )
             )
             progress["preliminary_group_count"] = len(retained)
@@ -758,6 +810,8 @@ def _run_audit(
             selected = {
                 "inputs": {symbol: inputs[symbol] for symbol in group.symbols},
                 "receipts": group.receipts,
+                "inference_evidence": group.inference_evidence,
+                "auxiliary_evidence": group.auxiliary_evidence,
                 "boundaries": {symbol: boundaries[symbol] for symbol in group.symbols},
                 "receipt_generations": group.receipt_generations,
                 "evidence_generations": group.evidence_generations,
@@ -804,6 +858,7 @@ def audit(
     """Evaluate the current schema-v4 policy once across the full lineage selector."""
     if not isinstance(policy, CompiledPolicy):
         raise PolicyLabError("policy must be a compiled policy")
+    require_generic_candidate(policy)
     if policy.schema_version != 4 or policy.fallback_profile is None:
         raise PolicyLabError("all-lineage audit requires a current schema-v4 fallback policy")
     validate_change_log()

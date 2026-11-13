@@ -4,11 +4,15 @@ import time
 from pathlib import Path
 
 from libs.alpaca_lineage_build import storage
-from libs.alpaca_lineage_policy_lab.comparison import _compare_loaded_group, _load_group
+from libs.alpaca_lineage_policy_lab.comparison import (
+    _compare_loaded_group,
+    _load_group,
+    _select_provider_evidence,
+)
 from libs.alpaca_pricing_download.contract import symbol_label
 
 from . import accept_report
-from .policy import policy_applies, policy_applies_to_group, require_research_application_support
+from .policy import policy_applies, policy_applies_to_group, require_generic_policy
 
 
 def failure(error):
@@ -49,18 +53,17 @@ def evaluate_group(
 ):
     # Keep materialized inputs local to one call, including its exception path.
     # The returned comparison and failure strings retain no pricing objects.
+    require_generic_policy(policy)
+    require_generic_policy(control_policy)
     extra = {} if screen_record is None else {"held_receipts": screen_record["receipts"]}
+    if screen_record is not None:
+        extra["held_inference_evidence"] = _select_provider_evidence(
+            {name: receipt["evidence"] for name, receipt in screen_record["receipts"].items()}
+        )
     if screen_record is not None and "boundaries" in screen_record:
         extra["held_boundaries"] = screen_record["boundaries"]
     if accepted_store is not None:
         extra["accepted_store"] = accepted_store
-    if getattr(policy, "control_mode", "replay") in {"accepted_publication", "documented_scopes"}:
-        from .documented import materialize_sources, scoped_facts
-
-        if scoped_facts(policy, group):
-            extra["materialize_symbols"] = lambda receipts: materialize_sources(
-                policy, receipts, group, membership_pairs_handoff=(screen_record or {}).get("membership_pairs")
-            )
     with _load_group(store, seed, selection=held_selection(index, group), **extra) as selected:
         if screen_record is not None and "membership_pairs" in screen_record:
             selected["membership_pair_handoff"] = [
@@ -123,7 +126,11 @@ def run(
     reuse_report=None,
     metadata_handoff=None,
 ):
+    require_generic_policy(policy)
+    require_generic_policy(control_policy)
     started = time.monotonic()
+    if reuse_report is not None:
+        accept_report(reuse_report, "run", allow_previous=True)
     if metadata_handoff is not None:
         if not isinstance(metadata_handoff, dict):
             raise ValueError("selected metadata handoff must be an object")
@@ -193,12 +200,8 @@ def run(
         ):
             raise ValueError("selected metadata handoff has incompatible store, group or generation bindings")
         screened[tuple(group)] = {**value, **({"membership_pairs": []} if tuple(group) in unaffected else {})}
-    for group in list(unaffected):
-        if any(set(entry["symbols"]).intersection(group) for entry in getattr(policy, "documented_facts", ())):
-            del unaffected[group]
     reused = {}
     if reuse_report is not None:
-        accept_report(reuse_report, "run", allow_previous=True)
         if (
             reuse_report.get("mode") != "paired_same_inputs"
             or reuse_report.get("store") != str(store)
@@ -211,7 +214,7 @@ def run(
             raise ValueError("completed paired report has incompatible operation bindings")
         for result in reuse_report["groups"]:
             if not policy_applies_to_group(reuse_report.get("candidate_policy", {}), policy, result["group"]):
-                raise ValueError("completed paired report has changed candidate facts in its group")
+                raise ValueError("completed paired report has changed generic policy bindings")
             if any(
                 entries.get(source, {}).get("sha256") != generation
                 for source, generation in result["baseline"]["receipt_generations"].items()
@@ -235,7 +238,6 @@ def run(
                 results.append(reused[group])
                 carried.append(list(group))
                 continue
-            require_research_application_support(policy, control_policy, group)
             if group in unaffected:
                 proven.append(unaffected[group])
                 continue

@@ -32,26 +32,6 @@ def correlate(
     closed_report_loader=None,
 ):
     """Run the shared compiled policy against one already-loaded complete group."""
-    from libs.alpaca_security_lineage.sourced_facts import MARKET_KIND, items
-
-    if policy.implementation_correlation_version < 87 and any(
-        fact["facts"]["schema_version"] in (3, 4, 5)
-        for facts in (*evidence.values(), *(auxiliary_evidence or {}).values())
-        for fact in items(facts, MARKET_KIND)
-    ):
-        raise LineageError("documented public-security ownership requires correlation policy 87")
-    if policy.implementation_correlation_version < 90 and any(
-        fact["facts"]["schema_version"] == 5
-        for facts in (*evidence.values(), *(auxiliary_evidence or {}).values())
-        for fact in items(facts, MARKET_KIND)
-    ):
-        raise LineageError("documented public holding exchange requires correlation policy 90")
-    if policy.implementation_correlation_version < 89 and any(
-        fact["facts"]["schema_version"] == 4
-        for facts in (*evidence.values(), *(auxiliary_evidence or {}).values())
-        for fact in items(facts, MARKET_KIND)
-    ):
-        raise LineageError("documented public reclassification requires correlation policy 89")
     # Correlation owns NEW identity decisions. Inputs/evidence already crossed
     # their producer boundaries; this adapter must not reopen paths to authenticate
     # them, and readers must consume its published assignments instead of rerunning it.
@@ -71,44 +51,6 @@ def correlate(
         closed_evidence=closed_evidence,
         closed_report_loader=closed_report_loader,
     )
-    if policy.implementation_correlation_version >= 83:
-        from libs.alpaca_end_of_day_security_correlation.market_occupancy import project
-
-        reports = project(
-            inputs,
-            reports,
-            evidence,
-            auxiliary_evidence,
-            allow_adjustment_continuity=policy.implementation_correlation_version >= 84,
-            inactive_memberships={
-                name: getattr(inputs[name], "accepted_identity_memberships", None) or {}
-                for name, report in reports.items()
-                if report["source_row_count"] == 0
-            },
-        )
-    if policy.implementation_correlation_version >= 86:
-        from libs.alpaca_end_of_day_security_correlation.recapitalizations import project as recapitalizations
-
-        reports = recapitalizations(inputs, reports, evidence)
-    if policy.implementation_correlation_version >= 87:
-        from libs.alpaca_end_of_day_security_correlation.documented_markets import project as documented
-
-        reports = documented(
-            inputs,
-            reports,
-            evidence,
-            allow_containing_membership=policy.implementation_correlation_version >= 88,
-            allow_reclassification=policy.implementation_correlation_version >= 89,
-            allow_holding_exchange=policy.implementation_correlation_version >= 90,
-            refine_accepted_dates=policy.implementation_correlation_version >= 91
-            or policy.implementation_correlation_version >= 90
-            and any(
-                fact["facts"]["schema_version"] == 5
-                for report in evidence.values()
-                for fact in items(report, MARKET_KIND)
-            ),
-            allow_report_memberships=policy.implementation_correlation_version >= 91,
-        )
     return reports
 
 
@@ -439,6 +381,33 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for kind, relative in boundary_paths(anchor).items()
         },
     }
+    if resume_closed:
+        # These are closed prefix results, not evidence or recipes for new rows.
+        # Preserve their original bounds; the fresh cache never certifies or
+        # extends researched chronology from them.
+        for key in (
+            "sourced_rename_ownership",
+            "sourced_rename_membership",
+            "public_common_continuation_membership",
+            "public_common_continuation_ownership",
+            "documented_identity_membership",
+            "security_relations",
+        ):
+            prior = previous.get(key)
+            current = receipt.get(key)
+            if prior and (
+                not current
+                or key
+                in {
+                    "sourced_rename_membership",
+                    "public_common_continuation_membership",
+                    "documented_identity_membership",
+                    "security_relations",
+                }
+                and isinstance(current, dict)
+                and not any(current.get(field) for field in ("certificates", "relations", "owners", "issues"))
+            ):
+                receipt[key] = prior
     if resume_closed and (
         "numerical_source_equivalence" in previous or "numerical_source_equivalence_version" in previous
     ):

@@ -66,6 +66,8 @@ def project_plan(inputs, reports, evidence, plan, *, refine_fact_ids=(), selecte
     None selects every owner; an empty set preserves every accepted positive.
     Allocation of unresolved rows remains bound to the plan's source routes.
     """
+    if plan:
+        raise ValueError("researched ownership plans are inadmissible for new inference")
     owners = (
         plan["owners"]
         if refine_fact_ids is None
@@ -94,6 +96,8 @@ def project_plan(inputs, reports, evidence, plan, *, refine_fact_ids=(), selecte
 
 def apply_updates(inputs, reports, evidence, receipts, entries):
     """Bind only newly asserted chronology and retain completed old owner plans."""
+    if entries:
+        raise ValueError("researched factual updates are inadmissible for new inference")
     evidence = dict(evidence)
     plans = []
     affected = set()

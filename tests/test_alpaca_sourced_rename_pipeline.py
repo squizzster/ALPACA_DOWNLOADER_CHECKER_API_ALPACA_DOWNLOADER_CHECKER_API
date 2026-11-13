@@ -1,4 +1,4 @@
-"""Sourced same-security history keeps its decisions through actual publication."""
+"""Completed rename ownership survives consumers and append without researched inference."""
 
 import copy
 import tempfile
@@ -149,6 +149,82 @@ class SourcedRenamePipelineTests(unittest.TestCase):
         self.assertNotIn("EARLY", {call[0] for call in client.calls})
         return result
 
+    def seed_closed(self, *, interrupted=False):
+        """Publish literal completed ownership output without researched ingress.
+
+        Consumer/continuation tests start at this accepted boundary. The fixture
+        never calls a retired certifier or makes its old explanation new evidence.
+        """
+        identity = security_identity.security_identity_for_alpaca_assets(
+            ["old-id", "current-id"], [], tickers=["EARLY", "PRIOR", "NEXT"], basis="completed_source_fixture"
+        ).as_report_object()
+        correlate = pipeline.correlate
+
+        def completed_outputs(*args, **kwargs):
+            reports = correlate(*args, **kwargs)
+            report = reports["NEXT"]
+            positive = []
+            for adjustment, rows in args[1]["NEXT"].views.items():
+                for first, last, label, owner, cusip in (
+                    ("2024-01-01", "2024-06-12", "EARLY", "old-id", "111111111"),
+                    ("2024-06-12", "2024-06-17", "PRIOR", "old-id", "111111111"),
+                    ("2024-06-17", None, "NEXT", "current-id", "222222222"),
+                ):
+                    selected = [
+                        (index, row)
+                        for index, row in enumerate(rows, 1)
+                        if first <= row[0][:10] and (last is None or row[0][:10] < last)
+                    ]
+                    if not selected:
+                        continue
+                    positive.append(
+                        {
+                            "adjustment": adjustment,
+                            "row_start": selected[0][0],
+                            "row_end": selected[-1][0],
+                            "row_count": len(selected),
+                            "first_timestamp": selected[0][1][0],
+                            "last_timestamp": selected[-1][1][0],
+                            "historical_symbol": label,
+                            "security_identity": identity,
+                            "canonical_security": {
+                                "security_id": identity["security_id"],
+                                "alpaca_asset_id": owner,
+                                "cusip": cusip,
+                            },
+                            "ticker_ownership_interval": {
+                                "historical_symbol": label,
+                                "start_date_inclusive": first,
+                                "end_date_exclusive": last,
+                                "asset_id": owner,
+                                "cusip": cusip,
+                            },
+                            "correlation_method": "completed_source_scope",
+                            "correlation_rule": {"name": "completed_source_fixture"},
+                            "warnings": [],
+                        }
+                    )
+            report["correlated"] = {
+                "row_count": sum(segment["row_count"] for segment in positive),
+                "segments": positive,
+            }
+            report["uncorrelated"] = {"row_count": 0, "segments": []}
+            return reports
+
+        with (
+            patch.object(pipeline, "correlate", side_effect=completed_outputs),
+            patch.object(
+                sourced_rename, "certify_group", side_effect=AssertionError("fixture certified research")
+            ),
+            patch.object(
+                sourced_rename, "source_history", side_effect=AssertionError("fixture derived researched bounds")
+            ),
+            patch.object(pipeline, "download_pricing", side_effect=AssertionError("fixture requested prices")),
+        ):
+            result = pipeline.run_lineage(self.store, ["NEXT"], identity_client=self.client())
+        self.assertEqual(1 if interrupted else 0, result["failed"], result)
+        return result
+
     def receipt(self, symbol="NEXT"):
         return storage.read_receipt(self.root, symbol, storage.read_index(self.root))
 
@@ -210,7 +286,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
             yield
 
     def test_complete_publication_unifies_identity_with_exact_dated_labels(self):
-        self.build(submit=True)
+        self.seed_closed()
         receipt = self.receipt()
         self.assertEqual(receipt["unresolved_rows"], 0)
         self.assertEqual(receipt["correlated_rows"], len(self.rows["NEXT"]) * 8)
@@ -238,7 +314,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
             self.build()
 
     def test_append_keeps_same_id_and_historical_decisions_despite_unresolved_peer(self):
-        self.build(submit=True)
+        self.seed_closed()
         before = self.receipt()
         self.append()
         with self.forbid_old_decisions():
@@ -246,23 +322,22 @@ class SourcedRenamePipelineTests(unittest.TestCase):
         after = self.receipt()
         self.assertEqual(before["identity_memberships"], after["identity_memberships"])
         self.assertEqual(after["unresolved_rows"], 0)
-        self.assertEqual(after["sourced_rename_ownership"]["last"], "2024-06-24")
+        self.assertIsNone(after["sourced_rename_ownership"])
+        self.assertEqual("2024-06-25", after["processed_through"][:10])
 
-    def test_new_facts_repair_existing_publication_without_changing_prices(self):
+    def test_new_facts_reject_before_reopening_existing_publication(self):
         self.build()
         before = self.receipt()
         self.assertGreater(before["unresolved_rows"], 0)
-        self.build(submit=True)
-        after = self.receipt()
-        self.assertEqual(after["source_sha256"], before["source_sha256"])
-        self.assertEqual(after["unresolved_rows"], 0)
-        self.assertEqual(
-            [item["security_id"] for item in after["identity_memberships"]],
-            [security_id_for_alpaca_asset_ids(["old-id", "current-id"])],
-        )
+        with patch.object(
+            pipeline, "accept_context", side_effect=AssertionError("accepted publication reopened")
+        ):
+            with self.assertRaisesRegex(Exception, "inadmissible"):
+                self.build(submit=True)
+        self.assertEqual(before, self.receipt())
 
     def test_public_reader_keeps_one_continuing_id_and_separate_reused_label(self):
-        self.build(submit=True)
+        self.seed_closed()
         public_id = self.receipt()["identity_memberships"][0]["security_id"]
         with (
             patch.object(
@@ -295,9 +370,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
 
     def test_journal_recovery_consumes_completed_identity_and_source_history(self):
         with patch.object(storage, "finish_publication", side_effect=RuntimeError("interrupted rename journal")):
-            failed = pipeline.run_lineage(
-                self.store, ["NEXT"], identity_client=self.client(), event_supplements=[self.supplement]
-            )
+            failed = self.seed_closed(interrupted=True)
         self.assertEqual(failed["failed"], 1, failed)
         self.assertTrue((self.root / ".pending.json").exists())
         with (
@@ -313,7 +386,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
         self.assertEqual(self.receipt()["unresolved_rows"], 0)
 
     def test_weekend_rollover_uses_producers_actual_changed_session(self):
-        self.build(submit=True)
+        self.seed_closed()
         self.append("2024-06-29")
         with self.forbid_old_decisions():
             self.build()
@@ -325,10 +398,11 @@ class SourcedRenamePipelineTests(unittest.TestCase):
             self.build()
         after = self.receipt()
         self.assertEqual(before["identity_memberships"], after["identity_memberships"])
-        self.assertEqual(after["sourced_rename_ownership"]["last"], "2024-07-01")
+        self.assertIsNone(after["sourced_rename_ownership"])
+        self.assertEqual("2024-07-02", after["processed_through"][:10])
 
     def test_actual_new_prior_month_row_is_not_hidden_by_calendar_assumptions(self):
-        self.build(submit=True)
+        self.seed_closed()
         self.append("2024-06-29")
         self.build()
         before = self.receipt()
@@ -358,8 +432,8 @@ class SourcedRenamePipelineTests(unittest.TestCase):
         self.assertEqual(selected, ["current_year", "current_month"])
         self.assertEqual([row[0][:10] for row in view.views["raw"]], ["2024-06-30", "2024-07-01"])
 
-    def test_price_replacement_renews_source_proof_without_repeating_membership(self):
-        self.build(submit=True)
+    def test_price_replacement_cannot_reopen_a_researched_source_recipe(self):
+        self.seed_closed()
         before = self.receipt()
         changed = copy.deepcopy(self.rows["NEXT"])
         for field in ("o", "h", "l", "c", "vw"):
@@ -372,14 +446,14 @@ class SourcedRenamePipelineTests(unittest.TestCase):
             patch.object(sourced_rename, "source_history", wraps=sourced_rename.source_history) as proof,
         ):
             self.build()
-        self.assertEqual(sum(call.args[0] == "NEXT" for call in proof.call_args_list), 1)
+        self.assertEqual(0, proof.call_count)
         after = self.receipt()
         self.assertNotEqual(before["source_sha256"], after["source_sha256"])
-        self.assertEqual(before["identity_memberships"], after["identity_memberships"])
-        self.assertEqual(after["unresolved_rows"], 0)
+        self.assertIsNone(after["sourced_rename_ownership"])
+        self.assertGreater(after["unresolved_rows"], 0)
 
     def test_changed_mapping_cannot_inherit_source_ownership(self):
-        self.build(submit=True)
+        self.seed_closed()
         download_pricing(
             self.store,
             "NEXT",
@@ -391,7 +465,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
         with patch.object(sourced_rename, "source_history", wraps=sourced_rename.source_history) as proof:
             self.build()
         self.assertIsNone(self.receipt()["sourced_rename_ownership"])
-        self.assertEqual(sum(call.args[0] == "NEXT" for call in proof.call_args_list), 1)
+        self.assertEqual(0, proof.call_count)
 
     def test_empty_holiday_advance_does_not_reopen_completed_work(self):
         self.store = self.store.parent / "holiday-store"
@@ -405,7 +479,7 @@ class SourcedRenamePipelineTests(unittest.TestCase):
         }
         for symbol, rows in self.rows.items():
             download_pricing(self.store, symbol, "2024-06-19", from_date="2024-01-01", client=FakeClient(rows))
-        self.build(submit=True)
+        self.seed_closed()
         before = self.receipt()
         for symbol, rows in self.rows.items():
             download_pricing(self.store, symbol, "2024-06-20", client=FakeClient(rows))
