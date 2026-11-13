@@ -19,7 +19,14 @@ from .pipeline import run_lineage
 from .refresh import refresh_required_history
 from .registration import command_policy
 from .update import update_everything
-from .work_contract import WorkPolicy, acquisition_fingerprint, auxiliary_work, pricing_target
+from .work_contract import (
+    WorkPolicy,
+    acquisition_fingerprint,
+    auxiliary_work,
+    numerical_satisfied,
+    pricing_target,
+    restriction,
+)
 
 
 @traced("recovery")
@@ -218,6 +225,51 @@ def _prepare_locked(
     with storage.writer_lock(store, accepted_store=context.accept_store()), storage.publication_lock(root):
         context.index = storage.read_index(root)
         require_complete(context.index)
+    numerical = universe_state.read_numerical_work(store)
+    if numerical["work"]:
+        from .numerical_recovery import resume as resume_numerical
+
+        deferred = [
+            {"symbol": name, "reason": reason}
+            for name, item in numerical["work"].items()
+            if not numerical_satisfied(item, context.index["symbols"].get(name, {}).get("projection"))
+            and (reason := restriction(item, end, retry_blocked=retry_blocked))
+        ]
+        numerical_policy = WorkPolicy(store, context.index, numerical["work"], deferred, end, context=context)
+        finished, failed, visited = [], [], set()
+        for name in sorted(numerical["work"]):
+            required = numerical["work"][name]["required_numerical_completion"]
+            operation_id = required.get("operation_id") if isinstance(required, dict) else None
+            visit_key = operation_id or ("invalid", name)
+            if visit_key in visited:
+                continue
+            visited.add(visit_key)
+            try:
+                selection = numerical_policy.numerical_selection(name)
+                if selection is None:
+                    continue
+                numerical_policy.check(selection.symbols)
+                finished.append(
+                    resume_numerical(selection, context=context, work_policy=numerical_policy, progress=progress)
+                )
+            except (RuntimeError, OSError, ValueError) as error:
+                affected = set(numerical["work"][name].get("required_group", ())) | {name}
+                numerical_policy.fail(affected, error, stage="numerical_completion")
+                failed.append({"symbols": sorted(affected), "error": str(error)})
+        numerical_policy.acknowledge()
+        result["stages"]["numerical_completion"] = {
+            "results": finished,
+            "failed": len(failed),
+            "failures": failed,
+        }
+        if failed:
+            result["failed"] += len(failed)
+            # The selected requirement below excludes only its affected group
+            # from maintenance. Independent groups can still complete. A frozen
+            # global journal must finish before any later publication proceeds.
+            if storage.path_at(root, ".pending.json").exists():
+                result["blockers"] = ["pending numerical publication must finish before new work"]
+                return result
     from libs.alpaca_serving_catalogue import work as serving_work
 
     pending_serving = serving_work.read(store)
@@ -395,6 +447,10 @@ def _prepare_locked(
         end,
         context=context,
         completed_work=accepted["state"]["work"],
+    )
+    policy.command_failures.extend(
+        {"stage": "numerical_completion", **failure}
+        for failure in result["stages"].get("numerical_completion", {}).get("failures", ())
     )
     # Reuse the accepted work policy's graph instead of reconstructing the
     # entire membership graph just to enforce its selected storage scope.

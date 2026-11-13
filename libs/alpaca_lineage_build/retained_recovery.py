@@ -87,6 +87,10 @@ class RecoverySelection:
 def load_selection(path, store):
     """Accept one explicit versioned scope; saved comparisons need no replay."""
     value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(value, dict) and value.get("boundary") == "alpaca_lineage_numerical_recovery":
+        from .numerical_recovery import accept_selection as accept_numerical
+
+        return accept_numerical(value, store)
     if isinstance(value, dict) and value.get("boundary") == "alpaca_retained_candidate_handoff":
         from .prepared_recovery import accept_candidate
 
@@ -154,6 +158,40 @@ def recover(store, selection_path, *, plan=False, progress=None, selection=None)
         raise LineageError("retained recovery selection belongs to another store")
     context = accept_context(store)
     universe_state.require_initialized(store)
+    from .numerical_recovery import NumericalRecoverySelection, resume
+
+    if isinstance(selection, NumericalRecoverySelection):
+        if plan:
+            if context.accept_correlation_policy().semantic_sha256 != selection.policy_sha256:
+                raise LineageError("numerical recovery policy changed from selected scope")
+            root = context.accept_store().root
+            with storage.publication_lock(root):
+                index = context.select_index(root)
+            pending, completed = selection.select(index)
+            return {
+                "mode": "plan",
+                "completion_mode": "numerical_only",
+                "selected_groups": len(selection.groups),
+                "selected_symbols": len(selection.symbols),
+                "pending_groups": len(pending),
+                "completed_groups": len(completed),
+                "symbols": sorted(selection.symbols),
+                "provider_requests": 0,
+                "pricing_writes": 0,
+            }
+        with (
+            universe_state.update_lock(store),
+            selected_work(store, selection.symbols, phase="numerical_lineage_recovery"),
+            operation(store),
+        ):
+            result = resume(selection, context=context, progress=progress, enroll=True)
+            from libs.alpaca_serving_catalogue.producer import maintain
+
+            serving = maintain(store, symbols=selection.symbols, context=context, progress=progress)
+            result["serving_catalogue"] = serving
+            result["failed"] += serving["failed"]
+            result["complete"] = serving["complete"]
+            return result
     scope = {
         "selected_groups": len(selection.groups),
         "selected_symbols": len(selection.symbols),

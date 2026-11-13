@@ -211,5 +211,10 @@
     "modifications": [
       "Consume an explicitly supplied completed serving-work selection in status/planning after owning recovery, preserving its pending generations without rereading the queue."
     ]
+  },
+  {
+    "modifications": [
+      "Consume version-2 numerical source revisions with an explicit producer guarantee of unchanged dated labels, retaining the accepted label projection and equal-session numerical checks while preserving version-1 relabelling behavior."
+    ]
   }
 ]

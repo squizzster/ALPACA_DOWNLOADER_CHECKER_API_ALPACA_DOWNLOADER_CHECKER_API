@@ -57,7 +57,14 @@ def select_revisions(group, previous, inputs, offsets, completed):
                     raise ValueError("source revision date assembly differs from accepted raw positions")
             if not set(revision["sessions"][pid]) <= set(dates):
                 raise ValueError("source revision requires owning projection for a changed session grid")
-            projected = project_dated_labels(record, revision["identity_episodes"][pid], dates)
+            # Numerical-only completion carries the accepted label projection.
+            # Its producer validated the new selected observations' labels once;
+            # do not reconstruct the unchanged historical ranges at a consumer.
+            projected = (
+                record
+                if revision.get("version") == 2 and revision.get("labels_unchanged") is True
+                else project_dated_labels(record, revision["identity_episodes"][pid], dates)
+            )
             result[pid] = {
                 "rows": {
                     source: {view: item["rows"] for view, item in old["views"].items()}

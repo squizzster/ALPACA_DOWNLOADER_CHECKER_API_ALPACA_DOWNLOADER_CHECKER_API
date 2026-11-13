@@ -153,6 +153,16 @@ prices, rerun correlation or numerical selection, or rebuild assignment projecti
 prepared outputs block publication. The same generation and mapping checks apply. Selected serving maintenance
 follows publication; generate a new selected [CSV export](exports.md#per-identity-csv-export) to consume it.
 
+For a diagnosed numerical-source conflict with accepted ownership, use the same commands with an
+`alpaca_lineage_numerical_recovery` selection, schema version 1 and mode `numerical_only`.
+The [numerical-only contract](technical-contracts.md#numerical-only-completion) defines the exact group,
+generation and boundary-local all-view row scopes. This owner completes numerical choices and publishes
+their result while retaining accepted ownership, membership and unaffected history. It makes no provider
+requests or pricing writes; a required mapping correction remains explicit owning work. Completed equality
+and held selected bundles carry into serving without another comparison or payload read. Ordinary update can
+finish explicitly enrolled selections through the existing work state; it does not discover or enroll
+unreviewed legacy conflicts automatically. An unchanged retry skips completed work before its source bodies.
+
 ## Serving catalogue maintenance
 
 ```bash

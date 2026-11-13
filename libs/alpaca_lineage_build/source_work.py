@@ -352,9 +352,11 @@ def rebind_retained_report(report, previous, memberships):
     }
 
 
-def assignment_documents(root, previous, cache):
+def assignment_documents(root, previous, cache, *, kinds=None):
     result = {}
     for kind, reference in previous["boundaries"].items():
+        if kinds is not None and kind not in kinds:
+            continue
         key = previous["symbol"], kind, reference["sha256"]
         if key not in cache:
             handoff = selected(previous, kind)
@@ -472,9 +474,9 @@ def accepted_report(view, plan, root, cache):
     return view.accepted_report
 
 
-def retained_ownership_report(prior, local, memberships, root, cache):
+def retained_ownership_report(prior, local, memberships, root, cache, *, kinds=None):
     """Assemble accepted row decisions in complete-source positions, without prices."""
-    documents = assignment_documents(root, prior, cache)
+    documents = assignment_documents(root, prior, cache, kinds=kinds)
     # These logical input identities already belong to the selected pricing
     # handoff. Carry the same provenance on both descriptors and segments: peer
     # rules consume it alongside held rows, without hashing or reopening prices.
@@ -503,6 +505,13 @@ def retained_ownership_report(prior, local, memberships, root, cache):
     for adjustment in ADJUSTMENTS:
         offset = 0
         for kind in ("completed_years", "current_year", "current_month"):
+            if kind not in documents:
+                continue
+            if kinds is not None:
+                # The accepted compact handoff already gives full-source
+                # positions. A selected boundary does not need earlier bodies
+                # reopened merely to count their rows again.
+                offset = prior["serving_ownership"]["offsets"][adjustment][kind]
             entry = next(item for item in documents[kind]["adjustments"] if item["adjustment"] == adjustment)
             for old in entry["segments"]:
                 if kind == "current_year" and old["from"][:7] >= prior["anchor_month"]:

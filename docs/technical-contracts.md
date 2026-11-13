@@ -103,6 +103,73 @@ capabilities fail into their owning work. Preparation performs no storage I/O or
 Its completed plan preserves assignment bodies and retargets only pricing bindings; publication checks the
 named generations under group locks. Changed values remain new serving inputs on the corrected date.
 
+### Numerical-only completion
+
+The same explicit `lineage recover --selection` entrypoint accepts a version-1 selection with boundary
+`alpaca_lineage_numerical_recovery` and mode `numerical_only`. It binds the absolute store, authorized
+`correlation_policy_sha256` and complete groups with sorted `members`, `receipt_generations` and
+`pricing_generations`. Each group's `scopes` maps a selected source to boundary-local intervals naming
+`adjustment`, `boundary`, `public_id`, `row_start` and `row_end`. Positions are one-based and inclusive;
+the selected counterpart scope must cover all eight views. Empty peers remain named group members without
+invented observations. A scope selects numerical work, not a different owner or a research assertion.
+
+The [numerical completion owner](../libs/alpaca_lineage_build/numerical_completion.py) consumes accepted
+assignments and the retained prices at those selected positions. It applies the shared numerical selector
+once, preserving ownership, membership, dated labels and choices outside the admitted intervals. Legacy
+`selected` flags inside a diagnosed conflicting scope cannot freeze that conflict into the new result.
+Retained researched `observation_authority` remains inspectable provenance; it is excluded from the
+reopened numerical contest. Accepted owners, dated labels and full-source routes remain completed inputs.
+Unknown capabilities are not inferred from serving ownership or coverage counts. Missing counterpart views,
+ambiguous numerical authority and required pricing-mapping corrections stop completion without publishing
+a replacement or acquiring prices.
+
+The scope must include every retained observation that could compete on its opened identity and dates.
+Before price assembly,
+compact accepted row extents and choice runs exclude empty or disjoint omitted branches; issuer chronology
+alone cannot prove an observation absent. An omitted peer or branch with unknown overlap rejects the scope
+without opening its assignment body. Selected assignment endpoints also reject a known omitted competitor
+before prices. For an included partial segment, the owner closes its remaining positions against the
+opened dates using only selected timestamps and the already-required adjacent cut timestamps, before
+numerical selection. This permits a competing prefix inside a longer accepted segment while retaining its
+later suffix. Uncertain omitted-branch overlap can reject a scope even when a containing segment's wider
+bounds overestimate the selected dates; the owner never expands the selection or audits outside history.
+
+Only selected sources and assignment branches are opened. Accepted receipt summaries and full-source
+observation routes supply the remaining membership and authority metadata; an absent required route
+requires its owning metadata preparation rather than ranking a source from clipped rows. Empty peers and
+unselected assignment branches remain closed. A scope containing an applicable completed source-equivalence
+decision is rejected before numerical payload reads: its existing winner and equality belong to the direct
+carry owner, not another contest. Original donor receipt tokens survive metadata publication. Accepted
+pricing ancestry can establish that a changed generation preserves an old decision through its date;
+missing ancestry or an uncertain interior overlap does not establish invalidation: completion rejects the
+scope and requires the existing carry owner. Proven changes affecting the decision's date can reopen the
+affected contest, while disjoint completed equivalence decisions remain carried forward.
+
+The owning recovery path retains the completed choice, exact equality outcomes, selected eight-view bundles
+and constructed publication while its input bindings apply. Publication uses the existing journal and the
+bounded numerical-source revision contract. Complete equality can retain the accepted serving outcome;
+different newly selected values receive only their dated checks. A version-2 numerical revision can declare
+`labels_unchanged: true` only after its producer establishes that the selected label union matches the
+accepted dated-label projection. Serving then retains that checkpoint's session dates and ticker ranges;
+it does not reconstruct the same label projection. Version-1 revisions retain their existing relabelling
+semantics. The stored pricing, lineage-format and serving-eligibility policy versions are unchanged.
+
+Each selected identity requires its applicable accepted serving checkpoint and dated-label projection.
+Their absence selects owning preparation; this mode cannot manufacture a prior numerical outcome or use
+ownership alone as numerical approval. Completion is bound to the exact selection and published through
+the owning journal. An unchanged retry
+consumes its completion before receipt or payload reads; interrupted installation consumes frozen outputs
+without repeating numerical selection or output construction. Actual receipt, pricing, mapping, membership,
+policy or selected-scope changes invalidate the affected work. A completed ownerless assessment remains a
+separate nonblocking disposition; missing or inconsistent technical publication capability is not ownership
+evidence.
+
+Ordinary update consumes numerical-only selections explicitly enrolled in its existing work state before
+ordinary pricing and lineage work. Direct history/lineage entrypoints drain matching enrolled work before
+unchanged-input continuation. This neither discovers legacy conflicts nor selects every absent optional
+handoff: a diagnostic selection defines the scope. Diagnostic inspection may read the source data needed to
+establish that scope; application execution still preserves applicable completed handoffs.
+
 ## Standalone artifacts
 
 Paths are relative to the standalone store:
@@ -212,7 +279,7 @@ An unmarked legacy checkpoint may assemble only its selected raw dates after tho
 projection missing dates requires owning recovery. This consumes a completed projection and authorizes neither
 new market assertions, numerical reselection nor UUID unions.
 
-`numerical_source_revision_version: 1` declares the separate bounded source-choice result. It binds prior
+`numerical_source_revision_version: 1` or `2` declares the separate bounded source-choice result. It binds prior
 receipt/pricing generations, exact changed sessions, selected sources, contributing-source membership and
 the preserved session grid. All outside choices remain accepted. Its `numeric_reuse_sessions` carries the
 completed complete-bundle equality result into serving; those values require no new numerical checks.
@@ -223,6 +290,8 @@ authorize a full-history audit. The regular source and historical-label consumer
 projection may supply labels and unchanged artifacts to a later adjustment refinement. Only its invalidated
 numerical scope is selected again; final revisions compare against the actual published baseline. Returning
 to those accepted source choices produces a label-only handoff and no new numerical checks.
+Version 2 carries the unchanged-label capability described in
+[numerical-only completion](#numerical-only-completion); version 1 retains its existing label projection.
 
 Ordinary source work separately publishes `numerical_source_equivalence_version: 1` and its
 `numerical_source_equivalence` projection when the original numerical selection establishes an equal

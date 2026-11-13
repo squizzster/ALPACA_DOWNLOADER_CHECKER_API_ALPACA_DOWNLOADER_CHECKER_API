@@ -228,6 +228,28 @@ class ScopedSourceServingTests(TestCase):
         with self.assertRaisesRegex(LineageError, "source revision"):
             validate_handoff(malformed)
 
+    def test_label_preserving_revision_requires_its_declared_producer_guarantee(self):
+        from libs.alpaca_lineage_build.continuation import validate_handoff
+        from libs.alpaca_lineage_build.contract import document_digest
+
+        with recovery_handoffs.operation(self.store):
+            self.apply()
+        root = self.store / "end_of_day/lineage"
+        receipt = storage.read_receipt(root, "MAIN", storage.read_index(root))
+        receipt["numerical_source_revision_version"] = 2
+        revision = receipt["numerical_source_revision"]
+        revision["version"] = 2
+        with self.assertRaisesRegex(LineageError, "source revision"):
+            validate_handoff(receipt)
+        revision["labels_unchanged"] = True
+        revision["id"] = document_digest({key: value for key, value in revision.items() if key != "id"})
+        validate_handoff(receipt)
+        for invalid in (False, None, 1):
+            with self.subTest(invalid=invalid):
+                revision["labels_unchanged"] = invalid
+                with self.assertRaisesRegex(LineageError, "source revision"):
+                    validate_handoff(receipt)
+
     def test_downstream_failure_keeps_completed_revision_validation(self):
         with recovery_handoffs.operation(self.store):
             self.apply()

@@ -19,6 +19,8 @@ from libs.alpaca_lineage_build.assignment_handoff import AcceptedObservationChoi
 from libs.alpaca_lineage_build.context import HistoryScope
 from libs.alpaca_lineage_build.correlation_policy import CompiledPolicy
 from libs.alpaca_lineage_build.market_assignments import CompletedMarketProjection
+from libs.alpaca_lineage_build.numerical_completion import NumericalCompletion, NumericalInput
+from libs.alpaca_lineage_build.numerical_recovery import NumericalRecoveryGroup, NumericalRecoverySelection
 from libs.alpaca_lineage_build.observation_carry import ChoiceRun, RetainedChoices
 from libs.alpaca_lineage_build.policy_active_suffix import ActiveSuffixRule
 from libs.alpaca_lineage_build.policy_evidence_quality import EvidenceQualityRule
@@ -80,6 +82,10 @@ DATACLASSES = {
         PublishedPricingEvidence,
         AcquisitionFailure,
         PreparedCandidate,
+        NumericalCompletion,
+        NumericalInput,
+        NumericalRecoveryGroup,
+        NumericalRecoverySelection,
         SourceWorkPlan,
         PricingInput,
         MetadataSourceControl,
@@ -390,7 +396,16 @@ class Decoder:
             cls = DATACLASSES[kind]
             if set(record["fields"]) != {f.name for f in fields(cls)}:
                 raise HandoffError("incomplete producer record")
-            result = cls(**{k: decode(v) for k, v in record["fields"].items()})
+            restored = {k: decode(v) for k, v in record["fields"].items()}
+            if cls in (NumericalCompletion, NumericalInput, NumericalRecoveryGroup, NumericalRecoverySelection):
+                # The owning numerical ingress already accepted this scope and
+                # these completed values. Restoration only lends their fields;
+                # no constructor, normalization or producer decision runs here.
+                result = object.__new__(cls)
+                for key, value in restored.items():
+                    object.__setattr__(result, key, value)
+            else:
+                result = cls(**restored)
             if isinstance(result, SourceWorkPlan):
                 require_generic_plan(result)
             extras = record.get("extras", {})

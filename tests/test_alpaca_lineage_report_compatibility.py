@@ -67,6 +67,13 @@ def historical_bindings():
             }
             for lineage in (101, 102)
         ),
+        {
+            "debug": 9,
+            "policy_lab": 23,
+            "correlation_runtime": 97,
+            "lineage_runtime": 104,
+            "membership_refinement": producer,
+        },
     ]
 
 

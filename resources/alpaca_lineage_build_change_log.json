@@ -614,5 +614,10 @@
     "modifications": [
       "Select legacy membership-transfer recovery only for incomplete positive or unknown transfer status; an explicitly absent transfer on a peer cannot reopen completed transfer handoffs or rebind them to an obsolete serving checkpoint. Retain full dependency scope, genuine generation rejection and unknown-state recovery."
     ]
+  },
+  {
+    "modifications": [
+      "Complete explicitly selected numerical-only source contests from generation-bound row positions and accepted owners/routes, rejecting incomplete competitor scopes and excluding legacy research authority from fresh selection; preserve completed calculations and artifacts through journal recovery, carry equality and unchanged labels into serving, and honor durable requirements before pricing advances without ownership replay or provider work."
+    ]
   }
 ]

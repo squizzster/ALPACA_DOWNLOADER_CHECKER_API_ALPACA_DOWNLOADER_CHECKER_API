@@ -150,6 +150,25 @@ Ordinary source work also retains its first completed equal-bundle result with e
 donors, independently of public-component changes. The [source-equivalence contract](technical-contracts.md#standalone-artifacts)
 defines its generation/date binding and serving reuse; equality supplies numerical continuity, not ownership evidence.
 
+Legacy source-local `selected` flags and assignment-projection completion do not establish one coherent
+numerical bundle for the complete group. Two retained sources can select the same identity and session
+even while serving retains an earlier eligible-history checkpoint. The explicit
+[numerical-only completion contract](technical-contracts.md#numerical-only-completion) selects those diagnosed
+boundary-local row intervals under their exact receipt and pricing generations. The shared numerical owner
+consumes the accepted owners and labels, chooses only that selected scope, and carries its completed result
+through publication. It neither reruns ownership rules nor rechecks accepted pricing. Outside selections,
+independent identities and completed ownerless outcomes remain accepted.
+An already completed applicable source-equivalence decision selects its direct carry owner before
+numerical reads; this completion mode cannot run its old contest again.
+
+Complete eight-view equality retains the corresponding serving numerical outcome; genuinely different
+selected values require only their dated serving assessment. A completed unchanged-label projection also
+retains the accepted session dates and ticker ranges without constructing them again. Missing required
+capabilities, a newly required pricing-mapping correction or an unresolved source contest select their owning
+work. Ordinary update consumes explicitly enrolled numerical-only work; it does not scan the universe for
+legacy overlaps or interpret every absent optional capability as a defective history. Readers continue to
+consume the published numerical decisions and reject competing selected observations.
+
 ## Ownership evidence limits
 
 Complete established correlation precedes occupancy fallbacks. A still-unresolved reused active label may be

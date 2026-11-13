@@ -484,6 +484,7 @@ def process_group(
     empty_suffixes=(),
     retained_rebuild=False,
     retained_recovery=None,
+    pending_checks=None,
 ):
     """Compatibility entrypoint for the complete-group engine."""
     return _group_engine.process_group(
@@ -506,6 +507,7 @@ def process_group(
         empty_suffixes=empty_suffixes,
         retained_rebuild=retained_rebuild,
         retained_recovery=retained_recovery,
+        pending_checks=pending_checks,
         services=_group_services(),
     )
 
@@ -689,6 +691,12 @@ def run_lineage(
             work_policy.context = context
             work_policy.update_index(index["symbols"])
         graph = work_policy.graph if work_policy is not None else DependencyGraph(index["symbols"])
+        numerical_members = {
+            member
+            for name, item in (work_policy.work.items() if work_policy is not None else ())
+            if item.get("required_numerical_completion") is not None
+            for member in item.get("required_group", (name,))
+        }
         if progress:
             visited, groups = set(), 0
             for symbol in selected:
@@ -748,6 +756,54 @@ def run_lineage(
             nonlocal stop
             for cohort in _cohorts(labels, graph):
                 cohort = [label for label in cohort if label not in processed]
+                if not cohort:
+                    continue
+                numerical_seen, numerical_failed = set(), set()
+                for label in (name for name in cohort if name in numerical_members):
+                    group = graph.closure({label})
+                    if group & numerical_seen:
+                        continue
+                    numerical_seen.update(group)
+                    try:
+                        result = _group_engine.complete_numerical_group(
+                            store,
+                            root,
+                            label,
+                            group,
+                            index,
+                            context=context,
+                            work_policy=work_policy,
+                            pending=checks["checks"],
+                            progress=progress,
+                        )
+                        if result is None:
+                            continue
+                        processed.update(result["processed"])
+                        if on_processed is not None and result["processed"]:
+                            on_processed(result["processed"])
+                    except (RuntimeError, OSError, ValueError) as error:
+                        numerical_failed.update(group)
+                        if work_policy is not None:
+                            work_policy.fail(sorted(group), error, stage="lineage")
+                        result = {
+                            "affected": sorted(group),
+                            "symbol": label,
+                            "status": "failed",
+                            "error": str(error),
+                            "outcome": failure_outcome(error),
+                        }
+                    results.append(result)
+                    if progress:
+                        progress(
+                            "lineage_group",
+                            {"completed": len(processed), "selected": len(selected), **result},
+                        )
+                    if result["status"] == "failed" and storage.path_at(root, ".pending.json").exists():
+                        stop = True
+                        break
+                if stop:
+                    break
+                cohort = [label for label in cohort if label not in processed and label not in numerical_failed]
                 if not cohort:
                     continue
                 members = set().union(
@@ -823,6 +879,7 @@ def run_lineage(
                             empty_suffixes=empty_suffixes,
                             retained_rebuild=retained_rebuild,
                             retained_recovery=recovery_groups.get(symbol),
+                            pending_checks=checks["checks"],
                         )
                         processed.update(result["processed"])
                         processed.update(result.get("unavailable_pricing", ()))

@@ -28,6 +28,7 @@ def obligation(item, previous=None):
         "correction_id",
         "pricing_correction",
         "required_group",
+        "required_numerical_completion",
     )
     if previous.get("obligation_id") and all(item.get(k) == previous.get(k) for k in keys):
         return {**item, "obligation_id": previous["obligation_id"]}
@@ -46,6 +47,20 @@ def correction_satisfied(item, generation, recorded_id=None):
     return bool(generation) and (completed.get("correction_id"), completed.get("source_sha256")) == (
         item["correction_id"],
         generation,
+    )
+
+
+def numerical_satisfied(item, projection):
+    """A pricing approval cannot stand in for a completed numerical repair."""
+    required = item.get("required_numerical_completion")
+    if required is None:
+        return True
+    return bool(
+        isinstance(required, dict)
+        and required.get("version") == 1
+        and required.get("operation_id")
+        and (projection or {}).get("retained_recovery")
+        == {"version": 1, "operation_id": required["operation_id"]}
     )
 
 
@@ -122,6 +137,7 @@ def satisfied(item, entry, pending, *, approved=False):
     projection = entry.get("projection") or {}
     return (
         not pending
+        and numerical_satisfied(item, projection)
         and covers_pricing_start(item, projection.get("pricing_request"))
         and projection.get("processed_through", "")[:10] >= pricing_target(item)
         and (approved or projection.get("update_obligation_id") == item["obligation_id"])
@@ -215,6 +231,7 @@ class WorkPolicy:
         self.command_failures = []
         self.history_approved = {}
         self.completed_decisions = {}
+        self.numerical_selections = {}
         self.restricted_identifiers = {
             identifier
             for symbol in self.blocked
@@ -236,6 +253,7 @@ class WorkPolicy:
             obligation_id, owner, references = completed
             if (
                 obligation_id == item["obligation_id"]
+                and numerical_satisfied(item, (entries.get(owner) or {}).get("projection"))
                 and not pending.keys() & references.keys()
                 and all((entries.get(s) or {}).get("sha256") == token for s, token in references.items())
                 and (
@@ -494,7 +512,8 @@ class WorkPolicy:
         for symbol, source in sources.items():
             item = self.work.get(symbol)
             if item is not None and not (
-                covers_pricing_start(item, source)
+                numerical_satisfied(item, self.index["symbols"].get(symbol, {}).get("projection"))
+                and covers_pricing_start(item, source)
                 and source["latest_request"]["end_exclusive"][:10] >= pricing_target(item)
                 and (
                     not item.get("invalidate_pricing")
@@ -506,6 +525,28 @@ class WorkPolicy:
             ):
                 return False
         return True
+
+    def numerical_selection(self, symbol):
+        """Accept a selected repair once, then lend that exact scope to its owner."""
+        item = self.work.get(symbol, {})
+        required = item.get("required_numerical_completion")
+        if required is None or numerical_satisfied(
+            item, self.index["symbols"].get(symbol, {}).get("projection")
+        ):
+            return None
+        if not isinstance(required, dict) or required.get("version") != 1:
+            raise LineageError("invalid required numerical completion")
+        operation_id = required.get("operation_id")
+        if not operation_id:
+            raise LineageError("required numerical completion lacks its operation binding")
+        if operation_id not in self.numerical_selections:
+            from .numerical_recovery import accept_selection
+
+            accepted = accept_selection(required.get("selection"), self.store)
+            if len(accepted.groups) != 1 or accepted.groups[0].operation_id != operation_id:
+                raise LineageError("required numerical completion differs from its accepted scope")
+            self.numerical_selections[operation_id] = accepted
+        return self.numerical_selections[operation_id]
 
     def reconcile_evidence(self, evidence, sources, previous, *, group=None, target=None, partial=False):
         """Bind newly acquired evidence before pricing delegation or lineage publication."""
@@ -620,6 +661,8 @@ class WorkPolicy:
             item = self.work.get(symbol)
             if item is None:
                 continue
+            if not numerical_satisfied(item, receipt):
+                raise WorkDeferred(f"{symbol}: required numerical completion is incomplete")
             if set(item.get("required_group", [])) - group:
                 continue
             source = sources[symbol]

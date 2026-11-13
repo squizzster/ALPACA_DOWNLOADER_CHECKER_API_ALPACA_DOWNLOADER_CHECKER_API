@@ -235,12 +235,23 @@ def _open_new_contests(inputs, active, frozen, row_cache, invalidated, instants)
 
 
 def select_observations(
-    inputs, reports, *, retained_choices=None, invalidated_scopes=None, instant_keys=None, equality_outcomes=None
+    inputs,
+    reports,
+    *,
+    retained_choices=None,
+    invalidated_scopes=None,
+    instant_keys=None,
+    equality_outcomes=None,
+    source_occupants=None,
 ):
     """Carry completed choices, selecting only genuinely active observations."""
     if not retained_choices:
         return _select_new_observations(
-            inputs, reports, instants=instant_keys, equality_outcomes=equality_outcomes
+            inputs,
+            reports,
+            instants=instant_keys,
+            equality_outcomes=equality_outcomes,
+            source_occupants=source_occupants,
         )
     for name, carry in retained_choices.items():
         if carry.source_generation != inputs[name].source_sha256:

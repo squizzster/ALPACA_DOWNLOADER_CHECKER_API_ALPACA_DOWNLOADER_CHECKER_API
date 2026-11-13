@@ -466,6 +466,52 @@ def correlate_components(
     return selected_components, selected_reports
 
 
+def complete_numerical_group(store, root, seed, group, index, *, context, work_policy, pending, progress=None):
+    """Drain an accepted numerical requirement before any ordinary group work."""
+    if work_policy is None:
+        return None
+    required = [
+        name
+        for name in sorted(group)
+        if work_policy.work.get(name, {}).get("required_numerical_completion") is not None
+    ]
+    if not required:
+        return None
+    work_policy.current_group = set(group)
+    work_policy.check(group)
+    outcomes = []
+    for name in required:
+        selection = work_policy.numerical_selection(name)
+        if selection is not None:
+            from .numerical_recovery import resume
+
+            outcomes.append(
+                resume(
+                    selection,
+                    context=context,
+                    work_policy=work_policy,
+                    progress=progress,
+                    writer_view=(root, index),
+                )
+            )
+    if any(
+        work_policy.satisfying_entry(name, index["symbols"], pending) is None
+        for name in group
+        if name in work_policy.work
+    ):
+        return None  # A later pricing/metadata target remains ordinary selected work.
+    return {
+        "symbol": seed,
+        "status": "processed" if outcomes else "unchanged",
+        "processed": sorted(set(group) & index["symbols"].keys()),
+        "numerical_completion": outcomes,
+        "reused_decision": True,
+        "provider_requests": 0,
+        "pricing_writes": 0,
+        "identity_rule_executions": 0,
+    }
+
+
 @traced("lineage_group")
 def process_group(
     store,
@@ -488,6 +534,7 @@ def process_group(
     empty_suffixes=(),
     retained_rebuild=False,
     retained_recovery=None,
+    pending_checks=None,
     services,
 ):
     context = accept_context(store, context, work_policy)
@@ -502,6 +549,23 @@ def process_group(
         and auxiliary_work(work_policy.work.get(seed, {}))
     ):
         seed = min(group.intersection(index["symbols"]), default=seed)
+    if work_policy is not None and any(
+        work_policy.work.get(name, {}).get("required_numerical_completion") is not None for name in group
+    ):
+        pending = services.read_checks(store, group)["checks"] if pending_checks is None else pending_checks
+        completed = complete_numerical_group(
+            store,
+            root,
+            seed,
+            group,
+            index,
+            context=context,
+            work_policy=work_policy,
+            pending=pending,
+            progress=progress,
+        )
+        if completed is not None:
+            return completed
     acquisition_waves = 0
     pricing_replacements = {}
     evidence_client = evidence_client or EvidenceClient(identity_client)

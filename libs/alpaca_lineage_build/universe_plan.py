@@ -29,6 +29,7 @@ from .work_contract import (
     correction_satisfied,
     covers_pricing_start,
     lookup_fact,
+    numerical_satisfied,
     obligation,
     pricing_target,
     replacement_fingerprint,
@@ -166,6 +167,14 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         for s, item in state["work"].items()
         if s not in satisfied_labels and (reason := restriction(item, end_date, retry_blocked=retry_blocked))
     }
+    restrictions.update(
+        {
+            symbol: "pending_numerical_completion"
+            for symbol, item in state["work"].items()
+            if item.get("status") != "complete"
+            and not numerical_satisfied(item, entries.get(symbol, {}).get("projection"))
+        }
+    )
     excluded = set().union(*(graph.closure({s}) for s in restrictions)) if restrictions else set()
     evidence_client.restricted_identifiers.update(
         identifier
@@ -319,6 +328,11 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             if unfinished or retain_completion
             else None,
             "required_group": sorted(required_group),
+            **(
+                {"required_numerical_completion": prior["required_numerical_completion"]}
+                if unfinished and prior.get("required_numerical_completion") is not None
+                else {}
+            ),
             "acquire": entry is None
             or invalidate
             or extend_history

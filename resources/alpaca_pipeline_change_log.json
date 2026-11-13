@@ -38,5 +38,10 @@
     "modifications": [
       "Use explicit native prepared/history records and shared stage implementations under the continuous controller lock; preserve references, narrow serving inputs and omit all bulk encoding/decoding in ordinary execution. Keep standalone JSON APIs as explicit adapters and capture only bounded native summaries/effects for ordinary DEBUG."
     ]
+  },
+  {
+    "modifications": [
+      "Carry accepted numerical-only scope and completion records with work-policy aliases through standalone stage JSON without repeating ingress; ordinary native handoffs retain their direct references and continuous operation lock."
+    ]
   }
 ]

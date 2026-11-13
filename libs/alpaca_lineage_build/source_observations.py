@@ -505,6 +505,177 @@ def selection_changes(report, rows, positions):
     return result
 
 
+def counterpart_positions(store, control, report, intervals, cache):
+    """Materialize admitted boundary-local positions without a date search.
+
+    The completion owner has bound these positions to accepted owners and input
+    generations. Exact-copy payload aliases share assembly. Only the timestamps
+    adjoining an actual assignment cut may be read outside the selected rows;
+    those endpoints construct retained fragments, never enter numerical choice.
+    """
+    from .numerical_completion import NumericalInput
+
+    source, previous = control.source, control.previous
+    root = store / "end_of_day/pricing" / control.symbol
+    offsets = previous["serving_ownership"]["offsets"]
+    requested = {}
+    for interval in intervals:
+        key = interval["boundary"], interval["adjustment"]
+        requested.setdefault(key, []).append((interval["row_start"], interval["row_end"]))
+    for key, ranges in requested.items():
+        merged = []
+        for first, last in sorted(ranges):
+            if first < 1 or last < first:
+                raise LineageError("invalid numerical counterpart row interval")
+            if merged and first <= merged[-1][1] + 1:
+                merged[-1] = merged[-1][0], max(last, merged[-1][1])
+            else:
+                merged.append((first, last))
+        requested[key] = merged
+
+    parts = {name: [] for name in ADJUSTMENTS}
+    positions = {name: [] for name in ADJUSTMENTS}
+    dates = {name: {} for name in ADJUSTMENTS}
+    kinds = {name: {} for name in ADJUSTMENTS}
+    instants = {}
+    remembered = set()
+
+    def partition(kind):
+        from .recovery_handoffs import recall, remember, remember_partition
+
+        key = str(root), kind, source["boundaries"][kind]["sha256"]
+        document_key = "numerical_counterpart_document", *key
+        if key not in cache:
+            held = recall(store, "pricing_partition", (control.symbol, kind, key[-1]))
+            if held is not None:
+                cache[key] = held
+            else:
+                documents = {}
+                cache[key] = load_published_boundary(root, source, kind, selected=True, documents=documents)
+                document = documents.get(source["boundaries"][kind]["manifest"])
+                if document is None:
+                    raise LineageError("materialized numerical counterpart lacks its publication document")
+                cache[document_key] = document
+        if key not in remembered:
+            cache[key] = remember_partition(store, control.symbol, kind, key[-1], cache[key])
+            if document_key in cache:
+                remember(
+                    store,
+                    "pricing_partition_document",
+                    (control.symbol, kind, key[-1]),
+                    cache[document_key],
+                )
+            remembered.add(key)
+        return cache[key]
+
+    def date_of(row):
+        stamp = row[0]
+        key = "numerical_counterpart_date", stamp
+        if key not in cache:
+            instant = timestamp(stamp)
+            cache[key] = instant.astimezone(NEW_YORK).date().isoformat(), instant
+        day, instant = cache[key]
+        instants[stamp] = instant
+        return day, stamp
+
+    assembled = {}
+    for kind in ("completed_years", "current_year", "current_month"):
+        if not any(key[0] == kind for key in requested):
+            continue
+        views = partition(kind)
+        for adjustment in ADJUSTMENTS:
+            ranges = requested.get((kind, adjustment), ())
+            if not ranges:
+                continue
+            rows = views[adjustment]
+            if ranges[-1][1] > len(rows):
+                raise LineageError("numerical counterpart positions exceed their selected boundary")
+            key = id(rows), tuple(ranges)
+            if key not in assembled:
+                assembled[key] = tuple(row for first, last in ranges for row in rows[first - 1 : last])
+            selected = assembled[key]
+            original = [
+                offsets[adjustment][kind] + number for first, last in ranges for number in range(first, last + 1)
+            ]
+            parts[adjustment].append(selected)
+            positions[adjustment].extend(original)
+            for number, row in zip(original, selected, strict=True):
+                dates[adjustment][number] = date_of(row)
+                kinds[adjustment][number] = kind
+
+    selected, aliases = {}, {}
+    for adjustment in ADJUSTMENTS:
+        if any(left >= right for left, right in zip(positions[adjustment], positions[adjustment][1:])):
+            raise LineageError("numerical counterpart intervals select overlapping boundary positions")
+        key = tuple(id(part) for part in parts[adjustment])
+        if key not in aliases:
+            aliases[key] = tuple(row for part in parts[adjustment] for row in part)
+        selected[adjustment] = aliases[key]
+
+    segments = []
+    for segment in report["correlated"]["segments"]:
+        adjustment = segment["adjustment"]
+        original = positions[adjustment]
+        left = bisect_left(original, segment["row_start"])
+        stop = bisect_right(original, segment["row_end"])
+        if left == stop:
+            continue
+        cuts = [left]
+        cuts.extend(index for index in range(left + 1, stop) if original[index] != original[index - 1] + 1)
+        cuts.append(stop)
+        for start, end in zip(cuts, cuts[1:]):
+            first, last = original[start], original[end - 1]
+            for adjacent, selected_position in (
+                (first - 1, first),
+                (last + 1, last),
+            ):
+                if segment["row_start"] <= adjacent <= segment["row_end"] and adjacent not in dates[adjustment]:
+                    if adjacent == segment["row_start"]:
+                        dates[adjustment][adjacent] = _dates(segment)[0], segment["first_timestamp"]
+                    elif adjacent == segment["row_end"]:
+                        dates[adjustment][adjacent] = _dates(segment)[1], segment["last_timestamp"]
+                    else:
+                        kind = kinds[adjustment][selected_position]
+                        rows = partition(kind)[adjustment]
+                        index = adjacent - offsets[adjustment][kind] - 1
+                        key = "numerical_counterpart_endpoint", id(rows), index
+                        if key not in cache:
+                            cache[key] = date_of(rows[index])
+                        dates[adjustment][adjacent] = cache[key]
+            first_day, first_stamp = dates[adjustment][first]
+            last_day, last_stamp = dates[adjustment][last]
+            segments.append(
+                {
+                    **segment,
+                    "row_start": start + 1,
+                    "row_end": end,
+                    "row_count": end - start,
+                    "from": first_day,
+                    "to": last_day,
+                    "first_session_date": first_day,
+                    "last_session_date": last_day,
+                    "first_timestamp": first_stamp,
+                    "last_timestamp": last_stamp,
+                }
+            )
+    projected = {
+        **report,
+        "correlated": {"row_count": sum(item["row_count"] for item in segments), "segments": segments},
+        "uncorrelated": {"row_count": 0, "segments": []},
+    }
+    return (
+        NumericalInput(
+            source=source,
+            source_sha256=control.source_sha256,
+            views=selected,
+            instant_keys=instants,
+        ),
+        projected,
+        positions,
+        dates,
+    )
+
+
 def reconcile(
     store,
     materialized,

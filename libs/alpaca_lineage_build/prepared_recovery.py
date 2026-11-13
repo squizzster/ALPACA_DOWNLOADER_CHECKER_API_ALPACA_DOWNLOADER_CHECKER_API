@@ -195,22 +195,102 @@ def accept_candidate(value, store):
     )
 
 
-def publish_prepared(selection, context, *, progress=None):
-    """Check current bindings, finalize bookkeeping and journal completed output."""
+def _install_prepared_group(selection, group, context, root, index, sources, *, progress, work_policy, effects):
+    from .recovery_handoffs import remember
+
+    prepared, store = selection.prepared, Path(selection.store)
+    if "receipts" not in effects:
+        receipts = deepcopy(prepared.receipts)
+        for name, receipt in receipts.items():
+            old = prepared.previous[name]
+            receipt["input_sources"] = dict(group.pricing)
+            for key in (
+                "unavailable_pricing",
+                "unavailable_obligations",
+                "update_obligation_id",
+                "evidence_requirements",
+                "last_observed_symbol_lookup",
+            ):
+                if key in old:
+                    receipt[key] = deepcopy(old[key])
+            receipt["retained_recovery"] = group.completion()
+        effects["receipts"] = receipts
+        effects["boundaries"] = deepcopy(prepared.boundaries)
+    receipts, boundaries = effects["receipts"], effects["boundaries"]
+    if work_policy is not None and "stamp" not in effects:
+        effects["stamp"] = work_policy.stamp(receipts, sources)
+    if "published" not in effects:
+        if progress:
+            progress("lineage_publication", {"symbols": sorted(receipts), "prepared_decision": True})
+        try:
+            storage.publish(
+                store, root, index, receipts, boundaries, {}, previous=prepared.previous, sources=sources
+            )
+        except BaseException:
+            # This newly attempted publication may have installed a frozen
+            # journal. Its owning recovery is new work even in the same context.
+            context._lineage_recovery_complete = False
+            raise
+        effects["published"] = {name: index["symbols"][name] for name in receipts}
+    if "remembered" not in effects:
+        for name, receipt in receipts.items():
+            remember(store, "receipt", (name, index["symbols"][name]["sha256"]), receipt)
+            for kind, document in prepared.assignments[name].items():
+                remember(store, "assignment", (name, kind, receipt["boundaries"][kind]["sha256"]), document)
+        effects["remembered"] = True
+    if work_policy is not None and "acknowledged" not in effects:
+        work_policy.update_index(effects["published"])
+        work_policy.accept_completion(receipts, index["symbols"], effects["stamp"])
+        effects["acknowledged"] = True
+
+
+def publish_prepared(selection, context, *, progress=None, accepted_inputs=None, work_policy=None):
+    """Install completed output; numerical completion may lend its owning locks."""
     from .pipeline import _current_sources
     from .recovery_handoffs import remember
 
     store = Path(selection.store)
     prepared = selection.prepared
+    # Loan accepted choices before frozen-journal recovery so restoring JSON
+    # does not repeat acceptance of those same producer values.
     for name, receipt in prepared.receipts.items():
         for kind, handoff in receipt["assignment_handoffs"].items():
             if "observation_choices" in handoff:
                 remember(store, "choices", (name, kind, handoff["generation"]), handoff["observation_choices"])
+    if prepared.observations is not None:
+        remember(
+            store,
+            "source_choice_bundles",
+            prepared.observations["revision_id"],
+            prepared.observations.observations,
+        )
+    if accepted_inputs is not None:
+        root, index, sources, completion = accepted_inputs
+        # The numerical owner selected these inputs while retaining both writer
+        # and pricing locks. This is its completed acceptance, not another scope
+        # requiring repeated selector, source, policy or receipt reads.
+        for group in selection.groups:
+            _install_prepared_group(
+                selection,
+                group,
+                context,
+                root,
+                index,
+                sources,
+                progress=progress,
+                work_policy=work_policy,
+                effects=completion.setdefault("publication_effects", {}),
+            )
+        return {
+            "failed": 0,
+            "recovered": False,
+            "previously_completed_groups": 0,
+            "published_prepared_groups": len(selection.groups),
+            "recomputed_groups": 0,
+        }
     with storage.writer_lock(store, accepted_store=context.accept_store()) as root:
         recovered = context.recover_lineage(root)
         policy = context.accept_correlation_policy()
-        # Exact implementation/semantic provenance matters; YAML formatting does
-        # not revoke a completed calculation under the same authorized policy.
         current = policy.provenance()
         if {k: v for k, v in current.items() if k != "file_sha256"} != {
             k: v for k, v in prepared.policy.items() if k != "file_sha256"
@@ -229,46 +309,17 @@ def publish_prepared(selection, context, *, progress=None):
                 group.accept_sources(
                     group.members, {name: storage.document_digest(source) for name, source in sources.items()}
                 )
-                if prepared.observations is not None:
-                    remember(
-                        store,
-                        "source_choice_bundles",
-                        prepared.observations["revision_id"],
-                        prepared.observations.observations,
-                    )
-                receipts = deepcopy(prepared.receipts)
-                boundaries = deepcopy(prepared.boundaries)
-                for name, receipt in receipts.items():
-                    old = prepared.previous[name]
-                    receipt["input_sources"] = dict(group.pricing)
-                    for key in (
-                        "unavailable_pricing",
-                        "unavailable_obligations",
-                        "update_obligation_id",
-                        "evidence_requirements",
-                        "last_observed_symbol_lookup",
-                    ):
-                        if key in old:
-                            receipt[key] = deepcopy(old[key])
-                    receipt["retained_recovery"] = group.completion()
-                if progress:
-                    progress("lineage_publication", {"symbols": sorted(receipts), "prepared_decision": True})
-                storage.publish(
-                    store,
+                _install_prepared_group(
+                    selection,
+                    group,
+                    context,
                     root,
                     index,
-                    receipts,
-                    boundaries,
-                    {},
-                    previous=prepared.previous,
-                    sources=sources,
+                    sources,
+                    progress=progress,
+                    work_policy=work_policy,
+                    effects={},
                 )
-                for name, receipt in receipts.items():
-                    remember(store, "receipt", (name, index["symbols"][name]["sha256"]), receipt)
-                    for kind, document in prepared.assignments[name].items():
-                        remember(
-                            store, "assignment", (name, kind, receipt["boundaries"][kind]["sha256"]), document
-                        )
         return {
             "failed": 0,
             "recovered": recovered,

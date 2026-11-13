@@ -222,7 +222,11 @@ The screen is specific to this named candidate and rejects a changed YAML cascad
 An applicable completed paired report can be supplied with `--reuse-report /tmp/previous-impact.json`.
 Completed peer groups from incomplete attempts remain usable; failed groups are not manufactured into
 success. The diagnostic's own schema, version, implementation, store, selector and semantic policy bindings
-must match. Formatting or moving an equivalent YAML file does not invalidate its meaning. A real invocation
+must match or have explicitly declared implementation compatibility. Known completed generic reports remain
+usable when a runtime release adds a separate opt-in producer without changing their research path.
+Compatibility does not turn them into completed work for that new producer. Unknown future implementations
+require their own compatibility decision, and fact-backed reports remain inadmissible regardless of version.
+Formatting or moving an equivalent YAML file does not invalidate its meaning. A real invocation
 gap checks selected receipt and pricing applicability, never prices or completed calculations. Failed
 applicability records the affected group without replaying it or discarding independent peer results.
 

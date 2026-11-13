@@ -146,7 +146,7 @@ def validate_handoff(previous):
         revision = previous.get("numerical_source_revision")
         if (
             type(previous.get("numerical_source_revision_version")) is not int
-            or previous["numerical_source_revision_version"] != 1
+            or previous["numerical_source_revision_version"] not in (1, 2)
             or not isinstance(revision, dict)
             or set(revision)
             != {
@@ -162,8 +162,11 @@ def validate_handoff(previous):
                 "selected_sources",
                 "numeric_reuse_sessions",
             }
+            | ({"labels_unchanged"} if previous["numerical_source_revision_version"] == 2 else set())
             or type(revision.get("version")) is not int
-            or revision["version"] != 1
+            or revision["version"] != previous["numerical_source_revision_version"]
+            or revision["version"] == 2
+            and revision.get("labels_unchanged") is not True
             or not valid_sha256(revision["id"])
             or revision["selection_unchanged_outside_scope"] is not True
             or revision["retained_session_grid"] is not True

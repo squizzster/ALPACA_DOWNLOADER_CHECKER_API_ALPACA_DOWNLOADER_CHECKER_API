@@ -183,6 +183,32 @@ def read_observation(store, reference):
     return json.loads(row[1])
 
 
+@traced("numerical_work_read")
+def read_numerical_work(store):
+    """Select pending numerical requirements before pricing can advance them.
+
+    Other work bodies and their pricing observations are not numerical inputs.
+    Leave them opaque; the normal planning boundary owns their later ingress.
+    """
+    try:
+        with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+            connection.execute("BEGIN")
+            _check(connection)
+            revision = connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
+            work = {
+                symbol: json.loads(body)
+                for symbol, body in connection.execute(
+                    "SELECT symbol, body FROM work WHERE CASE WHEN json_valid(body) THEN "
+                    "json_extract(body, '$.status') IS NOT 'complete' AND "
+                    "json_type(body, '$.required_numerical_completion') NOT IN ('null') "
+                    "ELSE 0 END"
+                )
+            }
+            return {"revision": revision, "work": work}
+    except (sqlite3.Error, ValueError, TypeError) as error:
+        raise LineageError("cannot select pending numerical completion requirements") from error
+
+
 def initialize(store):
     """Explicit reconstruction preserves existing intentions and retry outcomes."""
     path = Path(store) / STATE_FILE
