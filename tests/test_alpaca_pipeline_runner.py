@@ -1,4 +1,4 @@
-"""Daily execution uses real JSON contracts under one uninterrupted store gate."""
+"""Daily execution carries native contracts under one uninterrupted store gate."""
 
 import io
 import json
@@ -9,6 +9,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from contextvars import copy_context
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from test_alpaca_pricing_download import bar
 
 from libs.alpaca_lineage_build import universe_state, universe_update
 from libs.alpaca_pipeline.codec import HandoffError
+from libs.alpaca_pipeline.handoffs import Histories, Prepared
 from libs.alpaca_pipeline.prepare import encode
 from libs.alpaca_pricing_download.download import read_pricing_views
 from libs.common.store_lock import operation_lock
@@ -89,7 +91,7 @@ class RunnerTests(unittest.TestCase):
             identity_client=f.identity,
         )
 
-    def test_append_crosses_json_and_fresh_domain_contexts_with_continuous_exclusion(self):
+    def test_append_carries_native_values_with_continuous_exclusion_and_narrow_serving_context(self):
         from libs.alpaca_pipeline import runner
 
         f = self.f
@@ -128,11 +130,9 @@ class RunnerTests(unittest.TestCase):
 
         def boundary(name, original):
             def wrapped(data, **kwargs):
-                self.assertIs(type(data), bytes)
-                json.loads(data)
+                self.assertIsInstance(data, {"prepare": dict, "histories": Prepared, "serve": Histories}[name])
                 output = original(data, **kwargs)
-                self.assertIs(type(output), bytes)
-                json.loads(output)
+                self.assertIsInstance(output, {"prepare": Prepared, "histories": Histories, "serve": dict}[name])
                 documents.append((name, data, output))
                 # A real competing process cannot enter either boundary gap.
                 self.probe(2)
@@ -141,11 +141,13 @@ class RunnerTests(unittest.TestCase):
             return wrapped
 
         with (
-            patch.object(runner, "prepare", side_effect=boundary("prepare", runner.prepare)),
+            patch.object(runner, "prepare_native", side_effect=boundary("prepare", runner.prepare_native)),
             patch.object(
-                runner, "produce_histories", side_effect=boundary("histories", runner.produce_histories)
+                runner,
+                "produce_histories_native",
+                side_effect=boundary("histories", runner.produce_histories_native),
             ),
-            patch.object(runner, "serve", side_effect=boundary("serve", runner.serve)),
+            patch.object(runner, "serve_native", side_effect=boundary("serve", runner.serve_native)),
             patch.object(universe_update, "prepare_locked", side_effect=prepared),
             patch.object(universe_update, "histories_locked", side_effect=histories),
             patch.object(universe_update, "serve_locked", side_effect=serving),
@@ -160,13 +162,15 @@ class RunnerTests(unittest.TestCase):
         ):
             output = self.run_pipeline()
         self.assertEqual([name for name, _, _ in documents], ["prepare", "histories", "serve"])
-        self.assertEqual(documents[0][2], documents[1][1])
-        self.assertEqual(documents[1][2], documents[2][1])
-        self.assertEqual(documents[2][2], output)
-        self.assertEqual(len({id(context) for context in contexts}), 3)
-        operation = json.loads(documents[0][2])["operation"]
-        self.assertEqual(operation, json.loads(documents[1][2])["operation"])
+        self.assertIs(documents[0][2], documents[1][1])
+        self.assertIs(documents[1][2], documents[2][1])
+        self.assertIs(contexts[0], contexts[1])
+        self.assertIsNot(contexts[1], contexts[2])
+        self.assertIsNone(contexts[2]._pricing)
+        self.assertEqual(contexts[2].sourced_operations, {})
+        self.assertIs(documents[0][2].operation, documents[1][2].operation)
         result = json.loads(output)
+        self.assertEqual(json.loads(encode(documents[2][2])), result)
         self.assertTrue(result["complete"], result)
         self.assertEqual(f.identity.catalogue_calls, 1)
         observations = [
@@ -184,24 +188,29 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(any(f.directory.rglob("*.output.json")))
         self.probe(0)
 
-    def test_ordinary_update_routes_all_three_json_stages_with_frozen_exclusive_cutoff(self):
+    def test_ordinary_update_routes_native_stages_without_a_codec_or_json_round_trip(self):
         from libs.alpaca_pipeline import runner
 
         f = self.f
         f.live["AAA"] = [*f.old, bar("2026-10-19")]
-        run = runner.run
+        run = runner.run_native
         requests = []
 
         def observed(data, **kwargs):
-            self.assertIs(type(data), bytes)
-            requests.append(json.loads(data))
+            self.assertIs(type(data), dict)
+            requests.append(data)
             return run(data, **kwargs)
 
         with (
-            patch.object(runner, "run", side_effect=observed),
-            patch.object(runner, "prepare", wraps=runner.prepare) as prepare,
-            patch.object(runner, "produce_histories", wraps=runner.produce_histories) as histories,
-            patch.object(runner, "serve", wraps=runner.serve) as serve,
+            patch.object(runner, "run_native", side_effect=observed),
+            patch("libs.alpaca_pipeline.prepare.Encoder", side_effect=AssertionError("bulk encoding")),
+            patch("libs.alpaca_pipeline.prepare.Decoder", side_effect=AssertionError("bulk decoding")),
+            patch("libs.alpaca_pipeline.histories.Encoder", side_effect=AssertionError("bulk encoding")),
+            patch("libs.alpaca_pipeline.histories.Decoder", side_effect=AssertionError("bulk decoding")),
+            patch("libs.alpaca_pipeline.runner.encode", side_effect=AssertionError("JSON round trip")),
+            patch.object(runner, "prepare_native", wraps=runner.prepare_native) as prepare,
+            patch.object(runner, "produce_histories_native", wraps=runner.produce_histories_native) as histories,
+            patch.object(runner, "serve_native", wraps=runner.serve_native) as serve,
             patch.object(universe_update, "continue_locked", side_effect=AssertionError("direct object bypass")),
         ):
             result = universe_update.run_update(
@@ -216,8 +225,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["end_exclusive"], "2026-10-20")
         self.assertEqual((prepare.call_count, histories.call_count, serve.call_count), (1, 1, 1))
-        self.assertIs(type(histories.call_args.args[0]), bytes)
-        self.assertIs(type(serve.call_args.args[0]), bytes)
+        self.assertIsInstance(histories.call_args.args[0], Prepared)
+        self.assertIsInstance(serve.call_args.args[0], Histories)
         self.assertEqual(f.identity.catalogue_calls, 1)
         self.assertEqual(read_pricing_views(f.store, "AAA")["all"][-1][0][:10], "2026-10-19")
         self.probe(0)
@@ -225,19 +234,19 @@ class RunnerTests(unittest.TestCase):
     def test_existing_exclusive_weekend_cutoff_is_carried_without_session_rounding(self):
         from libs.alpaca_pipeline import runner
 
-        histories, serving = runner.produce_histories, runner.serve
+        histories, serving = runner.produce_histories_native, runner.serve_native
         ends = []
 
         def observed(original):
             def stage(data, **kwargs):
-                ends.append(json.loads(data)["operation"]["end_exclusive"])
+                ends.append(data.operation["end_exclusive"])
                 return original(data, **kwargs)
 
             return stage
 
         with (
-            patch.object(runner, "produce_histories", side_effect=observed(histories)),
-            patch.object(runner, "serve", side_effect=observed(serving)),
+            patch.object(runner, "produce_histories_native", side_effect=observed(histories)),
+            patch.object(runner, "serve_native", side_effect=observed(serving)),
             patch(
                 "libs.alpaca_pipeline.prepare.pricing_session_end",
                 side_effect=AssertionError("existing exclusive cutoff rounded again"),
@@ -254,6 +263,53 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["end_exclusive"], "2026-10-18")
         self.assertEqual(ends, ["2026-10-18", "2026-10-18"])
         self.assertEqual(self.f.identity.catalogue_calls, 1)
+
+    def test_native_only_completed_values_and_aliases_cross_all_owners_without_traversal(self):
+        from libs.alpaca_lineage_build import recovery_handoffs
+
+        class CompletedValue:
+            def __iter__(self):
+                raise AssertionError("completed value traversed")
+
+            def __deepcopy__(self, memo):
+                raise AssertionError("completed value copied")
+
+            def __reduce_ex__(self, protocol):
+                raise AssertionError("completed value serialized")
+
+        value = CompletedValue()
+        prepare_locked, histories_locked, serve_locked = (
+            universe_update.prepare_locked,
+            universe_update.histories_locked,
+            universe_update.serve_locked,
+        )
+        observed = []
+
+        def prepared(*args, **kwargs):
+            result = prepare_locked(*args, **kwargs)
+            values = recovery_handoffs._selected.get()[1]
+            values["native", "one"] = value
+            values["native", "alias"] = value
+            return result
+
+        def consume(original):
+            def stage(*args, **kwargs):
+                values = recovery_handoffs._selected.get()[1]
+                self.assertIs(values["native", "one"], value)
+                self.assertIs(values["native", "alias"], value)
+                observed.append(original.__name__)
+                return original(*args, **kwargs)
+
+            return stage
+
+        with (
+            patch.object(universe_update, "prepare_locked", side_effect=prepared),
+            patch.object(universe_update, "histories_locked", side_effect=consume(histories_locked)),
+            patch.object(universe_update, "serve_locked", side_effect=consume(serve_locked)),
+        ):
+            result = self.run_pipeline()
+        self.assertTrue(json.loads(result)["complete"])
+        self.assertEqual(observed, ["histories_locked", "serve_locked"])
 
     def test_controller_reuses_cli_owned_gate_without_another_descriptor(self):
         from libs.alpaca_pipeline import execution
@@ -316,9 +372,9 @@ class RunnerTests(unittest.TestCase):
             patch.object(alpaca_cli, "clients", return_value=(f.pricing, f.identity)),
             patch.object(alpaca_cli, "commit_registry") as bookkeeping,
             patch.object(universe_update, "run_update", side_effect=fixture_registry),
-            patch.object(runner, "prepare", wraps=runner.prepare) as prepare,
-            patch.object(runner, "produce_histories", wraps=runner.produce_histories) as histories,
-            patch.object(runner, "serve", wraps=runner.serve) as serve,
+            patch.object(runner, "prepare_native", wraps=runner.prepare_native) as prepare,
+            patch.object(runner, "produce_histories_native", wraps=runner.produce_histories_native) as histories,
+            patch.object(runner, "serve_native", wraps=runner.serve_native) as serve,
             patch.object(
                 execution, "operation_lock", side_effect=AssertionError("CLI gate reacquired by controller")
             ),
@@ -361,9 +417,9 @@ class RunnerTests(unittest.TestCase):
             patch.object(alpaca_cli, "clients", return_value=(f.pricing, f.identity)),
             patch.object(alpaca_cli, "commit_registry", side_effect=AssertionError("partial registry commit")),
             patch.object(universe_update, "run_update", side_effect=fixture_registry),
-            patch.object(runner, "prepare", wraps=runner.prepare) as prepare,
-            patch.object(runner, "produce_histories", wraps=runner.produce_histories) as histories,
-            patch.object(runner, "serve", wraps=runner.serve) as serve,
+            patch.object(runner, "prepare_native", wraps=runner.prepare_native) as prepare,
+            patch.object(runner, "produce_histories_native", wraps=runner.produce_histories_native) as histories,
+            patch.object(runner, "serve_native", wraps=runner.serve_native) as serve,
             redirect_stdout(output),
             redirect_stderr(errors),
         ):
@@ -390,8 +446,8 @@ class RunnerTests(unittest.TestCase):
         for exception in (RuntimeError("histories failed"), KeyboardInterrupt()):
             with (
                 self.subTest(exception=type(exception).__name__),
-                patch.object(runner, "produce_histories", side_effect=exception) as failed,
-                patch.object(runner, "serve", side_effect=AssertionError("dependent stage executed")),
+                patch.object(runner, "produce_histories_native", side_effect=exception) as failed,
+                patch.object(runner, "serve_native", side_effect=AssertionError("dependent stage executed")),
                 self.assertRaises(type(exception)),
             ):
                 self.run_pipeline()
@@ -403,11 +459,11 @@ class RunnerTests(unittest.TestCase):
         from libs.alpaca_pipeline import runner
 
         with (
-            patch.object(runner, "prepare", return_value=b"{"),
+            patch.object(runner, "prepare_native", return_value=b"{"),
             patch.object(
                 universe_update, "histories_locked", side_effect=AssertionError("malformed history effects")
             ),
-            patch.object(runner, "serve", side_effect=AssertionError("malformed downstream execution")),
+            patch.object(runner, "serve_native", side_effect=AssertionError("malformed downstream execution")),
             self.assertRaises((HandoffError, RuntimeError)),
         ):
             self.run_pipeline()
@@ -418,19 +474,19 @@ class RunnerTests(unittest.TestCase):
     def test_missing_carried_evidence_fails_despite_predecessor_state_still_in_process(self):
         from libs.alpaca_pipeline import runner
 
-        histories = runner.produce_histories
+        histories = runner.produce_histories_native
 
         def missing_evidence(data, **kwargs):
-            value = json.loads(data)
-            del value["prepared"]["evidence"]
-            return histories(encode(value), **kwargs)
+            values = dict(data.prepared)
+            del values["evidence"]
+            return histories(replace(data, prepared=values), **kwargs)
 
         with (
-            patch.object(runner, "produce_histories", side_effect=missing_evidence),
+            patch.object(runner, "produce_histories_native", side_effect=missing_evidence),
             patch.object(
                 universe_update, "histories_locked", side_effect=AssertionError("missing evidence recovered")
             ),
-            patch.object(runner, "serve", side_effect=AssertionError("missing evidence entered serving")),
+            patch.object(runner, "serve_native", side_effect=AssertionError("missing evidence entered serving")),
             self.assertRaises((HandoffError, RuntimeError)),
         ):
             self.run_pipeline()
@@ -438,7 +494,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.f.pages, [])
         self.probe(0)
 
-    def test_debug_captures_exact_boundaries_without_changing_requests_or_prices(self):
+    def test_debug_records_compact_native_boundaries_without_bulk_encoding_or_changed_work(self):
         normal = self.f
         debug = self.fixture()
         for f in (normal, debug):
@@ -448,7 +504,12 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(any(normal.directory.rglob("*.output.json")))
         directory = debug.directory / "debug"
         request = self.request(fixture=debug, debug={"enabled": True, "directory": str(directory)})
-        debug_output = self.run_pipeline(request, fixture=debug)
+        with (
+            patch("libs.alpaca_pipeline.prepare.Encoder", side_effect=AssertionError("DEBUG bulk encoding")),
+            patch("libs.alpaca_pipeline.histories.Encoder", side_effect=AssertionError("DEBUG bulk encoding")),
+            patch("libs.alpaca_pipeline.histories.Decoder", side_effect=AssertionError("DEBUG bulk decoding")),
+        ):
+            debug_output = self.run_pipeline(request, fixture=debug)
         self.assertTrue(json.loads(normal_output)["complete"])
         self.assertTrue(json.loads(debug_output)["complete"])
         self.assertEqual(normal.pages, debug.pages)
@@ -458,7 +519,13 @@ class RunnerTests(unittest.TestCase):
         captures = list(directory.iterdir())
         self.assertEqual(len(captures), 1)
         capture = captures[0]
-        self.assertEqual((capture / "prepare.input.json").read_bytes(), request)
+        recorded_request = json.loads((capture / "prepare.input.json").read_bytes())
+        self.assertEqual(recorded_request["through"], json.loads(request)["through"])
+        for stage in ("prepare", "histories"):
+            compact = (capture / (stage + ".output.json")).read_bytes()
+            self.assertLess(len(compact), 16384)
+            self.assertEqual(json.loads(compact)["schema"], "alpaca.pipeline.native")
+            self.assertNotIn("objects", json.loads(compact))
         self.assertEqual(
             (capture / "prepare.output.json").read_bytes(), (capture / "histories.input.json").read_bytes()
         )

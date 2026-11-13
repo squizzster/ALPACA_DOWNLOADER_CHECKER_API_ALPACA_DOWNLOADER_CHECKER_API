@@ -15,7 +15,7 @@ def controller_owned(store):
 
 @contextmanager
 def controller(store):
-    """Adopt the CLI's real gate, or hold one across the entire JSON pipeline."""
+    """Adopt the CLI's real gate, or hold one across the complete native pipeline."""
     if exclusive_owned(store):
         token = _controller.set(Path(store).resolve())
         try:

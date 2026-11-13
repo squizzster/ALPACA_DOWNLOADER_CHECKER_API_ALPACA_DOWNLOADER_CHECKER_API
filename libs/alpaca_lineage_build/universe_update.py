@@ -100,10 +100,10 @@ def run_update(
     coalesce_late_bars=True,
     debug=None,
 ):
-    # Ordinary updates traverse the same serialized owners as isolated stage
-    # execution. The controller adopts the CLI gate or owns it for direct calls.
-    from libs.alpaca_pipeline.prepare import StageExecutionError, encode, parse
-    from libs.alpaca_pipeline.runner import run
+    # The controller lends completed native values between the same stage owners.
+    # Independent JSON APIs remain adapters, outside ordinary update execution.
+    from libs.alpaca_pipeline.prepare import StageExecutionError
+    from libs.alpaca_pipeline.runner import run_native
 
     document = {
         "schema": "alpaca.pipeline.request",
@@ -124,18 +124,13 @@ def run_update(
         # non-session boundaries. Preserve it; do not round it a second time.
         document["end_exclusive"] = end_date
     try:
-        return parse(
-            run(
-                encode(document),
-                pricing_client=pricing_client,
-                identity_client=identity_client,
-                progress=progress,
-            )
+        return run_native(
+            document, pricing_client=pricing_client, identity_client=identity_client, progress=progress
         )
     except StageExecutionError as error:
         # Preserve the command's incomplete-data report without running any
         # dependent stage or treating an error report as a completed handoff.
-        return parse(error.result_json)
+        return error.result
 
 
 def prepare_locked(

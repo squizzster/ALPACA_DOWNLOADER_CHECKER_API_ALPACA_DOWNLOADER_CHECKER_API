@@ -33,5 +33,10 @@
     "modifications": [
       "Exclude active authored research facts, application registries, event projections and sourced recipes from stage JSON while retaining completed provider and publication handoffs without replay, including once-accepted provider cache state and aliased projections."
     ]
+  },
+  {
+    "modifications": [
+      "Use explicit native prepared/history records and shared stage implementations under the continuous controller lock; preserve references, narrow serving inputs and omit all bulk encoding/decoding in ordinary execution. Keep standalone JSON APIs as explicit adapters and capture only bounded native summaries/effects for ordinary DEBUG."
+    ]
   }
 ]

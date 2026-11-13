@@ -208,44 +208,44 @@ Missing required result fields and invalid storage scopes fail before locks or s
 The public serving stage and ordinary controller consume this same handoff as described below.
 This does not close F09, F15, F58 or F64 or establish full production memory/throughput
 or the live operational target.</p>
-<h2>Complete JSON pipeline and serving boundary</h2>
-<p>The <a href="development.md#pipeline-phase-3-complete-pipeline">Phase 3 goal and contract</a>
-make ordinary update sequence Prepare, Histories and Serve through actual JSON bytes under
-one continuous operation gate. The controller carries no domain state outside the documents.
-The CLI's acquired exclusion is adopted without opening another descriptor; direct pipeline
-calls acquire their own gate. Ownership binds the store, process, thread and active lock
-lifetime. A copied context cannot reuse released ownership. Each stage restores a fresh
-context and recovery-handoff scope; missing required input fails despite surviving predecessor
-objects. Standalone stage calls check applicability across their real lock gaps. Coordinated
-calls omit those gap checks because exclusion was continuous. Producer validation of new
-artifacts and selected group source applicability retain their own contracts.</p>
-<p>Serve consumes the carried accepted lineage index and serving controls without refreshing
-their selectors again. Selected receipts, assignments and decoded partitions cross JSON;
-unread selected artifacts remain generation-bound references. Generic serving invocations
-without that explicit completed selection retain their own freshness responsibility. Serve
-publishes and acknowledges before returning the existing compact report. Partial history
-failures remain visible while independent publications can finish. Missing JSON or delivery
-failure stops dependent execution; existing journals recover production writes only.</p>
-<p>Normal execution retains no handoff files or spool and changes no persisted pricing,
-lineage or catalogue schema. Ordinary DEBUG additionally records exact stage bytes and
-producer effects outside the store, without extra provider requests, reads or calculations.
-An already selected exclusive cutoff crosses the request and both handoffs without another
-calendar resolution. The read-only planner and CLI registry bookkeeping remain separate.</p>
-<p>Owning regressions: <a href="../tests/test_alpaca_pipeline_runner.py">ordinary runner and real CLI</a>,
-<a href="../tests/test_alpaca_pipeline_serve.py">public serving stage and process transport</a>,
-<a href="../tests/test_store_operation_lock.py">kernel operation exclusion</a>, and the
-existing Prepare/history/daily-update regressions above. They cover real competing processes
-between stages, copied contexts, interruption, missing required evidence, DEBUG equivalence,
-slow consumers, output failure after publication and actual standalone invalidation.
-Fresh-process measurements exercise the actual codec and provider-state acceptance transport with a
-20,000-record catalogue and zero or sixteen materialized sources: 336 hot-window or 4,032 year-vector
-synthetic rows, shared across eight views. Seven independent samples per shape produce 9.42–9.81 MiB
-JSON, median encode/decode times of 0.57–0.59/0.53–0.55 seconds, and peak RSS of 222–233 MiB.
-Existing aliases survive; no provider or production-store work occurs. Actual pipe compatibility is
-covered by process regressions, separately from these measurements. These are synthetic serialization
-costs, not validated market-session data or complete stage/live-universe throughput. The
-whole-document contract remains sensitive to the amount of materialized history. These
-changes do not close F09, F15, F58 or F64 or establish the operational runtime target.</p>
+<h2>Native controller and serving boundary</h2>
+<p>The <a href="development.md#pipeline-phase-3-complete-pipeline">Phase 3 contract</a>
+sequences Prepare, Histories and Serve using native completed records under one continuous
+operation gate. The shared implementations also serve the independent JSON APIs. The ordinary
+controller carries accepted values and their aliases directly: it does not construct codec
+object tables, encode/decode bulk handoffs or reconstruct domain objects. Prepare and Histories
+share their applicable context; the completed history result narrows it to accepted store,
+lineage index and serving controls. Spent acquisition, metadata and source-work caches do not
+reach Serve. Required receipts, assignments and decoded partitions remain explicit held values.</p>
+<p>The CLI gate is adopted without another descriptor; direct calls acquire their own gate.
+Ownership binds store, process, thread and active lifetime. Each stage retains its owning
+locks and explicit recovery-value scope. Coordinated calls skip nonexistent lock-gap checks;
+standalone calls check actual workflow, pricing, lineage and serving applicability after
+reacquisition. No transition reopens accepted artifacts or repeats producer calculations.
+Missing required input stops dependent work even when predecessor objects survive. There is
+no handoff archive, implicit reconstruction or stage replay. Existing journals install only
+their completed outputs under recorded provenance.</p>
+<p>Serve consumes completed attempt/scope and held values, publishes and acknowledges, and
+returns the existing compact report. Independent successes can finish beside explicit failures.
+Ordinary DEBUG records compact native metadata/counts and scalar effects, without traversing
+or serializing held data; standalone JSON adapters retain exact argument/result captures.
+Neither path adds provider requests or storage reads. Stored pricing, lineage and catalogue
+formats remain unchanged. Full standalone JSON documents still incur their serialization and
+memory costs; no production scalability claim follows from small codec measurements.</p>
+<p>Owning regressions: <a href="../tests/test_alpaca_pipeline_runner.py">ordinary runner and CLI</a>,
+<a href="../tests/test_alpaca_pipeline_serve.py">standalone serving</a>,
+<a href="../tests/test_store_operation_lock.py">kernel exclusion</a>, and the Prepare/history
+transport suites above. They enforce direct shared objects, native-only values that reject
+copying/serialization, no bulk codec with DEBUG enabled, competing processes, copied-context
+invalidation, actual standalone generation changes, interruption and failed delivery after
+publication. A synthetic completed cache containing one million physical rows shared across sixteen
+sources and eight views (128 million logical row references) crosses these real stage functions
+alongside a one-symbol append. Three fresh-process samples with and without DEBUG preserve identity
+with zero bulk codec calls, about 1.6 MiB traced pipeline allocations and captures below 10 KB.
+The held data accounts for the approximately 222 MiB total peak RSS in that shape; the comparison
+without held rows is approximately 57 MiB. This measures native transfer, not validation or numerical
+processing of the synthetic held rows, full production memory or live throughput. These mechanisms
+do not close F09, F15, F58 or F64 or establish the live runtime target.</p>
 <p>Serving completion reports outstanding export-input invalidations by pricing and lineage owner,
 using one compact aggregate over current published component members at its completion boundary.
 An empty scheduling queue cannot establish that separate publication-applicability fact. Applicable
@@ -275,7 +275,7 @@ workflow handoff. A new workflow attempt cannot renew identical completed acquis
 consume that disposition and explicit added-session evidence; append producers carry its unchanged prefix
 without historical reads or calculations. Pending acknowledgement does not revoke completed pricing acceptance.
 The <a href="../tests/test_alpaca_completed_correction_reuse.py">completed correction reuse regressions</a> cover
-real JSON execution, append, publication-before-acknowledgement interruption, repeated acquisition/payload/validator
+native controller execution, standalone JSON transport, append, publication-before-acknowledgement interruption, repeated acquisition/payload/validator
 prohibitions and genuine witness, mapping, scope and generation invalidation. Existing workflow fields retain
 these results without a new archive or production format. A new operation advancing beyond completed coverage performs
 its required fresh comparison: the prior correction's completion cannot hide a newly changed selected row.
@@ -286,10 +286,10 @@ operational acceptance still requires the ordinary advancing run.</p>
 exercise a full correction through lineage, append and serving, including month/year rollover. They reject
 reopening the same selected payload generation and verify the resulting histories. Lineage lends both decoded
 rows and their already-read publication documents to append; later lineage assembly also consumes unchanged
-held partitions. A separate ordinary append crosses the real history-to-serving JSON boundary while forbidding
+held partitions. A separate standalone append crosses the history-to-serving JSON adapter boundary while forbidding
 receipt or assignment output rereads after the lineage publisher completes. Normal publication now lends those
 bodies just as recovery does. Store and boundary-generation mismatches select their actual assembly rather than
-using stale rows. These transient values use the existing JSON handoff; production formats and lineage policy are
+using stale rows. These transient values use native controller records or the explicit JSON adapter; production formats and lineage policy are
 unchanged. This repairs the reproduced correction-to-append and fresh-lineage handoff omissions, not every possible repeated-read path;
 F15 remains partial and operational acceptance requires measured execution.</p>
 <h2>Read-only lineage rule visibility</h2>
@@ -458,9 +458,9 @@ omit a wrapped HTTP status. A healthy heartbeat alone does not establish provide
 <tr id="f10"><th scope="row">F10</th><td>fixed and verified</td><td><strong>Default HTTP redirects can forward Alpaca credentials to another origin</strong><p>Both default credential-bearing clients reject redirects before a second request. Real loopback tests cover 301, 302, 303, 307 and 308 for both clients.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_transport_boundary.py">test_alpaca_transport_boundary.py</a>.</p></td></tr>
 <tr id="f11"><th scope="row">F11</th><td>fixed and verified</td><td><strong>Malformed falsy metadata page tokens are accepted as exhausted pagination</strong><p>Metadata pagination rejects malformed false-valued and repeated tokens before handing off a completed interval.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_transport_boundary.py">test_alpaca_transport_boundary.py</a>, <a href="../tests/test_alpaca_security_lineage.py">test_alpaca_security_lineage.py</a>.</p></td></tr>
 <tr id="f12"><th scope="row">F12</th><td>fixed and verified</td><td><strong>Metadata JSON parsing silently accepts duplicate keys and nonfinite numbers</strong><p>Metadata ingress rejects duplicate object keys, NaN, Infinity and overflowing numeric literals.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_transport_boundary.py">test_alpaca_transport_boundary.py</a>.</p></td></tr>
-<tr id="f13"><th scope="row">F13</th><td>scope clarified</td><td><strong>CSV export relies on writer cooperation that internal producers do not enforce themselves</strong><p>The supported canonical CLI writers wait at the existing operation gate before store or provider work. The public Prepare, Histories and Serve JSON entrypoints take that same exclusive gate after complete input and release it before output delivery. The complete JSON runner holds one gate continuously, adopting actual CLI ownership without a second descriptor; each stage restores domain state from its bytes and skips nonexistent lock-gap checks. Their process-transport regressions exercise actual kernel exclusion, copied-context invalidation, inter-stage competing processes and slow pipe consumers. A single diagnostic and held WAIT phase expose contention; kernel blocking on the same descriptor avoids repeated boundary reads, and interruption closes only the waiting descriptor. Documentation now explicitly identifies direct internal producer calls as requiring caller-owned outer exclusion, not independent concurrent writer entrypoints. No new enforcement for unsupported bypasses is claimed.</p><p class="tests">Owning regressions: <a href="../tests/test_store_operation_lock.py">test_store_operation_lock.py</a>, <a href="../tests/test_alpaca_cli.py">test_alpaca_cli.py</a>.</p></td></tr>
+<tr id="f13"><th scope="row">F13</th><td>scope clarified</td><td><strong>CSV export relies on writer cooperation that internal producers do not enforce themselves</strong><p>The supported canonical CLI writers wait at the existing operation gate before store or provider work. The public Prepare, Histories and Serve JSON entrypoints take that same exclusive gate after complete input and release it before output delivery. The native controller holds one gate continuously, adopting actual CLI ownership without a second descriptor; stages consume explicit accepted values and skip nonexistent lock-gap checks. Independent JSON APIs use these same stage implementations. Their process-transport regressions exercise actual kernel exclusion, copied-context invalidation, inter-stage competing processes and slow pipe consumers. A single diagnostic and held WAIT phase expose contention; kernel blocking on the same descriptor avoids repeated boundary reads, and interruption closes only the waiting descriptor. Documentation now explicitly identifies direct internal producer calls as requiring caller-owned outer exclusion, not independent concurrent writer entrypoints. No new enforcement for unsupported bypasses is claimed.</p><p class="tests">Owning regressions: <a href="../tests/test_store_operation_lock.py">test_store_operation_lock.py</a>, <a href="../tests/test_alpaca_cli.py">test_alpaca_cli.py</a>.</p></td></tr>
 <tr id="f14"><th scope="row">F14</th><td>fixed and verified</td><td><strong>Serving checkpoint migration documentation describes an older target policy</strong><p>Serving migration documentation matches the existing policy-5/6/7/8 to policy-9 transition; the policy code is unchanged.</p></td></tr>
-<tr id="f15"><th scope="row">F15</th><td>partial</td><td><strong>Passing tests do not establish every handoff path or forbid all redundant work</strong><p>Permanent owning regressions cover repaired boundaries and invalidation/interruption neighbors, including F18–F31, recovery-to-discovery catalogue/lookup/action reuse and full synthetic update/restart/serving completion. This does not close every exported coverage omission or prove every possible input/interleaving.</p></td></tr>
+<tr id="f15"><th scope="row">F15</th><td>partial</td><td><strong>Passing tests do not establish every handoff path or forbid all redundant work</strong><p>Permanent owning regressions cover repaired boundaries and invalidation/interruption neighbors, including F18–F31, recovery-to-discovery catalogue/lookup/action reuse and full synthetic update/restart/serving completion. Native controller regressions now forbid bulk serialization, copying and lost aliases at stage transitions. Standalone JSON compatibility remains separate. These checks do not close every exported coverage omission, prove every possible input/interleaving or establish live resource/throughput acceptance.</p></td></tr>
 <tr id="f16"><th scope="row">F16</th><td>fixed and verified</td><td><strong>Lineage recovery reopens source and notice after accepting them under its newly held locks</strong><p>Recovery selects source/notice/hint values once under reacquired locks and carries them through acknowledgement; newly installed receipts come directly from the journal.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>, <a href="../tests/test_alpaca_lineage_build.py">test_alpaca_lineage_build.py</a>, <a href="../tests/test_alpaca_check_summary.py">test_alpaca_check_summary.py</a>.</p></td></tr>
 <tr id="f17"><th scope="row">F17</th><td>fixed and verified</td><td><strong>Repeated reads through one locked PricingUpdate object discard its accepted source and decoded views</strong><p>A locked pricing handoff retains immutable decoded views and releases them on close; returned mutable maps cannot corrupt the retained view.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_boundary_carry.py">test_alpaca_boundary_carry.py</a>.</p></td></tr>
 <tr id="f18"><th scope="row">F18</th><td>fixed and verified</td><td><strong>Discovery diverts summary members through general acquisition</strong><p>Existing eligible members complete live check/correction/append before discovery acquisition. Changed identity and lost eligibility reconcile first. Later maintenance consumes completed comparisons only for the same summary entry, source generation and allowed scope; an interior replacement invalidates them. Distinct completed-publication acceptance is described in <a href="#f63">F63</a>. The linked-group fixture uses two exact all-view endpoint checks plus two adaptive raw/all append requests, including a harmless metadata change.</p><p class="tests">Owning regressions: <a href="../tests/test_alpaca_update_handoff_regressions.py">test_alpaca_update_handoff_regressions.py</a>, <a href="../tests/test_alpaca_approval_handoffs.py">test_alpaca_approval_handoffs.py</a>.</p></td></tr>

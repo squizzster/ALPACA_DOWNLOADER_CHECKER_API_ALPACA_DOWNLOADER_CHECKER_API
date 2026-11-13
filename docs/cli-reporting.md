@@ -46,8 +46,10 @@ update work if it is unavailable or already exists. For example:
 ./alpaca-cli-eod lineage update --symbol AAPL --no-pricing-acquisition --debug /tmp/alpaca-AAPL.jsonl
 ```
 
-For ordinary `update`, DEBUG also captures the exact transient stage JSON and producer
-effects in `FILE.jsonl.handoffs/<operation-id>/`, outside the production store.
+For ordinary `update`, DEBUG captures compact native stage summaries and scalar producer
+effects in `FILE.jsonl.handoffs/<operation-id>/`, outside the production store. It does not
+encode held prices, receipts, assignments or caches. Explicit standalone JSON stages retain
+their exact argument/result captures.
 See the [pipeline contract](development.md#pipeline-phase-3-complete-pipeline).
 Planning and focused commands retain compact tracing only.
 

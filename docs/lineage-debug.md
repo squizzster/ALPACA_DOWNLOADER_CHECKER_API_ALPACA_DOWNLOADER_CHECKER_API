@@ -291,12 +291,13 @@ presence in an earlier export does not establish that run's flags or reader beha
 ```
 
 Prepare establishes the baseline and selected work; Histories completes pricing/lineage and the
-numerical choices; Serve assesses and publishes the catalogue. Ordinary execution passes real JSON
-under one continuous operation lock. The diagnostic reads a saved prepared/histories/final document
-as data. It reports operation/runtime identity, stage results, scope and selected compact index entries
-without restoring acceptance objects or executing any stage. Historical runtime bindings are displayed,
-not treated as current execution authority. Unrelated encoded prices are not decoded. The full JSON
-document is still parsed in memory, so very large DEBUG captures have a corresponding memory cost.
+numerical choices; Serve assesses and publishes the catalogue. Ordinary execution carries native values
+under one continuous operation lock. Its DEBUG captures contain compact operation metadata and counts,
+with no held values or index bodies; the diagnostic identifies those limits explicitly. Standalone JSON
+stages retain exact saved prepared/histories documents. The diagnostic reads these or a final report as data,
+without restoring acceptance objects or executing stages. Historical runtime bindings are displayed,
+never used as execution authority. Unrelated encoded prices are not decoded. A full standalone JSON
+capture is still parsed in memory, so its size remains a memory consideration.
 
 Normal pipeline execution saves no handoffs. DEBUG alone records them; this tool neither changes that
 retention rule nor creates a recovery archive. See the

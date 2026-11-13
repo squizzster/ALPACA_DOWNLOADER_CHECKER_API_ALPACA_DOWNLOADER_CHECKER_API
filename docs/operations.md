@@ -42,7 +42,9 @@ handoff requires owning generic recovery; it is not silently acknowledged or rep
 See [lineage inference and retained provenance](lineage.md#sourced-event-facts); the
 [rule tool](lineage-debug.md) tests generic candidates without publication.
 
-Every invocation checks live; saved experiments are not inputs. Failed history checks block append;
+Ordinary execution carries native prepared/history records between the shared stages under one continuous
+operation lock; it performs no bulk handoff encoding or decoding. Standalone JSON APIs remain available for
+independent process execution. Every invocation checks live; saved experiments are not inputs. Failed history checks block append;
 independent successes remain recoverable. Published unresolved identity is completed processing, distinct
 from acquisition failure or public eligibility. [Execution ownership](ARCHITECTURE.md#daily-update).
 

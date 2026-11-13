@@ -67,6 +67,20 @@ def inspect_handoff(path, symbols):
     if not isinstance(value, dict):
         raise ValueError("saved handoff must be a JSON object")
     schema = value.get("schema")
+    if schema == "alpaca.pipeline.native":
+        if value.get("schema_version") != 1 or value.get("stage") not in {"prepare", "histories"}:
+            raise ValueError("unsupported compact native handoff")
+        return {
+            "status": "complete",
+            "execution_complete": True,
+            "kind": schema,
+            "native_summary": value,
+            "selected_index_entries": {},
+            "limits": [
+                "Native capture contains counts and operation metadata, not held values or index bodies.",
+                "Inspection does not establish applicability or authorize execution or replay.",
+            ],
+        }
     if schema not in ("alpaca.pipeline.prepared", "alpaca.pipeline.histories"):
         if isinstance(value.get("stages"), dict) and type(value.get("complete")) is bool:
             return {

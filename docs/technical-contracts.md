@@ -380,7 +380,7 @@ When lineage materializes corrected partitions before a subsequent append, its t
 the decoded rows and their already-read publication documents. Append and later lineage assembly consume
 matching store, partition and boundary-generation records without reopening their manifests or payloads.
 A changed selected boundary needs its own assembly; an unchanged boundary remains reusable across source
-envelope changes and rollover. These values cross the ordinary JSON transport and are not retained separately.
+envelope changes and rollover. These values cross native controller records or the explicit standalone JSON adapter and are not archived separately.
 Normal lineage publication also carries its completed receipt and newly produced assignment bodies to serving,
 under their exact selected generations, using the same handoff as publication recovery.
 A correction completion carried from an earlier operation does not by itself complete a newly requested advance
@@ -428,7 +428,7 @@ repeat an accepted history comparison or expire evidence by time. Missing or amb
 original witnesses for one session, other-view conflicts, a still-old response or a third value remain pending.
 Reconciliation accounts for every accumulated witness before either disposition. Consumers retain that completed
 disposition instead of repeating reconciliation. The accepted workflow boundary carries completed equal-source
-correction contracts and their completion receipts across fresh JSON stages. Identical newly selected witnesses
+correction contracts and their completion receipts across native or standalone JSON stages. Identical newly selected witnesses
 consume that completed disposition without a new correction ID, full-range acquisition, payload reads or digest
 calculations. Completed correction evidence is not numerically revalidated at workflow ingress, including after
 publication but before acknowledgement. New work preserves those existing fields; append producers retarget the

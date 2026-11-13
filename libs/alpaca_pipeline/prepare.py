@@ -16,9 +16,10 @@ from libs.alpaca_pricing_download.download import pricing_session_end, request_e
 from .codec import Decoder, Encoder, HandoffError
 from .evidence import export_evidence, import_evidence
 from .execution import stage_lock
+from .handoffs import Prepared
 from .state import export_recovery, export_state, import_state
 
-VERSION = 7
+VERSION = 8
 SCHEMA_VERSION = 1
 
 
@@ -27,7 +28,11 @@ class StageExecutionError(HandoffError):
 
     def __init__(self, message, result):
         super().__init__(message)
-        self.result_json = encode(result)
+        self.result = result
+
+    @property
+    def result_json(self):
+        return encode(self.result)
 
 
 def _runtime_binding():
@@ -92,7 +97,13 @@ def clients():
 
 
 def request(data):
-    value = parse(data)
+    return configuration(parse(data))
+
+
+def configuration(value):
+    """Accept the small invocation envelope once, before producer work."""
+    if not isinstance(value, dict):
+        raise HandoffError("pipeline request must be an object")
     required = {"schema", "schema_version", "operation", "store", "registry", "through", "options", "debug"}
     if (
         set(value) - {"end_exclusive"} != required
@@ -147,15 +158,9 @@ def _capture(configuration, operation_id, stage, kind, data):
             stream.write(data)
 
 
-def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
-    """Complete preparation; return bytes only after production effects and locks finish.
-
-    Client injection is internal test infrastructure, never part of public API.
-    Normal execution creates no handoff files. Delivery failure does not roll
-    back committed outputs and never selects automatic handoff reconstruction.
-    """
-    value = request(data)
-    operation_id = uuid4().hex
+def prepare_native(value, *, pricing_client=None, identity_client=None, progress=None, operation_id=None):
+    """Complete preparation and lend its accepted values to the next owner."""
+    operation_id = uuid4().hex if operation_id is None else operation_id
     end = (
         (
             request_end(value["end_exclusive"])
@@ -165,71 +170,124 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
         .date()
         .isoformat()
     )
+    if pricing_client is None and identity_client is None:
+        pricing_client, identity_client = clients()
+    if pricing_client is None or identity_client is None:
+        raise HandoffError("both internal clients are required")
+    store = Path(value["store"])
+    context = accept_context(store)
+    result = {"complete": False, "end_exclusive": end, "failed": 0, "stages": {}}
+    metadata_started = identity_client.request_count
+    pricing_started = getattr(pricing_client, "request_count", None)
+    with stage_lock(store), universe_state.update_lock(store), operation(store):
+        universe_state.require_initialized(store)
+        prepared = universe_update.prepare_locked(
+            store,
+            end,
+            pricing_client=pricing_client,
+            identity_client=identity_client,
+            registry=Path(value["registry"]),
+            progress=progress,
+            context=context,
+            result=result,
+            **value["options"],
+        )
+        if "policy" not in prepared:
+            raise StageExecutionError("baseline preparation incomplete: " + str(prepared), prepared)
+        request_counts = {
+            "metadata": identity_client.request_count - metadata_started,
+            "pricing": None if pricing_started is None else pricing_client.request_count - pricing_started,
+        }
+        recovery = export_recovery(store, lambda item: item)
+    return Prepared(
+        {"id": operation_id, "request": value, "end_exclusive": end, "runtime": _runtime_binding()},
+        prepared,
+        request_counts,
+        recovery,
+        pricing_client,
+        identity_client,
+    )
+
+
+def serialize_prepared(handoff):
+    """Explicit standalone JSON adapter; ordinary execution never calls it."""
+    prepared = handoff.prepared
+    transport = Encoder()
+    body = {
+        key: transport.encode(prepared[key])
+        for key in (
+            "accepted",
+            "selection",
+            "registered",
+            "storage_symbols",
+            "maintenance_symbols",
+            "result",
+            "workflow_revision",
+        )
+    }
+    body["evidence"] = export_evidence(prepared["evidence"], transport.encode)
+    body["state"] = export_state(
+        prepared["context"],
+        prepared["policy"],
+        transport.encode,
+        evidence=prepared["evidence"],
+        recovery_values=handoff.recovery["values"],
+    )
+    body["recovery"] = {
+        "store": handoff.recovery["store"],
+        "values": transport.encode(handoff.recovery["values"]),
+    }
+    return encode(
+        {
+            "schema": "alpaca.pipeline.prepared",
+            "schema_version": SCHEMA_VERSION,
+            "operation": handoff.operation,
+            "prepared": body,
+            "objects": transport.objects,
+            "requests": handoff.requests,
+        }
+    )
+
+
+def capture_error(debug, operation_id, stage, error):
+    if debug["enabled"]:
+        try:
+            _capture(
+                debug,
+                operation_id,
+                stage,
+                "error",
+                encode(
+                    {
+                        "schema": "alpaca.pipeline.error",
+                        "schema_version": SCHEMA_VERSION,
+                        "operation_id": operation_id,
+                        "stage": stage,
+                        "error_type": type(error).__name__,
+                        "message": str(error),
+                    }
+                ),
+            )
+        except OSError as capture_error:
+            error.add_note("DEBUG error capture failed: " + str(capture_error))
+
+
+def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
+    """Standalone JSON preparation around the shared native stage."""
+    value = request(data)
+    operation_id = uuid4().hex
     _capture(value["debug"], operation_id, "prepare", "input", data)
     try:
-        if pricing_client is None and identity_client is None:
-            pricing_client, identity_client = clients()
-        if pricing_client is None or identity_client is None:
-            raise HandoffError("both internal clients are required")
-        store = Path(value["store"])
-        context = accept_context(store)
-        result = {"complete": False, "end_exclusive": end, "failed": 0, "stages": {}}
-        metadata_started = identity_client.request_count
-        pricing_started = getattr(pricing_client, "request_count", None)
-        with stage_lock(store), universe_state.update_lock(store), operation(store):
-            universe_state.require_initialized(store)
-            prepared = universe_update.prepare_locked(
-                store,
-                end,
-                pricing_client=pricing_client,
-                identity_client=identity_client,
-                registry=Path(value["registry"]),
-                progress=progress,
-                context=context,
-                result=result,
-                **value["options"],
-            )
-            if "policy" not in prepared:
-                raise StageExecutionError("baseline preparation incomplete: " + str(prepared), prepared)
-            transport = Encoder()
-            body = {
-                key: transport.encode(prepared[key])
-                for key in (
-                    "accepted",
-                    "selection",
-                    "registered",
-                    "storage_symbols",
-                    "maintenance_symbols",
-                    "result",
-                    "workflow_revision",
-                )
-            }
-            body["evidence"] = export_evidence(prepared["evidence"], transport.encode)
-            body["state"] = export_state(
-                context, prepared["policy"], transport.encode, evidence=prepared["evidence"]
-            )
-            body["recovery"] = export_recovery(store, transport.encode)
-            request_counts = {
-                "metadata": identity_client.request_count - metadata_started,
-                "pricing": None if pricing_started is None else pricing_client.request_count - pricing_started,
-            }
-            output = encode(
-                {
-                    "schema": "alpaca.pipeline.prepared",
-                    "schema_version": SCHEMA_VERSION,
-                    "operation": {
-                        "id": operation_id,
-                        "request": value,
-                        "end_exclusive": end,
-                        "runtime": _runtime_binding(),
-                    },
-                    "prepared": body,
-                    "objects": transport.objects,
-                    "requests": request_counts,
-                }
-            )
+        handoff = prepare_native(
+            value,
+            pricing_client=pricing_client,
+            identity_client=identity_client,
+            progress=progress,
+            operation_id=operation_id,
+        )
+        output = serialize_prepared(handoff)
+        _capture(value["debug"], operation_id, "prepare", "output", output)
         if value["debug"]["enabled"]:
-            _capture(value["debug"], operation_id, "prepare", "output", output)
             _capture(
                 value["debug"],
                 operation_id,
@@ -237,33 +295,14 @@ def prepare(data, *, pricing_client=None, identity_client=None, progress=None):
                 "effects",
                 encode(
                     {
-                        "stages": result["stages"],
-                        "requests": request_counts,
+                        "stages": handoff.prepared["result"]["stages"],
+                        "requests": handoff.requests,
                     }
                 ),
             )
         return output
     except (RuntimeError, OSError, ValueError) as error:
-        if value["debug"]["enabled"]:
-            try:
-                _capture(
-                    value["debug"],
-                    operation_id,
-                    "prepare",
-                    "error",
-                    encode(
-                        {
-                            "schema": "alpaca.pipeline.error",
-                            "schema_version": SCHEMA_VERSION,
-                            "operation_id": operation_id,
-                            "stage": "prepare",
-                            "error_type": type(error).__name__,
-                            "message": str(error),
-                        }
-                    ),
-                )
-            except OSError as capture_error:
-                error.add_note("DEBUG error capture failed: " + str(capture_error))
+        capture_error(value["debug"], operation_id, "prepare", error)
         raise
 
 

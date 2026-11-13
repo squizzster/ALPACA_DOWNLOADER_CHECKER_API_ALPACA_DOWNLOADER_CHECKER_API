@@ -1,1 +1,1 @@
-"""Independent transient JSON pipeline stages."""
+"""Native stage contracts with independent JSON boundary adapters."""

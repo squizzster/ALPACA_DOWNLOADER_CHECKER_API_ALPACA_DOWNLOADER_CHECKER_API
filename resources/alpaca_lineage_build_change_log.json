@@ -604,5 +604,10 @@
     "modifications": [
       "Carry the configured membership producer's completed ordinary-update trace into publication reporting without repeating inference or opening accepted pricing history."
     ]
+  },
+  {
+    "modifications": [
+      "Pass the ordinary update request and completed stage results through native pipeline contracts, preserving accepted values and failure reports without internal JSON round trips."
+    ]
   }
 ]

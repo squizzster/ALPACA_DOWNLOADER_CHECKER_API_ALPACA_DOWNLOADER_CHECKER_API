@@ -206,5 +206,10 @@
     "modifications": [
       "Remove researched event-supplement CLI input and reject nonempty legacy dispatch arguments before file, provider or store work; pass only provider-driven lineage inputs to the owning pipeline."
     ]
+  },
+  {
+    "modifications": [
+      "Describe compact native stage DEBUG captures for ordinary updates; independent JSON stage adapters retain explicit full captures."
+    ]
   }
 ]

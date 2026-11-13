@@ -432,6 +432,31 @@ class DebugSavedInputsTests(unittest.TestCase):
         with self.assertRaises(LineageDebugError):
             request("handoff", input=str(path), symbols=["GOOG"])
 
+    def test_native_capture_reports_its_limits_without_restoring_values(self):
+        document = {
+            "schema": "alpaca.pipeline.native",
+            "schema_version": 1,
+            "stage": "histories",
+            "operation": {"runtime": {"protocol": 8}},
+            "counts": {"storage_symbols": 20000, "recovery_values": 40000, "failed": 0},
+            "requests": {"pricing_http_requests": 12},
+            "history_complete": True,
+        }
+        path = self.directory / "native.json"
+        path.write_text(json.dumps(document))
+        with (
+            patch("libs.alpaca_pipeline.codec.Decoder.decode", side_effect=AssertionError("restored data")),
+            patch.object(storage, "read_index", side_effect=AssertionError("store accessed")),
+        ):
+            report = request("handoff", input=str(path), symbols=["GOOG"])
+        self.assertEqual(report["native_summary"], document)
+        self.assertEqual(report["selected_index_entries"], {})
+        self.assertTrue(report["limits"])
+        document["schema_version"] = 2
+        path.write_text(json.dumps(document))
+        with self.assertRaises(LineageDebugError):
+            request("handoff", input=str(path))
+
     def export(self, ranges):
         identities = {}
         for public_id, periods in ranges.items():

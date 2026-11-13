@@ -62,7 +62,7 @@ def _require_fields(document, fields, label):
         raise LineageError(f"incomplete {label} handoff")
 
 
-def export_state(context, policy, encode, *, evidence=None):
+def export_state(context, policy, encode, *, evidence=None, recovery_values=None):
     """Carry only enumerated accepted facts, retaining their shared references.
 
     Sourced calculations belong to the evidence client used for this operation.
@@ -78,11 +78,12 @@ def export_state(context, policy, encode, *, evidence=None):
         from .source_state import export_sourced
 
         recovery = recovery_handoffs._selected.get()
+        if recovery_values is None:
+            recovery_values = recovery[1] if recovery is not None and recovery[0] == context.store else {}
         # The selected producer caches retain their actual metadata and control
         # objects. Universe selectors/catalogue rows are not identity anchors.
         roots = []
-        if recovery is not None and recovery[0] == context.store:
-            roots.extend(body for (kind, _), body in recovery[1].items() if kind == "receipt")
+        roots.extend(body for (kind, _), body in recovery_values.items() if kind == "receipt")
         packed_sourced = export_sourced(sourced[evidence], roots=roots)
     else:
         packed_sourced = None
@@ -200,16 +201,7 @@ def export_serving_context(context, encode):
 
 def import_serving_context(store, document, decode):
     _require_fields(document, ("_accepted_store", "index", "serving"), "serving context")
-    context = object.__new__(OperationContext)
-    context.store = Path(store).absolute()
-    for name in CONTEXT_FIELDS:
-        setattr(context, name, None)
-    context._lineage_recovery_complete = True
-    context._pricing = None
-    context.sourced_operations = {}
-    context.history_comparisons, context.history_checks, context._history_scopes = {}, {}, {}
-    for name, value in document.items():
-        setattr(context, name, decode(value))
+    context = _serving_context(store, {name: decode(value) for name, value in document.items()})
     if (
         not isinstance(context._accepted_store, AcceptedStore)
         or context._accepted_store.store != context.store
@@ -219,3 +211,24 @@ def import_serving_context(store, document, decode):
     ):
         raise LineageError("incomplete serving baseline acceptance")
     return context
+
+
+def _serving_context(store, fields):
+    selected = object.__new__(OperationContext)
+    selected.store = Path(store).absolute()
+    for name in CONTEXT_FIELDS:
+        setattr(selected, name, None)
+    selected._lineage_recovery_complete = True
+    selected._pricing = None
+    selected.sourced_operations = {}
+    selected.history_comparisons, selected.history_checks, selected._history_scopes = {}, {}, {}
+    for name, value in fields.items():
+        setattr(selected, name, value)
+    return selected
+
+
+def serving_context(context):
+    """Lend only serving's accepted fields; leave spent producer caches behind."""
+    return _serving_context(
+        context.store, {name: getattr(context, name) for name in ("_accepted_store", "index", "serving")}
+    )

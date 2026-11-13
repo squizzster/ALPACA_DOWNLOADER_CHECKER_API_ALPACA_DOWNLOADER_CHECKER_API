@@ -37,5 +37,10 @@
     "modifications": [
       "Preserve explicitly compatible completed generic reports across the lineage runtime 102 trace-handoff repair, retaining exact store, policy, scope and generation applicability and rejecting unknown future implementations."
     ]
+  },
+  {
+    "modifications": [
+      "Inspect compact native pipeline capture metadata without decoding or restoring bulk data; retain explicit compatibility for previously completed generic comparison reports."
+    ]
   }
 ]

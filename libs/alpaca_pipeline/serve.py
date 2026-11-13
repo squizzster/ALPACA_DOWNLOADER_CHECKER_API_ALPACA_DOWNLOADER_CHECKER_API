@@ -8,8 +8,9 @@ from libs.common.work_scope import selected_work
 
 from .codec import HandoffError
 from .execution import stage_lock
+from .handoffs import Histories
 from .histories import load_histories
-from .prepare import SCHEMA_VERSION, _capture, encode
+from .prepare import _capture, capture_error, encode
 from .state import restore_recovery
 
 
@@ -24,14 +25,26 @@ def assert_histories_current(store, histories, context):
         raise HandoffError("stale_handoff: serving generation changed")
 
 
-def serve(data, *, progress=None):
-    """Consume a completed attempt without providers or upstream stage calls.
+def serve_native(handoff, *, progress=None):
+    """Consume completed values without providers, transport or upstream work."""
+    if not isinstance(handoff, Histories):
+        raise HandoffError("expected completed native histories")
+    histories, context = handoff.histories, handoff.context
+    try:
+        histories["result"], histories["history_complete"], histories["storage_symbols"]
+    except (KeyError, TypeError) as error:
+        raise HandoffError("incomplete native histories") from error
+    store = context.store
+    with stage_lock(store) as coordinated, universe_state.update_lock(store), operation(store):
+        if not coordinated:
+            assert_histories_current(store, histories, context)
+        restore_recovery(store, handoff.recovery, lambda item: item)
+        with selected_work(store, histories["storage_symbols"]):
+            return universe_update.serve_locked(store, histories, context=context, progress=progress)
 
-    The whole input is decoded before locks and effects. The controller lends
-    only its actual exclusion; every accepted domain fact comes from the JSON.
-    A standalone call checks selected applicability after acquiring its gate.
-    Lost delivery errors; it never requests reconstruction or stage replay.
-    """
+
+def serve(data, *, progress=None):
+    """Standalone JSON adapter around the same native serving implementation."""
     try:
         value, store, histories, context, decoder, recovery = load_histories(data)
     except (KeyError, TypeError, AttributeError) as error:
@@ -39,18 +52,14 @@ def serve(data, *, progress=None):
     op = value["operation"]
     debug = op["request"]["debug"]
     _capture(debug, op["id"], "serve", "input", data)
-    del data
+    handoff = Histories(
+        op, histories, context, {"store": recovery["store"], "values": decoder.decode(recovery["values"])}
+    )
+    del data, value, histories, context, decoder, recovery
     try:
-        with stage_lock(store) as coordinated, universe_state.update_lock(store), operation(store):
-            if not coordinated:
-                assert_histories_current(store, histories, context)
-            restore_recovery(store, recovery, decoder.decode)
-            with selected_work(store, histories["storage_symbols"]):
-                result = universe_update.serve_locked(store, histories, context=context, progress=progress)
-                # Serving has consumed the last bulk-data handoff. Its final
-                # result is compact and does not echo partitions or assignments.
-                del value, histories, context, decoder, recovery
-                output = encode(result)
+        result = serve_native(handoff, progress=progress)
+        del handoff
+        output = encode(result)
         _capture(debug, op["id"], "serve", "output", output)
         if debug["enabled"]:
             _capture(
@@ -68,24 +77,5 @@ def serve(data, *, progress=None):
             )
         return output
     except (RuntimeError, OSError, ValueError) as error:
-        if debug["enabled"]:
-            try:
-                _capture(
-                    debug,
-                    op["id"],
-                    "serve",
-                    "error",
-                    encode(
-                        {
-                            "schema": "alpaca.pipeline.error",
-                            "schema_version": SCHEMA_VERSION,
-                            "operation_id": op["id"],
-                            "stage": "serve",
-                            "error_type": type(error).__name__,
-                            "message": str(error),
-                        }
-                    ),
-                )
-            except OSError as capture_error:
-                error.add_note("DEBUG error capture failed: " + str(capture_error))
+        capture_error(debug, op["id"], "serve", error)
         raise
