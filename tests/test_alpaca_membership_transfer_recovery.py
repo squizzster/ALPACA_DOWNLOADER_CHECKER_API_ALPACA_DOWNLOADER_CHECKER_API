@@ -50,6 +50,63 @@ class TransferRecoveryTests(unittest.TestCase):
                 context.select_serving(),
             )
 
+    def test_completed_transfer_beside_explicit_negative_peer_does_not_reopen_old_checkpoint(self):
+        index = {
+            "symbols": {
+                name: {
+                    "sha256": name + "-receipt",
+                    "source_sha256": name + "-new-pricing",
+                    "group_members": ["POSITIVE", "NEGATIVE"],
+                    "projection": {
+                        "has_membership_rebind": name == "POSITIVE",
+                        "membership_transfers_complete": name == "POSITIVE",
+                    },
+                }
+                for name in ("POSITIVE", "NEGATIVE")
+            }
+        }
+        pending = {name: entry["sha256"] for name, entry in index["symbols"].items()}
+        with (
+            patch.object(storage, "read_receipt", side_effect=AssertionError("completed receipt reopened")),
+            patch.object(serving_storage, "read_groups", side_effect=AssertionError("old checkpoint reopened")),
+            patch.object(storage, "pricing_locks", side_effect=AssertionError("unselected pricing owner")),
+            patch.object(storage, "publish", side_effect=AssertionError("completed transfer rewritten")),
+        ):
+            self.assertEqual([], membership_transfer_recovery.recover(self.store, self.root, index, pending, {}))
+
+    def test_incomplete_positive_and_unknown_peers_retain_complete_group_recovery(self):
+        for state in ("incomplete_positive", "unknown_peer"):
+            index = {
+                "symbols": {
+                    name: {
+                        "sha256": name,
+                        "group_members": ["POSITIVE", "PEER"],
+                        "projection": {
+                            "has_membership_rebind": name == "POSITIVE",
+                            "membership_transfers_complete": name == "POSITIVE",
+                        },
+                    }
+                    for name in ("POSITIVE", "PEER")
+                }
+            }
+            if state == "incomplete_positive":
+                index["symbols"]["POSITIVE"]["projection"]["membership_transfers_complete"] = False
+            else:
+                index["symbols"]["PEER"]["projection"].pop("has_membership_rebind")
+            with (
+                self.subTest(state=state),
+                patch.object(
+                    membership_transfer_recovery, "_recover_group", return_value=["POSITIVE", "PEER"]
+                ) as owning,
+            ):
+                self.assertEqual(
+                    ["PEER", "POSITIVE"],
+                    membership_transfer_recovery.recover(
+                        self.store, self.root, index, {name: name for name in index["symbols"]}, {}
+                    ),
+                )
+            owning.assert_called_once_with(self.store, self.root, index, {"POSITIVE", "PEER"}, {})
+
     def test_carried_metadata_reads_only_missing_groups_and_expires_with_binding(self):
         controls = serving_storage.controls(self.store)
         keys = sorted(controls["groups"])

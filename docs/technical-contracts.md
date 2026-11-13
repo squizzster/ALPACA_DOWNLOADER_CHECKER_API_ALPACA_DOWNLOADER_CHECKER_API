@@ -184,8 +184,11 @@ Consumers remain strict; recovery does not reconstruct history or repeat continu
 
 The compact `has_membership_rebind` flag separately identifies a completed source rebind, while
 `membership_transfers_complete` records its completed projection. Pending-group recovery uses these producer
-flags to select exact metadata work; absence of required selection capability fails into explicit owning
-recovery rather than opening every pending receipt to discover it. These optional compact fields do not
+flags to select exact metadata work. An explicitly absent transfer on a peer does not reopen a completed
+positive transfer: legacy repair requires an incomplete positive transfer or unknown transfer status.
+Unknowns retain complete-group recovery, and actual changed donor generations still reject obsolete approvals.
+Absence of required selection capability fails into explicit owning recovery rather than opening every
+pending receipt to discover it. These optional compact fields do not
 change dated ownership, numerical choices or the existing receipt format.
 
 Selected generic source work closes its dependency group before payload loading. `ClosedAcceptedSource`

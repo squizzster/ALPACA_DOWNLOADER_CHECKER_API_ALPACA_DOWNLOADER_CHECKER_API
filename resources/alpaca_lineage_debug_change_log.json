@@ -42,5 +42,10 @@
     "modifications": [
       "Inspect compact native pipeline capture metadata without decoding or restoring bulk data; retain explicit compatibility for previously completed generic comparison reports."
     ]
+  },
+  {
+    "modifications": [
+      "Keep previously completed generic comparison reports applicable across the lineage membership-recovery selection repair, retaining explicit generation/policy invalidation and factual-candidate rejection."
+    ]
   }
 ]

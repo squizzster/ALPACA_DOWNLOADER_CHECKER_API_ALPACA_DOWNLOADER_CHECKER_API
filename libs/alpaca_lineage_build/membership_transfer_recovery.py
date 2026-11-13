@@ -28,8 +28,12 @@ def recover(store, root, index, pending_serving, serving):
         group = set(entries[symbol]["group_members"])
         seen.update(group)
         selected = group & entries.keys()
+        # A legacy peer can explicitly have no transfer without the newer
+        # completion marker. Keep completed positives closed; retain unknowns.
         if any(entries[name]["projection"].get("has_membership_rebind") for name in selected) and any(
-            not entries[name]["projection"].get("membership_transfers_complete") for name in selected
+            not entries[name]["projection"].get("membership_transfers_complete")
+            and entries[name]["projection"].get("has_membership_rebind") is not False
+            for name in selected
         ):
             groups.append(group)
     repaired = []

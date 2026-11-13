@@ -609,5 +609,10 @@
     "modifications": [
       "Pass the ordinary update request and completed stage results through native pipeline contracts, preserving accepted values and failure reports without internal JSON round trips."
     ]
+  },
+  {
+    "modifications": [
+      "Select legacy membership-transfer recovery only for incomplete positive or unknown transfer status; an explicitly absent transfer on a peer cannot reopen completed transfer handoffs or rebind them to an obsolete serving checkpoint. Retain full dependency scope, genuine generation rejection and unknown-state recovery."
+    ]
   }
 ]
