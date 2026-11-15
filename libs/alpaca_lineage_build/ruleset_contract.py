@@ -14,6 +14,7 @@ class AcceptedRuleset:
     policy: Any
     membership_refinement: str | None
     execution_sha256: str
+    dated_labels: str | None = None
 
     @property
     def applications(self):

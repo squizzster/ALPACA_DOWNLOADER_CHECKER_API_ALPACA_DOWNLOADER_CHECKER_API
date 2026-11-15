@@ -52,5 +52,10 @@
     "modifications": [
       "Preserve explicitly compatible completed generic comparison reports across scoped numerical completion, including lineage runtime 104 reports; retain exact policy, store, selector and receipt applicability, factual-candidate rejection and rejection of unknown future implementations."
     ]
+  },
+  {
+    "modifications": [
+      "Expose registered dated-label selection and preserve explicit control producers; carry identical completed comparisons and pre-label frames while computing changed label observations only."
+    ]
   }
 ]

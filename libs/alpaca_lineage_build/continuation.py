@@ -121,8 +121,10 @@ def _valid_rename_handoffs(previous):
 def validate_handoff(previous):
     """A declared completed handoff cannot fall back to legacy assembly."""
     if previous:
+        from .label_updates import validate_completion
         from .source_equivalence import validate as validate_source_equivalence
 
+        validate_completion(previous)
         validate_source_equivalence(previous)
     if previous:
         documented = previous.get("documented_identity_membership")

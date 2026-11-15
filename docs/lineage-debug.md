@@ -32,7 +32,7 @@ independent execution identity. Dated ownership and choosing which source suppli
 
 Only this diagnostic compiler admits the research role. The production compiler/authorization
 rejects it. Flat production and corrected-candidate schema-4 YAML files remain readable; the
-[policy lab](policy-lab.md) retains older executable profiles. Combined files keep generic membership selection under `producers`. Authored factual applications,
+[policy lab](policy-lab.md) retains older executable profiles. Combined files keep generic membership and dated-label selection under `producers`. Authored factual applications,
 supplements, assertion overlays and `research.documented_facts` are rejected before store or provider access,
 including legacy inputs and empty factual fields. Removed `accepted_publication` and `documented_scopes`
 candidate modes are also rejected. The combined document is bounded to 1 MiB and its policy to 64 KiB.
@@ -155,20 +155,23 @@ digests carry forward. Identical executable cascades reuse the completed control
 explicit preserved control implementation or an opt-in candidate with the unchanged path still present;
 changing Python globally and naming two YAML files does not restore the earlier implementation.
 
-The combined YAML supports one optional membership producer:
+The combined YAML selects registered producers; the canonical configuration enables both:
 
 ```yaml
 producers:
   membership_refinement: accepted_same_security_containing_component_v1
+  dated_labels: observed_rename_periods_over_mapped_alias_v1
 ```
 
 Flat legacy research YAML retains its `research.membership_refinement` compatibility setting.
 
-Omitted producer selection means null. The canonical YAML explicitly enables this producer;
+Omitted producer selection means null. The canonical YAML explicitly enables these producers;
 `init` carries that selection into the research copy.
-The control must leave the candidate producer disabled. Combined YAML can use its canonical default
-control; a flat legacy research file requires explicit `--control-policy`.
-The producer consumes an already completed containing identity, the exact retained same-CUSIP rename
+Both arms retain the producers actually selected by their YAML. To measure adding or removing one producer,
+use an explicit control copy with that producer disabled or enabled respectively. Identical selections carry
+the completed result. Combined YAML can use its canonical default control; a flat legacy research file
+requires explicit `--control-policy`.
+The membership producer consumes an already completed containing identity, the exact retained same-CUSIP rename
 observation, the shared dated provider UUID/CUSIP and the donor report's completed directed split edges.
 Every additional member needs that same-security extension path. Mere containment, shared UUIDs, ticker
 similarity, spin-offs, mergers and competing destinations cannot authorize this refinement. Conflicting
@@ -187,17 +190,24 @@ ordinary append, interruption recovery or complete production preservation. Prod
 plan under the selected group and generation bindings, preserving accepted ownership and opening only the
 new numerical overlap.
 
+Dated-label comparisons use the [same domain rule](lineage.md#dated-label-collisions) as normal lineage.
+They retain completed ownership, numerical choices and explanation dimensions, projecting only label
+observations. Removing the producer restores its held pre-label frame; identical selection performs no
+second label plan or projection. Only a changed observation dimension receives a new digest.
+
 ## Screen and carry a membership study
 
-For the named membership candidate with an otherwise unchanged cascade, a metadata screen can establish
+Copy the canonical YAML to `/tmp/membership-control.yaml` and set its `membership_refinement` to null,
+keeping every other producer selection identical to the candidate. For the named membership candidate
+with an otherwise unchanged cascade, a metadata screen can establish
 which groups cannot be affected without replaying prices or rules:
 
 ```bash
 ./alpaca-lineage-debug screen --store data_pricing \
-  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --control-policy /tmp/membership-control.yaml \
   --policy /tmp/lineage-candidate.yaml --format json > /tmp/lineage-screen.json
 ./alpaca-lineage-debug run --store data_pricing --all \
-  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --control-policy /tmp/membership-control.yaml \
   --policy /tmp/lineage-candidate.yaml --screen-report /tmp/lineage-screen.json \
   --format json > /tmp/lineage-impact.json
 ```
@@ -258,7 +268,7 @@ Capture the metadata already read during a complete explanation and pass it dire
   --include-metadata-handoff --format json > /tmp/lineage-case-input.json
 ./alpaca-lineage-debug run --store data_pricing --tickers SSNT \
   --policy /tmp/lineage-candidate.yaml \
-  --control-policy resources/alpaca_security_correlation_policy.yaml \
+  --control-policy /tmp/membership-control.yaml \
   --metadata-handoff /tmp/lineage-case-input.json --format json > /tmp/lineage-case-result.json
 ```
 

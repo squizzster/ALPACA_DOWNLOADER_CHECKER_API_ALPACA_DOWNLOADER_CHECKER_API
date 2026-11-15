@@ -280,6 +280,7 @@ def finish_correlated_group(
     unavailable,
     work_policy,
     completion=None,
+    dated_labels=None,
 ):
     """Consume completed correlation and retained choices under the owning locks.
 
@@ -320,12 +321,22 @@ def finish_correlated_group(
                 original_view=original_choice_inputs[name],
             )
             reports[name]["retained_observation_routes"] = prior.get("observation_routes", {})
+        label_options = {}
+        if dated_labels:
+            from .label_updates import continue_plan
+
+            label_options = {
+                "dated_label_evidence": evidence,
+                "dated_label_decision": continue_plan(previous, evidence, reports) if resume else None,
+                "dated_label_output": completion.setdefault("label_decision", {}),
+            }
         reports, mapping_corrections = services.select_observations(
             inputs,
             reports,
             retained_choices=retained_choices,
             invalidated_scopes=affected,
             instant_keys=completion.setdefault("instant_keys", {}),
+            **label_options,
         )
         completion["numerical"] = reports, dict(mapping_corrections)
         required.update(mapping_corrections)
@@ -358,6 +369,18 @@ def finish_correlated_group(
                 ):
                     raise LineageError("retained recovery changed its selected group")
                 receipts[symbol]["retained_recovery"] = retained_recovery.completion()
+        if (
+            "plan" in completion.get("label_decision", {})
+            and (not resume or all(prior and prior.get("dated_label_completion") for prior in previous.values()))
+            and (len(receipts) >= 2)
+        ):
+            from .label_updates import stamp as stamp_labels
+
+            if "labelled_receipts" not in completion:
+                completion["labelled_receipts"] = stamp_labels(
+                    receipts, evidence, completion["label_decision"]["plan"]
+                )
+            receipts = completion["labelled_receipts"]
         if "publication" not in completion:
             publication = CompletedGroupPublication(
                 receipts,
@@ -861,6 +884,29 @@ def process_group(
                 services.event(
                     "lineage_required", symbol=seed, required=False, reason="accepted_unchanged_inputs"
                 )
+                label_previous, label_boundaries = previous, {}
+                if context.accept_ruleset().dated_labels:
+                    from .label_updates import applicable as applicable_labels
+                    from .label_updates import complete as complete_labels
+                    from .label_updates import possible as possible_labels
+
+                    if not applicable_labels(previous) and possible_labels(
+                        previous, {name: prior["evidence"] for name, prior in previous.items()}
+                    ):
+                        provider_evidence = {
+                            name: evidence_client.provider_view(prior["evidence"])
+                            for name, prior in previous.items()
+                        }
+                        label_previous, label_boundaries, _label_trace = complete_labels(
+                            store,
+                            root,
+                            previous,
+                            sources,
+                            provider_evidence,
+                            {name: index["symbols"][name]["sha256"] for name in previous},
+                            source_work_cache,
+                            assignment_cache=assignment_boundaries,
+                        )
                 receipts = {
                     symbol: {
                         **prior,
@@ -892,7 +938,7 @@ def process_group(
                             }
                         ),
                     }
-                    for symbol, prior in previous.items()
+                    for symbol, prior in label_previous.items()
                 }
                 if work_policy is not None:
                     completed = work_policy.stamp(receipts, sources)
@@ -918,7 +964,7 @@ def process_group(
                         root,
                         index,
                         receipts,
-                        {s: {} for s in receipts},
+                        {s: label_boundaries.get(s, {}) for s in receipts},
                         {},
                         checks=checks,
                         previous=previous,
@@ -1894,6 +1940,7 @@ def process_group(
                         completion["correlation"] = components, reports, affected
                     components, reports, affected = completion["correlation"]
                     completion["finish_args"] = {
+                        "dated_labels": context.accept_ruleset().dated_labels,
                         "reports": reports,
                         "acquisition_waves": acquisition_waves,
                         "affected": affected,
@@ -1918,6 +1965,7 @@ def process_group(
                         "unavailable": unavailable,
                     }
                     completed_group = services.finish_correlated_group(
+                        dated_labels=context.accept_ruleset().dated_labels,
                         reports=reports,
                         acquisition_waves=acquisition_waves,
                         affected=affected,

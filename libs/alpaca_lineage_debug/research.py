@@ -12,7 +12,7 @@ from libs.alpaca_lineage_policy_lab.comparison import (
 from libs.alpaca_pricing_download.contract import symbol_label
 
 from . import accept_report
-from .policy import policy_applies, policy_applies_to_group, require_generic_policy
+from .policy import policy_applies_to_group, require_generic_policy
 
 
 def failure(error):
@@ -206,7 +206,10 @@ def run(
             reuse_report.get("mode") != "paired_same_inputs"
             or reuse_report.get("store") != str(store)
             or control_policy is None
-            or not policy_applies(reuse_report.get("control_policy", {}), control_policy)
+            or not all(
+                policy_applies_to_group(reuse_report.get("control_policy", {}), control_policy, result["group"])
+                for result in reuse_report.get("groups", ())
+            )
             or reuse_report.get("scope", {}).get("selector") != index["projection_state"]
             or type(reuse_report.get("execution_complete")) is not bool
             or reuse_report.get("status") not in {"complete", "incomplete", "timed_out"}

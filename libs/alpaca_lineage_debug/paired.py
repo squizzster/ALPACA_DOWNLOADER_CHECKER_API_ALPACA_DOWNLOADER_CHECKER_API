@@ -201,6 +201,26 @@ def _refined_candidate(selected, control, maximum):
     return frame, trace
 
 
+def _label_candidate(selected, control):
+    from libs.alpaca_lineage_build.dated_labels import project_observation_frame
+
+    frame = control["candidate"]
+    dimensions, trace = project_observation_frame(
+        control.get("unlabelled_dimensions", frame["dimensions"]),
+        control["reports"],
+        control["evidence"],
+        control["published"]["row_indexes"],
+        requests={name: view.source.get("latest_request", {}) for name, view in selected["inputs"].items()},
+    )
+    if not trace["changes"]:
+        return frame, trace
+    return {
+        **frame,
+        "dimensions": dimensions,
+        "digests": {**frame["digests"], "observation": _digest_mapping(dimensions["observation"])},
+    }, trace
+
+
 def evaluate(store, seed, policy, control_policy, selected, maximum):
     from .policy import require_generic_policy
 
@@ -208,11 +228,48 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
     require_generic_policy(control_policy)
     control = {}
     control_report = _compare_loaded_group(
-        store, seed, control_policy, selected, max_differences=maximum, completed=control
+        store,
+        seed,
+        control_policy,
+        selected,
+        max_differences=maximum,
+        completed=control,
+        refine=refine if getattr(control_policy, "membership_refinement", None) else None,
     )
-    trace = None
+    trace = control.get("refinement")
+    label_trace = None
     if same_cascade(control_policy, policy):
-        if getattr(policy, "membership_refinement", None):
+        candidate_labels = getattr(policy, "dated_labels", None)
+        control_labels = getattr(control_policy, "dated_labels", None)
+        same_membership = getattr(policy, "membership_refinement", None) == getattr(
+            control_policy, "membership_refinement", None
+        )
+        if (
+            not same_membership
+            and getattr(control_policy, "membership_refinement", None)
+            and not getattr(policy, "membership_refinement", None)
+        ):
+            # A completed no-effect producer establishes the unchanged input,
+            # including for removal. A real membership change needs its owning
+            # reverse projection; never report that as parity.
+            refinement = control.get("refinement")
+            if refinement is not None and not refinement["changes"]:
+                same_membership = True
+        if candidate_labels == control_labels and same_membership:
+            candidate = control["candidate"]
+            label_trace = control.get("label_trace")
+        elif candidate_labels != control_labels:
+            if not same_membership:
+                raise ValueError("compare one changed producer at a time")
+            if candidate_labels:
+                candidate, label_trace = _label_candidate(selected, control)
+            else:
+                candidate = {
+                    **control["candidate"],
+                    "dimensions": control["unlabelled_dimensions"],
+                    "digests": control["unlabelled_digests"],
+                }
+        elif getattr(policy, "membership_refinement", None):
             candidate, trace = _refined_candidate(selected, control, maximum)
         else:
             candidate = control["candidate"]
@@ -244,5 +301,6 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
         "published_to_candidate": compare_frames(control["published"], candidate, maximum),
         "comparison": impact,
         "membership_refinement": trace,
+        "dated_labels": label_trace,
         "control_correlation_reused": same_cascade(control_policy, policy),
     }

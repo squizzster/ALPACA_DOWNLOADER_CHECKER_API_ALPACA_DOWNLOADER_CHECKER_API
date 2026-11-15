@@ -126,8 +126,10 @@ to consume compatible header handoffs. This transition does not authorize any ot
 separately from identity assignment. Each identity/session takes all numerical views from one complete eight-view
 bundle. Applicable completed market and source decisions keep their accepted scope. For fresh selection,
 the latest independently observed own-label source normally wins. This selects observations, not historical completeness.
-Equal complete bundles can collapse; unresolved authority stays explicit. All accepted dated labels survive
-independently, including ambiguity. Readers/exports consume decisions without repeating selection/activity checks.
+Equal complete bundles can collapse; unresolved authority stays explicit. Numerical selection preserves dated
+labels independently, including ambiguity. The separate dated-label producer below can resolve supported
+collisions without changing that numerical choice. Readers/exports consume completed decisions without
+repeating selection/activity checks.
 
 When overlapping bundles disagree in any field and request mapping `asof` lies outside accepted occupancy, lineage
 requests only that source's full retained span at an observed own-label mapping date. Accepted departures across
@@ -168,6 +170,46 @@ capabilities, a newly required pricing-mapping correction or an unresolved sourc
 work. Ordinary update consumes explicitly enrolled numerical-only work; it does not scan the universe for
 legacy overlaps or interpret every absent optional capability as a defective history. Readers continue to
 consume the published numerical decisions and reject competing selected observations.
+
+## Dated-label collisions
+
+The canonical YAML selects `observed_rename_periods_over_mapped_alias_v1`, implemented by
+[dated_labels.py](../libs/alpaca_lineage_build/dated_labels.py). Within one accepted public owner, a provider
+name-change observation and disjoint old/new own-label source periods can make those dated labels more
+likely than a mapped alias whose source spans both periods. The producer removes that broad alias only
+from an existing collision that already contains exactly one supported chain label. It does not invent
+labels, alter a unique label, choose prices or change ownership/membership. Source periods supply the
+observed dates; the provider processing date is not treated as the trading transition. Missing or
+inconsistent CUSIPs remain recorded evidence limits rather than an absolute veto. Competing rename
+routes, overlapping direct periods and a contrary dated alias action preserve ambiguity. A uniquely
+directed round-trip label route can instead prefer its temporary label inside an observed contained
+source interval when a provider split is effective at that interval's start and the return follows its
+end. This only resolves existing collisions; it does not extend the temporary label beyond that interval.
+
+[label_updates.py](../libs/alpaca_lineage_build/label_updates.py) completes selected historical collisions
+automatically through normal lineage processing and its existing journal. For exactly two coextensive
+same-owner sources, the sole label named by provider actions inside their shared span is preferred over
+an alias with no competing dated actions or rename route, when both accepted latest requests began
+after the shared history ended. This distinguishes stopped histories from ongoing mapped histories;
+empty or manual request scopes remain an inference limit. Ex-dividend/effective dates take precedence
+over processing dates. This inference does not establish a rename date or extend into future alias-only
+history. Groups lacking either a three-source rename pattern or a two-source named dated action require
+no assignment traversal. Selected accepted assignment
+metadata supplies the remaining conditions. Whole-segment relabelling opens no prices; an interior split
+assembles only its required timestamps from manifest-selected physical views, sharing actual file aliases.
+No price comparison, ownership replay, provider request or whole-store scan is part of this correction.
+The receipt binds completion to source/assignment generations, accepted request scopes and held provider
+actions. Owning source work invalidates a completion when it changes those bindings while preserving
+its produced labels; consumers never clear or reconstruct a stale handoff. Applicable
+completion survives retry and journal recovery. An accepted prefix can carry the generic archive/rename
+relation onto newly owned continuing-label suffix rows without reconstructing its historical decision.
+Changed relevant observations or generations select the owning work. Legacy research annotations are
+not evidence for this producer.
+
+Its existing dated-label serving handoff preserves numerical outcomes and accepted session dates while
+projecting labels. The rule's scope is existing collisions, not a claim that every unique historical label
+or unresolved owner is correct. Public online collision screening does not measure offline identities or
+superseded source-label records. [F62/F64](trust-boundary-handoff.html#f62) retain these verification limits.
 
 ## Ownership evidence limits
 
@@ -546,7 +588,7 @@ work; requesting a fresh description is not itself a request to recalculate hist
 
 Validate each new session grid and its accepted seam, then send only added rows from every group member through
 the same compiled policy evaluator. An empty accepted prefix has no seam; the pricing producer validates its first
-rows. No new rows means no rule execution. Closed pricing/assignment payloads stay closed except for assignment
+rows. No new rows means no ownership or numerical rule execution. A separately uncompleted dated-label collision can still select its metadata-only producer. Closed pricing/assignment payloads stay closed except for assignment
 bodies needed to regroup publication at month/year rollover or project an older receipt without a summary. The
 active pricing partition supplies the added rows. A completed unresolved or incomplete prior row partition is
 explicitly conditional on later group facts: new rows in that group select complete-group work until an owning

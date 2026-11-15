@@ -43,5 +43,10 @@
     "modifications": [
       "Carry accepted numerical-only scope and completion records with work-policy aliases through standalone stage JSON without repeating ingress; ordinary native handoffs retain their direct references and continuous operation lock."
     ]
+  },
+  {
+    "modifications": [
+      "Carry the accepted generic dated-label producer selection across native and JSON pipeline stages without recompiling configuration."
+    ]
   }
 ]

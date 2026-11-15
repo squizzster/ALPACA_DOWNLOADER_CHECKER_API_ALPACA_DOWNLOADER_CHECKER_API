@@ -197,8 +197,6 @@ def dispatch(command, request):
             raise ValueError("screen and completed-report consumption require an explicit control_policy")
         if getattr(policy, "membership_refinement", None) and control is None:
             raise ValueError("membership refinement requires an explicit control_policy")
-        if control is not None and getattr(control, "membership_refinement", None):
-            raise ValueError("the control policy must disable experimental membership refinement")
         result = run(
             path(request.get("store"), "store"),
             policy,

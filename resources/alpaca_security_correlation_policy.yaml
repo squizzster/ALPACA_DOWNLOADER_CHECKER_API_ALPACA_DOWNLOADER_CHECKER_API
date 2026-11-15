@@ -50,3 +50,4 @@ policy:
       implementation: lineage_v37_documented_public_continuity_v1
 producers:
   membership_refinement: accepted_same_security_containing_component_v1
+  dated_labels: observed_rename_periods_over_mapped_alias_v1

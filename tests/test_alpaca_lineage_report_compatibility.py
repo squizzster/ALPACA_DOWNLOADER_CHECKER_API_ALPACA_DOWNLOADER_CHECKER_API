@@ -117,7 +117,9 @@ class ReportBindingCompatibilityTests(TestCase):
                 accept_report(report_for(historical_bindings()[0]), "run", allow_previous=True)
 
     def test_empty_control_research_options_match_absence_without_erasing_candidates(self):
-        control = control_view(load_policy(DEFAULT_POLICY))
+        control = replace(
+            control_view(load_policy(DEFAULT_POLICY)), membership_refinement=None, dated_labels=None
+        )
         values = {field.name: getattr(control, field.name) for field in fields(compiler.CompiledPolicy)}
         empty = ResearchPolicy(**values)
         self.assertTrue(policy_applies(control.as_report_object(), empty))

@@ -17,6 +17,7 @@ def screen(store, policy, control):
     if (
         control is None
         or getattr(control, "membership_refinement", None) is not None
+        or getattr(control, "dated_labels", None) != getattr(policy, "dated_labels", None)
         or not same_cascade(control, policy)
         or getattr(policy, "membership_refinement", None) != NAME
     ):

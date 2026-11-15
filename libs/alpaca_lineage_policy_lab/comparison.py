@@ -652,6 +652,21 @@ def _compare_loaded_group(
     candidate = _group_dimensions(candidate_boundaries, inputs, receipts, row_indexes=row_indexes)
     candidate["group_diagnostics"] = _group_diagnostics(reports)
     candidate_digests = {name: _digest_mapping(values) for name, values in candidate.items()}
+    unlabelled_dimensions, unlabelled_digests = candidate, candidate_digests
+    label_trace = None
+    if getattr(policy, "dated_labels", None):
+        from libs.alpaca_lineage_build.dated_labels import project_observation_frame
+
+        candidate, label_trace = project_observation_frame(
+            candidate,
+            reports,
+            evidence,
+            row_indexes,
+            requests={name: view.source.get("latest_request", {}) for name, view in inputs.items()},
+        )
+        if label_trace["changes"]:
+            candidate_digests = {**candidate_digests, "observation": _digest_mapping(candidate["observation"])}
+
     differences = {
         name: _difference(
             baseline[name],
@@ -692,6 +707,9 @@ def _compare_loaded_group(
     if completed is not None:
         completed.update(
             published=comparison_handoff,
+            unlabelled_dimensions=unlabelled_dimensions,
+            unlabelled_digests=unlabelled_digests,
+            label_trace=label_trace,
             candidate={
                 "dimensions": candidate,
                 "digests": candidate_digests,

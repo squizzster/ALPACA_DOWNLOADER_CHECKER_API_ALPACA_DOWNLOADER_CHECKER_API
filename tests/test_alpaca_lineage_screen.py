@@ -20,7 +20,12 @@ from libs.alpaca_pricing_download.download import download_pricing
 
 
 class ScreenTests(TestCase):
-    setUp = debug_fixtures.DebugStoreTests.setUp
+    def setUp(self):
+        debug_fixtures.DebugStoreTests.setUp(self)
+        value = yaml.safe_load(DEFAULT_POLICY.read_text())
+        value["producers"] = {"membership_refinement": None, "dated_labels": None}
+        self.control = self.directory / "control.yaml"
+        self.control.write_text(yaml.safe_dump(value))
 
     def enable(self):
         value = yaml.safe_load(self.policy.read_text())
@@ -29,7 +34,7 @@ class ScreenTests(TestCase):
 
     def screen(self):
         return debug_fixtures.request(
-            "screen", store=str(self.store), policy=str(self.policy), control_policy=str(DEFAULT_POLICY)
+            "screen", store=str(self.store), policy=str(self.policy), control_policy=str(self.control)
         )
 
     def test_single_source_exclusion_has_no_receipt_or_price_reads(self):
@@ -53,7 +58,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 all=True,
                 screen_report=str(path),
             )
@@ -111,7 +116,7 @@ class ScreenTests(TestCase):
             "run",
             store=str(self.store),
             policy=str(self.policy),
-            control_policy=str(DEFAULT_POLICY),
+            control_policy=str(self.control),
             symbols=["GOOG"],
         )
         path = self.directory / "completed.json"
@@ -125,7 +130,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 symbols=["GOOG"],
                 reuse_report=str(path),
             )
@@ -139,7 +144,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 symbols=["GOOG"],
                 reuse_report=str(path),
             )
@@ -158,14 +163,14 @@ class ScreenTests(TestCase):
                     "run",
                     store=str(self.store),
                     policy=str(self.policy),
-                    control_policy=str(DEFAULT_POLICY),
+                    control_policy=str(self.control),
                     all=True,
                     screen_report=str(path),
                 )
 
     def test_invalidated_reused_peer_keeps_completed_other_groups(self):
         report = debug_fixtures.request(
-            "run", store=str(self.store), policy=str(self.policy), control_policy=str(DEFAULT_POLICY), all=True
+            "run", store=str(self.store), policy=str(self.policy), control_policy=str(self.control), all=True
         )
         path = self.directory / "completed.json"
         path.write_text(json.dumps(report))
@@ -182,7 +187,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 all=True,
                 reuse_report=str(path),
             )
@@ -196,7 +201,7 @@ class ScreenTests(TestCase):
             "run",
             store=str(self.store),
             policy=str(self.policy),
-            control_policy=str(DEFAULT_POLICY),
+            control_policy=str(self.control),
             symbols=["GOOG"],
         )
         path = self.directory / "completed.json"
@@ -214,7 +219,7 @@ class ScreenTests(TestCase):
                         "run",
                         store=str(self.store),
                         policy=str(self.policy),
-                        control_policy=str(DEFAULT_POLICY),
+                        control_policy=str(self.control),
                         symbols=["GOOG"],
                         reuse_report=str(path),
                     )
@@ -224,7 +229,7 @@ class ScreenTests(TestCase):
             "run",
             store=str(self.store),
             policy=str(self.policy),
-            control_policy=str(DEFAULT_POLICY),
+            control_policy=str(self.control),
             symbols=["GOOG"],
         )
         path = self.directory / "completed.json"
@@ -237,7 +242,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 symbols=["GOOG"],
                 reuse_report=str(path),
             )
@@ -256,7 +261,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 all=True,
             )
         self.assertFalse(report["execution_complete"])
@@ -267,7 +272,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 all=True,
                 reuse_report=str(path),
             )
@@ -289,7 +294,7 @@ class ScreenTests(TestCase):
 
     def test_real_changed_price_generation_invalidates_only_its_completed_group(self):
         report = debug_fixtures.request(
-            "run", store=str(self.store), policy=str(self.policy), control_policy=str(DEFAULT_POLICY), all=True
+            "run", store=str(self.store), policy=str(self.policy), control_policy=str(self.control), all=True
         )
         path = self.directory / "completed.json"
         path.write_text(json.dumps(report))
@@ -306,7 +311,7 @@ class ScreenTests(TestCase):
                 "run",
                 store=str(self.store),
                 policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                control_policy=str(self.control),
                 all=True,
                 reuse_report=str(path),
             )

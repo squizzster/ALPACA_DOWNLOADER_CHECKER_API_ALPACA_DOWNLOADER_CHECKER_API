@@ -829,6 +829,16 @@ def _execute_source_work(store, root, controls, evidence, auxiliary, plan, polic
                     ),
                 )
             receipt["membership_only_rebind"] = transfer
+        label_completion = receipt.get("dated_label_completion")
+        if label_completion is not None and (
+            label_completion["sources"].get(name) != receipt["source_sha256"]
+            or label_completion["assignments"].get(name) != receipt["boundaries"]
+            or label_completion["requests"].get(name) != receipt.get("pricing_request", {})
+        ):
+            # The owning source work changed this scope. Preserve its output
+            # labels, but do not advertise the old group's applicability.
+            receipt.pop("dated_label_completion", None)
+            receipt.pop("dated_label_plan", None)
         validate_handoff(receipt)
         finished.add(name)
     return receipts, documents, {**closed, **materialized}, reports

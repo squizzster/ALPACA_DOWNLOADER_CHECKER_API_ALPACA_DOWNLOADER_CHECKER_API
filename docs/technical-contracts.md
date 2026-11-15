@@ -279,6 +279,11 @@ An unmarked legacy checkpoint may assemble only its selected raw dates after tho
 projection missing dates requires owning recovery. This consumes a completed projection and authorizes neither
 new market assertions, numerical reselection nor UUID unions.
 
+`dated_label_completion` and `dated_label_plan` carry the configured generic collision producer's completed
+source/assignment bindings, held request scopes, provider actions and accepted dated-label decision. Unknown or incomplete
+declared completion requires owning recovery. The [dated-label owner](lineage.md#dated-label-collisions)
+uses the same label-only serving contract above; it changes neither accepted numeric selections nor owners.
+
 `numerical_source_revision_version: 1` or `2` declares the separate bounded source-choice result. It binds prior
 receipt/pricing generations, exact changed sessions, selected sources, contributing-source membership and
 the preserved session grid. All outside choices remain accepted. Its `numeric_reuse_sessions` carries the

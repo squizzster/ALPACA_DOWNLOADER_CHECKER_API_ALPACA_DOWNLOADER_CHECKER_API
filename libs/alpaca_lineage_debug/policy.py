@@ -43,16 +43,21 @@ def require_generic_policy(policy):
 
 
 def control_view(policy):
-    """Lend the accepted generic cascade with the candidate producer disabled."""
+    """Lend the accepted cascade and its actual configured producer selection."""
     require_generic_policy(policy)
     values = {field.name: getattr(policy, field.name) for field in fields(compiler.CompiledPolicy)}
-    return compiler.CompiledPolicy(**values)
+    return ResearchPolicy(
+        **values,
+        membership_refinement=getattr(policy, "membership_refinement", None),
+        dated_labels=getattr(policy, "dated_labels", None),
+    )
 
 
 def _generic_options(value):
     options = value.get("research", {})
     if type(options) is not dict or set(options) - {
         "membership_refinement",
+        "dated_labels",
         "control_mode",
         "execution_sha256",
         "rule_applications",
@@ -60,7 +65,7 @@ def _generic_options(value):
         raise ValueError("saved policy contains unsupported research inputs")
     if options.get("control_mode", "replay") != "replay" or options.get("rule_applications", ()):
         raise ValueError("saved policy contains fact-backed research inputs")
-    return options.get("membership_refinement"), options.get("execution_sha256")
+    return options.get("membership_refinement"), options.get("dated_labels"), options.get("execution_sha256")
 
 
 def policy_applies(recorded, current):
@@ -75,16 +80,39 @@ def policy_applies(recorded, current):
 
 def policy_applies_to_group(recorded, current, group):
     """Generic rule/producer bindings apply equally to every selected identity."""
-    return policy_applies(recorded, current)
+    if policy_applies(recorded, current):
+        return True
+    actual = current.as_report_object()
+    if any(
+        recorded.get(name) != actual.get(name)
+        for name in ("semantic_sha256", "implementation", "execution_profile", "policy_role")
+    ):
+        return False
+    before, after = _generic_options(recorded), _generic_options(actual)
+    from libs.alpaca_lineage_build.dated_labels import NAME as LABEL_NAME
+
+    if any(
+        options[0] not in (None, REFINEMENT_NAME) or options[1] not in (None, LABEL_NAME)
+        for options in (before, after)
+    ):
+        return False
+    # Source-count exclusions are necessary conditions of these registered
+    # producers, not a replay or a statement about stored semantic correctness.
+    membership_equal = before[0] == after[0] or len(group) < 2
+    labels_equal = before[1] == after[1] or len(group) < 2
+    return membership_equal and labels_equal
 
 
 @dataclass(frozen=True)
 class ResearchPolicy(compiler.CompiledPolicy):
     membership_refinement: str | None = None
     ruleset: AcceptedRuleset | None = None
+    dated_labels: str | None = None
 
     def research_options(self):
         result = {"membership_refinement": self.membership_refinement}
+        if self.dated_labels is not None:
+            result["dated_labels"] = self.dated_labels
         if self.ruleset is not None:
             result["execution_sha256"] = self.ruleset.execution_sha256
         return result
@@ -104,7 +132,7 @@ def load_policy(path):
     document = compiler.policy_document(outer)
     if "ruleset_schema_version" not in outer:
         return _compile_research_document(path, raw, document)
-    refinement, execution_sha256 = accept_components(outer)
+    refinement, labels, execution_sha256 = accept_components(outer)
     if document.get("policy_role") == RESEARCH_ROLE:
         settings = document.get("research", {})
         if type(settings) is not dict or set(settings) - {"control_mode"}:
@@ -115,7 +143,8 @@ def load_policy(path):
     else:
         base = compiler.compile_policy_document(document, raw=raw, path=path)
         policy = ResearchPolicy(**base.__dict__, membership_refinement=refinement)
-    accepted = AcceptedRuleset(policy, refinement, execution_sha256)
+    policy = replace(policy, dated_labels=labels)
+    accepted = AcceptedRuleset(policy, refinement, execution_sha256, labels)
     return replace(policy, ruleset=accepted)
 
 
@@ -237,6 +266,11 @@ def rule_index(policy):
                 ("public_identity_membership", security_identity.security_identity_for_alpaca_assets),
             )
         ],
+        "dated_label_selection": {
+            "registered": "observed_rename_periods_over_mapped_alias_v1",
+            "selected": getattr(policy, "dated_labels", None),
+            "yaml_selectable": True,
+        },
         "numerical_source_selection": {
             "implementation": location(observations.select_observations),
             "yaml_selectable": False,
@@ -263,6 +297,7 @@ def rule_index(policy):
             "schema_version": compiler.RULESET_SCHEMA_VERSION,
             "execution_sha256": bundle.execution_sha256,
             "membership_refinement": bundle.membership_refinement,
+            "dated_labels": bundle.dated_labels,
             "meaning": "Registered generic policy and producer selection only.",
         }
     return result

@@ -13,6 +13,7 @@ from .correlation_policy import (
     policy_document,
     read_policy_document,
 )
+from .dated_labels import NAME as DATED_LABELS_NAME
 from .ruleset_contract import AcceptedRuleset
 
 
@@ -26,13 +27,14 @@ def load_ruleset(path=CANONICAL_POLICY_PATH, *, authorize=False) -> AcceptedRule
         validate_correlation_change_log()
     raw, document = read_policy_document(path)
     policy = compile_policy_document(policy_document(document), raw=raw, path=Path(path))
-    refinement, execution_sha256 = accept_components(document)
+    refinement, labels, execution_sha256 = accept_components(document)
     if authorize:
         compiler.authorize_production_policy(policy)
     return AcceptedRuleset(
         policy=policy,
         membership_refinement=refinement,
         execution_sha256=execution_sha256,
+        dated_labels=labels,
     )
 
 
@@ -41,14 +43,23 @@ def accept_components(document):
     policy_document(document)
     if "ruleset_schema_version" in document:
         producers = document["producers"]
-        if type(producers) is not dict or set(producers) != {"membership_refinement"}:
+        if (
+            type(producers) is not dict
+            or "membership_refinement" not in producers
+            or set(producers) - {"membership_refinement", "dated_labels"}
+        ):
             raise CorrelationPolicyError("ruleset producers require explicit membership_refinement")
         refinement = producers["membership_refinement"]
+        labels = producers.get("dated_labels")
+        if labels is not None and labels != DATED_LABELS_NAME:
+            raise CorrelationPolicyError("unknown dated label producer")
         if refinement is not None and refinement != REFINEMENT_NAME:
             raise CorrelationPolicyError("unknown ruleset membership refinement producer")
     else:
         refinement = None
+        labels = None
     return (
         refinement,
-        document_digest({"membership_refinement": refinement}),
+        labels,
+        document_digest({"membership_refinement": refinement, **({"dated_labels": labels} if labels else {})}),
     )

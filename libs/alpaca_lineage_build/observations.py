@@ -243,16 +243,43 @@ def select_observations(
     instant_keys=None,
     equality_outcomes=None,
     source_occupants=None,
+    dated_label_evidence=None,
+    dated_label_decision=None,
+    dated_label_output=None,
 ):
     """Carry completed choices, selecting only genuinely active observations."""
+
+    def selected_label_plan():
+        if dated_label_evidence is None:
+            return None
+        from .dated_labels import plan
+        from .label_updates import possible
+
+        if dated_label_decision is None and not possible(reports, dated_label_evidence):
+            return None
+        decision = (
+            dated_label_decision
+            if dated_label_decision is not None
+            else plan(
+                reports,
+                dated_label_evidence,
+                requests={name: view.source.get("latest_request", {}) for name, view in inputs.items()},
+            )
+        )
+        if dated_label_output is not None:
+            dated_label_output["plan"] = decision
+        return decision[0]
+
     if not retained_choices:
-        return _select_new_observations(
+        selected, corrections = _select_new_observations(
             inputs,
             reports,
             instants=instant_keys,
             equality_outcomes=equality_outcomes,
             source_occupants=source_occupants,
+            dated_label_plan=selected_label_plan(),
         )
+        return selected, corrections
     for name, carry in retained_choices.items():
         if carry.source_generation != inputs[name].source_sha256:
             raise LineageError(f"{name}: retained numerical choice belongs to another pricing generation")
@@ -269,6 +296,7 @@ def select_observations(
             source_occupants=occupants,
             instants=instants,
             equality_outcomes=equality_outcomes,
+            dated_label_plan=selected_label_plan(),
         )
     else:
         selected, corrections = deepcopy(active), {}
@@ -325,7 +353,14 @@ def _continuous_adjustments(pid, complete, dated, authorities, values, equal, in
 
 
 def _select_new_observations(
-    inputs, reports, *, row_cache=None, source_occupants=None, instants=None, equality_outcomes=None
+    inputs,
+    reports,
+    *,
+    row_cache=None,
+    source_occupants=None,
+    instants=None,
+    equality_outcomes=None,
+    dated_label_plan=None,
 ):
     """Return selected reports and only the mapping corrections they require.
 
@@ -392,6 +427,7 @@ def _select_new_observations(
             ownership[symbol][adjustment] = owners
 
     choices, corrections, contested, incomplete = {}, {}, set(), set()
+    label_days = {}
     for (pid, instant), sources in candidates.items():
         if len(sources) == 1:
             name, bundle = next(iter(sources.items()))
@@ -485,6 +521,12 @@ def _select_new_observations(
                 instant = _instant(values[index][0], instants)
                 winner = choices[(pid, instant)]
                 tickers = sorted(labels[(pid, instant)])
+                if dated_label_plan:
+                    from .dated_labels import select_labels
+
+                    if instant not in label_days:
+                        label_days[instant] = instant.astimezone(NEW_YORK).date().isoformat()
+                    tickers = select_labels(pid, label_days[instant], tickers, dated_label_plan)
                 state = (
                     "conflict"
                     if winner is None

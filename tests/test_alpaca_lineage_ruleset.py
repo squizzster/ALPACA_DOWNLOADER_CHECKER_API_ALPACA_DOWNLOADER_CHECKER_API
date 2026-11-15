@@ -35,7 +35,7 @@ class CanonicalRulesetTests(unittest.TestCase):
         self.assertEqual(compiler.PRODUCTION_POLICY_SEMANTIC_SHA256, accepted.policy.semantic_sha256)
         self.assertIs(accepted.policy, compiler.authorize_production_policy(accepted.policy))
         self.assertEqual(
-            ["policy", "membership_refinement", "execution_sha256"],
+            ["policy", "membership_refinement", "execution_sha256", "dated_labels"],
             [field.name for field in fields(AcceptedRuleset)],
         )
         self.assertEqual((), accepted.applications)
@@ -154,7 +154,7 @@ class CanonicalRulesetTests(unittest.TestCase):
         self.assertFalse(hasattr(candidate, "documented_facts"))
         control = control_view(candidate)
         self.assertIs(candidate.row_rules, control.row_rules)
-        self.assertIsNone(getattr(control, "membership_refinement", None))
+        self.assertEqual(candidate.membership_refinement, control.membership_refinement)
         self.assertNotIn("applications", rule_index(candidate)["ruleset"])
         with self.assertRaises(CorrelationPolicyError):
             compiler.authorize_production_policy(candidate)
