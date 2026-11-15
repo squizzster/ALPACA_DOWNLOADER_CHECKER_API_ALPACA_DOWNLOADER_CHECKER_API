@@ -196,9 +196,11 @@ def accept_candidate(value, store):
 
 
 def _install_prepared_group(selection, group, context, root, index, sources, *, progress, work_policy, effects):
-    from .recovery_handoffs import remember
+    from .recovery_handoffs import remember, remember_source
 
     prepared, store = selection.prepared, Path(selection.store)
+    for name, source in sources.items():
+        remember_source(store, name, source, group.pricing[name])
     if "receipts" not in effects:
         receipts = deepcopy(prepared.receipts)
         for name, receipt in receipts.items():

@@ -32,6 +32,32 @@ def recall(store, kind, key):
     return deepcopy(value) if value is not None else None
 
 
+def _source_selector(store, symbol):
+    # This is the selecting file itself, checked under the pricing lock. Its
+    # identity is an applicability token, never payload authentication.
+    path = Path(store) / "end_of_day" / "pricing" / symbol / "source.manifest.json"
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return None
+    return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns
+
+
+def remember_source(store, symbol, source, generation):
+    """Lend an already selected source and digest while its pricing lock is held."""
+    active = _selected.get()
+    if active is not None and active[0] == Path(store).absolute():
+        remember(store, "pricing_source", symbol, (_source_selector(store, symbol), source, generation))
+
+
+def selected_source(store, symbol):
+    """Reuse selection only when the reacquired lock sees its unchanged selector."""
+    held = recall(store, "pricing_source", symbol)
+    if held is None or held[0] is None or held[0] != _source_selector(store, symbol):
+        return None
+    return held[1], held[2]
+
+
 def remember_partition(store, source, kind, generation, views):
     """Lend producer-decoded immutable rows under their selected boundary token.
 

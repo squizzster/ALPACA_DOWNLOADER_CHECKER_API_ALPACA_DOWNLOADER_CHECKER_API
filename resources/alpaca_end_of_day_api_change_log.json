@@ -252,5 +252,10 @@
     "modifications": [
       "Expose published lineage coverage and selected unresolved explanations through the existing public diagnostic JSON API."
     ]
+  },
+  {
+    "modifications": [
+      "Reuse the prepared operation pricing-source handoff after locked selector-identity comparison; retain pending-work gates and fresh selection on changed or absent handoffs."
+    ]
   }
 ]

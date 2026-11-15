@@ -212,3 +212,58 @@ class PreparedRecoveryTests(unittest.TestCase):
                     value["comparison"]["comparison"]["mapping_corrections"] = {"AAA": {}}
                 with self.assertRaises(RuntimeError):
                     load_selection(self.save(case.store, copy.deepcopy(value)), case.store)
+
+    def test_prepared_publication_and_serving_select_source_once(self):
+        from collections import Counter
+
+        import alpaca_end_of_day.standalone as standalone
+
+        with fixture() as case:
+            selection = load_selection(self.save(case.store, candidate_for(case.store)), case.store)
+            reads = Counter()
+            read = pricing_storage.read_artifact
+            digest = standalone.document_digest
+
+            def no_source_digest(value):
+                if value.get("boundary") == "alpaca_standalone_pricing_source":
+                    raise AssertionError("source digest repeated")
+                return digest(value)
+
+            def once(path, *args, **kwargs):
+                if path.name == "source.manifest.json":
+                    reads[str(path)] += 1
+                    self.assertEqual(1, reads[str(path)], "accepted source selector read again")
+                return read(path, *args, **kwargs)
+
+            with (
+                self.no_replay(),
+                patch.object(pricing_storage, "read_artifact", side_effect=once),
+                patch.object(standalone, "document_digest", side_effect=no_source_digest),
+            ):
+                result = recover(case.store, None, selection=selection)
+            self.assertTrue(result["complete"], result)
+            self.assertEqual([1], list(reads.values()))
+
+    def test_source_carry_requires_same_selector_and_operation(self):
+        from libs.alpaca_lineage_build.recovery_handoffs import operation, remember_source, selected_source
+
+        with fixture() as case:
+            root = case.store / "end_of_day/pricing/AAA"
+            source = pricing_storage.load_source(root, "AAA")
+            generation = storage.document_digest(source)
+            with operation(case.store):
+                remember_source(case.store, "AAA", source, generation)
+                with patch.object(pricing_storage, "load_source", side_effect=AssertionError("source reread")):
+                    self.assertEqual((source, generation), selected_source(case.store, "AAA"))
+                path = root / "source.manifest.json"
+                replacement = root / "source.replacement.json"
+                replacement.write_text(json.dumps({**source, "changed_selector_fixture": True}))
+                replacement.replace(path)
+                self.assertIsNone(selected_source(case.store, "AAA"))
+                import alpaca_end_of_day.standalone as standalone
+
+                with patch.object(standalone, "load_source", wraps=standalone.load_source) as load:
+                    with self.assertRaisesRegex(RuntimeError, "lineage awaits changed pricing"):
+                        StandaloneReader(case.store).get_generation("AAA")
+                self.assertEqual(1, load.call_count)
+            self.assertIsNone(selected_source(case.store, "AAA"))

@@ -57,5 +57,10 @@
     "modifications": [
       "Expose registered dated-label selection and preserve explicit control producers; carry identical completed comparisons and pre-label frames while computing changed label observations only."
     ]
+  },
+  {
+    "modifications": [
+      "Retain completed report compatibility across the lineage source-handoff release without repeating accepted comparisons."
+    ]
   }
 ]

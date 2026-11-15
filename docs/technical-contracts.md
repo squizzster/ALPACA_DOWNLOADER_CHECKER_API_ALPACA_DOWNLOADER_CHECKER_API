@@ -63,7 +63,11 @@ not instructions to repeat comparison, numerical selection, payload authenticati
 Recovery checks current compact receipt/membership bindings and selects pricing generations once under the
 normal locks. It finalizes only group/workflow bookkeeping and the existing recovery completion envelope,
 then sends the completed artifacts directly to the ordinary journal. Journal output and accepted choice
-capabilities carry into serving without receipt/projection rereads or repeated schema calculations. A changed
+capabilities carry into serving without receipt/projection rereads or repeated schema calculations.
+The prepared publisher also carries the selected pricing source and its already computed generation.
+After reacquiring its pricing lock, the reader compares only the selecting file's identity; an unchanged
+selector reuses the source without rereading or hashing it. Changed selectors require fresh selection,
+and pending publication/update gates remain live. This handoff lasts only for its owning operation. A changed
 generation, effective mapping, membership or policy rejects the candidate; a missing prepared artifact fails
 into explicit owning preparation rather than silently recalculating. Serving still owns validation of newly
 selected numerical contributions, and export consumes its completed catalogue normally.

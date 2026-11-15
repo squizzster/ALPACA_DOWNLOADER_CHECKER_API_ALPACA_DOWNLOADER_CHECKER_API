@@ -558,16 +558,24 @@ class StandaloneReader:
                 for name in sorted(selected_sources):
                     # Lineage and pricing have separate publication owners. Even a
                     # pinned lineage view cannot establish current pricing after
-                    # an independent downloader ran. Read the selected source
-                    # under its lock; do not authenticate its payloads or aliases.
+                    # an independent downloader ran. Carry a prepared source only
+                    # if its selector identity is unchanged under this lock;
+                    # otherwise select it afresh, without checking payloads.
                     pricing = published_path(self.store, f"end_of_day/pricing/{name}")
                     if name not in snap["locked"] or published_path(pricing, ".pending.json").exists():
                         raise StandaloneReaderError("pricing publication incomplete; resume downloader first")
-                    source = load_source(pricing, name)
+                    from libs.alpaca_lineage_build.recovery_handoffs import selected_source
+
+                    held = selected_source(self.store, name)
+                    if held is None:
+                        source = load_source(pricing, name)
+                        source_generation = document_digest(source) if source is not None else None
+                    else:
+                        source, source_generation = held
                     if (
                         source is None
                         or read_update(pricing) is not None
-                        or document_digest(source) != selected_sources[name]
+                        or source_generation != selected_sources[name]
                     ):
                         raise StandaloneReaderError("lineage awaits changed pricing; run lineage first")
                     receipt = snap["receipts"][name]
