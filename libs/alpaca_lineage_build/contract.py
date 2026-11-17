@@ -4,6 +4,7 @@ from pathlib import Path
 
 from libs.alpaca_end_of_day_security_correlation.correlation_version import CORRELATION_VERSION
 from libs.alpaca_pricing_download.contract import digest, json_bytes
+from libs.alpaca_pricing_download.contract import failure_outcome as pricing_failure_outcome
 from libs.alpaca_pricing_download.storage import read_document
 from libs.alpaca_security_lineage.settings import REPORT_VERSION
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
@@ -44,7 +45,7 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 109
+RUNTIME_VERSION = 110
 COMPUTATION_REVISION = 2
 # A runtime repair is not a new data policy. DO NOT force completed stores through
 # reconstruction merely to align runtime and persisted publication version numbers.
@@ -56,6 +57,21 @@ MAX_ACQUISITION_WAVES = 3
 
 class LineageError(RuntimeError):
     pass
+
+
+class RecoveryRequired(LineageError):
+    """An internal capability needs its owning recovery before work can continue."""
+
+
+def failure_outcome(error):
+    """Keep owning recovery distinct from retryable provider/transport failures."""
+    cause, seen = error, set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, RecoveryRequired):
+            return {"outcome": "recovery_required", "http_status": None, "error": str(error)}
+        cause = cause.__cause__
+    return pricing_failure_outcome(error)
 
 
 class LineageBusyError(LineageError):

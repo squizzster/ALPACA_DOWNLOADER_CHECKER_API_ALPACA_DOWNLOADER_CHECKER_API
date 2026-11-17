@@ -6,7 +6,7 @@ from libs.alpaca_pricing_download.responses import CompletedBars, completed_bars
 from libs.alpaca_pricing_download.storage import read_document
 
 from . import storage
-from .contract import LineageError
+from .contract import LineageError, RecoveryRequired
 from .numerical_mapping import VERSION, witness_window
 
 
@@ -136,11 +136,16 @@ def execute(
         required_sessions = cache.get("required_sessions", {}).get(identifier)
     if not required_sessions and "acquisition" in value:
         required_sessions = value["acquisition"].get("required_sessions")
+    if not required_sessions and "required_sessions" in value:
+        required_sessions = tuple(value["required_sessions"])
     if not required_sessions and grid_provider is not None:
         required_sessions = grid_provider()
         cache.setdefault("required_sessions", {})[identifier] = required_sessions
     if not required_sessions:
-        raise LineageError("missing accepted mapping contribution grid; owning recovery required")
+        raise RecoveryRequired("missing accepted mapping contribution grid; owning recovery required")
+    if "required_sessions" not in value:
+        value["required_sessions"] = list(required_sessions)
+        persist()
     from libs.alpaca_pricing_download.mapping import MappingAcquisition, MappingCoverageIncomplete
 
     if "acquisition" not in stage:

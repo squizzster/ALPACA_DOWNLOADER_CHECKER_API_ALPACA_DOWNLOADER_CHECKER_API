@@ -104,7 +104,16 @@ def load_pricing(
                 partitions[key] = held
         if key not in partitions:
             documents = {}
-            partitions[key] = load_published_boundary(root, source, kind, selected=selected, documents=documents)
+            raw_key = ("selected_raw", *key)
+            options = (
+                {"raw_rows": partitions[raw_key][0], "accepted_document": partitions[raw_key][1]}
+                if raw_key in partitions
+                else {}
+            )
+            partitions[key] = load_published_boundary(
+                root, source, kind, selected=selected, documents=documents, **options
+            )
+            partitions.pop(raw_key, None)
             remember(
                 store,
                 "pricing_partition_document",

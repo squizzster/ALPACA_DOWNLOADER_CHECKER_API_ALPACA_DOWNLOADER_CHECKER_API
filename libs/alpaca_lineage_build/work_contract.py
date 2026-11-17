@@ -2,11 +2,11 @@
 
 from uuid import uuid4
 
-from libs.alpaca_pricing_download.contract import HISTORY_START, failure_outcome
+from libs.alpaca_pricing_download.contract import HISTORY_START
 from libs.alpaca_security_lineage.lineage import compact_asset
 from libs.common.debug_trace import event, traced
 
-from .contract import LineageError, document_digest, reusable_decision
+from .contract import LineageError, document_digest, failure_outcome, reusable_decision
 from .selection import DependencyGraph
 
 
@@ -999,7 +999,7 @@ class WorkPolicy:
         classification = detail.get("outcome") if isinstance(detail, dict) else detail
         status = (
             "blocked"
-            if classification in {"access_denied", "symbol_unavailable", "invalid_symbol"}
+            if classification in {"access_denied", "symbol_unavailable", "invalid_symbol", "recovery_required"}
             or outcome.get("status") == "blocked"
             else "retry"
         )

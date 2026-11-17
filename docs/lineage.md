@@ -191,6 +191,13 @@ capability requires owning recovery. An acquired history that omits known requir
 a provider-coverage assessment without replacing accepted pricing. Provider request failures retain their
 ordinary execution/retry meaning.
 
+An unmarked legacy serving checkpoint may lack the optional session-date projection. For the selected
+mapping only, its serving owner constructs that projection from accepted raw row positions under exact
+pricing and lineage bindings. It preserves numerical outcomes and ownership, carries the raw rows and
+their selected manifest into subsequent assembly, and persists the dates before mapped acquisition.
+A declared but missing projection still requires owning recovery. Such internal recovery prerequisites
+use the existing blocked work state without a transient-request retry timer.
+
 Applicable completed assessments survive receipt publication and acknowledgement. Actual changed source,
 mapping, provider facts or selected scope require owning work; older receipts without this optional capability
 do not select a historical scan or automatic repair. Historical adoption uses explicitly selected work, and

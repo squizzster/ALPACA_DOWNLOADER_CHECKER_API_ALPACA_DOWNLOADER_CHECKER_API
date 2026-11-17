@@ -142,7 +142,7 @@ def _acquisition_types():
 @lru_cache(maxsize=1)
 def _errors():
     from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
-    from libs.alpaca_lineage_build.contract import CorrelationPolicyError, LineageError
+    from libs.alpaca_lineage_build.contract import CorrelationPolicyError, LineageError, RecoveryRequired
     from libs.alpaca_lineage_build.work_contract import RegistrationIncomplete, WorkDeferred
     from libs.alpaca_pricing_download.contract import (
         BarsSymbolUnavailable,
@@ -166,6 +166,7 @@ def _errors():
             HTTPError,
             URLError,
             LineageError,
+            RecoveryRequired,
             CorrelationPolicyError,
             WorkDeferred,
             RegistrationIncomplete,

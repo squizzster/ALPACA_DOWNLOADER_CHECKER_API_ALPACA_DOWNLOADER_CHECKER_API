@@ -2094,6 +2094,19 @@ def process_group(
                             context.group_completions.pop(completion_key, None)
                             release_completed_assemblies(context, store, group)
                             return completed_group
+            if required and any("numerical_mapping" in request for request in required.values()):
+                from .recovery_handoffs import _source_selector
+
+                selections = source_work_cache.setdefault("numerical_mapping", {}).setdefault(
+                    "source_selections", {}
+                )
+                for name, source in sources.items():
+                    if selections.get(name, {}).get("generation") != selected[name]:
+                        selections[name] = {
+                            "source": source,
+                            "generation": selected[name],
+                            "selector": _source_selector(store, name),
+                        }
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
         if required:
@@ -2138,6 +2151,7 @@ def process_group(
                                 request["numerical_mapping"]["binding"]["pricing_generations"],
                                 request["numerical_mapping"]["binding"]["public_id"],
                                 mapping_cache,
+                                partitions=partitions,
                             ),
                         )
                     else:

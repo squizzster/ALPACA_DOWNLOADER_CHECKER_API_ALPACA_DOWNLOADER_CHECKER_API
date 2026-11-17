@@ -17,7 +17,9 @@ from .storage import (
 )
 
 
-def load_published_boundary(root: Path, source: dict, kind: str, *, selected=False, documents=None) -> dict:
+def load_published_boundary(
+    root: Path, source: dict, kind: str, *, selected=False, documents=None, raw_rows=None, accepted_document=None
+) -> dict:
     """Trust a published pricing receipt under the caller's ticker lock.
 
     The producer has already authenticated values and exact-copy aliases. This
@@ -31,18 +33,24 @@ def load_published_boundary(root: Path, source: dict, kind: str, *, selected=Fal
     if not selected and regular_path(root, ".pending.json").exists():
         raise DownloadError("pricing publication is incomplete; resume the downloader")
     reference = source["boundaries"][kind]
-    document = read_document(regular_path(root, reference["manifest"], published=True), published=True)
-    if (
-        document.get("schema_version") not in SUPPORTED_VERSIONS
-        or document.get("symbol") != source["symbol"]
-        or document.get("boundary") != "alpaca_pricing_" + kind
-        or tuple(entry["adjustment"] for entry in document["adjustments"]) != ADJUSTMENTS
-    ):
-        raise DownloadError("published pricing receipt has a different identity")
+    document = accepted_document
+    if document is None:
+        document = read_document(regular_path(root, reference["manifest"], published=True), published=True)
+        if (
+            document.get("schema_version") not in SUPPORTED_VERSIONS
+            or document.get("symbol") != source["symbol"]
+            or document.get("boundary") != "alpaca_pricing_" + kind
+            or tuple(entry["adjustment"] for entry in document["adjustments"]) != ADJUSTMENTS
+        ):
+            raise DownloadError("published pricing receipt has a different identity")
     if documents is not None:
         documents[reference["manifest"]] = document
     parent = PurePosixPath(reference["manifest"]).parent
     decoded, views = {}, {}
+    if raw_rows is not None:
+        raw = next(entry for entry in document["adjustments"] if entry["adjustment"] == "raw")
+        if raw["storage"] != "empty":
+            decoded[raw["file"]] = raw_rows
     for entry in document["adjustments"]:
         if entry["storage"] == "empty":
             views[entry["adjustment"]] = ()

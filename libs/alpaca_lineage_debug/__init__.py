@@ -56,10 +56,11 @@ def accept_report(value, operation, *, allow_previous=False):
         (12, 24, 97, 107),
         (13, 24, 97, 108),
         (13, 24, 97, 109),
+        (13, 24, 97, 110),
     }:
         # Generic completed comparisons retain their exact policy/generation
-        # bindings. Runtime 109 adds production mapping acquisition without
-        # changing these research producers. Factual candidates are rejected
+        # bindings. Runtimes 109/110 change production mapping acquisition and
+        # owning recovery without changing these research producers. Factual candidates are rejected
         # above, never restored.
         bindings.extend(
             {
@@ -86,6 +87,7 @@ def accept_report(value, operation, *, allow_previous=False):
                 (11, 24, 97, 106),
                 (12, 24, 97, 107),
                 (13, 24, 97, 108),
+                (13, 24, 97, 109),
             )
         )
     if (

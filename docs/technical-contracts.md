@@ -675,6 +675,16 @@ gzip payloads are not opened to authenticate the replacement. The ordinary indep
 contract applies once to the newly constructed full acquisition; an acquisition witness cannot also be
 its independent confirmation.
 
+For an exactly bound, unmarked legacy checkpoint without dates, the selected serving owner constructs
+the missing date projection from its completed raw ownership positions. It reads only the contributing
+raw partitions needed by those positions and checks the newly constructed projection against the
+accepted count and endpoints. It performs no price comparison, owner selection or calendar reconstruction.
+Pricing selector identities captured under the preceding locks govern reacquisition; a changed selector
+requires owning reselection. Held raw rows and their accepted boundary document cross into subsequent
+partition assembly without another payload/manifest read. The mapping journal records the completed dates
+before acquisition construction, so interruption cannot repeat date assembly or the provider witness.
+A checkpoint that declares its date projection but omits the dates fails into explicit owning recovery.
+
 Pricing installs through its existing journal with the source selector last. Its completed correction
 binding carries installation across interruption before lineage acknowledgement. Lineage resumes only
 work invalidated by the resulting source/mapping, retaining applicable peer decisions and completed

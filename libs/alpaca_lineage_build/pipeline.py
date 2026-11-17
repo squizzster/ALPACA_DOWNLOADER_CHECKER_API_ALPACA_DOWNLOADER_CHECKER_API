@@ -5,7 +5,6 @@ from pathlib import Path
 from libs.alpaca_pricing_download.acquire import MeasuredRequests, acquire_selected
 from libs.alpaca_pricing_download.contract import (
     HISTORY_START,
-    failure_outcome,
     symbol_label,
 )
 from libs.alpaca_pricing_download.download import download_pricing
@@ -25,6 +24,7 @@ from .context import accept_context
 from .continuation import scoped_identity_memberships
 from .contract import (
     LineageError,
+    failure_outcome,
     reusable_decision,
     reusable_metadata_versions,
 )

@@ -216,5 +216,10 @@
     "modifications": [
       "Consume version-2 numerical source revisions with an explicit producer guarantee of unchanged dated labels, retaining the accepted label projection and equal-session numerical checks while preserving version-1 relabelling behavior."
     ]
+  },
+  {
+    "modifications": [
+      "Construct a missing unmarked legacy session-date projection from selected accepted raw positions only, retaining numerical outcomes and lending rows and metadata downstream under exact source selector bindings; declared missing capabilities remain owning recovery."
+    ]
   }
 ]

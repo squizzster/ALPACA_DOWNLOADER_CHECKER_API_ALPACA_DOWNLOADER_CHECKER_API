@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
 from libs.alpaca_security_lineage.inference_evidence import provider_evidence
 
-from .contract import LineageError, document_digest
+from .contract import LineageError, RecoveryRequired, document_digest
 
 VERSION = 1
 FIELD = "numerical_mapping_assessments"
@@ -338,7 +338,7 @@ def prepare(store, sources, generations, reports, evidence, cache, *, selected, 
     }
 
 
-def checkpoint_sessions(context, generations, public_id, cache):
+def checkpoint_sessions(context, generations, public_id, cache, *, partitions=None):
     """Borrow a matching completed serving grid for selected closed sources."""
     if context is None or context.index is None:
         return None
@@ -372,6 +372,29 @@ def checkpoint_sessions(context, generations, public_id, cache):
         for record in selected[token]["history_validation"]["prefix_records"]
         if record["public_id"] == public_id
     ]
-    if len(records) != 1 or "session_dates" not in records[0]:
+    if len(records) != 1:
         return None
-    return tuple(records[0]["session_dates"])
+    record = records[0]
+    if "session_dates" in record:
+        return tuple(record["session_dates"])
+    if record.get("session_projection_version") is not None:
+        raise RecoveryRequired("declared mapping contribution dates are missing; owning recovery required")
+    if partitions is None:
+        raise RecoveryRequired("legacy mapping contribution dates need their selected assembly owner")
+    from libs.alpaca_serving_catalogue.contract import CatalogueError
+    from libs.alpaca_serving_catalogue.session_projection import legacy_dates
+
+    projections = cache.setdefault("legacy_dates", {})
+    projection_key = token, public_id
+    if projection_key not in projections:
+        try:
+            projections[projection_key] = legacy_dates(
+                context.store,
+                selected[token],
+                record,
+                cache.get("source_selections", {}),
+                partitions,
+            )
+        except CatalogueError as error:
+            raise RecoveryRequired(str(error)) from error
+    return projections[projection_key]

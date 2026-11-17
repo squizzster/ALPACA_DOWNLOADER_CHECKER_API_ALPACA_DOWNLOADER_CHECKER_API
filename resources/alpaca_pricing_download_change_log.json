@@ -330,5 +330,10 @@
     "modifications": [
       "Carry completed mapped all-view observations into their selected full acquisition, request only missing range fragments, and retain adaptive observations and producer-derived values across selected acquisition interruption without repeating completed requests or validation."
     ]
+  },
+  {
+    "modifications": [
+      "Lend selected raw rows and their completed boundary document from a legacy date projection into full partition assembly without repeating their reads, normalization or authentication."
+    ]
   }
 ]
