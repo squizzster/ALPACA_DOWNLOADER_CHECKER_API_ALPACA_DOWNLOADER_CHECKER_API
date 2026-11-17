@@ -340,5 +340,10 @@
     "modifications": [
       "Retain bounded credential-redacted provider and transport error reasons in existing scalar failure handoffs without changing request retries, pricing publications or accepted history. Publish completed acquisition request scopes for reporting-only recovery."
     ]
+  },
+  {
+    "modifications": [
+      "Use the accepted mapped all-view witness at its exact first-session endpoint. Fetch distinct confirmation scopes once."
+    ]
   }
 ]

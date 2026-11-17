@@ -651,5 +651,10 @@
     "modifications": [
       "Classify unsupported mapping journals, broken completed witnesses and changed journal bindings as owning recovery without transient cooldown. Preserve serving-selector exception causes and lend completed producer request scopes to ETA reporting without repeating work."
     ]
+  },
+  {
+    "modifications": [
+      "Classify malformed selected mapping journal envelopes and restoration failures as owning recovery. Carry the most advanced completed stage into execution."
+    ]
   }
 ]

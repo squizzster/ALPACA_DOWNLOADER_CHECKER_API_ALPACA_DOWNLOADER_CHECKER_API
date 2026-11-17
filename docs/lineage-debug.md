@@ -190,6 +190,11 @@ ordinary append, interruption recovery or complete production preservation. Prod
 plan under the selected group and generation bindings, preserving accepted ownership and opening only the
 new numerical overlap.
 
+When the candidate disables membership refinement, paired evaluation holds the unrefined candidate and
+applies refinement once to produce the control. Both comparisons use the same selected publication and
+correlation result. Older saved comparisons of affected membership toggles require a fresh comparison for
+that group. Peers with an applicable completed comparison retain their results.
+
 Dated-label comparisons use the [same domain rule](lineage.md#dated-label-collisions) as normal lineage.
 They retain completed ownership, numerical choices and explanation dimensions, projecting only label
 observations. Removing the producer restores its held pre-label frame; identical selection performs no

@@ -60,6 +60,63 @@ class ExceptionReportingTests(TestCase):
             self.assertIsNone(item["retry_after_utc"])
             self.assertEqual("recovery_required", item["outcome"]["outcome"]["outcome"])
 
+    def test_malformed_selected_stage_blocks_without_fetch_replay_or_cooldown(self):
+        from test_alpaca_numerical_mapping import fixture
+
+        with TemporaryDirectory() as directory:
+            store = Path(directory)
+            universe_state.initialize(store)
+            request = numerical_mapping.select(store, *fixture(), selected=True)["NOVA27"]
+            need = request["numerical_mapping"]
+            envelope = {"version": 1, "candidate_id": need["candidate_id"]}
+            bound = {**envelope, "binding": need["binding"]}
+            start, end = numerical_mapping.witness_window(need)
+            witness = dict(
+                symbol="NOVA27",
+                adjustment="all",
+                asof=request["mapping_asof"],
+                start=start.isoformat(),
+                end=end.isoformat(),
+                rows=[],
+                singleton=False,
+            )
+            for document in (
+                envelope,
+                {**bound, "binding": []},
+                {**bound, "witness": {**witness, "start": "invalid-time"}},
+                {**bound, "witness": {**witness, "symbol": "OTHER"}},
+                {**bound, "witness": {**witness, "rows": None}},
+                {**bound, "witness": witness, "acquisition": []},
+                {**bound, "assessment": {}},
+            ):
+                policy = WorkPolicy(store, {"symbols": {}}, {}, [], "2026-10-12")
+                policy.require("NOVA27", "2026-10-12", reason="selected_numerical_work")
+                with (
+                    self.subTest(document=document),
+                    patch.object(numerical_mapping_acquisition.storage, "path_at"),
+                    patch.object(numerical_mapping_acquisition, "read_document", return_value=document) as read,
+                    self.assertRaises(RecoveryRequired) as raised,
+                ):
+                    forbidden = Mock(side_effect=AssertionError("malformed journal reached acquisition"))
+                    numerical_mapping_acquisition.execute(
+                        store,
+                        store,
+                        "NOVA27",
+                        request,
+                        client=SimpleNamespace(fetch=forbidden),
+                        download=forbidden,
+                        context=None,
+                        cache={},
+                        required_sessions=None,
+                        grid_provider=forbidden,
+                    )
+                read.assert_called_once()
+                self.assertIsNotNone(raised.exception.__cause__)
+                policy.fail(["NOVA27"], raised.exception, stage="lineage")
+                item = universe_state.read_state(store, symbols=["NOVA27"])["work"]["NOVA27"]
+                self.assertEqual("blocked", item["status"])
+                self.assertIsNone(item["retry_after_utc"])
+
     def test_broken_witness_and_changed_journal_binding_require_owning_recovery(self):
         with self.assertRaises(RecoveryRequired):
             numerical_mapping_acquisition._restore_witness({})

@@ -482,6 +482,73 @@ def _load_group(
         }
 
 
+def compare_publication(published, frame, policy, receipts, reports, fallback_execution, max_differences):
+    """Compare a completed policy frame to the selected publication."""
+    differences = {
+        name: _difference(
+            published["dimensions"][name],
+            frame["dimensions"][name],
+            max_differences,
+            baseline_sha256=published["digests"][name],
+            candidate_sha256=frame["digests"][name],
+        )
+        for name in frame["dimensions"]
+    }
+    baseline_memberships = published["memberships"]
+    candidate_memberships = frame["memberships"]
+    baseline_counts = published["counts"]
+    candidate_counts = frame["counts"]
+    baseline_reported_counts = published["reported_counts"]
+    candidate_reported_counts = _candidate_counts(reports)
+    memberships_match = baseline_memberships == candidate_memberships
+    counts_match = baseline_counts == candidate_counts
+    baseline_counts_valid = _counts_match_rows(baseline_reported_counts, baseline_counts)
+    candidate_counts_valid = _counts_match_rows(candidate_reported_counts, candidate_counts)
+    reports_complete = frame["partition_complete"]
+    decision_parity = (
+        all(differences[name]["count"] == 0 for name in ("semantic", "observation", "explanation"))
+        and memberships_match
+        and counts_match
+        and baseline_counts_valid
+        and candidate_counts_valid
+        and reports_complete
+        and not frame["mapping_corrections"]
+    )
+    diagnostic_snapshot_match = differences["group_diagnostics"]["count"] == 0
+    exact_snapshot_parity = decision_parity and diagnostic_snapshot_match
+    migrated_rule_order = not diagnostic_snapshot_match and _migration_preserved_rule_order_provenance(
+        policy, receipts, reports, fallback_execution
+    )
+    migration_classification = "migration_preserved_rule_order_provenance" if migrated_rule_order else None
+    migration_compatible = decision_parity and (diagnostic_snapshot_match or migrated_rule_order)
+    return {
+        # `parity` remains the strict historical result used by the CLI.
+        "parity": exact_snapshot_parity,
+        "decision_parity": decision_parity,
+        "diagnostic_snapshot_match": diagnostic_snapshot_match,
+        "exact_snapshot_parity": exact_snapshot_parity,
+        "migration_compatible": migration_compatible,
+        "migration_classification": migration_classification,
+        "differences": differences,
+        "memberships": {
+            "match": memberships_match,
+            "baseline": baseline_memberships,
+            "candidate": candidate_memberships,
+        },
+        "row_counts": {
+            "match": counts_match,
+            "baseline": baseline_counts,
+            "candidate": candidate_counts,
+            "baseline_reported": baseline_reported_counts,
+            "candidate_reported": candidate_reported_counts,
+            "baseline_invariant": baseline_counts_valid,
+            "candidate_invariant": candidate_counts_valid,
+        },
+        "candidate_partition_complete": reports_complete,
+        "mapping_corrections": frame["mapping_corrections"],
+    }
+
+
 def _compare_loaded_group(
     store: Path,
     seed_symbol: str,
@@ -492,6 +559,7 @@ def _compare_loaded_group(
     comparison_handoff=None,
     completed=None,
     refine=None,
+    defer_publication_comparison=False,
 ) -> dict[str, Any]:
     """Evaluate one already selected complete group without further storage reads."""
     require_generic_candidate(policy)
@@ -647,7 +715,6 @@ def _compare_loaded_group(
             "reported_counts": _published_counts(receipts),
         }
     else:
-        baseline = comparison_handoff["dimensions"]
         row_indexes = comparison_handoff["row_indexes"]
     candidate = _group_dimensions(candidate_boundaries, inputs, receipts, row_indexes=row_indexes)
     candidate["group_diagnostics"] = _group_diagnostics(reports)
@@ -667,60 +734,25 @@ def _compare_loaded_group(
         if label_trace["changes"]:
             candidate_digests = {**candidate_digests, "observation": _digest_mapping(candidate["observation"])}
 
-    differences = {
-        name: _difference(
-            baseline[name],
-            candidate[name],
-            max_differences,
-            baseline_sha256=comparison_handoff["digests"][name],
-            candidate_sha256=candidate_digests[name],
-        )
-        for name in candidate
+    frame = {
+        "dimensions": candidate,
+        "digests": candidate_digests,
+        "memberships": _memberships(candidate["semantic"]),
+        "counts": _row_counts(candidate["semantic"]),
+        "mapping_corrections": mapping_corrections,
+        "partition_complete": all(report.get("row_partition_complete") is True for report in reports.values()),
     }
-    baseline_memberships = comparison_handoff["memberships"]
-    candidate_memberships = _memberships(candidate["semantic"])
-    baseline_counts = comparison_handoff["counts"]
-    candidate_counts = _row_counts(candidate["semantic"])
-    baseline_reported_counts = comparison_handoff["reported_counts"]
-    candidate_reported_counts = _candidate_counts(reports)
-    memberships_match = baseline_memberships == candidate_memberships
-    counts_match = baseline_counts == candidate_counts
-    baseline_counts_valid = _counts_match_rows(baseline_reported_counts, baseline_counts)
-    candidate_counts_valid = _counts_match_rows(candidate_reported_counts, candidate_counts)
-    reports_complete = all(report.get("row_partition_complete") is True for report in reports.values())
-    decision_parity = (
-        all(differences[name]["count"] == 0 for name in ("semantic", "observation", "explanation"))
-        and memberships_match
-        and counts_match
-        and baseline_counts_valid
-        and candidate_counts_valid
-        and reports_complete
-        and not mapping_corrections
-    )
-    diagnostic_snapshot_match = differences["group_diagnostics"]["count"] == 0
-    exact_snapshot_parity = decision_parity and diagnostic_snapshot_match
-    migrated_rule_order = not diagnostic_snapshot_match and _migration_preserved_rule_order_provenance(
-        policy, receipts, reports, fallback_execution
-    )
-    migration_classification = "migration_preserved_rule_order_provenance" if migrated_rule_order else None
-    migration_compatible = decision_parity and (diagnostic_snapshot_match or migrated_rule_order)
     if completed is not None:
         completed.update(
             published=comparison_handoff,
             unlabelled_dimensions=unlabelled_dimensions,
             unlabelled_digests=unlabelled_digests,
             label_trace=label_trace,
-            candidate={
-                "dimensions": candidate,
-                "digests": candidate_digests,
-                "memberships": candidate_memberships,
-                "counts": candidate_counts,
-                "mapping_corrections": mapping_corrections,
-                "partition_complete": reports_complete,
-            },
+            candidate=frame,
             refinement=refinement,
             reports=reports,
             raw_reports=raw_reports,
+            refinement_evidence=raw_evidence,
             candidate_boundaries=candidate_boundaries,
             evidence=evidence,
         )
@@ -742,32 +774,11 @@ def _compare_loaded_group(
             "pricing_generations": selected["pricing_generations"],
             "unavailable_pricing": selected["unavailable_pricing"],
         },
-        "comparison": {
-            # `parity` remains the strict historical result used by the CLI.
-            "parity": exact_snapshot_parity,
-            "decision_parity": decision_parity,
-            "diagnostic_snapshot_match": diagnostic_snapshot_match,
-            "exact_snapshot_parity": exact_snapshot_parity,
-            "migration_compatible": migration_compatible,
-            "migration_classification": migration_classification,
-            "differences": differences,
-            "memberships": {
-                "match": memberships_match,
-                "baseline": baseline_memberships,
-                "candidate": candidate_memberships,
-            },
-            "row_counts": {
-                "match": counts_match,
-                "baseline": baseline_counts,
-                "candidate": candidate_counts,
-                "baseline_reported": baseline_reported_counts,
-                "candidate_reported": candidate_reported_counts,
-                "baseline_invariant": baseline_counts_valid,
-                "candidate_invariant": candidate_counts_valid,
-            },
-            "candidate_partition_complete": reports_complete,
-            "mapping_corrections": mapping_corrections,
-        },
+        "comparison": None
+        if defer_publication_comparison
+        else compare_publication(
+            comparison_handoff, frame, policy, receipts, reports, fallback_execution, max_differences
+        ),
     }
 
 

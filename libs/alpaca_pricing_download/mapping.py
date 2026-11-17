@@ -53,7 +53,7 @@ def _encode_bars(value):
     }
 
 
-def _decode_bars(document):
+def restore_observation(document):
     """Accept this persisted handoff's schema once, without replaying a transform."""
     if not isinstance(document, dict) or set(document) != {
         "symbol",
@@ -233,12 +233,7 @@ class MappingAcquisition:
         return self.assembled_all
 
     def confirm(self, fetch, *, on_progress=None):
-        """Complete the existing independent first-row checks exactly once.
-
-        The witness is now part of acquisition, so it cannot also impersonate
-        independent confirmation.  Each newly acquired confirmation and match
-        decision crosses the same durable producer handoff before the next one.
-        """
+        """Use the accepted witness for its exact endpoint, fetching other scopes once."""
         if self.confirmed is not None:
             return self.confirmed
         completed = self.state.completed
@@ -253,8 +248,13 @@ class MappingAcquisition:
             if rows:
                 expected = rows[0]
                 start, end = session_window(expected, cutoff=self.end)
-                actual = completed_bars(fetch(name, start, end), self.symbol, name, start, end, self.asof)
-                matched = len(actual.rows) == 1 and same_row(actual.rows[0], expected)
+                witness = self.fragments[0]
+                if name == "all" and (start, end) == (witness.start, witness.end):
+                    # The endpoint was assembled from this disjoint, bound fragment.
+                    actual = witness
+                else:
+                    actual = completed_bars(fetch(name, start, end), self.symbol, name, start, end, self.asof)
+                    matched = len(actual.rows) == 1 and same_row(actual.rows[0], expected)
             self.confirmations[name] = actual, matched
             if not matched:
                 self.confirmed = False
@@ -421,7 +421,7 @@ class MappingAcquisition:
         self._check_binding_fields()
         if not isinstance(document["fragments"], (list, tuple)) or not document["fragments"]:
             raise DownloadError("missing completed mapping witness")
-        self.fragments = [_decode_bars(value) for value in document["fragments"]]
+        self.fragments = [restore_observation(value) for value in document["fragments"]]
         for value in self.fragments:
             self._check_fragment(value)
         ranges = document["remaining_all_ranges"]
@@ -431,7 +431,7 @@ class MappingAcquisition:
             raise DownloadError("invalid completed mapping range plan")
         self.remaining_all_ranges = [(timestamp(start), timestamp(end)) for start, end in ranges]
         self.assembled_all = (
-            None if document["assembled_all"] is None else _decode_bars(document["assembled_all"])
+            None if document["assembled_all"] is None else restore_observation(document["assembled_all"])
         )
         if self.assembled_all is not None:
             if self.remaining_all_ranges:
@@ -439,7 +439,7 @@ class MappingAcquisition:
             self.assembled_all = self.assembled_all.select(self.symbol, "all", self.start, self.end, self.asof)
         if not isinstance(document["observed"], dict) or set(document["observed"]) - set(ADJUSTMENTS):
             raise DownloadError("invalid mapped acquisition observations")
-        observed = {name: _decode_bars(value) for name, value in document["observed"].items()}
+        observed = {name: restore_observation(value) for name, value in document["observed"].items()}
         for name, value in observed.items():
             observed[name] = value.select(self.symbol, name, self.start, self.end, self.asof)
         hashes = document["hashes"]
@@ -549,7 +549,7 @@ class MappingAcquisition:
                 or type(value["matched"]) is not bool
             ):
                 raise DownloadError("invalid completed mapping confirmation")
-            actual = None if value["bars"] is None else _decode_bars(value["bars"])
+            actual = None if value["bars"] is None else restore_observation(value["bars"])
             self.confirmations[name] = actual, value["matched"]
         if document["confirmed"] is not None and type(document["confirmed"]) is not bool:
             raise DownloadError("invalid mapped confirmation completion")
@@ -602,7 +602,7 @@ class MappingAcquisition:
         if not observed.keys() <= self.view_sessions.keys():
             raise DownloadError("missing completed mapping session projection")
         self.rejected_view = (
-            None if document["rejected_view"] is None else _decode_bars(document["rejected_view"])
+            None if document["rejected_view"] is None else restore_observation(document["rejected_view"])
         )
         missing = document["coverage_missing"]
         if missing is not None and (

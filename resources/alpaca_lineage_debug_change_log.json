@@ -72,5 +72,10 @@
     "modifications": [
       "Preserve applicable completed generic diagnostic reports across the production exception-reporting and internal-recovery runtime repair, retaining their original policy, store and generation bindings."
     ]
+  },
+  {
+    "modifications": [
+      "Evaluate membership removal from the held unrefined frame, compare the refined control in the requested direction, and invalidate affected earlier paired results."
+    ]
   }
 ]

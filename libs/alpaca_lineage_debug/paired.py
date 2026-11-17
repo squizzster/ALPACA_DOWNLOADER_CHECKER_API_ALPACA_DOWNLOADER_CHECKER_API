@@ -15,10 +15,9 @@ from libs.alpaca_lineage_build.observations import select_observations
 from libs.alpaca_lineage_policy_lab.comparison import (
     _compare_loaded_group,
     _digest_mapping,
-    _group_diagnostics,
     _group_dimensions,
     _memberships,
-    _row_counts,
+    compare_publication,
     make_publication,
 )
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
@@ -141,10 +140,12 @@ def _retained(control, changes, selected):
     return choices
 
 
-def _refined_candidate(selected, control, maximum):
-    reports, trace = refine(control["reports"], control["evidence"], selected)
+def _refined_candidate(selected, control, *, dated_labels):
+    if "raw_reports" not in control:
+        raise ValueError("membership comparison requires the completed unrefined ownership reports")
+    reports, trace = refine(control["raw_reports"], control["refinement_evidence"], selected)
     if not trace["changes"]:
-        return control["candidate"], trace
+        return control["candidate"], control["reports"], trace, control.get("label_trace")
     for source, report in reports.items():
         # Completed latest own-label routes must travel into this narrow contest.
         reports[source] = {
@@ -175,30 +176,35 @@ def _refined_candidate(selected, control, maximum):
             reports[source],
             selected["receipts"][source]["dependencies"],
         )
-    dimensions = {
-        name: {
-            key: value for key, value in values.items() if name == "group_diagnostics" or key[0] not in sources
-        }
-        for name, values in control["candidate"]["dimensions"].items()
-    }
     fresh = _group_dimensions(
         boundaries,
         {source: selected["inputs"][source] for source in sources},
         selected["receipts"],
         row_indexes=control["published"]["row_indexes"],
     )
-    for name, values in fresh.items():
-        dimensions[name].update(values)
-    dimensions["group_diagnostics"] = _group_diagnostics(reports)
+    # The membership producer changes owners and their numerical contests.
+    # Row coverage, rule explanations and group diagnostics cross intact.
+    dimensions = dict(control["unlabelled_dimensions"])
+    digests = dict(control["unlabelled_digests"])
+    for name in ("semantic", "observation"):
+        dimensions[name] = {
+            **{key: value for key, value in dimensions[name].items() if key[0] not in sources},
+            **fresh[name],
+        }
+        digests[name] = _digest_mapping(dimensions[name])
     frame = {
+        **control["candidate"],
         "dimensions": dimensions,
-        "digests": {name: _digest_mapping(values) for name, values in dimensions.items()},
+        "digests": digests,
         "memberships": _memberships(dimensions["semantic"]),
-        "counts": _row_counts(dimensions["semantic"]),
         "mapping_corrections": {**control["candidate"]["mapping_corrections"], **corrections},
-        "partition_complete": all(report.get("row_partition_complete") is True for report in reports.values()),
     }
-    return frame, trace
+    label_trace = None
+    if dated_labels:
+        frame, label_trace = _label_candidate(
+            selected, {**control, "candidate": frame, "unlabelled_dimensions": dimensions, "reports": reports}
+        )
+    return frame, reports, trace, label_trace
 
 
 def _label_candidate(selected, control):
@@ -226,6 +232,10 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
 
     require_generic_policy(policy)
     require_generic_policy(control_policy)
+    shared = same_cascade(control_policy, policy)
+    control_membership = getattr(control_policy, "membership_refinement", None)
+    candidate_membership = getattr(policy, "membership_refinement", None)
+    removing_membership = shared and control_membership is not None and candidate_membership is None
     control = {}
     control_report = _compare_loaded_group(
         store,
@@ -234,27 +244,32 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
         selected,
         max_differences=maximum,
         completed=control,
-        refine=refine if getattr(control_policy, "membership_refinement", None) else None,
+        refine=refine if control_membership and not removing_membership else None,
+        defer_publication_comparison=removing_membership,
     )
     trace = control.get("refinement")
     label_trace = None
-    if same_cascade(control_policy, policy):
+    control_frame = control["candidate"]
+    if shared:
         candidate_labels = getattr(policy, "dated_labels", None)
         control_labels = getattr(control_policy, "dated_labels", None)
-        same_membership = getattr(policy, "membership_refinement", None) == getattr(
-            control_policy, "membership_refinement", None
-        )
-        if (
-            not same_membership
-            and getattr(control_policy, "membership_refinement", None)
-            and not getattr(policy, "membership_refinement", None)
-        ):
-            # A completed no-effect producer establishes the unchanged input,
-            # including for removal. A real membership change needs its owning
-            # reverse projection; never report that as parity.
-            refinement = control.get("refinement")
-            if refinement is not None and not refinement["changes"]:
-                same_membership = True
+        same_membership = candidate_membership == control_membership
+        if removing_membership:
+            # Produce the unrefined side first. The control then opens only the
+            # newly joined contest. Both sides retain their actual decisions.
+            control_frame, reports, trace, _ = _refined_candidate(selected, control, dated_labels=control_labels)
+            if trace["changes"] and candidate_labels != control_labels:
+                raise ValueError("compare one changed producer at a time")
+            control_report["comparison"] = compare_publication(
+                control["published"],
+                control_frame,
+                control_policy,
+                selected["receipts"],
+                reports,
+                control_report["fallback_execution"],
+                maximum,
+            )
+            same_membership = True
         if candidate_labels == control_labels and same_membership:
             candidate = control["candidate"]
             label_trace = control.get("label_trace")
@@ -269,10 +284,10 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
                     "dimensions": control["unlabelled_dimensions"],
                     "digests": control["unlabelled_digests"],
                 }
-        elif getattr(policy, "membership_refinement", None):
-            candidate, trace = _refined_candidate(selected, control, maximum)
         else:
-            candidate = control["candidate"]
+            candidate, _, trace, label_trace = _refined_candidate(
+                selected, control, dated_labels=candidate_labels
+            )
     else:
         candidate_completed = {}
         callback = refine if getattr(policy, "membership_refinement", None) else None
@@ -288,7 +303,7 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
         )
         candidate = candidate_completed["candidate"]
         trace = candidate_completed["refinement"]
-    impact = compare_frames(control["candidate"], candidate, maximum)
+    impact = compare_frames(control_frame, candidate, maximum)
     return {
         "group": selected["selected_group"],
         "seed_symbol": seed,
@@ -302,5 +317,5 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
         "comparison": impact,
         "membership_refinement": trace,
         "dated_labels": label_trace,
-        "control_correlation_reused": same_cascade(control_policy, policy),
+        "control_correlation_reused": shared,
     }

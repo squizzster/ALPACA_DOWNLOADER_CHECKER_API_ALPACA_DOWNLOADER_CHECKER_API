@@ -398,6 +398,30 @@ class NumericalMappingAcquisitionTests(TestCase):
             second = self.execute(store, request, forbidden, {})
             self.assertEqual(result["mapping_assessment"], second["mapping_assessment"])
 
+    def test_failed_witness_write_retries_persistence_before_acknowledgement(self):
+        with TemporaryDirectory() as directory:
+            store = Path(directory)
+            request = mapping.select(store, *fixture(), selected=True)["NOVA27"]
+            cache, saved = {}, []
+
+            def write(path, value, **kwargs):
+                if "witness" in value and not saved:
+                    saved.append(False)
+                    raise OSError("interrupted witness write")
+                if "witness" in value:
+                    saved.append("assessment" in value)
+
+            def fetch(symbol, adjustment, start, end, *, asof):
+                return CompletedBars(symbol, adjustment, start, end, asof, ())
+
+            with patch.object(acquisition.storage, "atomic_json", side_effect=write):
+                with self.assertRaisesRegex(OSError, "interrupted witness write"):
+                    self.execute(store, request, SimpleNamespace(fetch=fetch), cache)
+                forbidden = SimpleNamespace(fetch=lambda *a, **k: self.fail("completed witness repeated"))
+                result = self.execute(store, request, forbidden, cache)
+            self.assertEqual([False, False, True], saved)
+            self.assertEqual("provider_mapping_unavailable", result["mapping_assessment"]["outcome"])
+
     def test_missing_internal_grid_fails_closed_but_keeps_the_positive_witness(self):
         with TemporaryDirectory() as directory:
             store = Path(directory)

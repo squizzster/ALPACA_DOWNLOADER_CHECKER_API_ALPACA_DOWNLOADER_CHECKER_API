@@ -220,23 +220,51 @@ class MappingAcquisitionTests(unittest.TestCase):
         self.assertEqual([name for _, name, *_ in raw.calls], ["raw"])
         self.assertEqual([name for _, name, *_ in adjusted.calls], ["all", "all"])
 
-    def test_confirmations_are_independent_once_and_carry_through_failure(self):
+    def test_bound_witness_and_completed_peer_confirmations_survive_interruption(self):
         value, client, saved = acquisition(), Client(), []
         value.finish(client.selected)
 
         def check(name, start, end):
             if name == "all":
+                self.fail("accepted witness requested again")
+            if name == "dividend":
                 raise RuntimeError("confirmation interrupted")
             return client.selected(name, start, end)
 
         with self.assertRaises(RuntimeError):
             value.confirm(check, on_progress=lambda current: saved.append(persisted(current)))
-        self.assertEqual(set(value.confirmations), {"raw"})
+        self.assertEqual(set(value.confirmations), {"raw", "all"})
+        self.assertIs(value.fragments[0], value.confirmations["all"][0])
         restored = MappingAcquisition.from_document(saved[-1])
         retry = Client()
         self.assertTrue(restored.confirm(retry.selected))
-        self.assertEqual([name for _, name, *_ in retry.calls], ["all", "dividend", "split"])
+        self.assertEqual([name for _, name, *_ in retry.calls], ["dividend", "split"])
         restored.confirm(lambda *_: self.fail("confirmation repeated"))
+
+    def test_different_all_endpoint_still_requires_its_own_observation(self):
+        client = Client()
+        start = WITNESS_END
+        end = start + timedelta(days=1)
+        value = MappingAcquisition(
+            "/tmp/synthetic-mapping-store",
+            "NOVA",
+            "before",
+            START,
+            END,
+            ASOF,
+            "scope",
+            client.selected("all", start, end),
+            required_sessions=DAYS,
+        )
+        value.finish(client.selected)
+
+        def different(name, lower, upper):
+            if name == "all":
+                self.assertEqual((WITNESS_START, WITNESS_END), (lower, upper))
+                return CompletedBars("NOVA", name, lower, upper, ASOF, (row(DAYS[0], "999"),))
+            return client.selected(name, lower, upper)
+
+        self.assertFalse(value.confirm(different))
 
     def test_confirmation_contradiction_is_not_erased_by_retry(self):
         value, client, saved = acquisition(), Client(), []
@@ -307,7 +335,8 @@ class MappedDownloadTests(unittest.TestCase):
             )
         self.assertEqual(output["request"]["asof"], ASOF)
         self.assertEqual([row[0][:10] for row in read_pricing_views(self.store, "NOVA")["all"]], list(DAYS))
-        self.assertEqual(len(client.calls), 9)  # Five acquisition actions and four independent confirmations.
+        self.assertNotIn(("NOVA", "all", WITNESS_START, WITNESS_END, ASOF), client.calls)
+        self.assertEqual(len(client.calls), 8)  # Five acquisition actions and three other endpoints.
 
     def test_failure_before_publication_restores_completed_acquisition_and_confirmation(self):
         value, client, saved = acquisition(self.store, self.generation), Client(), []

@@ -660,7 +660,7 @@ Receipt digests and acknowledgement fields do not invalidate the decision merely
 was published. Only selected journals are opened; no directory or universe discovery is implied.
 
 [MappingAcquisition](../libs/alpaca_pricing_download/mapping.py) carries the completed `all` witness,
-remaining disjoint request ranges, adaptive views/digests/decisions, coverage and independent confirmation
+remaining disjoint request ranges, adaptive views/digests/decisions, coverage and endpoint confirmation
 results. A positive witness is one observation, not full-history approval. Acquisition requests its missing
 `all` ranges and only the additional views selected by the adaptive producer. Completed rows are assembled
 without a second normalization or historical authentication. Each completed stage is retained before the
@@ -671,9 +671,8 @@ Required contribution dates come from complete already-held producer inputs or a
 serving checkpoint's accepted session-date projection. Counts, endpoint dates and the market calendar
 cannot substitute for that capability. The pricing producer checks newly received views against the
 selected dates and stops when a known omission precludes a complete bundle. Accepted old validators and
-gzip payloads are not opened to authenticate the replacement. The ordinary independent confirmation
-contract applies once to the newly constructed full acquisition; an acquisition witness cannot also be
-its independent confirmation.
+gzip payloads are not opened to authenticate the replacement. The bound witness supplies the first fully adjusted endpoint when its session window matches exactly.
+Each other selected endpoint receives its own confirmation, carried through interruption.
 
 For an exactly bound, unmarked legacy checkpoint without dates, the selected serving owner constructs
 the missing date projection from its completed raw ownership positions. It reads only the contributing
