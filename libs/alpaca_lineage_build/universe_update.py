@@ -274,6 +274,47 @@ def _prepare_locked(
     from libs.alpaca_serving_catalogue import work as serving_work
 
     pending_serving = serving_work.read(store)
+    mapping = universe_state.read_mapping_work(store)
+    if mapping["work"]:
+        deferred = [
+            {"symbol": name, "reason": reason}
+            for name, item in mapping["work"].items()
+            if not numerical_satisfied(item, context.index["symbols"].get(name, {}).get("projection"))
+            and (reason := restriction(item, end, retry_blocked=retry_blocked))
+        ]
+        mapping_policy = WorkPolicy(store, context.index, mapping["work"], deferred, end, context=context)
+        selected_mapping = [
+            name
+            for name in sorted(mapping["work"])
+            if mapping_policy.allowed({name})
+            and not numerical_satisfied(
+                mapping["work"][name], context.index["symbols"].get(name, {}).get("projection")
+            )
+        ]
+        value = (
+            run_lineage(
+                store,
+                selected_mapping,
+                identity_client=identity_client,
+                pricing_client=pricing_client,
+                end_date=end,
+                work_policy=mapping_policy,
+                context=context,
+                progress=progress,
+            )
+            if selected_mapping
+            else {"failed": 0, "results": []}
+        )
+        mapping_policy.acknowledge()
+        result["stages"]["numerical_mapping"] = value
+        result["failed"] += value["failed"]
+        for completed in value.get("results", ()):
+            if completed["status"] == "processed":
+                for name in completed["processed"]:
+                    pending_serving[name] = context.index["symbols"][name]["sha256"]
+        if storage.path_at(root, ".pending.json").exists():
+            result["blockers"] = ["pending mapped lineage publication must finish before new work"]
+            return result
     if pending_serving:
         from .closed_source_recovery import recover as recover_closed_sources
         from .membership_transfer_recovery import recover as recover_membership_transfers

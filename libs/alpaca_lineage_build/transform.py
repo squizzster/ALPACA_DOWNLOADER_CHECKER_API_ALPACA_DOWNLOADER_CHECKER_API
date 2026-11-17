@@ -70,6 +70,11 @@ def retained_decision_report(previous, *, policy):
         },
         "correlation_policy": policy.provenance() if policy is not None else previous["correlation_policy"],
         "source_row_count": 0,
+        **(
+            {"numerical_mapping_assessments": previous["numerical_mapping_assessments"]}
+            if "numerical_mapping_assessments" in previous
+            else {}
+        ),
         "current_source_ownership": previous.get("current_source_ownership"),
         "sourced_rename_ownership": previous.get("sourced_rename_ownership"),
         "sourced_rename_membership": previous.get("sourced_rename_membership"),
@@ -408,6 +413,10 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
                 and not any(current.get(field) for field in ("certificates", "relations", "owners", "issues"))
             ):
                 receipt[key] = prior
+    if previous is not None:
+        from .numerical_mapping import carry as carry_mapping_assessments
+
+        carry_mapping_assessments(previous, receipt)
     if resume_closed and (
         "numerical_source_equivalence" in previous or "numerical_source_equivalence_version" in previous
     ):

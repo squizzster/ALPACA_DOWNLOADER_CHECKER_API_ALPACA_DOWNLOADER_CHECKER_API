@@ -434,11 +434,13 @@ def finish_correlated_group(
     work_policy,
     completion=None,
     dated_labels=None,
+    mapping_cache=None,
 ):
     """Compatibility entrypoint for the complete-group engine."""
     return _group_engine.finish_correlated_group(
         reports=reports,
         dated_labels=dated_labels,
+        mapping_cache=mapping_cache,
         acquisition_waves=acquisition_waves,
         affected=affected,
         assignment_boundaries=assignment_boundaries,

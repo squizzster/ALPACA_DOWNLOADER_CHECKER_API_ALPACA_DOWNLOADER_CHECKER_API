@@ -48,5 +48,10 @@
     "modifications": [
       "Carry the accepted generic dated-label producer selection across native and JSON pipeline stages without recompiling configuration."
     ]
+  },
+  {
+    "modifications": [
+      "Carry generic numerical-mapping needs, completed provider observations and acquisition continuation state through the native and JSON pipeline boundaries without repeating producer work."
+    ]
   }
 ]

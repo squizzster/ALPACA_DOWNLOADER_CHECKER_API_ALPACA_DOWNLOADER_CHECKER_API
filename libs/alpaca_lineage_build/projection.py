@@ -51,6 +51,18 @@ def project_receipt(receipt):
         "processed_through": receipt["processed_through"],
         "pricing_request": receipt.get("pricing_request"),
         "source_rows": receipt["source_rows"],
+        **(
+            {
+                "numerical_mapping_completed": {
+                    "version": 1,
+                    "candidate_ids": [
+                        item["candidate_id"] for item in receipt["numerical_mapping_assessments"]["decisions"]
+                    ],
+                }
+            }
+            if "numerical_mapping_assessments" in receipt
+            else {}
+        ),
         "unresolved_rows": receipt["unresolved_rows"],
         "catalogue_observed_at_utc": receipt["evidence"].get("catalogue_observed_at_utc"),
         "update_obligation_id": receipt.get("update_obligation_id"),

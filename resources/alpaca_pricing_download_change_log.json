@@ -325,5 +325,10 @@
       "After ordinary retained-boundary and omission handling, resolve a still-missing comparison session through a caller-selected historical ticker and mapping, while preserving the mapped response identity, binding only that completed comparison to the selected lineage receipt generation, and retaining accepted validators and suffix acquisitions across retry.",
       "Reject missing, stale or differing mapped observations without publishing or manufacturing current-ticker evidence; a matching routed comparison continues through the ordinary retained acquisition and publication journal."
     ]
+  },
+  {
+    "modifications": [
+      "Carry completed mapped all-view observations into their selected full acquisition, request only missing range fragments, and retain adaptive observations and producer-derived values across selected acquisition interruption without repeating completed requests or validation."
+    ]
   }
 ]

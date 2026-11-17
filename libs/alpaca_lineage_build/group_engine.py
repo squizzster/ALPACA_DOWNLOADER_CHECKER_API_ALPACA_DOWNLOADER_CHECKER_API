@@ -54,6 +54,7 @@ from .metadata import (
     dependencies,
     full_metadata,
 )
+from .numerical_mapping import PendingNumericalWork
 from .observation_carry import project_choices
 from .pricing import metadata_source_control
 from .resume import (
@@ -281,6 +282,7 @@ def finish_correlated_group(
     work_policy,
     completion=None,
     dated_labels=None,
+    mapping_cache=None,
 ):
     """Consume completed correlation and retained choices under the owning locks.
 
@@ -293,10 +295,33 @@ def finish_correlated_group(
     # for all views. A required mapping correction must publish
     # through pricing first; never stamp the old input as done.
     completion = {} if completion is None else completion
+    mapping_cache = completion.setdefault("numerical_mapping", {}) if mapping_cache is None else mapping_cache
     if "numerical" in completion:
         reports, mapping_corrections = completion["numerical"]
         required.update(mapping_corrections)
     elif not no_new_rows:
+        from .numerical_mapping import prepare as prepare_mapping
+        from .numerical_mapping import required_sessions
+
+        mapping_required = prepare_mapping(
+            store,
+            sources,
+            {name: view.source_sha256 for name, view in inputs.items()},
+            reports,
+            evidence,
+            mapping_cache,
+            selected=retained_recovery is None,
+            inputs=inputs,
+            previous=previous,
+        )
+        if mapping_required:
+            grids = mapping_cache.setdefault("required_sessions", {})
+            for request in mapping_required.values():
+                identifier = request["numerical_mapping"]["candidate_id"]
+                if identifier not in grids:
+                    grids[identifier] = required_sessions(inputs, reports)
+            required.update(mapping_required)
+            return None
         retained_choices = {}
         for name, prior in choice_prefix_sources.items():
 
@@ -369,6 +394,11 @@ def finish_correlated_group(
                 ):
                     raise LineageError("retained recovery changed its selected group")
                 receipts[symbol]["retained_recovery"] = retained_recovery.completion()
+        from .numerical_mapping import stamp as stamp_mapping
+
+        if "mapping_stamped" not in completion:
+            stamp_mapping(receipts, mapping_cache.get("completed", {}))
+            completion["mapping_stamped"] = True
         if (
             "plan" in completion.get("label_decision", {})
             and (not resume or all(prior and prior.get("dated_label_completion") for prior in previous.values()))
@@ -618,6 +648,7 @@ def process_group(
     unavailable = {}
     for _ in range(MAX_CLOSURE + MAX_ACQUISITION_WAVES + 1):
         required = None
+        source_work_requested = False
         if work_policy is not None:
             work_policy.current_group = set(group)
             work_policy.check(group)
@@ -1028,6 +1059,43 @@ def process_group(
                 for symbol in sorted(group)
                 if symbol not in sources and symbol not in unavailable
             }
+            if work_policy is not None:
+                required.update(
+                    work_policy.pending_mappings(
+                        group,
+                        sources,
+                        selected,
+                        completed=source_work_cache.get("numerical_mapping", {}).get("completed", {}),
+                    )
+                )
+            if (
+                not retained_rebuild
+                and previous
+                and all(previous.values())
+                and (
+                    metadata_current
+                    or all(evidence_client.evidence_current(prior["evidence"]) for prior in previous.values())
+                )
+            ):
+                from .numerical_mapping import prepare as prepare_mapping
+
+                retained_provider = {
+                    name: evidence_client.provider_view(prior["evidence"])
+                    for name, prior in previous.items()
+                    if name in sources
+                }
+                required.update(
+                    prepare_mapping(
+                        store,
+                        sources,
+                        selected,
+                        previous,
+                        retained_provider,
+                        source_work_cache.setdefault("numerical_mapping", {}),
+                        selected=True,
+                        previous=previous,
+                    )
+                )
             if not required:
                 # One decision for this selected source/receipt under these locks.
                 # None is a completed negative result too; consumers retain it.
@@ -1305,7 +1373,7 @@ def process_group(
                             ),
                             membership_projection_required=source_plan.projection_required,
                         )
-                        receipts, boundaries, planned_inputs, reports = execute_source_work(
+                        source_work_result = execute_source_work(
                             store,
                             root,
                             controls,
@@ -1316,12 +1384,594 @@ def process_group(
                             source_work_cache,
                             loader=services.load_pricing,
                         )
-                        for name, receipt in receipts.items():
-                            receipt["dependencies"] = sorted(set(deps[name]) | unavailable.keys())
-                            receipt["input_sources"] = dict(selected)
-                            if unavailable:
-                                receipt["unavailable_pricing"] = unavailable
-                        completion_key = ("source_completed", *assembly_key[1:])
+                        if isinstance(source_work_result, PendingNumericalWork):
+                            required.update(source_work_result.required)
+                        else:
+                            receipts, boundaries, planned_inputs, reports = source_work_result
+                            for name, receipt in receipts.items():
+                                receipt["dependencies"] = sorted(set(deps[name]) | unavailable.keys())
+                                receipt["input_sources"] = dict(selected)
+                                if unavailable:
+                                    receipt["unavailable_pricing"] = unavailable
+                            completion_key = ("source_completed", *assembly_key[1:])
+                            completion = context.group_completions.get(completion_key)
+                            if completion is None or not (
+                                completion["evidence"].keys() == evidence.keys()
+                                and all(
+                                    completion["evidence"][name] is facts for name, facts in evidence.items()
+                                )
+                            ):
+                                completion = {
+                                    "store": str(store),
+                                    "group": tuple(sorted(group)),
+                                    "pricing": dict(selected),
+                                    "policy": correlation_policy.semantic_sha256,
+                                    "execution": context.accept_ruleset().execution_sha256,
+                                    "refresh": refresh,
+                                    "retained_rebuild": retained_rebuild,
+                                    "end_date": end_date,
+                                    "evidence": dict(evidence),
+                                    "assembly_key": assembly_key,
+                                }
+                                if accepted_membership_plan is not None:
+                                    completion["accepted_membership_plan"] = (
+                                        membership_plan_key,
+                                        accepted_membership_plan,
+                                    )
+                                context.group_completions[completion_key] = completion
+                            if "publication" not in completion:
+                                publication = CompletedGroupPublication(
+                                    receipts,
+                                    boundaries,
+                                    not reports,
+                                    not reports,
+                                    sum(
+                                        (
+                                            previous[name]["source_rows"]
+                                            for name, view in planned_inputs.items()
+                                            if not getattr(view, "materialized", True)
+                                        )
+                                    )
+                                    if not reports
+                                    else sum(
+                                        (
+                                            previous[name]["source_rows"]
+                                            for name in sources
+                                            if source_plan.dispositions[name] in {"A", "retained"}
+                                        )
+                                    ),
+                                    sum(
+                                        (
+                                            len(rows)
+                                            for view in planned_inputs.values()
+                                            if getattr(view, "materialized", True)
+                                            for rows in view.views.values()
+                                        )
+                                    ),
+                                    membership_refinement=source_plan.membership_refinement,
+                                )
+                                completion["publication"] = publication.__dict__
+                                completion["publish_args"] = {
+                                    "acquisition_waves": acquisition_waves,
+                                    "checks": checks,
+                                    "notices": notices,
+                                    "previous": previous,
+                                    "pricing_replacements": pricing_replacements,
+                                    "seed": seed,
+                                    "sources": sources,
+                                    "unavailable": unavailable,
+                                }
+                            result = publish_completed_group(
+                                CompletedGroupPublication(**completion["publication"]),
+                                **completion["publish_args"],
+                                graph=graph,
+                                index=index,
+                                receipt_cache=receipt_cache,
+                                root=root,
+                                store=store,
+                                work_policy=work_policy,
+                                completion=completion,
+                            )
+                            consume_membership_plan(context, completion)
+                            context.group_completions.pop(completion_key, None)
+                            release_completed_assemblies(context, store, group)
+                            return result
+                    if not required:
+                        raise LineageError("source work did not produce its selected completion")
+                if not source_work_requested:
+                    # Assembly has the same source/receipt scope as its producer.
+                    # It survives a peer or publication failure, never a new generation.
+                    assembly = context.group_completions.setdefault(assembly_key, {})
+                    assembly.setdefault("previous", previous)
+                    # Dependency closure can enlarge this scope after assembly.
+                    # Lend the existing generation-keyed values into the enlarged
+                    # owner; a new scope does not invalidate unchanged source data.
+                    pricing_inputs = assembly.setdefault("pricing_inputs", pricing_inputs)
+                    partitions = assembly.setdefault("partitions", partitions)
+                    assignment_boundaries = assembly.setdefault("assignment_boundaries", assignment_boundaries)
+                    retained_kinds = {}
+                    if not resume:
+                        corrections = dict.fromkeys(sources)
+                    projections = {}
+                    affected = {}
+                    if any(choice_corrections.values()):
+                        affected_identities = {}
+
+                        def identities_at(symbol, day):
+                            prior = previous[symbol]
+                            if prior is None:
+                                return set()
+                            key = symbol, day
+                            if key in affected_identities:
+                                return affected_identities[key]
+                            summary = prior.get("assignment_summary", {}).get("raw", {})
+                            if not summary.get("last_session") or summary["last_session"] < day:
+                                affected_identities[key] = set()
+                                return set()
+                            documents = {}
+                            if "identity_intervals" not in prior:
+                                anchor = prior["anchor_month"]
+                                kind = (
+                                    "current_month"
+                                    if day[:7] == anchor
+                                    else "current_year"
+                                    if day[:4] == anchor[:4]
+                                    else "completed_years"
+                                )
+                                documents = read_boundaries(prior, kinds={kind})
+                            affected_identities[key] = {
+                                item["security_id"]
+                                for item in identity_intervals(prior, documents)
+                                if item["from"] <= day <= item["to"]
+                            }
+                            return affected_identities[key]
+
+                        for name, day in choice_corrections.items():
+                            if day:
+                                affected.setdefault(day, set()).update(identities_at(name, day))
+                        for name in sources if resume else ():
+                            days = [
+                                day
+                                for day, identities in affected.items()
+                                if identities_at(name, day) & identities
+                            ]
+                            if days:
+                                projections[name] = min(days)
+                    for symbol, prior in previous.items():
+                        retained_kinds[symbol] = None
+                        if not resume and prior:
+                            retained_kinds[symbol] = {
+                                kind for kind in prior["boundaries"] if assignment_handoff(prior, kind) is None
+                            }
+                        if resume and "assignment_summary" in prior:
+                            old_anchor, anchor = prior["anchor_month"], sources[symbol]["anchor_month"]
+                            if sources[symbol]["latest_request"]["end_exclusive"] <= prior["processed_through"]:
+                                retained_kinds[symbol] = set()
+                            elif old_anchor == anchor:
+                                retained_kinds[symbol] = set() if unchanged else {"current_month"}
+                            elif old_anchor[:4] == anchor[:4]:
+                                retained_kinds[symbol] = {"current_year", "current_month"}
+                            if corrections[symbol] and retained_kinds[symbol] is not None:
+                                day = corrections[symbol]
+                                retained_kinds[symbol].add(
+                                    "current_month"
+                                    if day[:7] == old_anchor
+                                    else "current_year"
+                                    if day[:4] == old_anchor[:4]
+                                    else "completed_years"
+                                )
+                            if symbol in projections and retained_kinds[symbol] is not None:
+                                day = projections[symbol]
+                                retained_kinds[symbol].add("current_month")
+                                if day[:7] < old_anchor:
+                                    retained_kinds[symbol].add("current_year")
+                                if day[:4] < old_anchor[:4]:
+                                    retained_kinds[symbol].add("completed_years")
+                    old_boundaries = {
+                        symbol: (
+                            read_boundaries(prior, kinds=retained_kinds[symbol])
+                            if prior and (resume or prior.get("schema_version") == VERSION)
+                            else None
+                        )
+                        for symbol, prior in previous.items()
+                    }
+                    for symbol, day in corrections.items():
+                        if day or symbol in projections:
+                            complete_prefix_boundaries(
+                                root, previous[symbol], old_boundaries[symbol], projections.get(symbol) or day
+                            )
+                    inputs = {}
+                    for symbol in sources:
+                        partitions.setdefault(symbol, {})
+                    if progress:
+                        progress(
+                            "lineage_inputs",
+                            {
+                                "symbols": sorted(sources),
+                                "active_only": resume,
+                                "from": previous[seed]["processed_through"][:10] if resume else start,
+                                "scope": "added_sessions" if resume else "complete_group",
+                            },
+                        )
+                    for symbol in sorted(sources):
+                        scope = (
+                            selected[symbol],
+                            resume,
+                            previous[symbol]["boundaries"] if resume else None,
+                            projections.get(symbol),
+                        )
+                        cached = pricing_inputs.get(symbol)
+                        if cached is None or cached[0] != scope:
+                            cached = (
+                                scope,
+                                services.load_pricing(
+                                    store,
+                                    symbol,
+                                    source=sources[symbol],
+                                    source_sha256=selected[symbol],
+                                    selected_correction=corrections[symbol],
+                                    selected_change_from=(notices.get(symbol) or {}).get("from"),
+                                    previous_boundaries=old_boundaries[symbol],
+                                    resume_from=(
+                                        projections.get(symbol)
+                                        or corrections[symbol]
+                                        or previous[symbol]["processed_through"][:10]
+                                    )
+                                    if resume
+                                    else None,
+                                    previous=previous[symbol],
+                                    partitions=partitions[symbol],
+                                    projection_from=projections.get(symbol),
+                                ),
+                            )
+                            pricing_inputs[symbol] = cached
+                        inputs[symbol] = cached[1]
+                    if progress:
+                        progress("lineage_evidence", {"symbols": sorted(group), "reused": reuse_metadata})
+                    for _metadata_round in range(MAX_CLOSURE + 1):
+                        evidence, deps, assets = {}, {}, set()
+                        for symbol, view in inputs.items():
+                            prior = previous[symbol]
+                            if retained_rebuild:
+                                evidence[symbol] = evidence_client.provider_view(
+                                    prior["evidence"], local_report=view.local
+                                )
+                            elif reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
+                                # Only the downstream rules changed. Consume the approved
+                                # evidence directly, then recalculate the complete group.
+                                evidence[symbol] = evidence_client.provider_view(
+                                    prior["evidence"], local_report=view.local
+                                )
+                            else:
+                                full = full_metadata(
+                                    prior, None if corrections[symbol] else notices.get(symbol), history_refresh
+                                )
+                                key = (symbol, view.source_sha256, full)
+                                if key not in metadata_cache or not evidence_client.evidence_current(
+                                    metadata_cache[key]
+                                ):
+                                    can_continue = (
+                                        not full
+                                        and prior is not None
+                                        and evidence_client.catalogue_attempted
+                                        and evidence_client.catalogue is not None
+                                    )
+                                    metadata_cache[key] = services.acquire(
+                                        view,
+                                        RetainedReportClient(evidence_client, prior["evidence"])
+                                        if reuse_metadata or can_continue
+                                        else evidence_client,
+                                        prior,
+                                        refresh=full,
+                                    )
+                                evidence[symbol] = metadata_cache[key]
+                            deps[symbol] = (
+                                prior["dependencies"]
+                                if retained_rebuild
+                                else dependencies(evidence[symbol], symbol)
+                            )
+                            assets.update(
+                                item["id"] for item in evidence[symbol]["identities"] if item.get("id")
+                            )
+                        for symbol, missing in sorted(unavailable.items()):
+                            # Prices and metadata have different provider endpoints. Keep
+                            # discovering real relationships even when bars reject a label.
+                            if not retained_rebuild and (
+                                "evidence" not in missing
+                                or not evidence_client.evidence_current(missing["evidence"])
+                            ):
+                                missing["evidence"] = services.acquire_unpriced(
+                                    symbol,
+                                    missing["request"],
+                                    evidence_client,
+                                    previous=missing.get("evidence") if reuse_metadata else None,
+                                )
+                            auxiliary = missing["evidence"]
+                            deps[symbol] = dependencies(auxiliary, symbol)
+                            assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
+                        # A later member may acquire an exact mapping that supersedes
+                        # an earlier retained observation. Reassemble only stale new
+                        # reports from the in-memory producer cache, under these locks.
+                        if retained_rebuild or all(
+                            evidence_client.evidence_current(facts)
+                            for facts in [
+                                *evidence.values(),
+                                *(item["evidence"] for item in unavailable.values()),
+                            ]
+                        ):
+                            break
+                    else:
+                        raise LineageError("selected metadata observations did not become coherent")
+                    expanded = services.closure(
+                        index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
+                    )
+                    if expanded != group:
+                        if retained_rebuild:
+                            raise LineageError(
+                                "retained lineage rebuild evidence exceeds its accepted complete group"
+                            )
+                        from libs.common.work_scope import accept_expansion
+
+                        accept_expansion(store, expanded, anchors=group, authority="metadata_dependencies")
+                        if progress:
+                            progress(
+                                "dependency_expansion",
+                                {"symbols": sorted(expanded), "added": sorted(expanded - group)},
+                            )
+                        if work_policy is not None:
+                            work_policy.require_dependencies(
+                                expanded, end, expanded - sources.keys() - unavailable.keys(), start=start
+                            )
+                            work_policy.reconcile_evidence(
+                                evidence, sources, previous, group=expanded, target=end, partial=True
+                            )
+                        group = expanded
+                        continue  # Release every pricing lock before taking an enlarged, sorted set.
+                    replacements = (
+                        work_policy.reconcile_evidence(
+                            evidence | {s: value["evidence"] for s, value in unavailable.items()},
+                            sources,
+                            previous,
+                            group=group,
+                            target=end,
+                        )
+                        if work_policy is not None
+                        else set()
+                    )
+                    for symbol in replacements:
+                        required[symbol] = {
+                            "from": start,
+                            "end_exclusive": max(end, pricing_target(work_policy.work[symbol])),
+                            "refresh_all": True,
+                            "selected_source_sha256": selected[symbol],
+                            "acquisition_evidence_sha256": acquisition_fingerprint(work_policy.work[symbol]),
+                        }
+                    # A related input may exist but not cover the selected acquisition range.
+                    # Empty published responses count as acquired, not as missing history.
+                    for symbol, source in () if retained_rebuild else sources.items():
+                        if source.get("history_start", HISTORY_START)[:10] > start:
+                            required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                        elif source["latest_request"]["end_exclusive"][:10] < end:
+                            accepted_empty = (symbol, selected[symbol], end) in empty_suffixes
+                            services.event(
+                                "dependency_suffix_selection",
+                                symbol=symbol,
+                                required=not accepted_empty,
+                                reason="completed_empty_suffix" if accepted_empty else "selection_unavailable",
+                                end_exclusive=end,
+                            )
+                            if not accepted_empty:
+                                required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                    if not required:
+                        check_unavailable_pricing(store, unavailable, locked, sources=sources)
+                        membership_deltas = (
+                            {}
+                            if resume or any(decision[1][1] for decision in prefix_decisions.values())
+                            else None
+                        )
+                        # Compare the metadata owner's completed provider views.
+                        # Legacy research provenance stays in the original receipts;
+                        # its omission from fresh inference is not a history change.
+                        provider_previous = previous
+                        if membership_deltas is not None:
+                            provider_previous = dict(previous)
+                            for name, prior in previous.items():
+                                if prior is None or not (resume or prefix_decisions[name][1][1]):
+                                    continue
+                                before = evidence_client.provider_view(
+                                    prior["evidence"], local_report=inputs[name].local
+                                )
+                                if before is not prior["evidence"]:
+                                    provider_previous[name] = {**prior, "evidence": before}
+                        historical_lineage = requires_lineage(
+                            provider_previous,
+                            evidence,
+                            pricing_unchanged=resume
+                            and (unchanged or all(complete_append(view) for view in inputs.values())),
+                            refresh=refresh,
+                            append=resume,
+                            completed_deltas=membership_deltas,
+                            auxiliary_previous={
+                                name: evidence_client.provider_view(item["evidence"])
+                                for name, item in unavailable_pricing(previous.get(seed)).items()
+                            }
+                            if membership_deltas is not None
+                            else None,
+                            auxiliary_current={name: item["evidence"] for name, item in unavailable.items()}
+                            if membership_deltas is not None
+                            else None,
+                            classification_sources={
+                                name for name, decision in prefix_decisions.items() if decision[1][1]
+                            }
+                            if not resume
+                            else None,
+                        )
+                        append_invalidation = (
+                            append_history_invalidation(provider_previous, inputs)
+                            if resume and not historical_lineage
+                            else None
+                        )
+                        if append_invalidation is not None:
+                            services.event(
+                                "lineage_append_invalidation",
+                                symbol=seed,
+                                scope="complete_group",
+                                **append_invalidation,
+                            )
+                            historical_lineage = True
+                        # Prefix-only certificates are applicable only after the
+                        # final work scope stays incremental. Complete-group work
+                        # materializes every selected history and establishes new
+                        # authority through that producer boundary.
+                        accepted_prefix_sources = {
+                            name: prior
+                            for name, prior in previous.items()
+                            if not historical_lineage
+                            and resume
+                            and prior is not None
+                            and prior.get("row_partition_complete") is True
+                            and prior.get("unresolved_rows") == 0
+                            and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
+                        }
+                        choice_prefix_sources = {
+                            name: prior
+                            for name, prior in previous.items()
+                            if not retained_rebuild
+                            and retained_recovery is None
+                            and prior is not None
+                            and prefix_decisions[name][1][1]
+                            and membership_deltas is not None
+                            and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
+                        }
+                        original_choice_inputs = dict(inputs)
+                        no_new_rows = not historical_lineage and not any(
+                            rows for view in inputs.values() for rows in view.views.values()
+                        )
+                        services.event(
+                            "lineage_required",
+                            symbol=seed,
+                            required=not no_new_rows,
+                            retained_history_required=historical_lineage,
+                            scope="complete_group"
+                            if historical_lineage
+                            else "none"
+                            if no_new_rows
+                            else "added_sessions",
+                            retained_rows=sum(item["source_rows"] for item in previous.values() if item),
+                            reason="changed_or_unproven_inputs"
+                            if historical_lineage
+                            else "accepted_unchanged_inputs"
+                            if no_new_rows
+                            else "accepted_prefix_new_sessions",
+                        )
+                        if historical_lineage:
+                            partial_inputs = {
+                                name
+                                for name, view in inputs.items()
+                                if view.materialization_scope != "complete_history"
+                            }
+                        else:
+                            partial_inputs = set()
+                        if partial_inputs:
+                            # Evidence changed after pricing alone proved reusable.
+                            # Announce selected owner work before reading its bodies.
+                            services.event(
+                                "lineage_work_selected",
+                                symbol=seed,
+                                symbols=sorted(inputs),
+                                scope="complete_group",
+                            )
+                            for name, prior in previous.items():
+                                missing = {
+                                    kind
+                                    for kind in prior["boundaries"].keys() - old_boundaries[name].keys()
+                                    if assignment_handoff(prior, kind) is None
+                                }
+                                old_boundaries[name].update(read_boundaries(prior, kinds=missing))
+                            inputs = {
+                                name: services.load_pricing(
+                                    store,
+                                    name,
+                                    source=source,
+                                    partitions=partitions[name],
+                                    source_sha256=selected[name],
+                                    selected_correction=None,
+                                )
+                                if name in partial_inputs
+                                else inputs[name]
+                                for name, source in sources.items()
+                            }
+                        if historical_lineage:
+                            incomplete = sorted(
+                                name
+                                for name, view in inputs.items()
+                                if view.materialization_scope != "complete_history"
+                            )
+                            if incomplete:
+                                raise LineageError(
+                                    "complete-group lineage requires complete pricing history for "
+                                    + ", ".join(incomplete)
+                                )
+                        resume = not historical_lineage
+                        for name, certificate in accepted_prefix_sources.items():
+                            inputs[name].accepted_current_source_ownership = certificate.get(
+                                "current_source_ownership"
+                            )
+                        scoped_memberships = services.scoped_identity_memberships(
+                            choice_prefix_sources, old_boundaries
+                        )
+                        for name, memberships in scoped_memberships.items():
+                            view = inputs[name]
+                            view.accepted_identity_memberships = memberships
+                            if historical_lineage and corrections[name] is None and name not in projections:
+                                # A peer selected complete-group work, but this
+                                # source's pricing prefix and owner metadata remain
+                                # accepted. Carry its old row decisions in their
+                                # actual full-source positions. New and unresolved
+                                # rows alone enter the owning cascade.
+                                view.accepted_report = {
+                                    **retained_decision_report(previous[name], policy=correlation_policy),
+                                    **retained_ownership_report(
+                                        previous[name], view.local, memberships, root, assignment_boundaries
+                                    ),
+                                }
+                                view.accepted_report["source_row_count"] = sum(
+                                    len(rows) for rows in view.views.values()
+                                )
+                        if resume and not no_new_rows:
+                            resumed_previous = dict(previous)
+                            for name, prior in resumed_previous.items():
+                                last = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
+                                if "identity_memberships" not in prior and last:
+                                    anchor = prior["anchor_month"]
+                                    kind = (
+                                        "current_month"
+                                        if last[:7] == anchor
+                                        else "current_year"
+                                        if last[:4] == anchor[:4]
+                                        else "completed_years"
+                                    )
+                                    if kind not in old_boundaries[name]:
+                                        old_boundaries[name].update(read_boundaries(prior, kinds={kind}))
+                            memberships = services.scoped_identity_memberships(resumed_previous, old_boundaries)
+                            for name, view in inputs.items():
+                                if name not in resumed_previous:
+                                    continue
+                                view.accepted_identity_memberships = memberships[name]
+                                if name in projections:
+                                    view.accepted_report = retained_report(
+                                        previous[name],
+                                        old_boundaries[name],
+                                        view,
+                                        unchanged_before=corrections[name]
+                                        or previous[name]["processed_through"],
+                                    )
+                        if progress:
+                            progress(
+                                "lineage_decision_reuse" if no_new_rows else "lineage_correlation",
+                                {"symbols": sorted(inputs)},
+                            )
+                        completion_key = ("completed", *assembly_key[1:], no_new_rows, resume)
                         completion = context.group_completions.get(completion_key)
                         if completion is None or not (
                             completion["evidence"].keys() == evidence.keys()
@@ -1339,675 +1989,117 @@ def process_group(
                                 "evidence": dict(evidence),
                                 "assembly_key": assembly_key,
                             }
-                            if accepted_membership_plan is not None:
-                                completion["accepted_membership_plan"] = (
-                                    membership_plan_key,
-                                    accepted_membership_plan,
-                                )
                             context.group_completions[completion_key] = completion
-                        if "publication" not in completion:
-                            publication = CompletedGroupPublication(
-                                receipts,
-                                boundaries,
-                                not reports,
-                                not reports,
-                                sum(
-                                    (
-                                        previous[name]["source_rows"]
-                                        for name, view in planned_inputs.items()
-                                        if not getattr(view, "materialized", True)
-                                    )
-                                )
-                                if not reports
-                                else sum(
-                                    (
-                                        previous[name]["source_rows"]
-                                        for name in sources
-                                        if source_plan.dispositions[name] in {"A", "retained"}
-                                    )
-                                ),
-                                sum(
-                                    (
-                                        len(rows)
-                                        for view in planned_inputs.values()
-                                        if getattr(view, "materialized", True)
-                                        for rows in view.views.values()
-                                    )
-                                ),
-                                membership_refinement=source_plan.membership_refinement,
+                        if "correlation" not in completion:
+                            components, reports = correlate_components(
+                                store,
+                                inputs,
+                                evidence,
+                                previous,
+                                deps,
+                                unavailable,
+                                policy=correlation_policy,
+                                retain=no_new_rows,
+                                services=services,
+                                completion=completion,
                             )
-                            completion["publication"] = publication.__dict__
-                            completion["publish_args"] = {
-                                "acquisition_waves": acquisition_waves,
-                                "checks": checks,
-                                "notices": notices,
-                                "previous": previous,
-                                "pricing_replacements": pricing_replacements,
-                                "seed": seed,
-                                "sources": sources,
-                                "unavailable": unavailable,
-                            }
-                        result = publish_completed_group(
-                            CompletedGroupPublication(**completion["publication"]),
-                            **completion["publish_args"],
+                            if not no_new_rows and all(previous.values()):
+                                from .membership_updates import invalidations, update_reports
+
+                                reports, trace = update_reports(
+                                    reports,
+                                    evidence,
+                                    selected={
+                                        "store": str(store),
+                                        "selected_group": sorted(group),
+                                        "receipts": previous,
+                                        "pricing_generations": selected,
+                                        "receipt_generations": {
+                                            name: index["symbols"][name]["sha256"] for name in previous
+                                        },
+                                    },
+                                    ruleset=context._ruleset,
+                                )
+                                affected = dict(affected)
+                                for day, identifiers in invalidations(
+                                    inputs, reports, trace, instants=completion.setdefault("instant_keys", {})
+                                ).items():
+                                    affected[day] = set(affected.get(day, ())) | identifiers
+                                completion["membership_refinement"] = trace
+                            completion["correlation"] = components, reports, affected
+                        components, reports, affected = completion["correlation"]
+                        completion["finish_args"] = {
+                            "dated_labels": context.accept_ruleset().dated_labels,
+                            "mapping_cache": source_work_cache.setdefault("numerical_mapping", {}),
+                            "reports": reports,
+                            "acquisition_waves": acquisition_waves,
+                            "affected": affected,
+                            "assignment_boundaries": assignment_boundaries,
+                            "checks": checks,
+                            "choice_prefix_sources": choice_prefix_sources,
+                            "components": components,
+                            "deps": deps,
+                            "evidence": evidence,
+                            "inputs": inputs,
+                            "no_new_rows": no_new_rows,
+                            "notices": notices,
+                            "old_boundaries": old_boundaries,
+                            "original_choice_inputs": original_choice_inputs,
+                            "previous": previous,
+                            "pricing_replacements": pricing_replacements,
+                            "required": required,
+                            "resume": resume,
+                            "retained_recovery": retained_recovery,
+                            "seed": seed,
+                            "sources": sources,
+                            "unavailable": unavailable,
+                        }
+                        completed_group = services.finish_correlated_group(
+                            dated_labels=context.accept_ruleset().dated_labels,
+                            mapping_cache=source_work_cache.setdefault("numerical_mapping", {}),
+                            reports=reports,
+                            acquisition_waves=acquisition_waves,
+                            affected=affected,
+                            assignment_boundaries=assignment_boundaries,
+                            checks=checks,
+                            choice_prefix_sources=choice_prefix_sources,
+                            components=components,
+                            deps=deps,
+                            evidence=evidence,
                             graph=graph,
                             index=index,
+                            inputs=inputs,
+                            no_new_rows=no_new_rows,
+                            notices=notices,
+                            observer=observer,
+                            old_boundaries=old_boundaries,
+                            original_choice_inputs=original_choice_inputs,
+                            previous=previous,
+                            pricing_replacements=pricing_replacements,
+                            progress=progress,
+                            read_boundaries=read_boundaries,
                             receipt_cache=receipt_cache,
+                            required=required,
+                            resume=resume,
+                            retained_recovery=retained_recovery,
                             root=root,
+                            seed=seed,
+                            sources=sources,
                             store=store,
+                            unavailable=unavailable,
                             work_policy=work_policy,
                             completion=completion,
                         )
-                        consume_membership_plan(context, completion)
-                        context.group_completions.pop(completion_key, None)
-                        release_completed_assemblies(context, store, group)
-                        return result
-                    raise LineageError(
-                        "metadata closure requires explicitly selected missing pricing before evaluation"
-                    )
-                # Assembly has the same source/receipt scope as its producer.
-                # It survives a peer or publication failure, never a new generation.
-                assembly = context.group_completions.setdefault(assembly_key, {})
-                assembly.setdefault("previous", previous)
-                # Dependency closure can enlarge this scope after assembly.
-                # Lend the existing generation-keyed values into the enlarged
-                # owner; a new scope does not invalidate unchanged source data.
-                pricing_inputs = assembly.setdefault("pricing_inputs", pricing_inputs)
-                partitions = assembly.setdefault("partitions", partitions)
-                assignment_boundaries = assembly.setdefault("assignment_boundaries", assignment_boundaries)
-                retained_kinds = {}
-                if not resume:
-                    corrections = dict.fromkeys(sources)
-                projections = {}
-                affected = {}
-                if any(choice_corrections.values()):
-                    affected_identities = {}
-
-                    def identities_at(symbol, day):
-                        prior = previous[symbol]
-                        if prior is None:
-                            return set()
-                        key = symbol, day
-                        if key in affected_identities:
-                            return affected_identities[key]
-                        summary = prior.get("assignment_summary", {}).get("raw", {})
-                        if not summary.get("last_session") or summary["last_session"] < day:
-                            affected_identities[key] = set()
-                            return set()
-                        documents = {}
-                        if "identity_intervals" not in prior:
-                            anchor = prior["anchor_month"]
-                            kind = (
-                                "current_month"
-                                if day[:7] == anchor
-                                else "current_year"
-                                if day[:4] == anchor[:4]
-                                else "completed_years"
-                            )
-                            documents = read_boundaries(prior, kinds={kind})
-                        affected_identities[key] = {
-                            item["security_id"]
-                            for item in identity_intervals(prior, documents)
-                            if item["from"] <= day <= item["to"]
-                        }
-                        return affected_identities[key]
-
-                    for name, day in choice_corrections.items():
-                        if day:
-                            affected.setdefault(day, set()).update(identities_at(name, day))
-                    for name in sources if resume else ():
-                        days = [
-                            day for day, identities in affected.items() if identities_at(name, day) & identities
-                        ]
-                        if days:
-                            projections[name] = min(days)
-                for symbol, prior in previous.items():
-                    retained_kinds[symbol] = None
-                    if not resume and prior:
-                        retained_kinds[symbol] = {
-                            kind for kind in prior["boundaries"] if assignment_handoff(prior, kind) is None
-                        }
-                    if resume and "assignment_summary" in prior:
-                        old_anchor, anchor = prior["anchor_month"], sources[symbol]["anchor_month"]
-                        if sources[symbol]["latest_request"]["end_exclusive"] <= prior["processed_through"]:
-                            retained_kinds[symbol] = set()
-                        elif old_anchor == anchor:
-                            retained_kinds[symbol] = set() if unchanged else {"current_month"}
-                        elif old_anchor[:4] == anchor[:4]:
-                            retained_kinds[symbol] = {"current_year", "current_month"}
-                        if corrections[symbol] and retained_kinds[symbol] is not None:
-                            day = corrections[symbol]
-                            retained_kinds[symbol].add(
-                                "current_month"
-                                if day[:7] == old_anchor
-                                else "current_year"
-                                if day[:4] == old_anchor[:4]
-                                else "completed_years"
-                            )
-                        if symbol in projections and retained_kinds[symbol] is not None:
-                            day = projections[symbol]
-                            retained_kinds[symbol].add("current_month")
-                            if day[:7] < old_anchor:
-                                retained_kinds[symbol].add("current_year")
-                            if day[:4] < old_anchor[:4]:
-                                retained_kinds[symbol].add("completed_years")
-                old_boundaries = {
-                    symbol: (
-                        read_boundaries(prior, kinds=retained_kinds[symbol])
-                        if prior and (resume or prior.get("schema_version") == VERSION)
-                        else None
-                    )
-                    for symbol, prior in previous.items()
-                }
-                for symbol, day in corrections.items():
-                    if day or symbol in projections:
-                        complete_prefix_boundaries(
-                            root, previous[symbol], old_boundaries[symbol], projections.get(symbol) or day
-                        )
-                inputs = {}
-                for symbol in sources:
-                    partitions.setdefault(symbol, {})
-                if progress:
-                    progress(
-                        "lineage_inputs",
-                        {
-                            "symbols": sorted(sources),
-                            "active_only": resume,
-                            "from": previous[seed]["processed_through"][:10] if resume else start,
-                            "scope": "added_sessions" if resume else "complete_group",
-                        },
-                    )
-                for symbol in sorted(sources):
-                    scope = (
-                        selected[symbol],
-                        resume,
-                        previous[symbol]["boundaries"] if resume else None,
-                        projections.get(symbol),
-                    )
-                    cached = pricing_inputs.get(symbol)
-                    if cached is None or cached[0] != scope:
-                        cached = (
-                            scope,
-                            services.load_pricing(
-                                store,
-                                symbol,
-                                source=sources[symbol],
-                                source_sha256=selected[symbol],
-                                selected_correction=corrections[symbol],
-                                selected_change_from=(notices.get(symbol) or {}).get("from"),
-                                previous_boundaries=old_boundaries[symbol],
-                                resume_from=(
-                                    projections.get(symbol)
-                                    or corrections[symbol]
-                                    or previous[symbol]["processed_through"][:10]
-                                )
-                                if resume
-                                else None,
-                                previous=previous[symbol],
-                                partitions=partitions[symbol],
-                                projection_from=projections.get(symbol),
-                            ),
-                        )
-                        pricing_inputs[symbol] = cached
-                    inputs[symbol] = cached[1]
-                if progress:
-                    progress("lineage_evidence", {"symbols": sorted(group), "reused": reuse_metadata})
-                for _metadata_round in range(MAX_CLOSURE + 1):
-                    evidence, deps, assets = {}, {}, set()
-                    for symbol, view in inputs.items():
-                        prior = previous[symbol]
-                        if retained_rebuild:
-                            evidence[symbol] = evidence_client.provider_view(
-                                prior["evidence"], local_report=view.local
-                            )
-                        elif reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
-                            # Only the downstream rules changed. Consume the approved
-                            # evidence directly, then recalculate the complete group.
-                            evidence[symbol] = evidence_client.provider_view(
-                                prior["evidence"], local_report=view.local
-                            )
-                        else:
-                            full = full_metadata(
-                                prior, None if corrections[symbol] else notices.get(symbol), history_refresh
-                            )
-                            key = (symbol, view.source_sha256, full)
-                            if key not in metadata_cache or not evidence_client.evidence_current(
-                                metadata_cache[key]
-                            ):
-                                can_continue = (
-                                    not full
-                                    and prior is not None
-                                    and evidence_client.catalogue_attempted
-                                    and evidence_client.catalogue is not None
-                                )
-                                metadata_cache[key] = services.acquire(
-                                    view,
-                                    RetainedReportClient(evidence_client, prior["evidence"])
-                                    if reuse_metadata or can_continue
-                                    else evidence_client,
-                                    prior,
-                                    refresh=full,
-                                )
-                            evidence[symbol] = metadata_cache[key]
-                        deps[symbol] = (
-                            prior["dependencies"] if retained_rebuild else dependencies(evidence[symbol], symbol)
-                        )
-                        assets.update(item["id"] for item in evidence[symbol]["identities"] if item.get("id"))
-                    for symbol, missing in sorted(unavailable.items()):
-                        # Prices and metadata have different provider endpoints. Keep
-                        # discovering real relationships even when bars reject a label.
-                        if not retained_rebuild and (
-                            "evidence" not in missing
-                            or not evidence_client.evidence_current(missing["evidence"])
-                        ):
-                            missing["evidence"] = services.acquire_unpriced(
-                                symbol,
-                                missing["request"],
-                                evidence_client,
-                                previous=missing.get("evidence") if reuse_metadata else None,
-                            )
-                        auxiliary = missing["evidence"]
-                        deps[symbol] = dependencies(auxiliary, symbol)
-                        assets.update(item["id"] for item in auxiliary["identities"] if item.get("id"))
-                    # A later member may acquire an exact mapping that supersedes
-                    # an earlier retained observation. Reassemble only stale new
-                    # reports from the in-memory producer cache, under these locks.
-                    if retained_rebuild or all(
-                        evidence_client.evidence_current(facts)
-                        for facts in [*evidence.values(), *(item["evidence"] for item in unavailable.values())]
-                    ):
-                        break
-                else:
-                    raise LineageError("selected metadata observations did not become coherent")
-                expanded = services.closure(
-                    index, group.union(*(set(values) for values in deps.values())), assets, graph=graph
-                )
-                if expanded != group:
-                    if retained_rebuild:
-                        raise LineageError(
-                            "retained lineage rebuild evidence exceeds its accepted complete group"
-                        )
-                    from libs.common.work_scope import accept_expansion
-
-                    accept_expansion(store, expanded, anchors=group, authority="metadata_dependencies")
-                    if progress:
-                        progress(
-                            "dependency_expansion",
-                            {"symbols": sorted(expanded), "added": sorted(expanded - group)},
-                        )
-                    if work_policy is not None:
-                        work_policy.require_dependencies(
-                            expanded, end, expanded - sources.keys() - unavailable.keys(), start=start
-                        )
-                        work_policy.reconcile_evidence(
-                            evidence, sources, previous, group=expanded, target=end, partial=True
-                        )
-                    group = expanded
-                    continue  # Release every pricing lock before taking an enlarged, sorted set.
-                replacements = (
-                    work_policy.reconcile_evidence(
-                        evidence | {s: value["evidence"] for s, value in unavailable.items()},
-                        sources,
-                        previous,
-                        group=group,
-                        target=end,
-                    )
-                    if work_policy is not None
-                    else set()
-                )
-                for symbol in replacements:
-                    required[symbol] = {
-                        "from": start,
-                        "end_exclusive": max(end, pricing_target(work_policy.work[symbol])),
-                        "refresh_all": True,
-                        "selected_source_sha256": selected[symbol],
-                        "acquisition_evidence_sha256": acquisition_fingerprint(work_policy.work[symbol]),
-                    }
-                # A related input may exist but not cover the selected acquisition range.
-                # Empty published responses count as acquired, not as missing history.
-                for symbol, source in () if retained_rebuild else sources.items():
-                    if source.get("history_start", HISTORY_START)[:10] > start:
-                        required.setdefault(symbol, {"from": start, "end_exclusive": end})
-                    elif source["latest_request"]["end_exclusive"][:10] < end:
-                        accepted_empty = (symbol, selected[symbol], end) in empty_suffixes
-                        services.event(
-                            "dependency_suffix_selection",
-                            symbol=symbol,
-                            required=not accepted_empty,
-                            reason="completed_empty_suffix" if accepted_empty else "selection_unavailable",
-                            end_exclusive=end,
-                        )
-                        if not accepted_empty:
-                            required.setdefault(symbol, {"from": start, "end_exclusive": end})
-                if not required:
-                    check_unavailable_pricing(store, unavailable, locked, sources=sources)
-                    membership_deltas = (
-                        {} if resume or any(decision[1][1] for decision in prefix_decisions.values()) else None
-                    )
-                    # Compare the metadata owner's completed provider views.
-                    # Legacy research provenance stays in the original receipts;
-                    # its omission from fresh inference is not a history change.
-                    provider_previous = previous
-                    if membership_deltas is not None:
-                        provider_previous = dict(previous)
-                        for name, prior in previous.items():
-                            if prior is None or not (resume or prefix_decisions[name][1][1]):
-                                continue
-                            before = evidence_client.provider_view(
-                                prior["evidence"], local_report=inputs[name].local
-                            )
-                            if before is not prior["evidence"]:
-                                provider_previous[name] = {**prior, "evidence": before}
-                    historical_lineage = requires_lineage(
-                        provider_previous,
-                        evidence,
-                        pricing_unchanged=resume
-                        and (unchanged or all(complete_append(view) for view in inputs.values())),
-                        refresh=refresh,
-                        append=resume,
-                        completed_deltas=membership_deltas,
-                        auxiliary_previous={
-                            name: evidence_client.provider_view(item["evidence"])
-                            for name, item in unavailable_pricing(previous.get(seed)).items()
-                        }
-                        if membership_deltas is not None
-                        else None,
-                        auxiliary_current={name: item["evidence"] for name, item in unavailable.items()}
-                        if membership_deltas is not None
-                        else None,
-                        classification_sources={
-                            name for name, decision in prefix_decisions.items() if decision[1][1]
-                        }
-                        if not resume
-                        else None,
-                    )
-                    append_invalidation = (
-                        append_history_invalidation(provider_previous, inputs)
-                        if resume and not historical_lineage
-                        else None
-                    )
-                    if append_invalidation is not None:
-                        services.event(
-                            "lineage_append_invalidation",
-                            symbol=seed,
-                            scope="complete_group",
-                            **append_invalidation,
-                        )
-                        historical_lineage = True
-                    # Prefix-only certificates are applicable only after the
-                    # final work scope stays incremental. Complete-group work
-                    # materializes every selected history and establishes new
-                    # authority through that producer boundary.
-                    accepted_prefix_sources = {
-                        name: prior
-                        for name, prior in previous.items()
-                        if not historical_lineage
-                        and resume
-                        and prior is not None
-                        and prior.get("row_partition_complete") is True
-                        and prior.get("unresolved_rows") == 0
-                        and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
-                    }
-                    choice_prefix_sources = {
-                        name: prior
-                        for name, prior in previous.items()
-                        if not retained_rebuild
-                        and retained_recovery is None
-                        and prior is not None
-                        and prefix_decisions[name][1][1]
-                        and membership_deltas is not None
-                        and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
-                    }
-                    original_choice_inputs = dict(inputs)
-                    no_new_rows = not historical_lineage and not any(
-                        rows for view in inputs.values() for rows in view.views.values()
-                    )
-                    services.event(
-                        "lineage_required",
-                        symbol=seed,
-                        required=not no_new_rows,
-                        retained_history_required=historical_lineage,
-                        scope="complete_group"
-                        if historical_lineage
-                        else "none"
-                        if no_new_rows
-                        else "added_sessions",
-                        retained_rows=sum(item["source_rows"] for item in previous.values() if item),
-                        reason="changed_or_unproven_inputs"
-                        if historical_lineage
-                        else "accepted_unchanged_inputs"
-                        if no_new_rows
-                        else "accepted_prefix_new_sessions",
-                    )
-                    if historical_lineage:
-                        partial_inputs = {
-                            name
-                            for name, view in inputs.items()
-                            if view.materialization_scope != "complete_history"
-                        }
-                    else:
-                        partial_inputs = set()
-                    if partial_inputs:
-                        # Evidence changed after pricing alone proved reusable.
-                        # Announce selected owner work before reading its bodies.
-                        services.event(
-                            "lineage_work_selected", symbol=seed, symbols=sorted(inputs), scope="complete_group"
-                        )
-                        for name, prior in previous.items():
-                            missing = {
-                                kind
-                                for kind in prior["boundaries"].keys() - old_boundaries[name].keys()
-                                if assignment_handoff(prior, kind) is None
-                            }
-                            old_boundaries[name].update(read_boundaries(prior, kinds=missing))
-                        inputs = {
-                            name: services.load_pricing(
-                                store,
-                                name,
-                                source=source,
-                                partitions=partitions[name],
-                                source_sha256=selected[name],
-                                selected_correction=None,
-                            )
-                            if name in partial_inputs
-                            else inputs[name]
-                            for name, source in sources.items()
-                        }
-                    if historical_lineage:
-                        incomplete = sorted(
-                            name
-                            for name, view in inputs.items()
-                            if view.materialization_scope != "complete_history"
-                        )
-                        if incomplete:
-                            raise LineageError(
-                                "complete-group lineage requires complete pricing history for "
-                                + ", ".join(incomplete)
-                            )
-                    resume = not historical_lineage
-                    for name, certificate in accepted_prefix_sources.items():
-                        inputs[name].accepted_current_source_ownership = certificate.get(
-                            "current_source_ownership"
-                        )
-                    scoped_memberships = services.scoped_identity_memberships(
-                        choice_prefix_sources, old_boundaries
-                    )
-                    for name, memberships in scoped_memberships.items():
-                        view = inputs[name]
-                        view.accepted_identity_memberships = memberships
-                        if historical_lineage and corrections[name] is None and name not in projections:
-                            # A peer selected complete-group work, but this
-                            # source's pricing prefix and owner metadata remain
-                            # accepted. Carry its old row decisions in their
-                            # actual full-source positions. New and unresolved
-                            # rows alone enter the owning cascade.
-                            view.accepted_report = {
-                                **retained_decision_report(previous[name], policy=correlation_policy),
-                                **retained_ownership_report(
-                                    previous[name], view.local, memberships, root, assignment_boundaries
-                                ),
-                            }
-                            view.accepted_report["source_row_count"] = sum(
-                                len(rows) for rows in view.views.values()
-                            )
-                    if resume and not no_new_rows:
-                        resumed_previous = dict(previous)
-                        for name, prior in resumed_previous.items():
-                            last = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
-                            if "identity_memberships" not in prior and last:
-                                anchor = prior["anchor_month"]
-                                kind = (
-                                    "current_month"
-                                    if last[:7] == anchor
-                                    else "current_year"
-                                    if last[:4] == anchor[:4]
-                                    else "completed_years"
-                                )
-                                if kind not in old_boundaries[name]:
-                                    old_boundaries[name].update(read_boundaries(prior, kinds={kind}))
-                        memberships = services.scoped_identity_memberships(resumed_previous, old_boundaries)
-                        for name, view in inputs.items():
-                            if name not in resumed_previous:
-                                continue
-                            view.accepted_identity_memberships = memberships[name]
-                            if name in projections:
-                                view.accepted_report = retained_report(
-                                    previous[name],
-                                    old_boundaries[name],
-                                    view,
-                                    unchanged_before=corrections[name] or previous[name]["processed_through"],
-                                )
-                    if progress:
-                        progress(
-                            "lineage_decision_reuse" if no_new_rows else "lineage_correlation",
-                            {"symbols": sorted(inputs)},
-                        )
-                    completion_key = ("completed", *assembly_key[1:], no_new_rows, resume)
-                    completion = context.group_completions.get(completion_key)
-                    if completion is None or not (
-                        completion["evidence"].keys() == evidence.keys()
-                        and all(completion["evidence"][name] is facts for name, facts in evidence.items())
-                    ):
-                        completion = {
-                            "store": str(store),
-                            "group": tuple(sorted(group)),
-                            "pricing": dict(selected),
-                            "policy": correlation_policy.semantic_sha256,
-                            "execution": context.accept_ruleset().execution_sha256,
-                            "refresh": refresh,
-                            "retained_rebuild": retained_rebuild,
-                            "end_date": end_date,
-                            "evidence": dict(evidence),
-                            "assembly_key": assembly_key,
-                        }
-                        context.group_completions[completion_key] = completion
-                    if "correlation" not in completion:
-                        components, reports = correlate_components(
-                            store,
-                            inputs,
-                            evidence,
-                            previous,
-                            deps,
-                            unavailable,
-                            policy=correlation_policy,
-                            retain=no_new_rows,
-                            services=services,
-                            completion=completion,
-                        )
-                        if not no_new_rows and all(previous.values()):
-                            from .membership_updates import invalidations, update_reports
-
-                            reports, trace = update_reports(
-                                reports,
-                                evidence,
-                                selected={
-                                    "store": str(store),
-                                    "selected_group": sorted(group),
-                                    "receipts": previous,
-                                    "pricing_generations": selected,
-                                    "receipt_generations": {
-                                        name: index["symbols"][name]["sha256"] for name in previous
-                                    },
-                                },
-                                ruleset=context._ruleset,
-                            )
-                            affected = dict(affected)
-                            for day, identifiers in invalidations(
-                                inputs, reports, trace, instants=completion.setdefault("instant_keys", {})
-                            ).items():
-                                affected[day] = set(affected.get(day, ())) | identifiers
-                            completion["membership_refinement"] = trace
-                        completion["correlation"] = components, reports, affected
-                    components, reports, affected = completion["correlation"]
-                    completion["finish_args"] = {
-                        "dated_labels": context.accept_ruleset().dated_labels,
-                        "reports": reports,
-                        "acquisition_waves": acquisition_waves,
-                        "affected": affected,
-                        "assignment_boundaries": assignment_boundaries,
-                        "checks": checks,
-                        "choice_prefix_sources": choice_prefix_sources,
-                        "components": components,
-                        "deps": deps,
-                        "evidence": evidence,
-                        "inputs": inputs,
-                        "no_new_rows": no_new_rows,
-                        "notices": notices,
-                        "old_boundaries": old_boundaries,
-                        "original_choice_inputs": original_choice_inputs,
-                        "previous": previous,
-                        "pricing_replacements": pricing_replacements,
-                        "required": required,
-                        "resume": resume,
-                        "retained_recovery": retained_recovery,
-                        "seed": seed,
-                        "sources": sources,
-                        "unavailable": unavailable,
-                    }
-                    completed_group = services.finish_correlated_group(
-                        dated_labels=context.accept_ruleset().dated_labels,
-                        reports=reports,
-                        acquisition_waves=acquisition_waves,
-                        affected=affected,
-                        assignment_boundaries=assignment_boundaries,
-                        checks=checks,
-                        choice_prefix_sources=choice_prefix_sources,
-                        components=components,
-                        deps=deps,
-                        evidence=evidence,
-                        graph=graph,
-                        index=index,
-                        inputs=inputs,
-                        no_new_rows=no_new_rows,
-                        notices=notices,
-                        observer=observer,
-                        old_boundaries=old_boundaries,
-                        original_choice_inputs=original_choice_inputs,
-                        previous=previous,
-                        pricing_replacements=pricing_replacements,
-                        progress=progress,
-                        read_boundaries=read_boundaries,
-                        receipt_cache=receipt_cache,
-                        required=required,
-                        resume=resume,
-                        retained_recovery=retained_recovery,
-                        root=root,
-                        seed=seed,
-                        sources=sources,
-                        store=store,
-                        unavailable=unavailable,
-                        work_policy=work_policy,
-                        completion=completion,
-                    )
-                    if completed_group is not None:
-                        context.group_completions.pop(completion_key, None)
-                        release_completed_assemblies(context, store, group)
-                        return completed_group
+                        if completed_group is not None:
+                            context.group_completions.pop(completion_key, None)
+                            release_completed_assemblies(context, store, group)
+                            return completed_group
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
         if required:
             if work_policy is not None:
                 work_policy.require_dependencies(group, end, required, start=start)
+                work_policy.require_mappings(required)
                 work_policy.check(group)
             if pricing_client is None:
                 return {"symbol": seed, "status": "waiting_for_pricing", "required": required, "processed": []}
@@ -2023,16 +2115,46 @@ def process_group(
                     if symbol not in sources and fingerprint:
                         request.update(selected_source_sha256=None, acquisition_evidence_sha256=fingerprint)
                 try:
-                    acquired = services.download_pricing(
-                        store,
-                        symbol,
-                        request["end_exclusive"],
-                        client=pricing_client,
-                        from_date=request["from"],
-                        context=context.pricing() if context is not None else None,
-                        **{k: v for k, v in request.items() if k not in {"from", "end_exclusive"}},
-                    )
-                    if request.get("refresh_all"):
+                    if "numerical_mapping" in request:
+                        if work_policy is None:
+                            raise LineageError("dated numerical mapping requires durable selected work policy")
+                        from .numerical_mapping import checkpoint_sessions
+                        from .numerical_mapping_acquisition import execute as execute_mapping
+
+                        mapping_cache = source_work_cache.setdefault("numerical_mapping", {})
+                        identifier = request["numerical_mapping"]["candidate_id"]
+                        acquired = execute_mapping(
+                            store,
+                            root,
+                            symbol,
+                            request,
+                            client=pricing_client,
+                            download=services.download_pricing,
+                            context=context.pricing() if context is not None else None,
+                            cache=mapping_cache,
+                            required_sessions=mapping_cache.get("required_sessions", {}).get(identifier),
+                            grid_provider=lambda: checkpoint_sessions(
+                                context,
+                                request["numerical_mapping"]["binding"]["pricing_generations"],
+                                request["numerical_mapping"]["binding"]["public_id"],
+                                mapping_cache,
+                            ),
+                        )
+                    else:
+                        acquired = services.download_pricing(
+                            store,
+                            symbol,
+                            request["end_exclusive"],
+                            client=pricing_client,
+                            from_date=request["from"],
+                            context=context.pricing() if context is not None else None,
+                            **{k: v for k, v in request.items() if k not in {"from", "end_exclusive"}},
+                        )
+                    installed = acquired.get("mapping_assessment", {}).get("outcome") in {
+                        None,
+                        "mapped_history_acquired",
+                    }
+                    if request.get("refresh_all") and installed:
                         pricing_replacements[symbol] = acquired["source_sha256"]
                         if work_policy is not None:
                             work_policy.history_approved[symbol] = acquired["source_sha256"]

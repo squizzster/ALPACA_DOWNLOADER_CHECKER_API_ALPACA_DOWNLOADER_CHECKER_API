@@ -650,6 +650,38 @@ Proven equality preserves retained payload references and controls ancestry, new
 `changed` flag together. An existing pending correction is never erased by an equal retry. Mapping/request
 context still reaches the ordinary lineage doorman.
 
+### Dated mapping acquisition
+
+The lineage-owned [mapping planner](../libs/alpaca_lineage_build/numerical_mapping.py) selects a genuinely
+new retained-source request; [the lineage guide](lineage.md#dated-numerical-mapping) defines admission and
+completed outcomes. The selected source's `.numerical-mapping.json` is the owner's bounded stage journal.
+It binds the provider request, source generations, accepted identity/routes and relevant provider facts.
+Receipt digests and acknowledgement fields do not invalidate the decision merely because its own result
+was published. Only selected journals are opened; no directory or universe discovery is implied.
+
+[MappingAcquisition](../libs/alpaca_pricing_download/mapping.py) carries the completed `all` witness,
+remaining disjoint request ranges, adaptive views/digests/decisions, coverage and independent confirmation
+results. A positive witness is one observation, not full-history approval. Acquisition requests its missing
+`all` ranges and only the additional views selected by the adaptive producer. Completed rows are assembled
+without a second normalization or historical authentication. Each completed stage is retained before the
+next dependent request. Restoration checks the journal's own schema/binding and lends those values without
+rehashing rows, rebuilding endpoint projections or repeating completed confirmations.
+
+Required contribution dates come from complete already-held producer inputs or an applicable selected
+serving checkpoint's accepted session-date projection. Counts, endpoint dates and the market calendar
+cannot substitute for that capability. The pricing producer checks newly received views against the
+selected dates and stops when a known omission precludes a complete bundle. Accepted old validators and
+gzip payloads are not opened to authenticate the replacement. The ordinary independent confirmation
+contract applies once to the newly constructed full acquisition; an acquisition witness cannot also be
+its independent confirmation.
+
+Pricing installs through its existing journal with the source selector last. Its completed correction
+binding carries installation across interruption before lineage acknowledgement. Lineage resumes only
+work invalidated by the resulting source/mapping, retaining applicable peer decisions and completed
+assessments. Native and JSON stage handoffs carry the same accepted acquisition state and aliases;
+transport does not call the producer's durable ingress or calculations again. This capability introduces
+no serving-policy rebuild and grants no research assertion or ticker-specific rule.
+
 ## Check summary
 
 Format-4 entries contain `symbol`, saved mapping `asof`, completed source `end_exclusive`, `source_sha256`, exact

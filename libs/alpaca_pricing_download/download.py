@@ -784,6 +784,8 @@ def download_pricing(
     correction_cause=None,
     correction_completion=None,
     mapping_asof: str | None = None,
+    mapping_acquisition=None,
+    on_mapping_progress=None,
     context=None,
 ) -> dict:
     """Acquire under the ticker lock, optionally bound to a prefetch selection.
@@ -913,6 +915,18 @@ def download_pricing(
                 raise DownloadError("request end cannot move backwards, including during full refresh")
         stored_start = timestamp(previous.get("history_start", HISTORY_START)) if previous is not None else None
         history_start = requested_start or stored_start or timestamp(HISTORY_START)
+        if mapping_acquisition is not None:
+            from .mapping import MappingAcquisition
+
+            if (
+                not isinstance(mapping_acquisition, MappingAcquisition)
+                or not refresh_all
+                or mapping_asof is None
+            ):
+                raise DownloadError("completed mapping acquisition requires its selected full replacement")
+            mapping_acquisition.require_binding(store, symbol, current_sha256, history_start, end, asof)
+            if not mapping_acquisition.available:
+                raise DownloadError("unavailable mapped prefix cannot authorize pricing replacement")
         if expected_source_sha256 is not None:
             trace_source_selection(previous, current_sha256, symbol=symbol, reason="replacement_execution")
             event(
@@ -1010,7 +1024,9 @@ def download_pricing(
                 "pending_update": read_update(root, published=True),
             }
         endpoints = (
-            accepted_endpoints
+            Endpoints({name: () for name in ADJUSTMENTS}, tail_all=())
+            if mapping_acquisition is not None
+            else accepted_endpoints
             if endpoint_selection is not None
             else read_validator(root, previous)
             if previous is not None
@@ -1032,7 +1048,9 @@ def download_pricing(
                     endpoint_selection, generation=publication["source_sha256"], tail_all=endpoints.tail_all
                 )
         old_extent = (
-            _manifest_extent(root, previous)
+            mapping_acquisition.contribution_extent
+            if mapping_acquisition is not None
+            else _manifest_extent(root, previous)
             if previous is not None and refresh_all and not previous.get("validator")
             else session_extent(endpoints)
         )
@@ -1161,26 +1179,42 @@ def download_pricing(
                 break
             take = getattr(client, "take_adjustments", None)
             acquisition = (
-                take(symbol, start, end, asof) if take else AdjustmentAcquisition(symbol, start, end, asof)
+                mapping_acquisition.state
+                if mapping_acquisition is not None
+                else take(symbol, start, end, asof)
+                if take
+                else AdjustmentAcquisition(symbol, start, end, asof)
             )
             fetch = getattr(client, "fetch_acquired", client.fetch)
             try:
-                acquired = acquisition.finish(
-                    lambda adjustment: fetch(
-                        symbol,
-                        adjustment,
-                        start,
-                        end,
-                        asof=asof if asof != end.date().isoformat() else None,
+                if mapping_acquisition is not None:
+                    acquired = mapping_acquisition.finish(
+                        lambda adjustment, lower, upper: fetch(symbol, adjustment, lower, upper, asof=asof),
+                        on_progress=on_mapping_progress,
                     )
-                )
+                else:
+                    acquired = acquisition.finish(
+                        lambda adjustment: fetch(
+                            symbol,
+                            adjustment,
+                            start,
+                            end,
+                            asof=asof if asof != end.date().isoformat() else None,
+                        )
+                    )
             except BarsSymbolUnavailable as error:
-                if previous is None and attempt == 0 and not acquisition.observed and error.symbol == symbol:
+                if (
+                    previous is None
+                    and attempt == 0
+                    and not acquisition.observed
+                    and mapping_acquisition is None
+                    and error.symbol == symbol
+                ):
                     raise InitialPricingUnavailable(request, error) from error
                 # A completed observation, even empty, contradicts a later rejection.
                 raise established_pricing_rejection(symbol, error) from error
             views = acquired.views
-            if any(
+            if mapping_acquisition is None and any(
                 month_of(row) < start.strftime("%Y-%m") or month_of(row) > anchor
                 for rows in views.values()
                 for row in rows
@@ -1216,20 +1250,33 @@ def download_pricing(
                     observed_instants = error.confirmed_observations
             # Matching first/latest all already approved the old generation.
             # Append never requests overlap or confirms its historical first rows again.
-            first_ok = not full_history or _endpoints_match(
-                client,
-                symbol,
-                {
-                    name: tuple(
-                        row
-                        for row in selected_endpoints[name][:1]
-                        if timestamp(row[0]) not in observed_instants.get(name, ())
+            if mapping_acquisition is not None:
+                first_ok = mapping_acquisition.confirm(
+                    lambda adjustment, lower, upper: client.fetch(symbol, adjustment, lower, upper, asof=asof),
+                    on_progress=on_mapping_progress,
+                )
+                if not first_ok:
+                    # The independently observed contradiction invalidates this
+                    # newly acquired artifact.  Retrying the same completed
+                    # scope cannot erase it or repeat its confirmation.
+                    raise DownloadError(
+                        "mapped acquisition changed during confirmation; owning recovery required"
                     )
-                    for name, _ in acquired.observed
-                },
-                asof,
-                cutoff=end,
-            )
+            else:
+                first_ok = not full_history or _endpoints_match(
+                    client,
+                    symbol,
+                    {
+                        name: tuple(
+                            row
+                            for row in selected_endpoints[name][:1]
+                            if timestamp(row[0]) not in observed_instants.get(name, ())
+                        )
+                        for name, _ in acquired.observed
+                    },
+                    asof,
+                    cutoff=end,
+                )
             # Removing published history requires a fresh confirmation. The planned
             # response is consumed once, so the bounded retry makes exact requests.
             # Ordinary empty appends must never enter this replacement-only guard.
@@ -1240,24 +1287,40 @@ def download_pricing(
             full_history, restarted, check = True, True, "changed_during_acquisition"
         read_selected = partial(read_boundary, documents=old_documents)
         acquired_extent = acquired.extent if any(views.values()) else None
-        changed_views = (
-            updated_boundaries(root, previous, anchor, views, full_history=True, read=read_selected)
-            if full_history
-            else incremental_boundaries(
-                root,
-                previous,
-                anchor,
-                views,
-                correction=correction.views if correction else None,
-                session=comparison.correction_session if correction else None,
-                read=read_selected,
+        if mapping_acquisition is not None and mapping_acquisition.publication_assembly is not None:
+            assembled = mapping_acquisition.publication_assembly
+            changed_views, update, old_documents = (
+                assembled["changed_views"],
+                assembled["update"],
+                assembled["old_documents"],
             )
-        )
-        update = (
-            merge_ranges(old_extent, acquired_extent)
-            if full_history
-            else merge_ranges(acquired_extent, correction.extent if correction else None)
-        )
+        else:
+            changed_views = (
+                updated_boundaries(root, previous, anchor, views, full_history=True, read=read_selected)
+                if full_history
+                else incremental_boundaries(
+                    root,
+                    previous,
+                    anchor,
+                    views,
+                    correction=correction.views if correction else None,
+                    session=comparison.correction_session if correction else None,
+                    read=read_selected,
+                )
+            )
+            update = (
+                merge_ranges(old_extent, acquired_extent)
+                if full_history
+                else merge_ranges(acquired_extent, correction.extent if correction else None)
+            )
+            if mapping_acquisition is not None:
+                mapping_acquisition.publication_assembly = {
+                    "changed_views": changed_views,
+                    "update": update,
+                    "old_documents": old_documents,
+                }
+                if on_mapping_progress is not None:
+                    on_mapping_progress(mapping_acquisition)
         from .observation_recovery import resolve as resolve_observation_conflict
 
         written = publish_acquired(

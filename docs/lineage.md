@@ -171,6 +171,34 @@ work. Ordinary update consumes explicitly enrolled numerical-only work; it does 
 legacy overlaps or interpret every absent optional capability as a defective history. Readers continue to
 consume the published numerical decisions and reject competing selected observations.
 
+### Dated numerical mapping
+
+Selected retained-source work can request a dated continuing-label mapping when completed ownership routes
+and provider evidence establish one direct, unchanged-UUID/CUSIP rename, disjoint source histories and a
+post-transition cash distribution within observed coverage. The generic planner in
+[numerical_mapping.py](../libs/alpaca_lineage_build/numerical_mapping.py) runs after the unchanged-work
+shortcut and before selected acquisition or numerical materialization. It uses the continuing label's
+accepted own-label observation date; an inactive asset or an old last bar alone supplies no mapping decision.
+Fresh sources without applicable completed ownership routes remain outside this retained-source rule.
+Mapped acquisition requires the existing durable work policy so an interrupted installation retains its
+exact selected request. Pending mapping work resumes before ordinary pricing maintenance advances its sources.
+
+The pricing owner first requests one exact fully adjusted predecessor session. A returned observation can
+continue through the selected full mapped acquisition; an empty completed response records that bounded
+mapping limitation in the receipt's existing evidence issues. Neither outcome changes identity membership,
+fills missing sessions or derives prices from cash distributions. A missing internal contribution-grid
+capability requires owning recovery. An acquired history that omits known required contributions completes
+a provider-coverage assessment without replacing accepted pricing. Provider request failures retain their
+ordinary execution/retry meaning.
+
+Applicable completed assessments survive receipt publication and acknowledgement. Actual changed source,
+mapping, provider facts or selected scope require owning work; older receipts without this optional capability
+do not select a historical scan or automatic repair. Historical adoption uses explicitly selected work, and
+the existing numerical-only recovery keeps its zero-provider contract. Readers and exports consume the
+resulting provider-view source decisions; this does not declare an absolute corporate-action horizon.
+The [pricing handoff contract](technical-contracts.md#dated-mapping-acquisition) owns observation carry,
+coverage, installation and interruption behavior.
+
 ## Dated-label collisions
 
 The canonical YAML selects `observed_rename_periods_over_mapped_alias_v1`, implemented by

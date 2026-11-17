@@ -333,6 +333,11 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
                 if unfinished and prior.get("required_numerical_completion") is not None
                 else {}
             ),
+            **(
+                {"required_numerical_mapping": prior["required_numerical_mapping"]}
+                if unfinished and prior.get("required_numerical_mapping") is not None
+                else {}
+            ),
             "acquire": entry is None
             or invalidate
             or extend_history

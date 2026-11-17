@@ -687,6 +687,7 @@ def reconcile(
     retained=None,
     selection_output=None,
     stable_identities=(),
+    mapping_requests=None,
 ):
     retained = retained or {}
     active, protected = _protect_reports(reports, retained)
@@ -787,7 +788,7 @@ def reconcile(
                     }
     active = {name: report for name, report in active.items() if report["correlated"]["segments"]}
     closed_active = {name: report for name, report in closed_active.items() if report["correlated"]["segments"]}
-    selected, changes, scopes = _reconcile(
+    outcome = _reconcile(
         store,
         {name: materialized[name] for name in active},
         active,
@@ -798,7 +799,13 @@ def reconcile(
         retained=retained,
         selection_output=selection_output,
         instant_keys=exact_coverage.instants if exact_coverage is not None else None,
+        mapping_requests=mapping_requests,
     )
+    from .numerical_mapping import PendingNumericalWork
+
+    if isinstance(outcome, PendingNumericalWork):
+        return outcome
+    selected, changes, scopes = outcome
     result = {}
     for name, report in reports.items():
         chosen = selected.get(name, {**report, "correlated": {**report["correlated"], "segments": []}})
@@ -868,6 +875,7 @@ def _reconcile(
     retained=None,
     selection_output=None,
     instant_keys=None,
+    mapping_requests=None,
 ):
     scopes = select_scopes(reports, closed_reports)
     if contested:
@@ -894,6 +902,11 @@ def _reconcile(
             else ({}, {})
         )
         if corrections:
+            if mapping_requests is not None:
+                from .numerical_mapping import PendingNumericalWork
+
+                mapping_requests.update(corrections)
+                return PendingNumericalWork(dict(corrections))
             raise LineageError(f"selected observation mapping correction required for {sorted(corrections)}")
         if selection_output is not None:
             from .source_equivalence import project
@@ -919,6 +932,11 @@ def _reconcile(
         inputs, selected_reports, instant_keys=instants, equality_outcomes=equivalence
     )
     if corrections:
+        if mapping_requests is not None:
+            from .numerical_mapping import PendingNumericalWork
+
+            mapping_requests.update(corrections)
+            return PendingNumericalWork(dict(corrections))
         raise LineageError(
             f"bounded observation selection requires mapping correction for {sorted(corrections)}; accepted peers retained"
         )

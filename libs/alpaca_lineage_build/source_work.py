@@ -15,6 +15,7 @@ from libs.alpaca_security_lineage.inference_evidence import provider_evidence, r
 from . import source_observations, storage
 from .assignment_handoff import produce, selected
 from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_digest, versions
+from .numerical_mapping import PendingNumericalWork
 from .observation_carry import membership_choices
 from .pricing import ClosedAcceptedSource
 from .resume import _evidence_facts, continuing_request, unchanged_rows
@@ -696,9 +697,12 @@ def execute_source_work(store, root, controls, evidence, auxiliary, plan, policy
     handoff["evidence"].update((id(value), value) for value in (*evidence.values(), *auxiliary.values()))
     try:
         if "outputs" not in handoff:
-            handoff["outputs"] = _execute_source_work(
+            result = _execute_source_work(
                 store, root, controls, evidence, auxiliary, plan, policy, cache, loader=loader, handoff=handoff
             )
+            if isinstance(result, PendingNumericalWork):
+                return result
+            handoff["outputs"] = result
         return handoff["outputs"]
     finally:
         # A selected pricing loader can complete previously unknown technical
@@ -713,9 +717,12 @@ def _execute_source_work(store, root, controls, evidence, auxiliary, plan, polic
     from .transform import make_publication
 
     if "decisions" not in handoff:
-        handoff["decisions"] = _decide_source_work(
-            store, root, controls, evidence, auxiliary, plan, policy, cache, loader=loader
+        decisions = _decide_source_work(
+            store, root, controls, evidence, auxiliary, plan, policy, cache, loader=loader, handoff=handoff
         )
+        if isinstance(decisions, PendingNumericalWork):
+            return decisions
+        handoff["decisions"] = decisions
     closed, materialized, reports, observation_changes, source_equivalence = handoff["decisions"]
     receipts, documents = {}, {}
     parts = handoff.setdefault("publications", {})
@@ -841,6 +848,9 @@ def _execute_source_work(store, root, controls, evidence, auxiliary, plan, polic
             receipt.pop("dated_label_plan", None)
         validate_handoff(receipt)
         finished.add(name)
+    from .numerical_mapping import stamp as stamp_mapping
+
+    stamp_mapping(receipts, cache.get("numerical_mapping", {}).get("completed", {}))
     return receipts, documents, {**closed, **materialized}, reports
 
 
@@ -872,8 +882,8 @@ def append_unresolved(view, prior, report):
     return report
 
 
-def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy, cache, *, loader):
-    """Complete the owning decisions once, before constructing publications."""
+def _prepare_source_decisions(store, root, controls, evidence, auxiliary, plan, policy, cache, *, loader):
+    """Complete materialization/ownership before selecting numerical work."""
     from .transform import correlate
 
     closed = {
@@ -1035,12 +1045,42 @@ def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy
             and continuing_request(control.source, control.previous)
         )
     }
+    return closed, materialized, reports, closed_reports, retained_selections, identity_changes
+
+
+def _decide_source_work(
+    store, root, controls, evidence, auxiliary, plan, policy, cache, *, loader, handoff=None
+):
+    from .numerical_mapping import prepare as prepare_mapping
+
+    handoff = {} if handoff is None else handoff
+    mapping_cache = cache.setdefault("numerical_mapping", {})
+    pending = prepare_mapping(
+        store,
+        {name: control.source for name, control in controls.items()},
+        {name: control.source_sha256 for name, control in controls.items()},
+        {},
+        evidence,
+        mapping_cache,
+        selected=any(value not in {"A", "retained"} for value in plan.dispositions.values()),
+        previous={name: control.previous for name, control in controls.items()},
+    )
+    if pending:
+        return PendingNumericalWork(pending)
+    if "prepared_numerical_work" not in handoff:
+        handoff["prepared_numerical_work"] = _prepare_source_decisions(
+            store, root, controls, evidence, auxiliary, plan, policy, cache, loader=loader
+        )
+    closed, materialized, reports, closed_reports, retained_selections, identity_changes = handoff[
+        "prepared_numerical_work"
+    ]
     selection_output = {
         "track_opened": any(
             (control.previous or {}).get("numerical_source_equivalence") for control in controls.values()
         )
     }
-    reports, observation_changes, _ = source_observations.reconcile(
+    mapping_requests = {}
+    outcome = source_observations.reconcile(
         store,
         materialized,
         reports,
@@ -1050,7 +1090,11 @@ def _decide_source_work(store, root, controls, evidence, auxiliary, plan, policy
         retained=retained_selections,
         selection_output=selection_output,
         stable_identities=plan.stable_numerical_identities,
+        mapping_requests=mapping_requests,
     )
+    if isinstance(outcome, PendingNumericalWork):
+        return outcome
+    reports, observation_changes, _ = outcome
     from .source_equivalence import build as build_source_equivalence
 
     equivalence = build_source_equivalence(controls, selection_output, identity_changes)
