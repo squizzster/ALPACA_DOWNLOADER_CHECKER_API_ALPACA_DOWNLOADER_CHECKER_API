@@ -48,5 +48,15 @@
     "modifications": [
       "Carry the accepted generic dated-label producer selection across native and JSON pipeline stages without recompiling configuration."
     ]
+  },
+  {
+    "modifications": [
+      "Carry generic numerical-mapping needs, completed provider observations and acquisition continuation state through the native and JSON pipeline boundaries without repeating producer work."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve the lineage-owned recovery-required error type across JSON stage handoffs so deterministic missing internal capabilities retain their blocked classification without changing provider retry behavior."
+    ]
   }
 ]

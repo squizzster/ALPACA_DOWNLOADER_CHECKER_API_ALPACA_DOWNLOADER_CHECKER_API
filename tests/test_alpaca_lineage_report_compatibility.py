@@ -74,6 +74,34 @@ def historical_bindings():
             "lineage_runtime": 104,
             "membership_refinement": producer,
         },
+        {
+            "debug": 12,
+            "policy_lab": 24,
+            "correlation_runtime": 97,
+            "lineage_runtime": 107,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 13,
+            "policy_lab": 24,
+            "correlation_runtime": 97,
+            "lineage_runtime": 108,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 13,
+            "policy_lab": 24,
+            "correlation_runtime": 97,
+            "lineage_runtime": 109,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 13,
+            "policy_lab": 24,
+            "correlation_runtime": 97,
+            "lineage_runtime": 110,
+            "membership_refinement": producer,
+        },
     ]
 
 

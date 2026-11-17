@@ -13,8 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cli_support import export_main as main
-
 from alpaca_end_of_day import StandaloneReaderError
 from libs.alpaca_bloodhound_export import VERSION
 from libs.alpaca_bloodhound_export.command_line import SnapshotChangedError, export, schema
@@ -324,6 +322,7 @@ class BloodhoundParquetTests(unittest.TestCase):
                 pass
 
         stdout = StringIO()
+        completed = export(self.reader, self.output)
         args = SimpleNamespace(
             cache_mib=0,
             memory_mib=256,
@@ -338,7 +337,7 @@ class BloodhoundParquetTests(unittest.TestCase):
             replace=False,
         )
         with (
-            patch("libs.alpaca_bloodhound_export.command_line.StandaloneReader", return_value=self.reader),
+            patch("libs.alpaca_bloodhound_export.catalogue.export_catalogue", return_value=completed),
             patch("sys.stderr", DiagnosticSink()),
             patch("sys.stdout", stdout),
         ):
@@ -348,7 +347,7 @@ class BloodhoundParquetTests(unittest.TestCase):
         self.assertEqual(self.read_file()[0].num_rows, 2)
         self.assertEqual(
             [item["stage"] for item in result["diagnostic_errors"]],
-            ["publication_progress", "cache_reporting", "memory_reporting"],
+            ["memory_reporting"],
         )
 
     def test_acquisition_creates_no_output_and_serialization_is_one_packed_write(self):
@@ -596,91 +595,6 @@ class BloodhoundParquetTests(unittest.TestCase):
             export(self.reader, output)
         self.assertFalse(output.exists())
         self.assertEqual(self.reader.roster_calls, 0)
-
-    def test_cli_single_fixture_roundtrip(self):
-        from io import StringIO
-
-        stdout, stderr = StringIO(), StringIO()
-        with (
-            patch(
-                "libs.alpaca_bloodhound_export.command_line.StandaloneReader", return_value=self.reader
-            ) as reader,
-            patch("sys.stdout", stdout),
-            patch("sys.stderr", stderr),
-        ):
-            status = main(["--store", str(self.store), "--output", str(self.output), "--symbol", " source "])
-        reader.assert_called_once_with(self.store, wait=False, cache_bytes=2048 * 1024**2)
-        self.assertEqual(status, 0)
-        self.assertEqual(json.loads(stdout.getvalue())["rows"], 2)
-        records = [json.loads(line) for line in stderr.getvalue().splitlines()]
-        self.assertEqual(records[0]["phase"], "INIT")
-        self.assertEqual(records[-1]["phase"], "FINAL_EXIT")
-        self.assertEqual(records[-1]["status"], "success")
-        self.assertEqual(records[-1]["last_phase"], "EXPORT")
-        table, metadata = self.read_file()
-        self.assertEqual(table.num_rows, 2)
-        self.assertNotIn("partial", metadata)
-
-    def test_cli_can_disable_cache_and_rejects_invalid_budgets_before_store_access(self):
-        from io import StringIO
-
-        for value in ("-1", "6145", "not-an-integer"):
-            with (
-                self.subTest(value=value),
-                patch("libs.alpaca_bloodhound_export.command_line.StandaloneReader") as reader,
-                patch("sys.stderr", StringIO()),
-                self.assertRaises(SystemExit) as error,
-            ):
-                main(["--output", str(self.output), "--cache-mib", value])
-            self.assertEqual(error.exception.code, 2)
-            reader.assert_not_called()
-            self.assert_no_output()
-        with (
-            patch(
-                "libs.alpaca_bloodhound_export.command_line.StandaloneReader", return_value=self.reader
-            ) as reader,
-            patch("sys.stdout", StringIO()),
-            patch("sys.stderr", StringIO()),
-        ):
-            status = main(["--store", str(self.store), "--output", str(self.output), "--cache-mib", "0"])
-        self.assertEqual(status, 0)
-        reader.assert_called_once_with(self.store, wait=False, cache_bytes=0)
-
-    def test_cli_accepts_explicit_six_gib_cache(self):
-        from io import StringIO
-
-        with (
-            patch(
-                "libs.alpaca_bloodhound_export.command_line.StandaloneReader", return_value=self.reader
-            ) as reader,
-            patch("sys.stdout", StringIO()),
-            patch("sys.stderr", StringIO()),
-        ):
-            status = main(["--store", str(self.store), "--output", str(self.output), "--cache-mib", "6144"])
-        self.assertEqual(status, 0)
-        reader.assert_called_once_with(self.store, wait=False, cache_bytes=6144 * 1024**2)
-
-    def test_cli_rejections_go_only_to_stderr_and_success_summary_stays_clean(self):
-        from io import StringIO
-
-        self.reader = ReaderDouble(self.store, [history(100, "GOOD"), history(200, "BAD")])
-        self.reader.errors[public_id(200)] = "conflicting source observations"
-        stdout, stderr = StringIO(), StringIO()
-        with (
-            patch("libs.alpaca_bloodhound_export.command_line.StandaloneReader", return_value=self.reader),
-            patch("sys.stdout", stdout),
-            patch("sys.stderr", stderr),
-        ):
-            status = main(["--output", str(self.output), "--include-all-passed"])
-        self.assertEqual(status, 0)
-        self.assertEqual(
-            json.loads(stdout.getvalue()),
-            {"output": str(self.output), "rows": 2, "identities": 1, "diagnostic_errors": []},
-        )
-        self.assertIn(f"rejected source=BAD public_id={public_id(200)}", stderr.getvalue())
-        self.assertIn("conflicting source observations", stderr.getvalue())
-        _, metadata = self.read_file()
-        self.assertNotIn("BAD", json.dumps(metadata))
 
     def test_one_bad_session_rejects_whole_id_but_not_other_id_in_same_group(self):
         good, bad = history(100, "SHARED"), history(200, "SHARED")

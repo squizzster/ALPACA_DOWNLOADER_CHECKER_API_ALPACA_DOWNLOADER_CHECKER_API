@@ -1,4 +1,4 @@
-"""Offline export; only the final Parquet is a persistent output."""
+"""Offline Bloodhound conversion and the canonical catalogue command adapter."""
 
 import json
 import os
@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
 
-from alpaca_end_of_day import StandaloneReader, StandaloneReaderError
+from alpaca_end_of_day import DataLibraryError, StandaloneReaderError
 from libs.alpaca_heartbeat import diagnostic
 from libs.common.us_equity_market_session_calendar import us_market_hours_sha256
 
@@ -316,25 +316,10 @@ def run_arguments(args):
     if not 256 <= args.memory_mib <= 8192:
         raise ValueError("--memory-mib must be between 256 and 8192")
     try:
-        reader = StandaloneReader(args.store, wait=args.wait, cache_bytes=args.cache_mib * 1024**2)
-        result = export(
-            reader,
-            args.output,
-            symbols=[s.strip().upper() for s in args.symbol] if args.symbol else None,
-            public_ids=args.public_id,
-            start=args.start,
-            end=args.end,
-            include_all_passed=args.include_all_passed,
-            replace=args.replace,
-            progress=_progress_callback(getattr(args, "_lifecycle", None)),
-            memory_bytes=args.memory_mib * 1024**2,
-        )
+        from .catalogue import export_catalogue
+
+        result = export_catalogue(args)
         errors = result["diagnostic_errors"]
-        _diagnose(
-            errors,
-            "cache_reporting",
-            lambda: diagnostic(getattr(args, "_lifecycle", None), "cache " + _json(reader.cache_info())),
-        )
         _diagnose(
             errors,
             "memory_reporting",
@@ -351,6 +336,6 @@ def run_arguments(args):
             f"error: install requirements-bloodhound.txt with Python 3.11: {error}",
             level="error",
         )
-    except (StandaloneReaderError, ExportError, OSError, ValueError) as error:
+    except (DataLibraryError, StandaloneReaderError, ExportError, OSError, ValueError, MemoryError) as error:
         diagnostic(getattr(args, "_lifecycle", None), f"error: {error}", level="error")
     return 1

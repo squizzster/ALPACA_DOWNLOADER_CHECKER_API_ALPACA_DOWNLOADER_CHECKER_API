@@ -533,6 +533,9 @@ def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) 
 
     validate_handoff(value)
     accept_observation_choices(value)
+    from .numerical_mapping import accept_assessments
+
+    accept_assessments(value)
     from .recovery_handoffs import remember
 
     remember(root.parent.parent, "receipt", (symbol, entry["sha256"]), value)

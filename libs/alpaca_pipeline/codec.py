@@ -20,6 +20,7 @@ from libs.alpaca_lineage_build.context import HistoryScope
 from libs.alpaca_lineage_build.correlation_policy import CompiledPolicy
 from libs.alpaca_lineage_build.market_assignments import CompletedMarketProjection
 from libs.alpaca_lineage_build.numerical_completion import NumericalCompletion, NumericalInput
+from libs.alpaca_lineage_build.numerical_mapping import AcceptedAssessments, PendingNumericalWork
 from libs.alpaca_lineage_build.numerical_recovery import NumericalRecoveryGroup, NumericalRecoverySelection
 from libs.alpaca_lineage_build.observation_carry import ChoiceRun, RetainedChoices
 from libs.alpaca_lineage_build.policy_active_suffix import ActiveSuffixRule
@@ -31,7 +32,7 @@ from libs.alpaca_lineage_build.source_choice_handoff import AcceptedSourceBundle
 from libs.alpaca_lineage_build.source_equivalence import AcceptedEqualityFrame, AcceptedSourceEquivalence
 from libs.alpaca_lineage_build.source_work_contract import SourceWorkPlan
 from libs.alpaca_lineage_build.storage import AcceptedStore
-from libs.alpaca_pricing_download.adaptive import CompletedAdjustments
+from libs.alpaca_pricing_download.adaptive import AdjustmentAcquisition, CompletedAdjustments
 from libs.alpaca_pricing_download.adjustment_policy import AdaptiveAdjustmentDecision
 from libs.alpaca_pricing_download.check_summary import AcceptedEntry, _AcceptedRows
 from libs.alpaca_pricing_download.endpoints import Endpoints, EndpointSelection, HistoryComparison
@@ -42,6 +43,7 @@ from libs.alpaca_pricing_download.full_publication import (
     FullPublicationAcceptance,
     PublicationAcceptance,
 )
+from libs.alpaca_pricing_download.mapping import MappingAcquisition
 from libs.alpaca_pricing_download.responses import CompletedBars
 from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence
 
@@ -86,6 +88,7 @@ DATACLASSES = {
         NumericalInput,
         NumericalRecoveryGroup,
         NumericalRecoverySelection,
+        PendingNumericalWork,
         SourceWorkPlan,
         PricingInput,
         MetadataSourceControl,
@@ -121,13 +124,25 @@ ERROR_FIELDS = (
     "url",
     "reason",
     "msg",
+    "missing_sessions",
 )
+
+
+@lru_cache(maxsize=1)
+def _acquisition_types():
+    """Named producer state only; never obtain executable types from wire data."""
+    from libs.alpaca_pricing_download.mapping import ADJUSTMENT_STATE_FIELDS
+
+    return {
+        "mapping_acquisition": (MappingAcquisition, MappingAcquisition.NATIVE_FIELDS),
+        "adjustment_acquisition": (AdjustmentAcquisition, ADJUSTMENT_STATE_FIELDS),
+    }
 
 
 @lru_cache(maxsize=1)
 def _errors():
     from libs.alpaca_end_of_day_security_correlation.errors import SecurityCorrelationError
-    from libs.alpaca_lineage_build.contract import CorrelationPolicyError, LineageError
+    from libs.alpaca_lineage_build.contract import CorrelationPolicyError, LineageError, RecoveryRequired
     from libs.alpaca_lineage_build.work_contract import RegistrationIncomplete, WorkDeferred
     from libs.alpaca_pricing_download.contract import (
         BarsSymbolUnavailable,
@@ -136,6 +151,7 @@ def _errors():
     )
     from libs.alpaca_pricing_download.correction import ProviderObservationConflict
     from libs.alpaca_pricing_download.failures import RetainedAcquisitionError
+    from libs.alpaca_pricing_download.mapping import MappingCoverageIncomplete
     from libs.alpaca_security_lineage.alpaca_http import IdentityHttpError
     from libs.alpaca_serving_catalogue.contract import CatalogueError
 
@@ -150,6 +166,7 @@ def _errors():
             HTTPError,
             URLError,
             LineageError,
+            RecoveryRequired,
             CorrelationPolicyError,
             WorkDeferred,
             RegistrationIncomplete,
@@ -158,6 +175,7 @@ def _errors():
             InitialPricingUnavailable,
             ProviderObservationConflict,
             RetainedAcquisitionError,
+            MappingCoverageIncomplete,
             IdentityHttpError,
             SecurityCorrelationError,
             CatalogueError,
@@ -187,6 +205,16 @@ class Encoder:
 
     def _record(self, value):
         encode = self.encode
+        if type(value) in (MappingAcquisition, AdjustmentAcquisition):
+            kind = "mapping_acquisition" if type(value) is MappingAcquisition else "adjustment_acquisition"
+            _, names = _acquisition_types()[kind]
+            if set(value.__dict__) != set(names):
+                raise HandoffError("incomplete accepted acquisition state")
+            return {
+                "kind": kind,
+                "schema_version": 1,
+                "fields": {name: encode(getattr(value, name)) for name in names},
+            }
         if isinstance(value, SourceWorkPlan):
             require_generic_plan(value)
         # Legacy closed outputs may retain immutable provenance mappings. Carry
@@ -211,6 +239,8 @@ class Encoder:
             }
         if isinstance(value, ProviderEvidence):
             return {"kind": "provider_evidence", "items": [[encode(k), encode(v)] for k, v in value.items()]}
+        if isinstance(value, AcceptedAssessments):
+            return {"kind": "mapping_assessments", "items": [[encode(k), encode(v)] for k, v in value.items()]}
         if isinstance(value, IdentityKey):
             return {"kind": "identity_key", "owner": encode(value.owner)}
         if isinstance(value, MappingProxyType):
@@ -340,6 +370,23 @@ class Decoder:
 
     def _record(self, record):
         kind, decode = record["kind"], self.decode
+        if kind in ("mapping_acquisition", "adjustment_acquisition"):
+            cls, names = _acquisition_types()[kind]
+            if (
+                set(record) != {"kind", "schema_version", "fields"}
+                or type(record["schema_version"]) is not int
+                or record["schema_version"] != 1
+                or not isinstance(record["fields"], dict)
+                or set(record["fields"]) != set(names)
+            ):
+                raise HandoffError("incomplete accepted acquisition record")
+            # HTTP/acquisition already completed normalization and selection.
+            # Transport lends that exact state and its aliases; constructors,
+            # durable ingress and producer calculations must not run again.
+            result = object.__new__(cls)
+            for name in names:
+                setattr(result, name, decode(record["fields"][name]))
+            return result
         if kind == "pricing_descriptor":
             if set(record["fields"]) != {
                 "path",
@@ -355,6 +402,12 @@ class Decoder:
             if set(record) != {"kind", "items"} or not isinstance(record["items"], list):
                 raise HandoffError("incomplete provider-evidence record")
             value = ProviderEvidence.__new__(ProviderEvidence)
+            dict.__init__(value, ((decode(k), decode(v)) for k, v in record["items"]))
+            return value
+        if kind == "mapping_assessments":
+            if set(record) != {"kind", "items"} or not isinstance(record["items"], list):
+                raise HandoffError("incomplete numerical-mapping assessment record")
+            value = AcceptedAssessments.__new__(AcceptedAssessments)
             dict.__init__(value, ((decode(k), decode(v)) for k, v in record["items"]))
             return value
         if kind == "identity_key":

@@ -32,6 +32,27 @@ def _read_work(value):
     accepted = completed and completed.get("correction_id") == item.get("correction_id")
     if item.get("status") != "complete" and not accepted and contract is not None:
         validate_durable_observations(contract)
+    mapping = item.get("required_numerical_mapping")
+    if mapping is not None:
+        request = mapping.get("request") if isinstance(mapping, dict) else None
+        need = request.get("numerical_mapping") if isinstance(request, dict) else None
+        if (
+            not isinstance(mapping, dict)
+            or set(mapping) != {"version", "request"}
+            or type(mapping.get("version")) is not int
+            or mapping.get("version") != 1
+            or not isinstance(need, dict)
+            or set(need) != {"version", "candidate_id", "binding"}
+            or type(need.get("version")) is not int
+            or need.get("version") != 1
+            or not isinstance(need.get("candidate_id"), str)
+            or not isinstance(need.get("binding"), dict)
+            or not isinstance(need["binding"].get("pricing_generations"), dict)
+            or not isinstance(need["binding"].get("members"), list)
+            or need["binding"].get("symbol") not in need["binding"]["members"]
+            or request.get("mapping_asof") != need["binding"].get("asof")
+        ):
+            raise LineageError("invalid required numerical mapping; owning recovery required")
     return item
 
 
@@ -207,6 +228,27 @@ def read_numerical_work(store):
             return {"revision": revision, "work": work}
     except (sqlite3.Error, ValueError, TypeError) as error:
         raise LineageError("cannot select pending numerical completion requirements") from error
+
+
+@traced("mapping_work_read")
+def read_mapping_work(store):
+    """Select only pending producer-derived mapping requirements before pricing."""
+    try:
+        with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+            connection.execute("BEGIN")
+            _check(connection)
+            revision = connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
+            work = {
+                symbol: _read_work(body)
+                for symbol, body in connection.execute(
+                    "SELECT symbol, body FROM work WHERE CASE WHEN json_valid(body) THEN "
+                    "json_extract(body, '$.status') IS NOT 'complete' AND "
+                    "json_type(body, '$.required_numerical_mapping') = 'object' ELSE 0 END"
+                )
+            }
+            return {"revision": revision, "work": work}
+    except (sqlite3.Error, ValueError, TypeError) as error:
+        raise LineageError("cannot select pending numerical mapping requirements") from error
 
 
 def initialize(store):

@@ -63,9 +63,18 @@ def trace_http(function, url_for, client):
             try:
                 return function(*args, **kwargs)
             except BaseException as error:
-                status = getattr(error, "status", getattr(error, "code", None))
-                if type(status) is int:
-                    result["http_status"] = status
+                cause, seen = error, set()
+                while cause is not None and id(cause) not in seen:
+                    seen.add(id(cause))
+                    status = (
+                        getattr(cause, "http_status", None)
+                        or getattr(cause, "status", None)
+                        or getattr(cause, "code", None)
+                    )
+                    if type(status) is int:
+                        result["http_status"] = status
+                        break
+                    cause = cause.__cause__
                 raise
             finally:
                 result["attempts"] = client.request_count - before

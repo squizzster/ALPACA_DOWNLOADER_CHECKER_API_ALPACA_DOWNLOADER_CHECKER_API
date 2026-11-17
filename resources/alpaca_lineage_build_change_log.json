@@ -629,5 +629,32 @@
     "modifications": [
       "Carry prepared recovery pricing sources and their accepted generations into serving under the unchanged selecting-file identity, avoiding repeated source reads and digests while retaining changed-selector selection."
     ]
+  },
+  {
+    "modifications": [
+      "Route a genuinely missing retained-price comparison session through a retired source label only when the selected receipt carries an exact current-label 404, its producer-held last positive exact own-label UUID, unique accepted membership and a UUID-bound same-CUSIP rename chain; read that receipt once and bind the routed comparison to its receipt generation so retries retain completed observations without repeated identity work or calculations.",
+      "When a committed receipt projection satisfies the exact pending obligation, acknowledge it without selecting that already-published summary member for another live comparison; retain normal maintenance for every label not covered by that compact completion handoff."
+    ]
+  },
+  {
+    "modifications": [
+      "Select a dated continuing-label request from provider-supported direct rename evidence only for genuinely selected numerical work, carry completed bounded mapping assessments through pricing and lineage, and preserve accepted identity and numerical decisions outside actual changed source scope.",
+      "Complete unavailable historical mapping assessments through existing receipt evidence issues without retry loops, researched facts, synthetic prices, unrelated source discovery or a serving policy rebuild; preserve explicitly compatible completed diagnostic reports because this production acquisition change does not change their research implementation."
+    ]
+  },
+  {
+    "modifications": [
+      "Classify deterministic missing or broken internal contribution-grid capabilities as explicit owning recovery through the existing blocked work status, preserving completed mapping observations while leaving transient provider and transport failures retryable; retain compatible completed diagnostic reports because research implementation is unchanged."
+    ]
+  },
+  {
+    "modifications": [
+      "Classify unsupported mapping journals, broken completed witnesses and changed journal bindings as owning recovery without transient cooldown. Preserve serving-selector exception causes and lend completed producer request scopes to ETA reporting without repeating work."
+    ]
+  },
+  {
+    "modifications": [
+      "Classify malformed selected mapping journal envelopes and restoration failures as owning recovery. Carry the most advanced completed stage into execution."
+    ]
   }
 ]

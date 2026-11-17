@@ -1,6 +1,6 @@
 # Alpaca to Bloodhound converter
 
-A standalone offline converter for completed Alpaca per-identity CSV exports and legacy resolved histories.
+An offline Bloodhound converter for online Alpaca catalogue histories, completed per-identity CSV exports and legacy resolved histories.
 It writes an 18-column Bloodhound Parquet file and a JSON report. This application has its own dependencies
 and CLI; the engine's separate [Parquet exporter](../docs/exports.md#parquet-conversion) remains available.
 
@@ -99,6 +99,36 @@ python alpaca_to_bloodhound.py \
 This mode writes `raw.open/high/low/close * split_adjustment_ratio`. It continues to store raw close and raw volume, and computes the overall adjustment ratio from the resulting adjusted close. Its price basis is declared as `split`. It can be combined with the action-evidence options below. Inference limitations still apply when the selected factor source is `infer`.
 
 ## 3. Supported input layouts
+
+### Direct online catalogue input
+
+From the repository root, either command reads the online catalogue directly:
+
+```bash
+./alpaca-cli-eod export bloodhound --output exports/bloodhound.parquet
+python -m bloodhound_app.alpaca_to_bloodhound --store data_pricing --blood-out exports/bloodhound.parquet
+```
+
+Use the interpreter containing this application's dependencies. The canonical command defaults to all online
+identities; its `--public-id` and `--symbol` options select within that catalogue. The module's `--store`
+input supports the existing factor, metadata, date-filter, compression and explicit error-policy options.
+`--store` and `--data-in` are mutually exclusive.
+
+The public `DataLibrary.open_history_export()` context is the same source library used by CSV export.
+It accepts catalogue applicability once, holds the shared store gate through publication, reads each selected
+group once and shares decoded sources. The adapter consumes exact decimal strings and completed dated ticker
+ranges without index discovery, source checksum authentication, ownership replay or repeated alignment checks.
+The existing float64 conversion, precision/geometry checks, cross-view checks, factor solver, stable series IDs
+and serialized Parquet validation remain in force. Source-read failures are recorded without retry; ordinary
+strict failure and explicit whole-history omission retain their existing meanings. Selector and lock failures
+stop before source bodies.
+
+For `--store`, completed Arrow output is buffered in RAM and sorted by series ID before one Parquet write.
+`--memory-mib` defaults to 5120 and accepts 1–8192 MiB; one quarter, capped at 2 GiB, is reserved from the retained
+output allowance. Active history, catalogue, metadata and writer workspace are additional memory. Exceeding
+the buffer is fatal under either error policy; there is no spill or source reread. Factors still use the full
+accepted online history before output date filters. Output and reports must remain outside the source store.
+
 
 ### Current per-identity CSV export
 
@@ -361,7 +391,9 @@ python alpaca_to_bloodhound.py --help
 
 | Option | Purpose |
 | --- | --- |
+| `--store DIRECTORY` | Read online catalogue histories directly through the shared public export stream |
 | `--data-in DIRECTORY` | Completed current CSV run or legacy source directory |
+| `--memory-mib N` | Retained-output/working allowance for direct store input |
 | `--public-id ID` | Select a current-export identity; repeatable |
 | `--blood-out FILE.parquet` | Required destination |
 | `--split-source infer\|actions` | Choose factor evidence; default `infer` |
@@ -424,9 +456,10 @@ SciPy is used only by an independent mathematical test oracle. The normal applic
 
 ## 8. Known limitations and scope
 
-The completed current CSV manifest selects membership. Its selected digest and CSV are each read once;
-upstream checksums are provenance and are not recalculated. The app does not open the live pricing store
-or acquire provider data. The regressions in [tests/test_current_csv.py](tests/test_current_csv.py) reject
+For direct catalogue input, the public export context selects membership and source scope once.
+For completed current CSV input, the manifest selects membership. Its selected digest and CSV are each read once;
+upstream checksums are provenance and are not recalculated. The CSV/legacy adapters do not open a live store; direct catalogue input reads selected retained histories
+through the public library. Neither mode acquires provider data. The regressions in [tests/test_current_csv.py](tests/test_current_csv.py) reject
 directory crawling, unselected reads, repeated boundary reads and upstream checksum recalculation.
 
 The retained audit establishes these unresolved limitations of the packaged app:

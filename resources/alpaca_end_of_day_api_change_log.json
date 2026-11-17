@@ -257,5 +257,10 @@
     "modifications": [
       "Reuse the prepared operation pricing-source handoff after locked selector-identity comparison; retain pending-work gates and fresh selection on changed or absent handoffs."
     ]
+  },
+  {
+    "modifications": [
+      "Share online catalogue export selection, applicability, group assembly and decoded-source reuse between formats; expose a pinned single-use history export context without repeated upstream authentication."
+    ]
   }
 ]

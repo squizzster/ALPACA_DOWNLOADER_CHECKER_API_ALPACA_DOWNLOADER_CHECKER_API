@@ -260,26 +260,36 @@ class HeartbeatCommandTests(unittest.TestCase):
         self.assertTrue(all("version" not in entry and entry["modifications"] for entry in entries))
 
     def test_parquet_adapter_samples_progress_and_preserves_immediate_rejections(self):
-        from libs.alpaca_bloodhound_export import command_line as parquet
+        import sys
+        from types import SimpleNamespace
 
-        result = {"output": "unused.parquet", "rows": 2, "identities": 1, "diagnostic_errors": []}
+        report = {
+            "output_file": "unused.parquet",
+            "output_rows": 2,
+            "histories_exported": 1,
+            "histories_rejected": 1,
+            "status": "partial",
+            "catalogue": {"generation": "fixture"},
+        }
 
-        def export(_reader, _output, **options):
-            options["progress"]("collecting accepted Arrow data in RAM")
-            options["progress"]("rejected source=BAD public_id=one: conflicting observations")
-            options["progress"]("processed 1/1 source locators; converted 1 identities")
-            return result
+        def convert(options):
+            options._progress("Preparing accepted Arrow data in RAM")
+            options._progress("REJECT BAD: conflicting observations", warning=True)
+            options._progress("Checked 1/1 histories; staged 2 rows; rejected 1.")
+            return report
 
         output, errors = io.StringIO(), io.StringIO()
         with (
-            patch.object(parquet, "StandaloneReader") as reader,
-            patch.object(parquet, "export", side_effect=export),
+            patch.dict(sys.modules, {"bloodhound_app.alpaca_to_bloodhound": SimpleNamespace(convert=convert)}),
             redirect_stdout(output),
             redirect_stderr(errors),
         ):
-            reader.return_value.cache_info.return_value = {"maximum_bytes": 0}
             self.assertEqual(alpaca_cli.main(["export", "bloodhound", "--output", "unused.parquet"]), 0)
-        self.assertEqual(json.loads(output.getvalue()), result)
+        result = json.loads(output.getvalue())
+        self.assertEqual((result["rows"], result["identities"], result["rejected"]), (2, 1, 1))
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["catalogue_generation"], "fixture")
+        self.assertEqual(result["diagnostic_errors"], [])
         records = self.records(errors)
         warnings = [record for record in records if record.get("level") == "warning"]
         self.assertEqual(len(warnings), 1)

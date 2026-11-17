@@ -1,5 +1,6 @@
 """Real producer pipelines with doubles only at the provider boundary."""
 
+import copy
 import os
 import signal
 import traceback
@@ -650,20 +651,65 @@ class UpdateHandoffRegressions(unittest.TestCase):
     def test_partial_match_only_approves_group_after_missing_endpoint_route_completes(self):
         for alternative_present in (False, True):
             with self.subTest(alternative_present=alternative_present), fixture() as case:
+                from libs.alpaca_lineage_build import comparison_routes, universe_state
+
                 store = seed_group(case)
                 assets = {s: asset(s) for s in ("AAA", "BBB")}
                 case.live = {"AAA": case.old + [bar("2026-10-19")], "BBB": [case.old[-1]]}
+                pricing_root = store / "end_of_day/pricing/BBB"
+                before = pricing_storage.load_source(pricing_root, "BBB")
                 page = case.pricing._get
-                mapped = []
+                mapped, compared = [], []
 
                 def observe(params):
                     if params["asof"] == case.old[0]["t"][:10]:
                         mapped.append(dict(params))
                         if not alternative_present:
                             return {"bars": {}}
+                        response = page(params)
+                        self.assertEqual(set(response["bars"]), {"AAA"})
+                        return response
                     return page(params)
 
-                with patch.object(case.pricing, "_get", side_effect=observe):
+                route = comparison_routes.historical_route
+
+                def retired_source(receipt, day, generation):
+                    if receipt["symbol"] != "BBB":
+                        return route(receipt, day, generation)
+                    value = copy.deepcopy(receipt)
+                    current = next(
+                        lookup
+                        for lookup in value["evidence"]["asset_lookups"]
+                        if lookup.get("lookup_kind") == "symbol" and lookup.get("lookup") == "BBB"
+                    )
+                    value["last_observed_symbol_lookup"] = copy.deepcopy(current)
+                    current.update(found=False, outcome="not_found", http_status=404, asset=None)
+                    return route(value, day, generation)
+
+                verify = refresh.verify
+
+                def observed_comparison(snapshot, *args, **kwargs):
+                    compared.extend(entry["symbol"] for entry in snapshot["entries"])
+                    return verify(snapshot, *args, **kwargs)
+
+                read_bytes = Path.read_bytes
+                validator_reads = []
+
+                def no_retained_bbb_payload(path):
+                    if "BBB" in path.parts and path.suffix == ".gz":
+                        raise AssertionError("accepted BBB pricing payload reopened")
+                    if "BBB" in path.parts and path.name.startswith("validator_"):
+                        validator_reads.append(path)
+                        if len(validator_reads) > 1:
+                            raise AssertionError("accepted BBB validator reopened")
+                    return read_bytes(path)
+
+                with (
+                    patch.object(case.pricing, "_get", side_effect=observe),
+                    patch.object(comparison_routes, "historical_route", side_effect=retired_source),
+                    patch.object(refresh, "verify", side_effect=observed_comparison),
+                    patch.object(Path, "read_bytes", no_retained_bbb_payload),
+                ):
                     result = run_update(
                         store,
                         "2026-10-20",
@@ -676,8 +722,305 @@ class UpdateHandoffRegressions(unittest.TestCase):
                 self.assertEqual(result["complete"], alternative_present, result)
                 self.assertEqual(len(mapped), 1, "mapped endpoint must not repeat")
                 self.assertEqual(mapped[0]["symbols"], "AAA")
+                self.assertEqual(compared.count("BBB"), 1, "completed comparison must not repeat")
+                self.assertEqual(len(validator_reads), int(alternative_present))
+                request_keys = [
+                    (p["symbols"], p["adjustment"], p["start"], p["end"], p["asof"]) for p in case.pages
+                ]
+                self.assertEqual(len(request_keys), len(set(request_keys)), "provider request repeated")
                 self.assertEqual(len(read_pricing_views(store, "AAA")["all"]), 3 if alternative_present else 2)
                 self.assertEqual(len(read_pricing_views(store, "BBB")["all"]), 2)
+                if alternative_present:
+                    after = pricing_storage.load_source(pricing_root, "BBB")
+                    self.assertEqual(after["boundaries"], before["boundaries"])
+                    self.assertEqual(after["latest_request"]["end_exclusive"], "2026-10-20T00:00:00Z")
+                    state = universe_state.read_state(store)["work"]["BBB"]
+                    index = refresh.storage.read_index(store / "end_of_day/lineage")
+                    receipt = refresh.storage.read_receipt(store / "end_of_day/lineage", "BBB", index)
+                    self.assertEqual(state["status"], "complete")
+                    self.assertEqual(receipt["update_obligation_id"], state["obligation_id"])
+
+    def test_non_summary_retired_source_routes_through_retained_acquisition_end_to_end(self):
+        from libs.alpaca_lineage_build import comparison_routes, pipeline, universe_state, universe_update
+        from libs.alpaca_pricing_download.contract import digest, json_bytes
+
+        class Interrupted(BaseException):
+            pass
+
+        with fixture() as case:
+            case.old = [bar("2016-01-04")] + [
+                bar(day)
+                for day in (
+                    "2026-10-05",
+                    "2026-10-06",
+                    "2026-10-07",
+                    "2026-10-08",
+                    "2026-10-09",
+                    "2026-10-12",
+                    "2026-10-13",
+                    "2026-10-14",
+                    "2026-10-15",
+                    "2026-10-16",
+                )
+            ]
+            store = seed_group(case, inactive_second=True)
+            self.assertEqual([entry["symbol"] for entry in read_snapshot(store)["entries"]], ["AAA"])
+            inactive_bbb = {**asset("BBB"), "status": "inactive"}
+            context = accept_context(store)
+            with refresh.storage.publication_lock(context.accept_store().root):
+                index = context.select_index(context.accept_store().root)
+            policy = WorkPolicy(store, index, {}, [], "2026-10-20", context=context)
+            policy.require_dependencies({"AAA", "BBB"}, "2026-10-20", {"BBB"})
+            identities = ActionCatalogueClient(
+                [asset("AAA"), inactive_bbb],
+                [rename()],
+                exact={"AAA": asset("AAA"), "BBB": inactive_bbb, "111111111": inactive_bbb},
+            )
+            case.live = {"AAA": case.old, "BBB": case.old[1:]}
+            pricing_root = store / "end_of_day/pricing/BBB"
+            before = pricing_storage.load_source(pricing_root, "BBB")
+            mapped, comparisons, validator_reads = [], [], []
+
+            def observe(params):
+                response = case.page(params)
+                if params["asof"] == case.old[0]["t"][:10]:
+                    mapped.append(dict(params))
+                    self.assertEqual(set(response["bars"]), {"AAA"})
+                return response
+
+            route = comparison_routes.historical_route
+
+            def retired_source(receipt, day, generation):
+                if receipt["symbol"] != "BBB":
+                    return route(receipt, day, generation)
+                value = copy.deepcopy(receipt)
+                current = next(
+                    lookup
+                    for lookup in value["evidence"]["asset_lookups"]
+                    if lookup.get("lookup_kind") == "symbol" and lookup.get("lookup") == "BBB"
+                )
+                value["last_observed_symbol_lookup"] = copy.deepcopy(current)
+                current.update(found=False, outcome="not_found", http_status=404, asset=None)
+                return route(value, day, generation)
+
+            read_bytes = Path.read_bytes
+
+            def no_retained_bbb_payload(path):
+                if "BBB" in path.parts and path.suffix == ".gz":
+                    raise AssertionError("accepted BBB pricing payload reopened")
+                if "BBB" in path.parts and path.name.startswith("validator_"):
+                    validator_reads.append(path)
+                    if len(validator_reads) > 1:
+                        raise AssertionError("accepted BBB validator reopened")
+                return read_bytes(path)
+
+            compare = pricing_refresh.compare_history
+
+            def compared(*args, **kwargs):
+                comparisons.append(args)
+                return compare(*args, **kwargs)
+
+            record = universe_state.record_outcome
+
+            def interrupt(store, symbol, **kwargs):
+                if symbol == "BBB" and kwargs["status"] == "complete":
+                    raise Interrupted("after non-summary routed publication")
+                return record(store, symbol, **kwargs)
+
+            with (
+                patch.object(case.pricing, "_get", side_effect=observe),
+                patch.object(comparison_routes, "historical_route", side_effect=retired_source),
+                patch.object(pricing_refresh, "compare_history", side_effect=compared),
+                patch.object(Path, "read_bytes", no_retained_bbb_payload),
+                patch.object(universe_state, "record_outcome", side_effect=interrupt),
+                self.assertRaises(Interrupted),
+            ):
+                run_update(
+                    store,
+                    "2026-10-20",
+                    pricing_client=case.pricing,
+                    identity_client=identities,
+                    registry=case.registry,
+                )
+
+            self.assertEqual(len(mapped), 1)
+            self.assertEqual(mapped[0]["symbols"], "AAA")
+            self.assertEqual(mapped[0]["asof"], case.old[0]["t"][:10])
+            self.assertEqual(len(comparisons), 1, "completed retained comparison repeated")
+            self.assertEqual(len(validator_reads), 1)
+            request_keys = [
+                (params["symbols"], params["adjustment"], params["start"], params["end"], params["asof"])
+                for params in case.pages
+            ]
+            self.assertEqual(len(request_keys), len(set(request_keys)), "provider request repeated")
+            self.assertEqual(len(request_keys), 9, case.pages)
+            after = pricing_storage.load_source(pricing_root, "BBB")
+            self.assertEqual(after["boundaries"], before["boundaries"])
+            self.assertEqual(after["latest_request"]["end_exclusive"], "2026-10-20T00:00:00Z")
+            self.assertNotEqual(digest(json_bytes(after)), digest(json_bytes(before)))
+            state = universe_state.read_state(store)["work"]["BBB"]
+            obligation_id = state["obligation_id"]
+            published_index = refresh.storage.read_index(store / "end_of_day/lineage")
+            receipt = refresh.storage.read_receipt(store / "end_of_day/lineage", "BBB", published_index)
+            self.assertNotEqual(state["status"], "complete")
+            self.assertEqual(receipt["update_obligation_id"], state["obligation_id"])
+            self.assertEqual(receipt["source_sha256"], digest(json_bytes(after)))
+
+            case.pages.clear()
+
+            def no_repeated_request(params):
+                raise AssertionError(f"completed pricing request repeated: {params}")
+
+            def no_repeated_bbb_read(path):
+                if "BBB" in path.parts and (path.suffix == ".gz" or path.name.startswith("validator_")):
+                    raise AssertionError(f"accepted BBB input reopened: {path}")
+                return read_bytes(path)
+
+            with (
+                patch.object(case.pricing, "_get", side_effect=no_repeated_request),
+                patch.object(
+                    comparison_routes,
+                    "historical_route",
+                    side_effect=AssertionError("completed historical route recalculated"),
+                ),
+                patch.object(
+                    pricing_refresh,
+                    "compare_history",
+                    side_effect=AssertionError("completed comparison recalculated"),
+                ),
+                patch.object(
+                    pricing_refresh,
+                    "fetch_history",
+                    side_effect=AssertionError("completed comparison refetched"),
+                ),
+                patch.object(
+                    pipeline,
+                    "acquire_selected",
+                    side_effect=AssertionError("completed dependency acquisition re-entered"),
+                ),
+                patch.object(
+                    universe_update,
+                    "acquire_selected",
+                    side_effect=AssertionError("completed ordinary acquisition re-entered"),
+                ),
+                patch.object(
+                    update,
+                    "run_lineage",
+                    side_effect=AssertionError("completed maintenance lineage re-entered"),
+                ),
+                patch.object(
+                    universe_update,
+                    "run_lineage",
+                    side_effect=AssertionError("completed discovery lineage re-entered"),
+                ),
+                patch.object(Path, "read_bytes", no_repeated_bbb_read),
+            ):
+                repeated = run_update(
+                    store,
+                    "2026-10-20",
+                    pricing_client=case.pricing,
+                    identity_client=identities,
+                    registry=case.registry,
+                )
+            self.assertTrue(repeated["complete"], repeated)
+            self.assertEqual(repeated["stages"]["acquisition"]["results"], [])
+            self.assertIn("BBB", repeated["plan"]["already_published"])
+            self.assertEqual(
+                digest(json_bytes(pricing_storage.load_source(pricing_root, "BBB"))),
+                digest(json_bytes(after)),
+            )
+            repeated_index = refresh.storage.read_index(store / "end_of_day/lineage")
+            self.assertEqual(
+                repeated_index["symbols"]["BBB"]["sha256"],
+                published_index["symbols"]["BBB"]["sha256"],
+            )
+            completed = universe_state.read_state(store)["work"]["BBB"]
+            self.assertEqual(completed["obligation_id"], obligation_id)
+            self.assertEqual(completed["status"], "complete")
+            self.assertEqual(completed["outcome"], {"published_before_acknowledgement": True})
+            self.assertEqual(case.pages, [])
+
+    def test_routed_empty_suffix_publication_survives_interrupted_acknowledgement(self):
+        from libs.alpaca_lineage_build import comparison_routes, universe_state
+
+        class Interrupted(BaseException):
+            pass
+
+        with fixture() as case:
+            store = seed_group(case)
+            assets = {symbol: asset(symbol) for symbol in ("AAA", "BBB")}
+            case.live = {"AAA": case.old + [bar("2026-10-19")], "BBB": [case.old[-1]]}
+            page = case.pricing._get
+            mapped = []
+
+            def observe(params):
+                if params["asof"] == case.old[0]["t"][:10]:
+                    mapped.append(dict(params))
+                    return page(params)
+                return page(params)
+
+            route = comparison_routes.historical_route
+
+            def retired_source(receipt, day, generation):
+                if receipt["symbol"] != "BBB":
+                    return route(receipt, day, generation)
+                value = copy.deepcopy(receipt)
+                current = next(
+                    lookup
+                    for lookup in value["evidence"]["asset_lookups"]
+                    if lookup.get("lookup_kind") == "symbol" and lookup.get("lookup") == "BBB"
+                )
+                value["last_observed_symbol_lookup"] = copy.deepcopy(current)
+                current.update(found=False, outcome="not_found", http_status=404, asset=None)
+                return route(value, day, generation)
+
+            record = universe_state.record_outcome
+
+            def interrupt(store, symbol, **kwargs):
+                if symbol == "BBB" and kwargs["status"] == "complete":
+                    raise Interrupted("after routed publication")
+                return record(store, symbol, **kwargs)
+
+            arguments = dict(
+                pricing_client=case.pricing,
+                identity_client=ActionCatalogueClient(
+                    list(assets.values()), [rename()], exact={**assets, "111111111": assets["BBB"]}
+                ),
+                registry=case.registry,
+            )
+            with (
+                patch.object(case.pricing, "_get", side_effect=observe),
+                patch.object(comparison_routes, "historical_route", side_effect=retired_source),
+                patch.object(universe_state, "record_outcome", side_effect=interrupt),
+                self.assertRaises(Interrupted),
+            ):
+                run_update(store, "2026-10-20", **arguments)
+            self.assertEqual(len(mapped), 1)
+            state = universe_state.read_state(store)["work"]["BBB"]
+            index = refresh.storage.read_index(store / "end_of_day/lineage")
+            receipt = refresh.storage.read_receipt(store / "end_of_day/lineage", "BBB", index)
+            self.assertNotEqual(state["status"], "complete")
+            self.assertEqual(receipt["update_obligation_id"], state["obligation_id"])
+            source = pricing_storage.load_source(store / "end_of_day/pricing/BBB", "BBB")
+            self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-20T00:00:00Z")
+
+            case.pages.clear()
+
+            def repeated_request(params):
+                raise AssertionError(f"pricing request repeated: {params}")
+
+            with (
+                patch.object(case.pricing, "_get", side_effect=repeated_request),
+                patch.object(
+                    comparison_routes,
+                    "historical_route",
+                    side_effect=AssertionError("historical route recalculated"),
+                ),
+            ):
+                result = run_update(store, "2026-10-20", **arguments)
+            self.assertTrue(result["complete"], result)
+            self.assertEqual(case.pages, [])
+            self.assertEqual(universe_state.read_state(store)["work"]["BBB"]["status"], "complete")
 
     def test_all_failed_refresh_does_not_enter_append(self):
         with fixture() as case:
@@ -770,6 +1113,124 @@ class UpdateHandoffRegressions(unittest.TestCase):
                     )
             self.assertEqual(context.history_checks, {})
             self.assertEqual(context.history_comparisons, {})
+
+    def test_only_routed_comparison_is_invalidated_by_changed_receipt_generation(self):
+        for routed in (False, True):
+            with self.subTest(routed=routed), fixture() as case:
+                context = accept_context(case.store)
+                arguments = dict(
+                    pricing_client=case.pricing,
+                    identity_client=IdentityClient({"AAA": asset("AAA")}),
+                    end_date="2026-10-17",
+                    symbols={"AAA"},
+                    context=context,
+                    on_ready=lambda ready: None,
+                )
+                self.assertTrue(refresh_existing(case.store, **arguments)["complete"])
+                comparison = context.history_comparisons["AAA"]
+                scope = context.history_scope("comparison", "AAA", comparison)
+                index = context.select_index(context.accept_store().root)
+                if routed:
+                    comparison += (index["symbols"]["AAA"]["sha256"],)
+                    context.cache_history("comparison", "AAA", comparison, scope)
+                context.history_checks.pop("AAA")
+                changed = {
+                    **index,
+                    "symbols": {
+                        **index["symbols"],
+                        "AAA": {**index["symbols"]["AAA"], "sha256": "changed-receipt-generation"},
+                    },
+                }
+                selected = []
+                verify = refresh.verify
+
+                def observed(snapshot, *args, **kwargs):
+                    selected.append(len(snapshot["entries"]))
+                    return verify(snapshot, *args, **kwargs)
+
+                with (
+                    patch.object(context, "select_index", return_value=changed),
+                    patch.object(refresh, "verify", side_effect=observed),
+                ):
+                    result = refresh_existing(case.store, **arguments)
+                self.assertTrue(result["complete"], result)
+                self.assertEqual(selected, [int(routed)])
+
+    def test_multiple_missing_routes_consume_one_selected_receipt(self):
+        with fixture() as case:
+            store = seed_group(case)
+            context = accept_context(store)
+            index = context.select_index(context.accept_store().root)
+            original = refresh.storage.read_receipt
+            reads = []
+
+            def selected_receipt(root, symbol, *args, **kwargs):
+                reads.append(symbol)
+                return original(root, symbol, *args, **kwargs)
+
+            def routed(snapshot, get_page, *, missing_route, **kwargs):
+                self.assertEqual([entry["symbol"] for entry in snapshot["entries"]], ["BBB"])
+                entry = snapshot["entries"][0]
+                mapped = []
+                for day in ("2016-01-04", "2016-01-05"):
+                    route = missing_route(entry, day)
+                    self.assertEqual(route["symbol"], "AAA")
+                    mapped.append(
+                        {
+                            "symbol": "BBB",
+                            "endpoint": "first",
+                            "session": day,
+                            **route,
+                            "mapped_symbol": route["symbol"],
+                        }
+                    )
+                    mapped[-1]["symbol"] = "BBB"
+                live = tuple(tuple(row) for row in (entry["first_all"], *entry["tail_all"]))
+                return {
+                    "complete": True,
+                    "stats": {
+                        "tickers": 1,
+                        "checked": 1,
+                        "matched": 1,
+                        "differed": 0,
+                        "missing": 0,
+                        "failed": 0,
+                    },
+                    "requests": {},
+                    "live_seconds": 0,
+                    "differences": [],
+                    "matched": ["BBB"],
+                    "comparisons": {
+                        "BBB": {
+                            "decision": "unchanged",
+                            "changed_sessions": (),
+                            "live_all": live,
+                            "field_changes": (),
+                            "added_sessions": (),
+                        }
+                    },
+                    "mapped_endpoints": mapped,
+                    "missing": [],
+                    "missing_endpoints": [],
+                    "failures": [],
+                }
+
+            with (
+                patch.object(refresh.storage, "read_receipt", side_effect=selected_receipt),
+                patch.object(refresh, "verify", side_effect=routed),
+            ):
+                result = refresh_existing(
+                    store,
+                    pricing_client=case.pricing,
+                    identity_client=IdentityClient({"AAA": asset("AAA"), "BBB": asset("BBB")}),
+                    end_date="2026-10-17",
+                    symbols={"BBB"},
+                    context=context,
+                    on_ready=lambda ready: None,
+                )
+            self.assertTrue(result["complete"], result)
+            self.assertEqual(reads, ["BBB"])
+            self.assertEqual(context.history_comparisons["BBB"][3], index["symbols"]["BBB"]["sha256"])
 
     def seed_independent_pair(self, case, symbols=("AAA", "BBB")):
         store = case.directory / "independent"

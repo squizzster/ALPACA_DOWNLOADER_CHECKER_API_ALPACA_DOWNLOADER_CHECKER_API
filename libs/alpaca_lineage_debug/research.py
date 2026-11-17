@@ -223,6 +223,16 @@ def run(
                 for source, generation in result["baseline"]["receipt_generations"].items()
             ):
                 raise ValueError("completed paired report selects a changed receipt generation")
+            if (
+                reuse_report["debug_version"] < 15
+                and result.get("control_correlation_reused")
+                and getattr(control_policy, "membership_refinement", None)
+                != getattr(policy, "membership_refinement", None)
+                and (result.get("membership_refinement") or {}).get("changes")
+            ):
+                # Earlier frames can carry the wrong membership or label projection.
+                # Only this effective producer toggle loses its completed comparison.
+                continue
             reused[tuple(result["group"])] = result
     results = []
     proven, carried = [], []

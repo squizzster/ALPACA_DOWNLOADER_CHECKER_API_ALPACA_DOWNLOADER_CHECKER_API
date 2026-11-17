@@ -27,7 +27,14 @@ class PipelineCodecTests(unittest.TestCase):
         row = ("2026-11-10T21:00:00Z", "1", "1", "1", "1", "1", "1", "1")
         comparison = HistoryComparison("unchanged", (), (row,))
         selection = EndpointSelection(
-            "/synthetic", "AAA", "generation", "2026-11-11", "2026-11-10", (row,), comparison=comparison
+            "/synthetic",
+            "AAA",
+            "generation",
+            "2026-11-11",
+            "2026-11-10",
+            (row,),
+            comparison=comparison,
+            lineage_generation="receipt-generation",
         )
         publication = FullPublicationAcceptance(
             Path("/synthetic"),
@@ -235,6 +242,16 @@ class PipelineStateCapabilityTests(unittest.TestCase):
 
 
 class PipelineObservedErrorTests(unittest.TestCase):
+    def test_lineage_recovery_requirement_keeps_its_type_and_classification(self):
+        from libs.alpaca_lineage_build.contract import RecoveryRequired, failure_outcome
+
+        original = RuntimeError("selected lineage work cannot continue")
+        original.__cause__ = RecoveryRequired("missing contribution dates; owning recovery required")
+        restored = roundtrip(original)
+        self.assertIsInstance(restored.__cause__, RecoveryRequired)
+        self.assertEqual(failure_outcome(original), failure_outcome(restored))
+        self.assertEqual("recovery_required", failure_outcome(restored)["outcome"])
+
     def test_http_failure_keeps_domain_status_and_closed_transport(self):
         from urllib.error import HTTPError, URLError
 

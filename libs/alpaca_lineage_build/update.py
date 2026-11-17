@@ -103,6 +103,7 @@ def update_everything(
     late_bar_repairs=None,
     context=None,
     symbols=None,
+    excluded_symbols=(),
 ):
     """Fresh check -> same-span replacement/lineage -> append -> lineage -> summary.
 
@@ -122,7 +123,7 @@ def update_everything(
         nonlocal current_stage
         current_stage = name
         if progress:
-            progress(name, {"state": "started", "end_exclusive": end})
+            progress(name, {"state": "started", "end_exclusive": end, "request_scope": True})
         before = time.monotonic()
         value = function(*args, **kwargs)
         result["stages"][name] = {**value, "seconds": round(time.monotonic() - before, 3)}
@@ -171,6 +172,7 @@ def update_everything(
                 register_discoveries=register_discoveries,
                 work_policy=work_policy,
                 symbols=remaining,
+                excluded_symbols=excluded_symbols,
                 late_bar_repairs=late_bar_repairs if round_number == 0 else None,
                 context=context,
             )
@@ -256,6 +258,7 @@ def update_everything(
                 e["symbol"]
                 for e in latest["entries"]
                 if e["symbol"] not in maintained_symbols
+                and e["symbol"] not in excluded_symbols
                 and (symbols is None or e["symbol"] in symbols)
                 and e["end_exclusive"][:10] <= end
                 and (work_policy is None or work_policy.allowed({e["symbol"]}))

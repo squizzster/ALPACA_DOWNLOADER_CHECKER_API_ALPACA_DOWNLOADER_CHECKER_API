@@ -84,6 +84,7 @@ def _references(roots):
         "pricing",
         "partitions",
         "counterpart_partitions",
+        "numerical_mapping",
         "market_date_partitions",
         "source_bundles",
         "views",
@@ -177,6 +178,7 @@ def export_sourced(value, *, roots):
         "pricing",
         "partitions",
         "counterpart_partitions",
+        "numerical_mapping",
     }
     keyed = {
         "owner_applicability": lambda k: (k[0], prior(k[1]), identity(k[2])),

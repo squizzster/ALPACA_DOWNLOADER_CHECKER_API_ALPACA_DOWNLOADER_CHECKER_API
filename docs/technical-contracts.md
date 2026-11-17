@@ -568,15 +568,26 @@ already executed singly, including a 414 subdivision, is not repeated. Confirmat
 the same limiter/retry policy; failed confirmations remain failures and completed empty confirmations remain
 missing. A missing selected endpoint may use an alternative dated provider label only when the selected,
 source-generation-bound lineage receipt already publishes its positive UUID membership and same-CUSIP rename
-observations tied to that identity's UUID. Historical mapping uses the endpoint's date and requests only that
-session in `all`; other acquired endpoints remain held. Unknown membership, unlike exchanges, conflicting routes
-and changed source bindings select no alternate request. Only missing selected sources need receipt bodies;
-carried receipts remain authoritative. This is provider request planning from accepted facts, not a new identity
-calculation. Backward routing stops at each earlier rename; later reuse of that label cannot redirect the old identity.
+observations tied to that identity's UUID. The current source label normally supplies that UUID through its exact
+positive lookup. If that exact lookup instead completed with a 404, the receipt's producer-held last positive exact
+own-label lookup may supply the UUID only when one accepted membership and every traversed same-CUSIP rename agree.
+Historical mapping uses the endpoint's date and requests only that session in `all`; other acquired endpoints remain
+held. The provider response retains its actual historical ticker and mapping provenance. Unknown membership, unlike
+exchanges, conflicting identifiers or routes and changed source bindings select no alternate request. Only missing
+selected sources need receipt bodies; each selected body is read once per selected comparison operation and carried
+as authoritative.
+A routed comparison is additionally bound to that receipt generation, so a changed receipt invalidates that
+comparison without invalidating unrelated ordinary comparisons. This is provider request planning from accepted
+facts, not a new identity calculation or a peer metadata lookup. Backward routing stops at each earlier rename;
+later reuse of that label cannot redirect the old identity.
 This request choice does not allocate rows or require already allocated ownership of the missing date.
 Recovered observations enter the original single comparison. Missing alternate observations stay
-incomplete and route errors preserve independent completed peers. Results and debug events identify each missing endpoint; request metrics count probes and recovered
-endpoints. This rule does not infer ticker identity from a companion's returned bar.
+incomplete and route errors preserve independent completed peers. A mapped difference also fails closed: this
+focused route does not manufacture current-label evidence or select a correction/replacement that would need
+historical-label acquisition. Results and debug events identify each missing endpoint; request metrics count probes
+and recovered endpoints. Once the resulting suffix and exact workflow obligation are committed in the lineage projection,
+an interrupted acknowledgement consumes that compact publication on restart and excludes the already-published
+label from another live comparison. This rule does not infer ticker identity from a companion's returned bar.
 Transport, shape or pagination errors leave actions incomplete. Replacement emptying a
 previously nonempty view needs bounded fresh producer confirmation; ordinary empty appends/initial empty histories
 retain batched acquisition.
@@ -638,6 +649,47 @@ non-active-month rows outside those bounds, unproved overlap or rollover keep or
 Proven equality preserves retained payload references and controls ancestry, new notices and the returned
 `changed` flag together. An existing pending correction is never erased by an equal retry. Mapping/request
 context still reaches the ordinary lineage doorman.
+
+### Dated mapping acquisition
+
+The lineage-owned [mapping planner](../libs/alpaca_lineage_build/numerical_mapping.py) selects a genuinely
+new retained-source request; [the lineage guide](lineage.md#dated-numerical-mapping) defines admission and
+completed outcomes. The selected source's `.numerical-mapping.json` is the owner's bounded stage journal.
+It binds the provider request, source generations, accepted identity/routes and relevant provider facts.
+Receipt digests and acknowledgement fields do not invalidate the decision merely because its own result
+was published. Only selected journals are opened; no directory or universe discovery is implied.
+
+[MappingAcquisition](../libs/alpaca_pricing_download/mapping.py) carries the completed `all` witness,
+remaining disjoint request ranges, adaptive views/digests/decisions, coverage and endpoint confirmation
+results. A positive witness is one observation, not full-history approval. Acquisition requests its missing
+`all` ranges and only the additional views selected by the adaptive producer. Completed rows are assembled
+without a second normalization or historical authentication. Each completed stage is retained before the
+next dependent request. Restoration checks the journal's own schema/binding and lends those values without
+rehashing rows, rebuilding endpoint projections or repeating completed confirmations.
+
+Required contribution dates come from complete already-held producer inputs or an applicable selected
+serving checkpoint's accepted session-date projection. Counts, endpoint dates and the market calendar
+cannot substitute for that capability. The pricing producer checks newly received views against the
+selected dates and stops when a known omission precludes a complete bundle. Accepted old validators and
+gzip payloads are not opened to authenticate the replacement. The bound witness supplies the first fully adjusted endpoint when its session window matches exactly.
+Each other selected endpoint receives its own confirmation, carried through interruption.
+
+For an exactly bound, unmarked legacy checkpoint without dates, the selected serving owner constructs
+the missing date projection from its completed raw ownership positions. It reads only the contributing
+raw partitions needed by those positions and checks the newly constructed projection against the
+accepted count and endpoints. It performs no price comparison, owner selection or calendar reconstruction.
+Pricing selector identities captured under the preceding locks govern reacquisition; a changed selector
+requires owning reselection. Held raw rows and their accepted boundary document cross into subsequent
+partition assembly without another payload/manifest read. The mapping journal records the completed dates
+before acquisition construction, so interruption cannot repeat date assembly or the provider witness.
+A checkpoint that declares its date projection but omits the dates fails into explicit owning recovery.
+
+Pricing installs through its existing journal with the source selector last. Its completed correction
+binding carries installation across interruption before lineage acknowledgement. Lineage resumes only
+work invalidated by the resulting source/mapping, retaining applicable peer decisions and completed
+assessments. Native and JSON stage handoffs carry the same accepted acquisition state and aliases;
+transport does not call the producer's durable ingress or calculations again. This capability introduces
+no serving-policy rebuild and grants no research assertion or ticker-specific rule.
 
 ## Check summary
 

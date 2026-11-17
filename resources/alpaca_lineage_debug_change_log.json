@@ -62,5 +62,20 @@
     "modifications": [
       "Retain completed report compatibility across the lineage source-handoff release without repeating accepted comparisons."
     ]
+  },
+  {
+    "modifications": [
+      "Retain explicitly compatible completed generic comparison reports across the retired-label request-routing and exact-obligation recovery release; preserve their existing store, policy, selector and receipt-generation invalidation without replaying accepted comparisons."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve applicable completed generic diagnostic reports across the production exception-reporting and internal-recovery runtime repair, retaining their original policy, store and generation bindings."
+    ]
+  },
+  {
+    "modifications": [
+      "Evaluate membership removal from the held unrefined frame, compare the refined control in the requested direction, and invalidate affected earlier paired results."
+    ]
   }
 ]

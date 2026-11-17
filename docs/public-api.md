@@ -135,7 +135,8 @@ selected inputs raise `CatalogChangedError`: finish maintenance, then reopen. Un
 catalogues retain no old pricing files. `PublicIdUnavailableError` conceals whether an ID is unknown or internally
 offline. Both inherit `DataLibraryError`; malformed arguments raise `ValueError`, busy groups `ReaderBusyError`.
 
-[Exports](exports.md) owns flat/per-identity CSV contracts, snapshot scope and output publication.
+`open_history_export()` exposes the shared, pinned online history stream used by CSV and Bloodhound Parquet.
+[Exports](exports.md) owns selection, one-read source assembly, snapshot scope and output publication.
 
 ## Pipeline execution
 

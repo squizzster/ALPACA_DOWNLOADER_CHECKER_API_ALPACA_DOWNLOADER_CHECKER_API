@@ -15,18 +15,13 @@ from decimal import Decimal
 from pathlib import Path
 from time import monotonic
 
-from libs.alpaca_serving_catalogue import export_inputs
-from libs.alpaca_serving_catalogue.contract import CatalogueError
-from libs.common.store_lock import StoreBusyError, operation_lock
-
 from . import (
     ADJUSTMENTS,
     API_VERSION,
-    CatalogChangedError,
     ReaderBusyError,
-    StandaloneReaderError,
 )
-from .standalone import _date
+from ._catalogue_export import open_export, read_group
+from ._catalogue_export import selection as _selection
 
 SCHEMA_VERSION = 2
 GIB = 1024**3
@@ -42,29 +37,6 @@ VIEW_COLUMNS = {
     adjustment: {field: f"{PREFIXES[adjustment]}_{field}" for field in FIELDS} for adjustment in ADJUSTMENTS
 }
 LOGICAL_COLUMNS = ("date", *(column for columns in VIEW_COLUMNS.values() for column in columns.values()))
-
-
-def _selection(data, public_ids, start, end):
-    # The opened DataLibrary owns eligibility and group references. Planning is
-    # an in-memory projection of that accepted catalogue, never a source census.
-    start, end = _date(start, "start"), _date(end, "end")
-    if start is not None and end is not None and start > end:
-        raise ValueError("start must be on or before end")
-    if public_ids is None:
-        securities = data._securities
-    else:
-        if not isinstance(public_ids, (list, tuple)) or not public_ids:
-            raise ValueError("public_ids must be a nonempty list or tuple, or None for all online IDs")
-        securities = {security.public_id: security for security in map(data.get_security, public_ids)}
-    selected, groups = {}, {}
-    for public_id, security in sorted(securities.items()):
-        if (start is not None and security.last_session < start) or (
-            end is not None and security.first_session > end
-        ):
-            continue
-        selected[public_id] = security
-        groups.setdefault(data._records[public_id]["group_key"], []).append(public_id)
-    return selected, groups, start, end
 
 
 def _range(start, end):
@@ -223,11 +195,6 @@ def _publication_lock(output):
 
 
 def _prepare_identity(data, security, views, start, end, memory_bytes):
-    first, last = security.first_session.isoformat(), security.last_session.isoformat()
-    views = {
-        adjustment: {**view, "bars": [bar for bar in view["bars"] if first <= bar["session"] <= last]}
-        for adjustment, view in views.items()
-    }
     raw = views["raw"]["bars"]
     if not raw:
         return None
@@ -298,21 +265,7 @@ def _write_identity(directory, prepared):
 
 
 def _export_group(data, selected, groups, key, start, end):
-    """The coordinator reads one selected group with its shared payload memo."""
-    expected = data._groups[key]
-    try:
-        with data._reader._open_group(
-            expected["locator"], expected=expected["references"], wait=False, export_selection=True
-        ) as group:
-            with closing(group._iter_export_histories(groups[key], start=start, end=end)) as histories:
-                for public_id, views in histories:
-                    yield public_id, views
-    except ReaderBusyError as error:
-        raise ReaderBusyError("CSV export source is busy; retry later") from error
-    except (CatalogueError, StandaloneReaderError) as error:
-        raise CatalogChangedError(
-            "selected serving history is no longer compatible; finish maintenance and open a new DataLibrary"
-        ) from error
+    yield from read_group(data, selected, groups, key, start, end)
 
 
 def _group_events(data, directory, selected, groups, start, end, workers, memory_bytes, progress=None):
@@ -425,37 +378,18 @@ def write_export(
 ):
     workers = _workers(workers)
     memory_bytes = _memory_budget(memory_bytes)
-    try:
-        # The catalogue transaction was released at DataLibrary construction.
-        # Compare its token once after acquiring the shared operation lock and
-        # retain that lock through final-manifest publication. This pins CLI
-        # maintenance. Selected groups consume this accepted view without any
-        # further selector reads or upstream freshness/authentication checks.
-        with operation_lock(data.store, exclusive=False):
-            selected, groups, start, end = _selection(data, public_ids, start, end)
-            try:
-                export_inputs.select(
-                    data.store,
-                    data.catalog_generation(),
-                    {symbol for key in groups for symbol in data._groups[key]["references"]["lineage"]},
-                )
-            except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
-                raise CatalogChangedError(
-                    "selected serving catalogue or export inputs changed; finish maintenance and open a new DataLibrary"
-                ) from error
-            return _write_export(
-                data,
-                destination,
-                selected=selected,
-                groups=groups,
-                start=start,
-                end=end,
-                progress=progress,
-                workers=workers,
-                memory_bytes=memory_bytes,
-            )
-    except StoreBusyError as error:
-        raise ReaderBusyError("CSV export source store is busy; retry later") from error
+    with open_export(data, public_ids=public_ids, start=start, end=end) as exported:
+        return _write_export(
+            data,
+            destination,
+            selected=exported.securities,
+            groups=exported.groups,
+            start=exported.start,
+            end=exported.end,
+            progress=progress,
+            workers=workers,
+            memory_bytes=memory_bytes,
+        )
 
 
 def _write_export(data, destination, *, selected, groups, start, end, progress, workers, memory_bytes):

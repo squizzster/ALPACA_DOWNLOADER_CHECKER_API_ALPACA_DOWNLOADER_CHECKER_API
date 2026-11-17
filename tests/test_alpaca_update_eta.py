@@ -101,7 +101,8 @@ class UpdateETATests(unittest.TestCase):
         self.assertGreater(after["estimated_remaining_seconds"], before)
         estimate.request({"started": 68, "finished": 70, "succeeded": False})
         self.assertEqual(estimate.context()["estimated_remaining_seconds"], "TBD")
-        self.assertEqual(estimate.context()["eta_status"], "request_failed")
+        self.assertEqual(estimate.context()["eta_status"], "unknown")
+        self.assertEqual(estimate.context()["eta_reason"], "request_failed")
 
     def test_bad_or_unobserved_inputs_do_not_fabricate_eta(self):
         estimate = UpdateEstimate()

@@ -99,6 +99,76 @@ class PairedImpactTests(unittest.TestCase):
         self.assertFalse(report["groups"][0]["membership_refinement"]["changes"])
         self.assertEqual(report["summary"]["different_groups"], 0)
 
+    def test_effective_removal_compares_unrefined_candidate_and_invalidates_old_false_parity(self):
+        control = yaml.safe_load(self.policy.read_text())
+        control["research"]["membership_refinement"] = "accepted_same_security_containing_component_v1"
+        control_path = self.directory / "refined-control.yaml"
+        control_path.write_text(yaml.safe_dump(control))
+        options = dict(
+            store=str(self.store), policy=str(self.policy), control_policy=str(control_path), all=True
+        )
+
+        def refinement(reports, evidence, selected):
+            # Stand in for the completed membership decision. The real comparison,
+            # numerical selector, publication projection and saved-report path run.
+            if "GOOG" not in reports:
+                return reports, {"changes": []}
+            reports = copy.deepcopy(reports)
+            changes = []
+            for segment in reports["GOOG"]["correlated"]["segments"]:
+                old = segment["security_identity"]
+                new = {
+                    **old,
+                    "security_id": "a" * 64,
+                    "member_alpaca_asset_ids": [*old["member_alpaca_asset_ids"], "peer"],
+                }
+                segment["security_identity"] = new
+                segment["canonical_security"] = {
+                    **segment["canonical_security"],
+                    "security_id": new["security_id"],
+                }
+                changes.append(
+                    {
+                        "source": "GOOG",
+                        "adjustment": segment["adjustment"],
+                        "row_start": segment["row_start"],
+                        "row_end": segment["row_end"],
+                        "old_public_id": old["security_id"],
+                        "new_public_id": new["security_id"],
+                    }
+                )
+            return reports, {"changes": changes}
+
+        with (
+            patch.object(paired, "refine", side_effect=refinement) as producer,
+            patch.object(comparison, "correlate", wraps=comparison.correlate) as correlate,
+        ):
+            report = debug_fixtures.request("run", **options)
+            self.assertTrue(report["execution_complete"], report["failures"])
+            self.assertEqual(2, correlate.call_count)
+            self.assertEqual(2, producer.call_count)
+            groups = {group["seed_symbol"]: group for group in report["groups"]}
+            impact = groups["GOOG"]["control_to_candidate"]
+            self.assertFalse(impact["parity"])
+            self.assertFalse(impact["decision_parity"])
+            self.assertEqual("a" * 64, impact["memberships"]["control"][0]["security_id"])
+            self.assertNotEqual(impact["memberships"]["control"], impact["memberships"]["candidate"])
+            self.assertFalse(groups["GOOG"]["published_to_control"]["parity"])
+            self.assertTrue(groups["GOOG"]["published_to_candidate"]["parity"])
+            self.assertTrue(groups["AAA"]["control_to_candidate"]["parity"])
+
+            previous = self.directory / "previous.json"
+            report["debug_version"] = 14
+            report["implementation_binding"].update(debug=14, lineage_runtime=111)
+            impact["parity"] = True
+            previous.write_text(json.dumps(report))
+            retried = debug_fixtures.request("run", reuse_report=str(previous), **options)
+            self.assertTrue(retried["execution_complete"], retried["failures"])
+            self.assertEqual([["AAA"]], retried["reused_groups"])
+            self.assertEqual(1, retried["summary"]["different_groups"])
+            self.assertEqual(3, correlate.call_count)
+            self.assertEqual(3, producer.call_count)
+
 
 class FrameTests(unittest.TestCase):
     def test_diagnostic_change_is_not_a_changed_owner(self):

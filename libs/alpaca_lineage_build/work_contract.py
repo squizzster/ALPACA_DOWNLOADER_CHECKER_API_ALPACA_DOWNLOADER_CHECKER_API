@@ -2,11 +2,11 @@
 
 from uuid import uuid4
 
-from libs.alpaca_pricing_download.contract import HISTORY_START, failure_outcome
+from libs.alpaca_pricing_download.contract import HISTORY_START
 from libs.alpaca_security_lineage.lineage import compact_asset
 from libs.common.debug_trace import event, traced
 
-from .contract import LineageError, document_digest, reusable_decision
+from .contract import LineageError, document_digest, failure_outcome, reusable_decision
 from .selection import DependencyGraph
 
 
@@ -29,6 +29,7 @@ def obligation(item, previous=None):
         "pricing_correction",
         "required_group",
         "required_numerical_completion",
+        "required_numerical_mapping",
     )
     if previous.get("obligation_id") and all(item.get(k) == previous.get(k) for k in keys):
         return {**item, "obligation_id": previous["obligation_id"]}
@@ -52,6 +53,31 @@ def correction_satisfied(item, generation, recorded_id=None):
 
 def numerical_satisfied(item, projection):
     """A pricing approval cannot stand in for a completed numerical repair."""
+    mapping = item.get("required_numerical_mapping")
+    if mapping is not None:
+        if (
+            not isinstance(mapping, dict)
+            or type(mapping.get("version")) is not int
+            or mapping.get("version") != 1
+        ):
+            return False
+        identifier = mapping.get("request", {}).get("numerical_mapping", {}).get("candidate_id")
+        capability = (projection or {}).get("numerical_mapping_completed")
+        if capability is not None:
+            if (
+                not isinstance(capability, dict)
+                or type(capability.get("version")) is not int
+                or capability.get("version") != 1
+            ):
+                return False
+            completed = capability.get("candidate_ids", ())
+        else:
+            completed = [
+                decision["candidate_id"]
+                for decision in (projection or {}).get("numerical_mapping_assessments", {}).get("decisions", ())
+            ]
+        if not identifier or identifier not in completed:
+            return False
     required = item.get("required_numerical_completion")
     if required is None:
         return True
@@ -268,8 +294,9 @@ class WorkPolicy:
         # selected pricing generation changes workflow state, not lineage data.
         # Selection already owns whether metadata needs refreshing; the index
         # owns coverage/group membership. Consume those handoffs in memory, not
-        # by reopening receipts or repeating upstream checks. A crash before the
-        # workflow acknowledgement leaves the obligation pending for a fresh check.
+        # by reopening receipts or repeating upstream checks. An approval that
+        # produced no matching receipt projection remains operation-local after a
+        # crash; selection separately consumes any exact committed obligation.
         approved = bool(
             entry
             and (
@@ -294,8 +321,8 @@ class WorkPolicy:
         # The caller already checked inputs under group locks and selected any
         # changed outputs. Keep that proof, including absent auxiliary members;
         # DO NOT reopen their receipts when a later live approval arrives.
-        # This is operation-local: a crash before durable acknowledgement leaves
-        # work pending, and no persisted cache is allowed to bypass a fresh check.
+        # This in-memory proof is operation-local. After a crash, only an owning
+        # publication carrying the exact obligation may bypass a fresh check.
         unavailable = next(iter(receipts.values())).get("unavailable_pricing", {})
         references = {s: (entries.get(s) or {}).get("sha256") for s in receipts.keys() | unavailable.keys()}
         for symbol, owner in completed.items():
@@ -391,6 +418,59 @@ class WorkPolicy:
                 _pending=pending,
             )
         self._accept_requirements(pending)
+
+    def require_mappings(self, requests):
+        """Persist the selected producer requirement before its first observation."""
+        pending = {}
+        for symbol, request in requests.items():
+            if "numerical_mapping" not in request:
+                continue
+            prior = self.work[symbol]
+            requirement = {"version": 1, "request": request}
+            if prior.get("required_numerical_mapping") != requirement:
+                pending[symbol] = obligation(
+                    {
+                        **prior,
+                        "required_numerical_mapping": requirement,
+                        "status": "pending",
+                        "reasons": sorted(set(prior.get("reasons", ())) | {"numerical_mapping_selection"}),
+                    },
+                    prior,
+                )
+        self._accept_requirements(pending)
+
+    def pending_mappings(self, group, sources, generations, *, completed=None):
+        """A missing workflow acknowledgement cannot erase selected mapping work."""
+        required = {}
+        for symbol in group:
+            item = self.work.get(symbol, {})
+            value = item.get("required_numerical_mapping")
+            if value is None or numerical_satisfied(
+                item, self.index["symbols"].get(symbol, {}).get("projection")
+            ):
+                continue
+            if not isinstance(value, dict) or type(value.get("version")) is not int or value.get("version") != 1:
+                raise LineageError("unsupported pending numerical mapping; owning recovery required")
+            request = value["request"]
+            need = request["numerical_mapping"]
+            original = need["binding"]["pricing_generations"]
+            decision = (completed or {}).get(need["candidate_id"])
+            if decision is not None:
+                expected = {**original, symbol: decision["result_generation"]}
+                if all(generations.get(name) == generation for name, generation in expected.items()):
+                    continue
+            if any(
+                generations.get(name) != generation
+                and not (
+                    name == symbol
+                    and (sources.get(name) or {}).get("history_correction_id") == need["candidate_id"]
+                    and sources[name]["latest_request"]["asof"] == request["mapping_asof"]
+                )
+                for name, generation in original.items()
+            ):
+                raise LineageError("pending numerical mapping changed source binding; owning recovery required")
+            required[symbol] = request
+        return required
 
     def require_maintenance(self, entries, target):
         pending = {}
@@ -919,7 +999,7 @@ class WorkPolicy:
         classification = detail.get("outcome") if isinstance(detail, dict) else detail
         status = (
             "blocked"
-            if classification in {"access_denied", "symbol_unavailable", "invalid_symbol"}
+            if classification in {"access_denied", "symbol_unavailable", "invalid_symbol", "recovery_required"}
             or outcome.get("status") == "blocked"
             else "retry"
         )

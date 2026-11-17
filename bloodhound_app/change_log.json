@@ -18,5 +18,10 @@
     "modifications": [
       "Carry the current CSV adapter's shared session and dated-label alignment into history consumption without repeating array comparisons. Preserve independent legacy alignment checks once per distinct loaded frame, including alias reuse, and test both supported schemas, metadata overrides and actual mismatches."
     ]
+  },
+  {
+    "modifications": [
+      "Read online histories directly through the shared public catalogue export stream; preserve existing precision, factor, metadata, series-ID, schema and serialized-output checks, with bounded read-once Arrow buffering and completed CSV/legacy input compatibility."
+    ]
   }
 ]

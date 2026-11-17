@@ -1,6 +1,6 @@
 """Small publication-owned comparison rows; never a second pricing store."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -200,14 +200,21 @@ class EndpointSelection:
     tail_all: tuple | None = None
     comparison: HistoryComparison | None = None
     comparison_asof: str | None = None
+    lineage_generation: str | None = None
 
     def document(self):
-        return {"schema_version": 1, **asdict(self)}
+        if self.lineage_generation is not None:
+            raise DownloadError("mapped retained-history comparisons cannot select a durable correction")
+        values = asdict(self)
+        values.pop("lineage_generation")
+        return {"schema_version": 1, **values}
 
     @classmethod
     def from_document(cls, document):
         if not isinstance(document, dict) or document.get("schema_version") != 1:
             raise DownloadError("unsupported durable pricing selection")
+        if "lineage_generation" in document:
+            raise DownloadError("unsupported durable pricing lineage generation")
         values = {key: value for key, value in document.items() if key != "schema_version"}
         comparison = values.get("comparison")
         if comparison is not None:
@@ -224,7 +231,7 @@ class EndpointSelection:
         except (TypeError, KeyError) as error:
             raise DownloadError("invalid durable pricing selection") from error
 
-    def applies(self, store, symbol, generation, end, asof):
+    def applies(self, store, symbol, generation, end, asof, *, lineage_generation=None):
         applicable = (str(store), symbol, generation, end, asof) == (
             self.store,
             self.symbol,
@@ -244,13 +251,36 @@ class EndpointSelection:
             selected_end_exclusive=self.end,
             asof=asof,
             selected_asof=self.asof,
+            lineage_generation=lineage_generation,
+            selected_lineage_generation=self.lineage_generation,
             applicable=applicable,
             comparison_matched=self.matched,
         )
         return applicable
 
-    def consume(self, store, symbol, generation, end, asof):
-        if not self.applies(store, symbol, generation, end, asof):
+    def for_lineage(self, lineage_generation):
+        """Invalidate only a comparison that consumed a changed lineage receipt."""
+        applicable = self.lineage_generation is None or self.lineage_generation == lineage_generation
+        event(
+            "endpoint_comparison_binding",
+            symbol=self.symbol,
+            lineage_generation=lineage_generation,
+            selected_lineage_generation=self.lineage_generation,
+            applicable=applicable,
+            comparison_matched=self.matched,
+        )
+        if applicable:
+            return self
+        return replace(
+            self,
+            matched=None,
+            comparison=None,
+            comparison_asof=None,
+            lineage_generation=None,
+        )
+
+    def consume(self, store, symbol, generation, end, asof, *, lineage_generation=None):
+        if not self.applies(store, symbol, generation, end, asof, lineage_generation=lineage_generation):
             raise DownloadError("endpoint selection no longer matches the selected acquisition")
         return None if self.points is None else Endpoints(self.points, tail_all=self.tail_all)
 

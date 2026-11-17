@@ -13,6 +13,11 @@ from pathlib import Path
 
 import pandas as pd
 
+if __package__:
+    from .published_labels import ticker_labels as _published_ticker_labels
+else:
+    from published_labels import ticker_labels as _published_ticker_labels
+
 FIELDS = ("open", "high", "low", "close", "volume", "trade_count", "vwap")
 VIEWS = ("raw", "split", "dividend", "spin-off", "split,dividend", "split,spin-off", "dividend,spin-off", "all")
 SUPPORTED_SCHEMAS = (1, 2)
@@ -125,21 +130,6 @@ def _legacy_ticker_labels(security, exported_range, sessions):
             symbols.append(single_ticker)
         else:
             symbols.append("")
-    return symbols
-
-
-def _published_ticker_labels(ranges, sessions):
-    """Project the accepted catalogue's inclusive label ranges into output rows.
-
-    These are completed observed-label decisions, not ownership evidence to
-    reconcile. Preserve their distinct candidates without re-proving membership,
-    endpoint coverage or compatibility with the descriptive ticker metadata.
-    """
-    selected = [(item["first_session"], item["last_session"], item["ticker"]) for item in ranges]
-    symbols = []
-    for session in sessions:
-        candidates = {ticker for start, end, ticker in selected if start <= session <= end}
-        symbols.append(next(iter(candidates)) if len(candidates) == 1 else "")
     return symbols
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert resolved Alpaca daily histories to the 18-column Bloodhound interface.
 
-Run: python alpaca_to_bloodhound.py --data-in DIRECTORY --blood-out FILE.parquet
+Run: python -m bloodhound_app.alpaca_to_bloodhound --store STORE --blood-out FILE.parquet
 See README.md for the input, factor-evidence, and metadata contracts.
 """
 
@@ -19,6 +19,7 @@ import shutil
 import sys
 import tempfile
 import zlib
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -28,11 +29,16 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from bloodhound_actions import load_action_evidence
-from bloodhound_factors import infer_split_factors, validate_split_factors
 
-VERSION = "1.2.0"
-RUNTIME_VERSION = 4
+if __package__:
+    from .bloodhound_actions import load_action_evidence
+    from .bloodhound_factors import infer_split_factors, validate_split_factors
+else:
+    from bloodhound_actions import load_action_evidence
+    from bloodhound_factors import infer_split_factors, validate_split_factors
+
+VERSION = "1.3.0"
+RUNTIME_VERSION = 5
 ADJUSTMENTS = (
     "raw",
     "split",
@@ -115,6 +121,9 @@ class History:
     read_symbol: str
     views: dict[str, dict[str, Any]]
     current_export: dict[str, Any] | None = None
+    catalogue_history: Any = None
+    identifier: int | None = None
+    projected_metadata: dict[str, Any] | None = None
 
 
 def contained_payload(directory: Path, name: str) -> Path:
@@ -130,7 +139,10 @@ def contained_payload(directory: Path, name: str) -> Path:
 
 
 def discover_histories(root: Path, public_ids=None) -> list[History]:
-    from current_csv import select
+    if __package__:
+        from .current_csv import select
+    else:
+        from current_csv import select
 
     current = select(root, public_ids)
     if current is not None:
@@ -241,7 +253,12 @@ def unique_histories(histories):
         if number in by_numeric and by_numeric[number] != item.public_id:
             raise ConversionError("Deterministic series-ID collision; use distinct source identities")
         by_numeric[number] = item.public_id
-    return sorted(histories, key=lambda item: series_id(item.public_id))
+        item.identifier = number
+    return sorted(histories, key=lambda item: item.identifier)
+
+
+def history_identifier(history):
+    return history.identifier if history.identifier is not None else series_id(history.public_id)
 
 
 def bad_rows(mask: np.ndarray, frame: pd.DataFrame, limit: int = 5) -> str:
@@ -329,10 +346,21 @@ def validate_frame(
 
 
 def load_history(
-    history: History, metadata=None
+    history: History, metadata=None, *, args=None
 ) -> tuple[dict[str, pd.DataFrame], list[dict[str, Any]], list[dict[str, Any]]]:
-    if history.current_export is not None:
-        from current_csv import load
+    if history.catalogue_history is not None:
+        if __package__:
+            from .catalogue_input import load
+        else:
+            from catalogue_input import load
+
+        frames, payloads = load(history, metadata, args, validate_frame)
+        alignment_complete = True
+    elif history.current_export is not None:
+        if __package__:
+            from .current_csv import load
+        else:
+            from current_csv import load
 
         current = history.current_export
         frames, payloads = load(
@@ -516,8 +544,14 @@ def make_table(
     sessions = raw["session"].to_numpy(dtype=str)
     values: dict[str, Any] = {
         "date": pd.to_datetime(sessions, format="%Y-%m-%d").to_numpy(dtype="datetime64[ns]"),
-        "ohlcv_series_id": np.full(len(raw), series_id(history.public_id), dtype=np.int64),
-        **metadata.columns(history.public_id, sessions, raw, args.unknown_security_type, args.unknown_exchange),
+        "ohlcv_series_id": np.full(len(raw), history_identifier(history), dtype=np.int64),
+        **(
+            history.projected_metadata
+            if history.projected_metadata is not None
+            else metadata.columns(
+                history.public_id, sessions, raw, args.unknown_security_type, args.unknown_exchange
+            )
+        ),
     }
     for name in OHLC:
         values["adjusted_" + name] = (
@@ -671,11 +705,34 @@ def validate_written_parquet(path: Path) -> dict[str, Any]:
 
 
 def convert(args: argparse.Namespace) -> dict[str, Any]:
-    root = args.data_in.expanduser().resolve()
+    store = getattr(args, "store", None)
+    root = (store if store is not None else args.data_in).expanduser().resolve()
+    output, report_path = validate_arguments(args, root)
+    if store is not None:
+        if __package__:
+            from .catalogue_input import open_histories
+        else:
+            from catalogue_input import open_histories
+
+        with open_histories(args, History, unique_histories) as histories:
+            return _convert(args, root=root, output=output, report_path=report_path, histories=histories)
+    return _convert(args, root=root, output=output, report_path=report_path)
+
+
+def progress(args, message, *, warning=False):
+    callback = getattr(args, "_progress", None)
+    if callback is not None:
+        callback(message, warning=warning)
+    elif not args.quiet:
+        print(message, file=sys.stderr)
+
+
+def validate_arguments(args, root):
     output = args.blood_out.expanduser().resolve()
     report_path = Path(str(output) + ".report.json")
     if not root.is_dir():
-        raise ConversionError(f"--data-in must be an existing extracted directory: {root}")
+        option = "--store" if getattr(args, "store", None) is not None else "--data-in"
+        raise ConversionError(f"{option} must be an existing directory: {root}")
     if output.suffix.lower() != ".parquet":
         raise ConversionError("--blood-out must end in .parquet")
     if args.start_date and args.end_date and args.start_date > args.end_date:
@@ -694,11 +751,26 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
             raise ConversionError(f"Output already exists: {path}; use --overwrite to replace it")
         if path.is_dir():
             raise ConversionError(f"Output path is a directory: {path}")
-    histories = discover_histories(root, getattr(args, "public_id", None))
+    if getattr(args, "store", None) is not None:
+        if any(
+            path.resolve().is_relative_to(root)
+            for path in (output, report_path, Path(str(output) + ".failure.json"))
+        ):
+            raise ConversionError("Parquet and reports must be outside the source store")
+        memory_mib = getattr(args, "memory_mib", 5120)
+        if type(memory_mib) is not int or not 1 <= memory_mib <= 8192:
+            raise ConversionError("--memory-mib must be between 1 and 8192")
+    return output, report_path
+
+
+def _convert(args, *, root, output, report_path, histories=None):
+    catalogue = histories is not None
+    if not catalogue:
+        histories = discover_histories(root, getattr(args, "public_id", None))
     # Every possible publication destination, including failure diagnostics,
     # must be disjoint from selected inputs before any output can be written.
     inputs = {p.resolve() for p in (args.split_events, args.action_coverage, args.metadata) if p}
-    for history in histories:
+    for history in histories.descriptors if catalogue else histories:
         if history.manifest_path:
             inputs.add(history.manifest_path.resolve())
         inputs.update(
@@ -770,10 +842,15 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
         "histories": [],
         "omitted_histories": [],
         "input_evidence": {},
-        "input_format": "alpaca_public_id_eod_csv"
+        "input_format": "alpaca_online_catalogue"
+        if catalogue
+        else "alpaca_public_id_eod_csv"
         if any(h.current_export for h in histories)
         else "legacy_per_view_csv",
     }
+    if catalogue:
+        report["catalogue"] = histories.catalogue
+        report["io_strategy"] = "read_once_then_write"
     for name, path in (
         ("split_events", args.split_events),
         ("action_coverage", args.action_coverage),
@@ -799,13 +876,30 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
     )
     total_rows = 0
     try:
-        with pq.ParquetWriter(
-            temporary, schema, compression=args.compression, version="2.6", use_dictionary=True
-        ) as writer:
+        with ExitStack() as resources:
+            collector = None
+            if catalogue:
+                if __package__:
+                    from .catalogue_input import OutputTables
+                else:
+                    from catalogue_input import OutputTables
+
+                memory_mib = getattr(args, "memory_mib", 5120)
+                collector = OutputTables(memory_mib * 1024**2)
+                resources.callback(collector.clear)
+                report["memory_bytes"] = collector.maximum_bytes
+                report["retained_memory_bytes"] = collector.retained_limit
+                writer = None
+            else:
+                writer = resources.enter_context(
+                    pq.ParquetWriter(
+                        temporary, schema, compression=args.compression, version="2.6", use_dictionary=True
+                    )
+                )
             for position, history in enumerate(histories, 1):
                 item: dict[str, Any] = {
                     "public_id": history.public_id,
-                    "ohlcv_series_id": series_id(history.public_id),
+                    "ohlcv_series_id": history_identifier(history),
                     "read_symbol": history.read_symbol,
                     "input_subdirectory": str(history.directory.relative_to(root)),
                     "lineage_generation": history.manifest.get("lineage_generation"),
@@ -813,7 +907,11 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
                 try:
                     if history.manifest_path:
                         item["manifest_sha256"] = sha256_file(history.manifest_path)
-                    frames, payloads, issues = load_history(history, metadata)
+                    frames, payloads, issues = (
+                        load_history(history, metadata, args=args)
+                        if catalogue
+                        else load_history(history, metadata)
+                    )
                     raw = frames["raw"]
                     item.update(
                         input_rows=len(raw),
@@ -850,9 +948,11 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
                     item["split_factor_details"] = diagnostics
                     table = make_table(history, frames, factors, metadata, args)
                     if len(table):
-                        writer.write_table(
-                            table.replace_schema_metadata(schema.metadata), row_group_size=len(table)
-                        )
+                        table = table.replace_schema_metadata(schema.metadata)
+                        if collector is not None:
+                            collector.add(history_identifier(history), table)
+                        else:
+                            writer.write_table(table, row_group_size=len(table))
                         total_rows += len(table)
                         item["status"] = "exported"
                     else:
@@ -876,13 +976,22 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
                     if getattr(exc, "view", None):
                         item["error_view"] = exc.view
                     report["omitted_histories"].append(item)
-                    if not args.quiet:
-                        print(f"REJECT {history.read_symbol}: {exc}", file=sys.stderr)
-                if not args.quiet and (position % 25 == 0 or position == len(histories)):
-                    print(
+                    progress(args, f"REJECT {history.read_symbol}: {exc}", warning=True)
+                if position % 25 == 0 or position == len(histories):
+                    progress(
+                        args,
                         f"Checked {position}/{len(histories)} histories; staged {total_rows:,} rows; rejected {len(report['omitted_histories'])}.",
-                        file=sys.stderr,
                     )
+            if (
+                collector is not None
+                and total_rows
+                and (not report["omitted_histories"] or args.on_error == "skip")
+            ):
+                progress(args, f"Writing {total_rows:,} rows from accepted in-memory Parquet tables.")
+                with pq.ParquetWriter(
+                    temporary, schema, compression=args.compression, version="2.6", use_dictionary=True
+                ) as writer:
+                    collector.write(writer)
         report["staged_rows"] = total_rows
         report["histories_exported"] = sum(item["status"] == "exported" for item in report["histories"])
         report["histories_rejected"] = len(report["omitted_histories"])
@@ -921,9 +1030,10 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    result.add_argument(
+    inputs = result.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--store", type=Path, help="Read online histories directly from an Alpaca store")
+    inputs.add_argument(
         "--data-in",
-        required=True,
         type=Path,
         help="Completed current CSV run directory, or legacy per-view history directory",
     )
@@ -931,7 +1041,7 @@ def parser() -> argparse.ArgumentParser:
         "--blood-out", required=True, type=Path, help="Destination Bloodhound .parquet data file"
     )
     result.add_argument(
-        "--public-id", action="append", help="Select a public ID from a completed current CSV run; repeatable"
+        "--public-id", action="append", help="Select an online or completed-CSV public identity; repeatable"
     )
     result.add_argument(
         "--split-source",
@@ -976,6 +1086,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--quiet", action="store_true", help="Suppress progress; final summary and errors remain"
     )
+    result.add_argument(
+        "--memory-mib",
+        type=int,
+        default=5120,
+        help="Completed Parquet buffer budget for --store, 1–8192 MiB; default 5120",
+    )
     result.add_argument("--version", action="version", version=VERSION)
     return result
 
@@ -984,9 +1100,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.compression == "none":
         args.compression = None
+    errors = (ValueError, TypeError, OSError, EOFError, MemoryError, csv.Error, zlib.error, pa.ArrowException)
+    if args.store is not None:
+        try:
+            from alpaca_end_of_day import DataLibraryError
+        except ImportError as exc:
+            print(f"ERROR: Direct store input requires the Alpaca public library: {exc}", file=sys.stderr)
+            return 2
+        errors += (DataLibraryError,)
     try:
         report = convert(args)
-    except (ValueError, TypeError, OSError, EOFError, csv.Error, zlib.error, pa.ArrowException) as exc:
+    except errors as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print(
