@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 13
+VERSION = 14
 SCHEMA_VERSION = 1
 
 
@@ -57,9 +57,10 @@ def accept_report(value, operation, *, allow_previous=False):
         (13, 24, 97, 108),
         (13, 24, 97, 109),
         (13, 24, 97, 110),
+        (14, 24, 97, 111),
     }:
         # Generic completed comparisons retain their exact policy/generation
-        # bindings. Runtimes 109/110 change production mapping acquisition and
+        # bindings. Runtimes 109 through 111 change production mapping acquisition and
         # owning recovery without changing these research producers. Factual candidates are rejected
         # above, never restored.
         bindings.extend(
@@ -88,6 +89,7 @@ def accept_report(value, operation, *, allow_previous=False):
                 (12, 24, 97, 107),
                 (13, 24, 97, 108),
                 (13, 24, 97, 109),
+                (13, 24, 97, 110),
             )
         )
     if (

@@ -216,5 +216,10 @@
     "modifications": [
       "Export Bloodhound Parquet directly from the online catalogue, sharing source selection with CSV and reporting the converter result and compatibility report."
     ]
+  },
+  {
+    "modifications": [
+      "Report unknown ETA availability separately from retained request-failure reasons and emit bounded normal-run diagnostics. Retire recovered exceptions only at completed producer request scopes; retain failures across unrelated successful requests. Preserve wrapped HTTP status in debug traces."
+    ]
   }
 ]

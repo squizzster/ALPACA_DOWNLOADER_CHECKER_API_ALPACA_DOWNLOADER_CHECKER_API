@@ -123,7 +123,7 @@ def update_everything(
         nonlocal current_stage
         current_stage = name
         if progress:
-            progress(name, {"state": "started", "end_exclusive": end})
+            progress(name, {"state": "started", "end_exclusive": end, "request_scope": True})
         before = time.monotonic()
         value = function(*args, **kwargs)
         result["stages"][name] = {**value, "seconds": round(time.monotonic() - before, 3)}

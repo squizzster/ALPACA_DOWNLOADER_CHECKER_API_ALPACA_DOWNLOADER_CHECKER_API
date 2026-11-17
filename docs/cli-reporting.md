@@ -73,7 +73,8 @@ correlation/publication/acknowledgement, serving components/evaluation/publicati
 registry commit/push. CLI HTTP spans include limiter waits, request time and response handling, not exclusively network latency.
 Full GET targets and parameters are recorded in ordered `http_target` chunks (join `url_part` by request ID and
 part number), including long symbol rosters and pagination tokens. Request headers, credentials and response
-bodies are not serialized. HTTP exits retain observed request-count changes and available failure status.
+bodies are not serialized. HTTP exits retain observed request-count changes and available failure status,
+including a status carried by a wrapped exception's cause.
 Correction conflict events retain selected/acquired row values and the acquired session row count.
 `late_bar_action_positive` identifies each completed positive action and whether it was persisted;
 `late_bar_action_failed` includes the selected symbols, mapping, bounds and classified cause.
@@ -148,8 +149,19 @@ Daily execution also estimates the remaining **known pricing requests**, identif
 the midpoint and `estimated_remaining_lower_seconds` / `estimated_remaining_upper_seconds` combine the
 accepted work-plan assumptions with recent and invocation-wide wall-time throughput, bounded by the shared
 request-rate limit. Worker durations are not added together. Completed calls include their own retries and
-rate waits; a failed call withdraws the numeric estimate. Request counters update held progress without
+rate waits; a failed call withdraws the numeric estimate with `eta_status: "unknown"` and
+`eta_reason: "request_failed"`. Request counters update held progress without
 changing the phase or heartbeat cadence, and work without debug receives the same reporting.
+
+Escaped pricing-call exceptions emit an immediate warning diagnostic containing `pricing_request_failure`:
+bounded error type/message, available HTTP status and allowlisted request scope, without headers or response bodies.
+Provider messages and transport reasons are bounded and credential-redacted at the pricing boundary before
+they enter scalar failure handoffs. Heartbeats retain `eta_request_failures`,
+`eta_unresolved_request_failures`, `eta_last_error_type` and an available `eta_last_http_status`.
+Successful retries inside the original call remain one successful observation. A completed producer request
+scope with zero failures retires exceptions observed inside that scope, including supported batch fallback;
+unrelated successful calls or scopes cannot retire an earlier unfinished failure. Successful overall completion
+retires the remaining observations. Reporting never retries requests or reopens accepted work.
 
 The exact late-bar request plan replaces its provisional selection estimate. Newly selected request plans
 extend an exhausted estimate. These are conditional estimates, not duration limits: later metadata,

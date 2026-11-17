@@ -584,7 +584,20 @@ class RetainedBatchTests(unittest.TestCase):
         self.assertTrue(all(params["symbols"] == "AAA,BBB,CCC,DDD" for _, params in self.pages))
         self.assertEqual(
             [stage for stage, values in self.progress if values.get("state") == "started"],
-            ["boundary_check", "retained_history_acquisition", "retained_history_acquisition"],
+            [
+                "acquisition_selection",
+                "boundary_check",
+                "retained_history_acquisition",
+                "retained_history_acquisition",
+            ],
+        )
+        self.assertEqual(
+            [
+                (values["state"], values.get("request_scope"), values.get("failed"))
+                for stage, values in self.progress
+                if stage == "acquisition_selection"
+            ],
+            [("started", True, None), ("completed", None, 0)],
         )
         for item in result["results"]:
             self.assertEqual((item["mode"], item["consistency_check"]), ("update", "matched"))

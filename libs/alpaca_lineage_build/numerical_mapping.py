@@ -346,8 +346,8 @@ def checkpoint_sessions(context, generations, public_id, cache, *, partitions=No
 
     try:
         catalogue = context.select_serving()
-    except (OSError, RuntimeError):
-        return None
+    except (OSError, RuntimeError) as error:
+        raise RecoveryRequired(f"mapping contribution selector unavailable: {error}") from error
     keys = {catalogue["members"].get(name) for name in generations}
     if None in keys or len(keys) != 1:
         return None

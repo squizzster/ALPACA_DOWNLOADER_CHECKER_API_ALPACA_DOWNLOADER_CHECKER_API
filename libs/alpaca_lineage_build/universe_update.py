@@ -700,7 +700,7 @@ def histories_locked(
     def lineage_phase(name, labels, publications=()):
         callback = (lambda stage, values: progress(name + "_" + stage, values)) if progress else None
         if progress:
-            progress(name, {"state": "started", "selected": len(labels)})
+            progress(name, {"state": "started", "selected": len(labels), "request_scope": True})
         value = run_lineage(
             store,
             sorted(labels),

@@ -134,6 +134,19 @@ class BarsClient:
             headers={"APCA-API-KEY-ID": self.key, "APCA-API-SECRET-KEY": self.secret},
         )
 
+        def diagnostic(value):
+            # Retain bounded scalar reasons, never response bodies, credentials
+            # or exception/response objects in durable failure handoffs.
+            text = str(value)
+            for credential in (self.key, self.secret):
+                text = text.replace(credential, "[redacted]")
+            return " ".join(text.split())[:512]
+
+        target = parameters.get("symbols")
+        if isinstance(target, str) and "," in target:
+            target = f"{target.count(',') + 1} symbols"
+        scope = f"{target}/{parameters.get('adjustment')}"
+
         def before_attempt():
             # Every page, endpoint probe, and retry uses this same shared budget.
             self.limiter.acquire()
@@ -148,12 +161,14 @@ class BarsClient:
                     # Even an exhausted ticker must leave the other workers paused.
                     self.limiter.defer(delay)
                 unavailable = False
-                if error.code == 400:
+                body = {}
+                if error.code == 400 or not retry or last:
                     try:
                         body = parse_response(error.read(2048))
                         symbol = parameters.get("symbols")
                         unavailable = (
-                            isinstance(symbol, str)
+                            error.code == 400
+                            and isinstance(symbol, str)
                             and "," not in symbol
                             and body.get("message") == f"invalid symbol: {symbol}"
                         )
@@ -162,15 +177,17 @@ class BarsClient:
                 if unavailable:
                     raise BarsSymbolUnavailable(symbol, error.code) from error
                 if not retry or last:
-                    target = parameters.get("symbols")
-                    if isinstance(target, str) and "," in target:
-                        target = f"{target.count(',') + 1} symbols"
+                    message = body.get("message")
+                    detail = ": " + diagnostic(message) if isinstance(message, str) and message else ""
                     raise DownloadError(
-                        f"Alpaca bars request failed for {target}/{parameters.get('adjustment')}: HTTP {error.code}"
+                        f"Alpaca bars request failed for {scope}: HTTP {error.code}{detail}"
                     ) from error
             else:
                 if last:
-                    raise DownloadError(f"Alpaca bars transport failed: {type(error).__name__}") from error
+                    reason = diagnostic(getattr(error, "reason", error))
+                    raise DownloadError(
+                        f"Alpaca bars transport failed for {scope}: {type(error).__name__}: {reason}"
+                    ) from error
                 self.sleep(min(2**attempt, 30))
             return RETRY
 

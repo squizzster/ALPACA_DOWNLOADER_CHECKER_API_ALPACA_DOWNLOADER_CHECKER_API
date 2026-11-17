@@ -6,7 +6,7 @@ from libs.alpaca_pricing_download.responses import CompletedBars, completed_bars
 from libs.alpaca_pricing_download.storage import read_document
 
 from . import storage
-from .contract import LineageError, RecoveryRequired
+from .contract import RecoveryRequired
 from .numerical_mapping import VERSION, witness_window
 
 
@@ -34,7 +34,7 @@ def _restore_witness(value):
         "rows",
         "singleton",
     }:
-        raise LineageError("invalid completed mapping witness; owning recovery required")
+        raise RecoveryRequired("invalid completed mapping witness; owning recovery required")
     return CompletedBars(
         value["symbol"],
         value["adjustment"],
@@ -67,14 +67,14 @@ def execute(
             or value.get("version") != VERSION
             or not isinstance(value.get("candidate_id"), str)
         ):
-            raise LineageError("unsupported numerical mapping journal; owning recovery required")
+            raise RecoveryRequired("unsupported numerical mapping journal; owning recovery required")
         if value is None or value["candidate_id"] != identifier:
             value = {"version": VERSION, "candidate_id": identifier, "binding": need["binding"]}
         stages[identifier] = {"path": path, "value": value}
     stage = stages[identifier]
     value, path = stage["value"], stage["path"]
     if value["binding"] != need["binding"]:
-        raise LineageError("numerical mapping journal binding changed")
+        raise RecoveryRequired("numerical mapping journal binding changed; owning recovery required")
 
     def persist():
         storage.atomic_json(path, value, compare=False)

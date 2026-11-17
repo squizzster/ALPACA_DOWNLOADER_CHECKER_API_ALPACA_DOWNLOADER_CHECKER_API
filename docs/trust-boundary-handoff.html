@@ -163,7 +163,11 @@ retains ordering, delivery and response-lifetime regressions. These checks do no
 or close F15's broader coverage limits.</p>
 <p>Reporting regressions in <a href="../tests/test_alpaca_update_eta.py">test_alpaca_update_eta.py</a>
 cover concurrent request measurement, failed calls, changed request scope, counter resets, heartbeat cadence
-and synthetic update parity through serving. The estimate covers known pricing requests and separately measured
+and synthetic update parity through serving. <a href="../tests/test_alpaca_exception_reporting.py">Exception-boundary regressions</a>
+exercise a rejected batch followed by successful exact acquisition, unknown ETA availability with a separate reason,
+completed producer-scope recovery, unrelated peer failures, bounded normal diagnostics and wrapped HTTP status.
+They preserve exact request counts and original exceptions without diagnostic storage reads.
+The estimate covers known pricing requests and separately measured
 phases; unselected future work and unmeasured local stages remain outside its numerical range.</p>
 <p>Completed equal-price correction outcomes carry through a certified append whose ancestry preserves the corrected span. Interrupted acknowledgement consumes that selected ancestry without repeating correction acquisition. Renewed correction IDs, missing ancestry and earlier changed rows invalidate the carry. <a href="../tests/test_alpaca_correction_completion_carry.py">Correction completion carry regressions</a> cover normal publication, interruption and invalidation through actual maintenance entry points.</p>
 <h2>Prepare process boundary</h2>
@@ -458,9 +462,13 @@ changed-price, changed-ownership or changed-mapping work.</p>
 distinguishes the client socket timeout from an earlier provider failure. Owning regressions exercise slow
 paginated responses without redundant requests, bounded timeout retries and preserved HTTP 504 classification:
 <a href="../tests/test_alpaca_pricing_download.py">test_alpaca_pricing_download.py</a> and
-<a href="../tests/test_alpaca_pricing_rate_limit.py">test_alpaca_pricing_rate_limit.py</a>. Retry errors and
-cooldowns are not exposed by the existing heartbeat; the debug request exit retains the attempt count but can
-omit a wrapped HTTP status. A healthy heartbeat alone does not establish provider progress.</p>
+<a href="../tests/test_alpaca_pricing_rate_limit.py">test_alpaca_pricing_rate_limit.py</a>.
+Escaped pricing-call failures now retain bounded, credential-redacted provider/transport reasons and emit a normal
+diagnostic before any owning fallback. Debug request exits preserve HTTP status through exception causes;
+internal retry and cooldown policies are unchanged. The exception-boundary regressions above exercise these
+limits and mapping-journal recovery without a transient cooldown, including preservation of serving-selector
+failure causes. These synthetic repairs do not recover discarded historical exception details or close F09/F15.
+A healthy heartbeat alone does not establish provider progress.</p>
 <h2>Finding register</h2>
 <table>
 <thead><tr><th>Finding</th><th>Status</th><th>Evidence and remaining scope</th></tr></thead>

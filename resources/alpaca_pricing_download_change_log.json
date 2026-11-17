@@ -335,5 +335,10 @@
     "modifications": [
       "Lend selected raw rows and their completed boundary document from a legacy date projection into full partition assembly without repeating their reads, normalization or authentication."
     ]
+  },
+  {
+    "modifications": [
+      "Retain bounded credential-redacted provider and transport error reasons in existing scalar failure handoffs without changing request retries, pricing publications or accepted history. Publish completed acquisition request scopes for reporting-only recovery."
+    ]
   }
 ]

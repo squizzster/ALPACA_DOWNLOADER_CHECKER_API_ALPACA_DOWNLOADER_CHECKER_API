@@ -58,6 +58,11 @@ FIELDS.update(
     eta_pricing_pages_completed=int,
     eta_scope=str,
     eta_status=str,
+    eta_reason=str,
+    eta_request_failures=int,
+    eta_unresolved_request_failures=int,
+    eta_last_error_type=str,
+    eta_last_http_status=int,
     estimated_phase_remaining_seconds=int,
     eta_phase=str,
 )
@@ -141,6 +146,20 @@ def progress_callback(reporter, *, estimate=None):
                 if estimate is None:
                     return False
                 estimate.request(values)
+                if values.get("succeeded") is False:
+                    reporter.diagnostic(
+                        json.dumps(
+                            {
+                                "pricing_request_failure": {
+                                    key: values[key]
+                                    for key in ("error_type", "http_status", "error", "request")
+                                    if key in values
+                                }
+                            },
+                            separators=(",", ":"),
+                        ),
+                        level="warning",
+                    )
                 if latest is None:
                     return False
                 phase, message, context, counts = latest

@@ -197,6 +197,9 @@ pricing and lineage bindings. It preserves numerical outcomes and ownership, car
 their selected manifest into subsequent assembly, and persists the dates before mapped acquisition.
 A declared but missing projection still requires owning recovery. Such internal recovery prerequisites
 use the existing blocked work state without a transient-request retry timer.
+Unsupported mapping journals, malformed completed witnesses and changed journal bindings use the same
+owning-recovery classification. A selected serving-control failure preserves its original exception as the
+cause of the recovery requirement rather than becoming an absent date capability.
 
 Applicable completed assessments survive receipt publication and acknowledgement. Actual changed source,
 mapping, provider facts or selected scope require owning work; older receipts without this optional capability

@@ -67,5 +67,10 @@
     "modifications": [
       "Retain explicitly compatible completed generic comparison reports across the retired-label request-routing and exact-obligation recovery release; preserve their existing store, policy, selector and receipt-generation invalidation without replaying accepted comparisons."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve applicable completed generic diagnostic reports across the production exception-reporting and internal-recovery runtime repair, retaining their original policy, store and generation bindings."
+    ]
   }
 ]

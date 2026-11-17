@@ -1,7 +1,7 @@
 """Conditional update estimates from accepted plans and completed HTTP calls.
 
 This observer owns no data authority. It performs no filesystem or provider I/O,
-does not retain request arguments/results, and cannot authorize or finish work.
+retains only bounded failure diagnostics, and cannot authorize or finish work.
 """
 
 import math
@@ -9,6 +9,7 @@ from collections import deque
 from functools import wraps
 from time import monotonic
 
+from libs.alpaca_pricing_download.contract import failure_outcome
 from libs.alpaca_pricing_download.http import REQUESTS_PER_MINUTE
 
 
@@ -31,7 +32,10 @@ class UpdateEstimate:
         self.samples = deque(maxlen=64)
         self.first_started = None
         self.last_finished = None
-        self.failed = False
+        self.failures = 0
+        self.unresolved = set()
+        self.scopes = {}
+        self.last_failure = {}
         self.complete = False
         self.phase = None
         self.phase_baseline = None
@@ -39,6 +43,14 @@ class UpdateEstimate:
         self.phase_done = None
 
     def request(self, values):
+        if values.get("succeeded") is not True:
+            self.failures += 1
+            self.unresolved.add(self.failures)
+            self.last_failure = {
+                key: values[key]
+                for key, expected in (("error_type", str), ("http_status", int))
+                if type(values.get(key)) is expected
+            }
         start, finish = values.get("started"), values.get("finished")
         if not all(type(value) in (int, float) and math.isfinite(value) for value in (start, finish)):
             return
@@ -48,10 +60,16 @@ class UpdateEstimate:
         self.first_started = start if self.first_started is None else min(start, self.first_started)
         self.last_finished = finish if self.last_finished is None else max(finish, self.last_finished)
         self.samples.append((start, finish))
-        if values.get("succeeded") is not True:
-            self.failed = True
 
     def observe(self, stage, values):
+        if values.get("state") == "started" and values.get("request_scope") is True:
+            self.scopes[stage] = self.failures
+        elif values.get("state") == "completed":
+            baseline = self.scopes.pop(stage, None)
+            if baseline is not None and type(values.get("failed")) is int and values["failed"] == 0:
+                # Only the owning producer's completed scope establishes that
+                # its fallback succeeded. Other calls/scopes prove no recovery.
+                self.unresolved.difference_update(n for n in tuple(self.unresolved) if n > baseline)
         done = values.get("done", values.get("completed"))
         total = values.get("total", values.get("selected"))
         if stage != self.phase or values.get("state") == "started":
@@ -95,6 +113,8 @@ class UpdateEstimate:
             self.bounds = [max(bound, required) for bound in self.bounds]
         if stage == "completion":
             self.complete = values.get("complete") is True and values.get("pending_work") == 0
+            if self.complete:
+                self.unresolved.clear()
 
     def context(self):
         base = {
@@ -103,6 +123,12 @@ class UpdateEstimate:
             "eta_status": "learning",
             "eta_pricing_pages_completed": self.completed,
         }
+        if self.failures:
+            base.update(
+                eta_request_failures=self.failures,
+                eta_unresolved_request_failures=len(self.unresolved),
+                **{"eta_last_" + key: value for key, value in self.last_failure.items()},
+            )
         if self.phase_remaining is not None:
             base.update(eta_phase=self.phase, estimated_phase_remaining_seconds=self.phase_remaining)
         if self.complete:
@@ -112,8 +138,8 @@ class UpdateEstimate:
                 "eta_scope": "data_update",
                 "eta_status": "complete",
             }
-        if self.failed:
-            return {**base, "eta_status": "request_failed"}
+        if self.unresolved:
+            return {**base, "eta_status": "unknown", "eta_reason": "request_failed"}
         if self.bounds is None or len(self.samples) < 8:
             return base
         completed = self.completed - self.selected_at
@@ -147,13 +173,34 @@ def measured_request(function, progress, *, clock=monotonic):
         except Exception:
             started = None
         succeeded = False
+        failure = {}
         try:
             result = function(*args, **kwargs)
             succeeded = True
             return result
+        except BaseException as error:
+            try:
+                outcome = failure_outcome(error)
+                parameters = args[0] if args and isinstance(args[0], dict) else kwargs.get("parameters", {})
+                failure = {
+                    "error_type": type(error).__name__,
+                    "http_status": outcome.get("http_status"),
+                    "error": outcome["error"][:768],
+                    "request": {
+                        key: str(parameters[key])[:160]
+                        for key in ("symbols", "adjustment", "asof", "start", "end", "feed", "timeframe")
+                        if key in parameters
+                    },
+                }
+            except Exception:
+                failure = {"error_type": type(error).__name__}
+            raise
         finally:
             try:
-                progress("eta_request", {"started": started, "finished": clock(), "succeeded": succeeded})
+                progress(
+                    "eta_request",
+                    {"started": started, "finished": clock(), "succeeded": succeeded, **failure},
+                )
             except Exception:
                 pass  # Reporting failure must not alter the provider outcome.
 

@@ -369,6 +369,8 @@ def acquire_selected(
         progress(
             "acquisition_selection",
             {
+                "state": "started",
+                "request_scope": True,
                 "selected": len(symbols),
                 "reused": sum(r["status"] == "covered" for r in results),
                 "initial_or_invalidated": len(needs),
@@ -552,8 +554,11 @@ def acquire_selected(
                 }
                 for symbol in selected.keys() - completed
             )
-    return {
+    result = {
         "results": results,
         "requests": metrics,
         "failed": sum(item["status"] in {"failed", "blocked"} for item in results),
     }
+    if progress:
+        progress("acquisition_selection", {"state": "completed", "failed": result["failed"]})
+    return result
