@@ -27,7 +27,14 @@ class PipelineCodecTests(unittest.TestCase):
         row = ("2026-11-10T21:00:00Z", "1", "1", "1", "1", "1", "1", "1")
         comparison = HistoryComparison("unchanged", (), (row,))
         selection = EndpointSelection(
-            "/synthetic", "AAA", "generation", "2026-11-11", "2026-11-10", (row,), comparison=comparison
+            "/synthetic",
+            "AAA",
+            "generation",
+            "2026-11-11",
+            "2026-11-10",
+            (row,),
+            comparison=comparison,
+            lineage_generation="receipt-generation",
         )
         publication = FullPublicationAcceptance(
             Path("/synthetic"),

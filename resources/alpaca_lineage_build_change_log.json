@@ -629,5 +629,11 @@
     "modifications": [
       "Carry prepared recovery pricing sources and their accepted generations into serving under the unchanged selecting-file identity, avoiding repeated source reads and digests while retaining changed-selector selection."
     ]
+  },
+  {
+    "modifications": [
+      "Route a genuinely missing retained-price comparison session through a retired source label only when the selected receipt carries an exact current-label 404, its producer-held last positive exact own-label UUID, unique accepted membership and a UUID-bound same-CUSIP rename chain; read that receipt once and bind the routed comparison to its receipt generation so retries retain completed observations without repeated identity work or calculations.",
+      "When a committed receipt projection satisfies the exact pending obligation, acknowledge it without selecting that already-published summary member for another live comparison; retain normal maintenance for every label not covered by that compact completion handoff."
+    ]
   }
 ]

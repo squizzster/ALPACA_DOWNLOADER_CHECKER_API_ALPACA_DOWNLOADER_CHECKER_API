@@ -101,7 +101,9 @@ provider requests or identity-rule replay. Empty/ineligible results complete wor
 publications leave work pending.
 
 `StandaloneReader` exposes resolved group histories/evidence; `DataLibrary` exposes online identities. Both
-use the same locked history assembly. [Public API](public-api.md) owns reader semantics;
+use the same locked history assembly. CSV and Bloodhound Parquet share the catalogue export selection and
+group reader in [catalogue export](../alpaca_end_of_day/_catalogue_export.py); format conversion never needs
+an intermediate CSV. [Public API](public-api.md) owns reader semantics;
 [exports](exports.md) own output contracts. Default standalone store: repository `data_pricing/`.
 
 ## Code ownership
@@ -109,7 +111,7 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | Owner | Responsibility |
 |---|---|
 | [IS_ELIGIBLE_LISTED_BUSINESS_EQUITY](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/) | Independent consumer exporting public-reader identity metadata and group evidence without prices or eligibility assessments. |
-| [bloodhound_app](../bloodhound_app/README.md) | Standalone offline CSV-to-Parquet application with its own CLI, dependencies, tests and publication limitations. |
+| [bloodhound_app](../bloodhound_app/README.md) | Bloodhound conversion from shared public catalogue histories, completed CSV exports or legacy files; owns precision checks, schema, dependencies and publication limitations. |
 | [alpaca_end_of_day](../alpaca_end_of_day/) | Public API, shared history assembly, CSV exports, reader adapters. |
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch, progress adapters and post-update recovery-registry Git commits/pushes. |
 | [alpaca_heartbeat](../libs/alpaca_heartbeat/) | Shared opt-in stderr lifecycle timer, protocol encoding and consumption. |
@@ -125,5 +127,5 @@ use the same locked history assembly. [Public API](public-api.md) owns reader se
 | [alpaca_lineage_debug](../libs/alpaca_lineage_debug/) | Public JSON diagnostics, research YAML selection, group replay, recorded explanations, saved handoffs and export-instance reports. |
 | [alpaca_end_of_day_pipeline](../libs/alpaca_end_of_day_pipeline/) | Compatibility version emitted by correlation reports. |
 | [alpaca_end_of_day_reader](../libs/alpaca_end_of_day_reader/) | Numerical source-choice consumption guards. |
-| [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Offline Parquet conversion. |
+| [alpaca_bloodhound_export](../libs/alpaca_bloodhound_export/) | Canonical catalogue-to-Parquet command adapter and retained standalone conversion primitives. |
 | [common](../libs/common/) | Market calendar, SQLite connections, store operation lock, shared provider HTTP execution. |

@@ -776,6 +776,7 @@ def download_pricing(
     expected_source_sha256: str | None = None,
     selected_source_sha256=_SOURCE_NOT_SELECTED,
     endpoint_selection=None,
+    lineage_generation: str | None = None,
     acquisition_evidence_sha256: str | None = None,
     history_correction_id: str | None = None,
     correction_observations=None,
@@ -884,11 +885,26 @@ def download_pricing(
                 )
         if endpoint_selection is None and symbol in context.endpoint_selections:
             accepted = context.endpoint_selections[symbol]
-            if accepted.applies(store, symbol, current_sha256, end_text, asof):
+            if accepted.applies(
+                store,
+                symbol,
+                current_sha256,
+                end_text,
+                asof,
+                lineage_generation=lineage_generation,
+            ):
                 endpoint_selection = accepted
         accepted_endpoints = None
         if endpoint_selection is not None:
-            accepted_endpoints = endpoint_selection.consume(store, symbol, current_sha256, end_text, asof)
+            endpoint_selection = endpoint_selection.for_lineage(lineage_generation)
+            accepted_endpoints = endpoint_selection.consume(
+                store,
+                symbol,
+                current_sha256,
+                end_text,
+                asof,
+                lineage_generation=lineage_generation,
+            )
         if previous is None and any(path.name != ".download.lock" for path in root.iterdir()):
             raise DownloadError("ticker directory contains unowned files; refusing acquisition")
         if previous is not None:

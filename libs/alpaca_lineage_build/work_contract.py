@@ -268,8 +268,9 @@ class WorkPolicy:
         # selected pricing generation changes workflow state, not lineage data.
         # Selection already owns whether metadata needs refreshing; the index
         # owns coverage/group membership. Consume those handoffs in memory, not
-        # by reopening receipts or repeating upstream checks. A crash before the
-        # workflow acknowledgement leaves the obligation pending for a fresh check.
+        # by reopening receipts or repeating upstream checks. An approval that
+        # produced no matching receipt projection remains operation-local after a
+        # crash; selection separately consumes any exact committed obligation.
         approved = bool(
             entry
             and (
@@ -294,8 +295,8 @@ class WorkPolicy:
         # The caller already checked inputs under group locks and selected any
         # changed outputs. Keep that proof, including absent auxiliary members;
         # DO NOT reopen their receipts when a later live approval arrives.
-        # This is operation-local: a crash before durable acknowledgement leaves
-        # work pending, and no persisted cache is allowed to bypass a fresh check.
+        # This in-memory proof is operation-local. After a crash, only an owning
+        # publication carrying the exact obligation may bypass a fresh check.
         unavailable = next(iter(receipts.values())).get("unavailable_pricing", {})
         references = {s: (entries.get(s) or {}).get("sha256") for s in receipts.keys() | unavailable.keys()}
         for symbol, owner in completed.items():

@@ -41,6 +41,72 @@ def receipt():
     }
 
 
+def retired_receipt():
+    return {
+        "symbol": "MID",
+        "source_sha256": "generation",
+        "last_observed_symbol_lookup": {
+            "lookup_kind": "symbol",
+            "lookup": "MID",
+            "found": True,
+            "outcome": "found",
+            "http_status": 200,
+            "asset": {"id": "uuid", "symbol": "MID", "class": "us_equity"},
+        },
+        "identity_memberships": [
+            {
+                "security_id": "public",
+                "member_alpaca_asset_ids": ["uuid"],
+                "member_tickers": ["OLD", "MID", "CURRENT"],
+            }
+        ],
+        "evidence": {
+            "asset_lookups": [
+                {
+                    "lookup_kind": "symbol",
+                    "lookup": "MID",
+                    "found": False,
+                    "outcome": "not_found",
+                    "http_status": 404,
+                    "asset": None,
+                },
+                {
+                    "lookup_kind": "symbol",
+                    "lookup": "CURRENT",
+                    "found": True,
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": {"id": "uuid"},
+                },
+                {
+                    "lookup_kind": "cusip",
+                    "lookup": "cusip",
+                    "found": True,
+                    "outcome": "found",
+                    "http_status": 200,
+                    "asset": {"id": "uuid"},
+                },
+            ],
+            "symbol_changes": [
+                {
+                    "new_symbol": "MID",
+                    "old_symbol": "OLD",
+                    "new_cusip": "cusip",
+                    "old_cusip": "cusip",
+                    "process_date": "2026-06-17",
+                },
+                {
+                    "new_symbol": "CURRENT",
+                    "old_symbol": "MID",
+                    "new_cusip": "cusip",
+                    "old_cusip": "cusip",
+                    "process_date": "2026-11-12",
+                },
+            ],
+        },
+    }
+
+
 class ComparisonRouteTests(unittest.TestCase):
     def test_route_consumes_dated_positive_owner_and_current_generation(self):
         value = receipt()
@@ -50,6 +116,57 @@ class ComparisonRouteTests(unittest.TestCase):
         )
         self.assertIsNone(historical_route(value, "2026-10-14", "generation"))
         self.assertIsNone(historical_route(value, "2026-10-13", "changed"))
+
+    def test_retired_source_uses_unambiguous_membership_and_cusip_bound_route(self):
+        self.assertEqual(
+            historical_route(retired_receipt(), "2025-01-23", "generation"),
+            {"symbol": "OLD", "asof": "2025-01-23", "owner": "public", "asset_id": "uuid"},
+        )
+
+    def test_retired_source_rejects_ambiguous_membership_or_identifier_evidence(self):
+        for change in (
+            "unconfirmed_absence",
+            "missing_held_lookup",
+            "malformed_held_lookup",
+            "foreign_held_lookup",
+            "competing_owner",
+            "foreign_cusip",
+            "conflicting_chain",
+        ):
+            value = retired_receipt()
+            if change == "unconfirmed_absence":
+                value["evidence"]["asset_lookups"][0].pop("http_status")
+            elif change == "missing_held_lookup":
+                value.pop("last_observed_symbol_lookup")
+            elif change == "malformed_held_lookup":
+                value["last_observed_symbol_lookup"] = "invalid"
+            elif change == "foreign_held_lookup":
+                value["last_observed_symbol_lookup"]["asset"]["id"] = "foreign"
+            elif change == "competing_owner":
+                value["identity_memberships"].append(
+                    {
+                        "security_id": "competitor",
+                        "member_alpaca_asset_ids": ["uuid"],
+                        "member_tickers": ["MID"],
+                    }
+                )
+            elif change == "foreign_cusip":
+                value["evidence"]["asset_lookups"][2]["asset"]["id"] = "foreign"
+            else:
+                value["symbol"] = "CURRENT"
+                value["identity_memberships"][0]["member_alpaca_asset_ids"].append("other")
+                value["evidence"]["symbol_changes"][1]["new_cusip"] = "other-cusip"
+                value["evidence"]["symbol_changes"][1]["old_cusip"] = "other-cusip"
+                value["evidence"]["asset_lookups"].append(
+                    {
+                        "lookup_kind": "cusip",
+                        "lookup": "other-cusip",
+                        "found": True,
+                        "asset": {"id": "other"},
+                    }
+                )
+            with self.subTest(change=change):
+                self.assertIsNone(historical_route(value, "2025-01-23", "generation"))
 
     def test_unknown_foreign_competing_or_unlike_evidence_cannot_select_route(self):
         for change in ("unknown", "foreign", "competing", "unlike"):
@@ -80,30 +197,73 @@ class ComparisonRouteTests(unittest.TestCase):
         self.assertEqual(historical_route(value, "2026-10-13", "generation")["symbol"], "OLD")
 
     def test_missing_first_consumes_alternate_mapping_and_retained_tail_once(self):
-        selected = entry("NEW")
-        selected["first_all"] = [str(v) for v in (bar("2026-10-13")[k] for k in FIELDS)]
+        tail_days = (
+            "2026-10-01",
+            "2026-10-02",
+            "2026-10-05",
+            "2026-10-06",
+            "2026-10-07",
+            "2026-10-08",
+            "2026-10-09",
+            "2026-10-12",
+            "2026-10-13",
+            "2026-10-14",
+        )
+        selected = entry("MID")
+        first_bar = bar("2025-01-23", t="2025-01-23T05:00:00Z")
+        selected["first_all"] = [str(first_bar[key]) for key in FIELDS]
+        selected["tail_all"] = [[str(bar(day)[key]) for key in FIELDS] for day in tail_days]
+        selected["last_all"] = selected["tail_all"][-1]
+        selected_snapshot = snapshot(selected)
+        selected_snapshot["entries"][0]["tail_all"] = copy.deepcopy(selected["tail_all"])
         calls, routes = [], []
 
         def get_page(params):
-            key = params["symbols"], params["start"][:10], params["asof"]
+            key = params["symbols"], params["start"][:10], params["end"][:10], params["asof"]
             self.assertNotIn(key, calls, "completed request repeated")
             calls.append(key)
             if params["symbols"] == "OLD":
-                return {"bars": {"OLD": [bar("2026-10-13")]}}
-            return {"bars": {} if params["start"][:10] == "2026-10-13" else {"NEW": [bar()]}}
+                return {"bars": {"OLD": [first_bar]}}
+            return {
+                "bars": {} if params["start"][:10] == "2025-01-23" else {"MID": [bar(day) for day in tail_days]}
+            }
 
         def route(value, day):
             routes.append(day)
-            return historical_route(receipt(), day, "generation")
+            result = historical_route(retired_receipt(), day, "generation")
+            if result is not None:
+                result["lineage_generation"] = "lineage-generation"
+            return result
 
         with patch.object(live_check, "compare_history", wraps=live_check.compare_history) as compare:
-            result = live_check.verify(snapshot(selected), get_page, missing_route=route)
+            result = live_check.verify(selected_snapshot, get_page, missing_route=route)
         self.assertTrue(result["complete"], result)
-        self.assertEqual(result["matched"], ["NEW"])
-        self.assertEqual(routes, ["2026-10-13"])
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(result["matched"], ["MID"])
+        self.assertEqual(routes, ["2025-01-23"])
+        self.assertEqual(
+            calls,
+            [
+                ("MID", "2025-01-23", "2025-01-24", "2026-10-15"),
+                ("MID", "2026-10-01", "2026-10-14", "2026-10-15"),
+                ("OLD", "2025-01-23", "2025-01-24", "2025-01-23"),
+            ],
+        )
         self.assertEqual(compare.call_count, 1)
-        self.assertEqual(result["mapped_endpoints"][0]["mapped_symbol"], "OLD")
+        self.assertEqual(
+            result["mapped_endpoints"],
+            [
+                {
+                    "symbol": "MID",
+                    "endpoint": "first",
+                    "session": "2025-01-23",
+                    "mapped_symbol": "OLD",
+                    "asof": "2025-01-23",
+                    "owner": "public",
+                    "asset_id": "uuid",
+                    "lineage_generation": "lineage-generation",
+                }
+            ],
+        )
 
     def test_missing_mapped_endpoint_preserves_incomplete_result_without_retry(self):
         calls = []

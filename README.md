@@ -13,7 +13,7 @@ It records the audit findings, verified fixes, remaining gaps, owning regression
 The review covers trust repairs and evidence-gated lineage extensions. [AGENTS.md](AGENTS.md) remains authoritative.
 
 Requires Python 3.11, Unix `flock` and `America/New_York` timezone data. Production policy compilation uses
-[PyYAML](requirements.txt); Parquet additionally uses [PyArrow](requirements-bloodhound.txt).
+[PyYAML](requirements.txt); Parquet additionally uses the [converter dependencies](requirements-bloodhound.txt).
 See [setup and credentials](docs/operations.md#prerequisites). Runtime stores stay outside Git.
 
 ## Run and consume
@@ -21,7 +21,7 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Operations](docs/operations.md): setup, `./alpaca-cli-eod update`, cutoffs, recovery and focused commands.
 - [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
 - [Exports](docs/exports.md): CSV/Parquet selection, formats, memory, locks and publication guarantees.
-- [Standalone Bloodhound converter](bloodhound_app/README.md): convert completed CSV exports or legacy histories
+- [Standalone Bloodhound converter](bloodhound_app/README.md): convert online catalogue histories, completed CSV exports or legacy histories
   with the imported app, its own dependencies, tests and documented limitations.
 - [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.
 - [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md): independent metadata and lineage export

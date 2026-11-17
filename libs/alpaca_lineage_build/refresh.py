@@ -94,11 +94,13 @@ def refresh_existing(
     register_discoveries=None,
     work_policy=None,
     symbols=None,
+    excluded_symbols=(),
     late_bar_repairs=None,
     context=None,
 ):
     """Check newly eligible members too; approval never expands with the summary."""
     context = accept_context(store, context, work_policy)
+    excluded_symbols = frozenset(excluded_symbols)
     recover_and_accept_correlation_policy(store, context)
     pricing_context = context.pricing()
     verified, generations, checks, completed_replacements = {}, {}, [], {}
@@ -118,6 +120,7 @@ def refresh_existing(
     def in_scope(entry):
         return (
             (symbols is None or entry["symbol"] in symbols)
+            and entry["symbol"] not in excluded_symbols
             and (not end_date or entry["end_exclusive"][:10] <= end_date)
             and (work_policy is None or work_policy.allowed({entry["symbol"]}))
         )
@@ -221,7 +224,11 @@ def refresh_existing(
                     generations[symbol] = generation
             if comparison is not None and comparison[:2] == (entry, generation):
                 scope = context.history_scope("comparison", symbol, comparison)
-                if scope_applies(scope, symbol):
+                route_generation = comparison[3] if len(comparison) > 3 else None
+                if scope_applies(scope, symbol) and (
+                    route_generation is None
+                    or selected_index["symbols"].get(symbol, {}).get("sha256") == route_generation
+                ):
                     compared[symbol] = comparison[2]
                     compared_scopes[symbol] = scope
 
@@ -339,6 +346,11 @@ def refresh_existing(
                 prior is None
                 or prior[:2] != (current.get(symbol), current_generations.get(symbol))
                 or not scope_applies(compared_scopes[symbol], symbol)
+                or (
+                    len(prior) > 3
+                    and prior[3] is not None
+                    and index["symbols"].get(symbol, {}).get("sha256") != prior[3]
+                )
             ):
                 compared.pop(symbol)
                 compared_scopes.pop(symbol, None)
@@ -402,6 +414,8 @@ def refresh_existing(
         for symbol, item in late_bar_repairs["sources"].items():
             if symbols is not None and symbol not in symbols:
                 continue
+            if symbol in excluded_symbols:
+                continue
             if work_policy is not None and not work_policy.allowed({symbol}):
                 restricted.add(symbol)
                 continue
@@ -447,6 +461,8 @@ def refresh_existing(
                 compared.pop(symbol)
                 compared_scopes.pop(symbol, None)
             if symbols is not None and symbol not in symbols:
+                continue
+            if symbol in excluded_symbols:
                 continue
             if end_date and entry["end_exclusive"][:10] > end_date:
                 beyond.add(symbol)
@@ -553,15 +569,23 @@ def refresh_existing(
             if (
                 entry["end_exclusive"] == contract.get("comparison_end_exclusive", contract["end_exclusive"])
                 and entry["asof"] == (selection.comparison_asof or selection.asof)
-                and selection.applies(store, symbol, generation, contract["end_exclusive"], contract["asof"])
+                and selection.applies(
+                    store,
+                    symbol,
+                    generation,
+                    contract["end_exclusive"],
+                    contract["asof"],
+                    lineage_generation=(selected_index["symbols"].get(symbol) or {}).get("sha256"),
+                )
             ):
                 durable_selections[symbol] = selection
                 compared[symbol] = selection.comparison
                 scope = requested_scope(symbol)
                 compared_scopes[symbol] = scope
-                context.cache_history(
-                    "comparison", symbol, (dict(entry), generation, selection.comparison), scope
-                )
+                comparison = (dict(entry), generation, selection.comparison)
+                if selection.lineage_generation is not None:
+                    comparison += (selection.lineage_generation,)
+                context.cache_history("comparison", symbol, comparison, scope)
         selected_snapshot = {
             **snapshot,
             "entries": [
@@ -578,20 +602,48 @@ def refresh_existing(
         # DO NOT reopen ticker histories to re-prove the stored baseline here.
         selected_scopes = {entry["symbol"]: requested_scope(entry["symbol"]) for entry in candidates}
         with span("live_history_check", symbols=len(selected_snapshot["entries"])) as check_trace:
-            from .comparison_routes import historical_route
+            from .comparison_routes import route_selector
+
+            select_route = route_selector(context.accept_store().root, selected_index)
 
             def missing_route(entry, day):
-                indexed = selected_index["symbols"].get(entry["symbol"])
-                if indexed is None or indexed["source_sha256"] != entry.get("source_sha256"):
-                    return None
-                receipt = storage.read_receipt(context.accept_store().root, entry["symbol"], selected_index)
-                route = historical_route(receipt, day, entry["source_sha256"])
-                if route is not None:
-                    route["lineage_generation"] = indexed["sha256"]
-                return route
+                return select_route(entry["symbol"], day, entry["source_sha256"])
 
             handoff = verify(selected_snapshot, pricing_client._get, missing_route=missing_route)
             check_trace.update(complete=handoff["complete"], **handoff["stats"], requests=handoff["requests"])
+        routed_generations = {}
+        for route in handoff["mapped_endpoints"]:
+            generation = route.get("lineage_generation")
+            prior = routed_generations.setdefault(route["symbol"], generation)
+            if generation is None or prior != generation:
+                raise DownloadError("mapped endpoint routes changed lineage generation")
+        routed_differences = {
+            symbol
+            for symbol in routed_generations
+            if symbol in handoff["comparisons"] and handoff["comparisons"][symbol]["decision"] != "unchanged"
+        }
+        if routed_differences:
+            for symbol in sorted(routed_differences):
+                event(
+                    "mapped_history_difference_unhandled",
+                    symbol=symbol,
+                    decision=handoff["comparisons"][symbol]["decision"],
+                    lineage_generation=routed_generations[symbol],
+                )
+                if work_policy is not None:
+                    work_policy.fail(
+                        {symbol},
+                        DownloadError(
+                            f"{symbol}: mapped retained-history difference requires route-aware correction"
+                        ),
+                        stage="history_check",
+                    )
+            checks.append(handoff)
+            error = DownloadError(
+                "mapped retained-history difference requires route-aware correction; no replacements started"
+            )
+            error.work_failure_recorded = work_policy is not None
+            raise error
         assert_current(store, snapshot["token"])
         # Live-check completion is per symbol. A peer's missing endpoint or
         # failed request cannot revoke this producer's completed comparison.
@@ -659,7 +711,10 @@ def refresh_existing(
                 if symbol in resolved:
                     decision = HistoryComparison("unchanged", (), decision.live_all)
                 scope = selected_scopes[symbol]
-                context.cache_history("comparison", symbol, (dict(entry), generation, decision), scope)
+                comparison = (dict(entry), generation, decision)
+                if symbol in routed_generations:
+                    comparison += (routed_generations[symbol],)
+                context.cache_history("comparison", symbol, comparison, scope)
                 compared[symbol] = decision
                 compared_scopes[symbol] = scope
                 if symbol in matched:
@@ -733,6 +788,11 @@ def refresh_existing(
             end_date=end_date if on_ready is not None else None,
             correction_ids={
                 symbol: work_policy.work[symbol]["correction_id"] for symbol in completed_corrections - differing
+            },
+            lineage_generations={
+                symbol: comparison[3]
+                for symbol, comparison in context.history_comparisons.items()
+                if len(comparison) > 3
             },
         )
         for item in prepared:

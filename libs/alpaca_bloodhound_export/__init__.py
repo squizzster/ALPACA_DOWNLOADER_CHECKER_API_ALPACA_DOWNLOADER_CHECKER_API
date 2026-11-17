@@ -1,9 +1,9 @@
-"""Deterministic, offline Bloodhound-shaped export of standalone Alpaca pricing."""
+"""Online-catalogue Bloodhound export and retained standalone conversion primitives."""
 
 import json
 from pathlib import Path
 
-VERSION = 8
+VERSION = 9
 
 
 def validate_version():

@@ -89,6 +89,8 @@ def acquire_selected(
     context=None,
     select_append_work=False,
     on_append_work_selected=None,
+    missing_route=None,
+    lineage_generations=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
     # First/latest all is the sole retained-history acceptance boundary, including
@@ -97,6 +99,7 @@ def acquire_selected(
     store = Path(store).absolute()
     evidence_fingerprints = evidence_fingerprints or {}
     from_dates = from_dates or {}
+    lineage_generations = lineage_generations or {}
     end = request_end(end_date)
     symbols = sorted(set(symbols))
     for symbol in symbols:
@@ -111,9 +114,22 @@ def acquire_selected(
         accepted = context.endpoint_selections.get(symbol)
         mapping = acquisition_asof(source, end)
         if accepted is not None and accepted.applies(
-            store, symbol, selected_generations[symbol], end_text, mapping
+            store,
+            symbol,
+            selected_generations[symbol],
+            end_text,
+            mapping,
+            lineage_generation=lineage_generations.get(symbol),
         ):
-            endpoints = accepted.consume(store, symbol, selected_generations[symbol], end_text, mapping)
+            accepted = accepted.for_lineage(lineage_generations.get(symbol))
+            endpoints = accepted.consume(
+                store,
+                symbol,
+                selected_generations[symbol],
+                end_text,
+                mapping,
+                lineage_generation=lineage_generations.get(symbol),
+            )
             endpoint_selections[symbol] = accepted
         else:
             endpoints = read_validator(root, source, published=True) if source else None
@@ -398,6 +414,7 @@ def acquire_selected(
                     from_date=need["ranges"][0]["start"][:10],
                     selected_source_sha256=selected_generations[symbol],
                     endpoint_selection=endpoint_selections[symbol],
+                    lineage_generation=lineage_generations.get(symbol),
                     acquisition_evidence_sha256=evidence_fingerprints.get(symbol),
                     context=context,
                 )
@@ -441,9 +458,12 @@ def acquire_selected(
         buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
         completed = set()
 
-        def checked(symbol, comparison):
+        def checked(symbol, comparison, lineage_generation):
             endpoint_selections[symbol] = replace(
-                endpoint_selections[symbol], matched=comparison.matched, comparison=comparison
+                endpoint_selections[symbol],
+                matched=comparison.matched,
+                comparison=comparison,
+                lineage_generation=lineage_generation,
             )
             context.endpoint_selections[symbol] = endpoint_selections[symbol]
             event(
@@ -452,6 +472,7 @@ def acquire_selected(
                 source_generation=endpoint_selections[symbol].generation,
                 matched=comparison.matched,
                 decision=comparison.decision,
+                lineage_generation=lineage_generation,
                 asof=endpoint_selections[symbol].asof,
                 end_exclusive=endpoint_selections[symbol].end,
             )
@@ -471,6 +492,12 @@ def acquire_selected(
                         if endpoint_selections[symbol].comparison is not None
                     },
                     acquired=acquired,
+                    missing_route=missing_route,
+                    source_generations=selected_generations,
+                    lineage_generations=lineage_generations,
+                    approved_lineage_generations={
+                        symbol: endpoint_selections[symbol].lineage_generation for symbol in buffered
+                    },
                 )
                 if buffered and callable(getattr(client, "execute_plan", None))
                 else [(list(buffered), ordinary_client, {})]
@@ -495,6 +522,7 @@ def acquire_selected(
                             # completed comparison remains authoritative; an
                             # endpoint-stage failure already has matched=None.
                             endpoint_selection=endpoint_selections[symbol],
+                            lineage_generation=lineage_generations.get(symbol),
                             context=context,
                         )
                         results.append({**value, "status": "published"})

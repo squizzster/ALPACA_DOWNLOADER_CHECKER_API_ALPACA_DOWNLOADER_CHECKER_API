@@ -319,5 +319,11 @@
     "modifications": [
       "Consume store- and boundary-generation-bound materialized partition handoffs during approved append and rollover instead of decoding the same retained partition again."
     ]
+  },
+  {
+    "modifications": [
+      "After ordinary retained-boundary and omission handling, resolve a still-missing comparison session through a caller-selected historical ticker and mapping, while preserving the mapped response identity, binding only that completed comparison to the selected lineage receipt generation, and retaining accepted validators and suffix acquisitions across retry.",
+      "Reject missing, stale or differing mapped observations without publishing or manufacturing current-ticker evidence; a matching routed comparison continues through the ordinary retained acquisition and publication journal."
+    ]
   }
 ]

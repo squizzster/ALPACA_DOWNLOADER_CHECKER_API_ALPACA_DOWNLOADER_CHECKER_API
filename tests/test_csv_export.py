@@ -31,6 +31,7 @@ from alpaca_end_of_day import (
     ReaderBusyError,
     StandaloneReader,
     TickerOwnershipInterval,
+    _catalogue_export,
     _csv_export,
 )
 from libs.alpaca_cli import main
@@ -864,9 +865,9 @@ class CsvExportTests(NativeCase):
             ),
             patch.object(catalogue_storage, "assert_group", side_effect=AssertionError("catalogue recheck")),
             patch.object(
-                _csv_export.export_inputs,
+                _catalogue_export.export_inputs,
                 "select",
-                wraps=_csv_export.export_inputs.select,
+                wraps=_catalogue_export.export_inputs.select,
             ) as token,
         ):
             result = data.write_csv_export(self.directory / "trusted-export", workers=2)
@@ -1098,7 +1099,9 @@ class CsvExportTests(NativeCase):
         destination = self.directory / "writer-blocked-csv"
         with (
             operation_lock(self.store, exclusive=True),
-            patch.object(_csv_export, "_selection", side_effect=AssertionError("busy export selected work")),
+            patch.object(
+                _catalogue_export, "selection", side_effect=AssertionError("busy export selected work")
+            ),
             self.assertRaisesRegex(ReaderBusyError, "source store is busy"),
         ):
             data.write_csv_export(destination)
@@ -1127,7 +1130,7 @@ class CsvExportTests(NativeCase):
         stale_destination = self.directory / "stale-csv"
         with (
             patch.object(
-                _csv_export.export_inputs,
+                _catalogue_export.export_inputs,
                 "select",
                 side_effect=CatalogueError("selected serving catalogue changed"),
             ),
@@ -1162,7 +1165,9 @@ class CsvExportTests(NativeCase):
             with (
                 self.subTest(workers=workers),
                 patch.object(
-                    _csv_export, "_selection", side_effect=AssertionError("invalid workers reached selection")
+                    _catalogue_export,
+                    "selection",
+                    side_effect=AssertionError("invalid workers reached selection"),
                 ),
             ):
                 with self.assertRaises(ValueError):

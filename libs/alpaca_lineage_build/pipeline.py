@@ -20,6 +20,7 @@ from libs.common.debug_trace import event, traced
 from . import group_engine as _group_engine
 from . import storage
 from .acquisition import unavailable_pricing
+from .comparison_routes import route_selector
 from .context import accept_context
 from .continuation import scoped_identity_memberships
 from .contract import (
@@ -332,6 +333,12 @@ def _catch_up_published_dependencies(
                 result["deferred_full_range"] += 1
             elif source["latest_request"]["end_exclusive"][:10] < end:
                 targets.setdefault(end, []).append(symbol)
+    select_route = route_selector(Path(store) / "end_of_day/lineage", index)
+    lineage_generations = {
+        symbol: entry["sha256"]
+        for symbol, entry in index["symbols"].items()
+        if isinstance(entry.get("sha256"), str) and entry["sha256"]
+    }
     for end, symbols in targets.items():
         allowed = [s for s in symbols if work_policy is None or work_policy.allowed({s})]
         if not allowed:
@@ -356,6 +363,8 @@ def _catch_up_published_dependencies(
             context=context.pricing() if context is not None else None,
             select_append_work=True,
             on_append_work_selected=persist_selected,
+            missing_route=select_route,
+            lineage_generations=lineage_generations,
         )
         result["results"].extend(value["results"])
         not_selected = {item["symbol"] for item in value["results"] if item.get("status") == "not_selected"}

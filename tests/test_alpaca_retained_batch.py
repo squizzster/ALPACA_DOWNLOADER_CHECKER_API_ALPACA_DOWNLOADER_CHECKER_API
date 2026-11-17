@@ -91,6 +91,128 @@ class RetainedBatchTests(unittest.TestCase):
             self.assertEqual(result["failed"], int(attempt < 2), result)
         self.assertEqual(successful, {"raw", "all"})
 
+    def test_changed_route_receipt_reuses_validator_but_repeats_the_routed_comparison(self):
+        from libs.alpaca_pricing_download.context import accept_context
+        from libs.alpaca_pricing_download.contract import digest, json_bytes
+        from libs.alpaca_pricing_download.download import acquisition_asof, request_end
+        from libs.alpaca_pricing_download.endpoints import EndpointSelection, HistoryComparison
+
+        context = accept_context(self.store)
+        root = self.store / "end_of_day/pricing/AAA"
+        source = storage.load_source(root, "AAA")
+        generation = digest(json_bytes(source))
+        endpoints = storage.read_validator(root, source)
+        end = request_end("2026-10-17")
+        end_text = end.isoformat().replace("+00:00", "Z")
+        comparison = HistoryComparison(
+            "unchanged",
+            (),
+            tuple(tuple(row) for row in (endpoints["all"][0], *endpoints.tail_all)),
+        )
+        context.endpoint_selections["AAA"] = EndpointSelection(
+            str(self.store.absolute()),
+            "AAA",
+            generation,
+            end_text,
+            acquisition_asof(source, end),
+            tuple((name, tuple(rows)) for name, rows in endpoints.items()),
+            matched=True,
+            tail_all=endpoints.tail_all,
+            comparison=comparison,
+            lineage_generation="receipt-1",
+        )
+        for name in ADJUSTMENTS:
+            self.live["AAA"][name] = self.live["AAA"][name][1:]
+        mapped = []
+
+        def page(params):
+            if params["symbols"] == "OLD":
+                mapped.append(dict(params))
+                return {"bars": {"OLD": [self.old[0]]}}
+            return self.page(params)
+
+        def route(symbol, day, source_generation):
+            self.assertEqual((symbol, day, source_generation), ("AAA", "2016-01-04", generation))
+            return {
+                "symbol": "OLD",
+                "asof": day,
+                "owner": "security",
+                "asset_id": "asset",
+                "lineage_generation": "receipt-2",
+            }
+
+        with (
+            patch.object(self.client, "_get", side_effect=page),
+            patch.object(acquire, "read_validator", side_effect=AssertionError("validator reread")),
+        ):
+            result = acquire.acquire_selected(
+                self.store,
+                ["AAA"],
+                "2026-10-17",
+                client=self.client,
+                context=context,
+                progress=self.observe,
+                missing_route=route,
+                lineage_generations={"AAA": "receipt-2"},
+            )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(len(mapped), 1)
+        self.assertEqual(mapped[0]["symbols"], "OLD")
+        accepted = context.endpoint_selections["AAA"]
+        self.assertEqual(accepted.lineage_generation, "receipt-2")
+        self.assertTrue(accepted.comparison.matched)
+
+    def test_mapped_difference_fails_closed_without_relabelling_or_publication(self):
+        from libs.alpaca_pricing_download.contract import digest, json_bytes
+
+        for endpoint, missing_index in (("first", 0), ("latest", 1)):
+            with self.subTest(endpoint=endpoint):
+                before = snapshot(self.store)
+                source = storage.load_source(self.store / "end_of_day/pricing/AAA", "AAA")
+                generation = digest(json_bytes(source))
+                for name in ADJUSTMENTS:
+                    self.live["AAA"][name] = [
+                        row for index, row in enumerate(self.live["AAA"][name]) if index != missing_index
+                    ]
+                changed = bar(self.old[missing_index]["t"][:10], "50")
+                mapped = []
+
+                def page(params):
+                    if params["symbols"] == "OLD":
+                        mapped.append(dict(params))
+                        return {"bars": {"OLD": [changed]}}
+                    return self.page(params)
+
+                def route(symbol, day, source_generation):
+                    self.assertEqual((symbol, source_generation), ("AAA", generation))
+                    return {
+                        "symbol": "OLD",
+                        "asof": day,
+                        "owner": "security",
+                        "asset_id": "asset",
+                        "lineage_generation": "receipt",
+                    }
+
+                with patch.object(self.client, "_get", side_effect=page):
+                    result = acquire.acquire_selected(
+                        self.store,
+                        ["AAA"],
+                        "2026-10-17",
+                        client=self.client,
+                        progress=self.observe,
+                        missing_route=route,
+                        lineage_generations={"AAA": "receipt"},
+                    )
+                self.assertEqual(result["failed"], 1, result)
+                self.assertIn("route-aware correction", result["results"][0]["outcome"]["error"])
+                self.assertEqual(len(mapped), 1)
+                self.assertEqual(mapped[0]["symbols"], "OLD")
+                self.assertEqual(snapshot(self.store), before)
+                self.pages.clear()
+                self.progress.clear()
+                self.phase = None
+                self.live["AAA"] = {name: copy.deepcopy(self.old + [bar("2026-10-16")]) for name in ADJUSTMENTS}
+
     def test_changed_suffix_cutoff_cannot_consume_a_shorter_completed_response(self):
         from libs.alpaca_pricing_download.context import accept_context
 

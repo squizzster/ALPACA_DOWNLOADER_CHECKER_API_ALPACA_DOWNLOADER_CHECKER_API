@@ -12,6 +12,7 @@ from libs.common.debug_trace import traced
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
+from .comparison_routes import route_selector
 from .context import accept_context, recover_and_accept_correlation_policy
 from .contract import LineageError
 from .metadata import EvidenceClient
@@ -482,8 +483,14 @@ def _prepare_locked(
             and current.get("class") == "us_equity"
         )
 
+    # Selection already matched these exact pending obligations to completed
+    # receipt projections and acknowledged them above. Do not turn the missing
+    # workflow acknowledgement into another live comparison on this restart.
+    already_published = set(selection["already_published"])
     maintenance_symbols = {
-        entry["symbol"] for entry in accepted["summary"]["entries"] if keeps_summary_membership(entry["symbol"])
+        entry["symbol"]
+        for entry in accepted["summary"]["entries"]
+        if entry["symbol"] not in already_published and keeps_summary_membership(entry["symbol"])
     }
     return {
         "accepted": accepted,
@@ -590,6 +597,16 @@ def histories_locked(
         if item["acquire"] and not lineage_owned_auxiliary and policy.allowed({symbol}):
             acquisition_groups.setdefault(pricing_target(item), []).append(symbol)
     pricing = {"results": [], "requests": {}, "failed": 0}
+    acquisition_route = None
+    if acquisition_groups:
+        with storage.publication_lock(root):
+            acquisition_index = context.select_index(root)
+        acquisition_route = route_selector(root, acquisition_index)
+    acquisition_lineage_generations = {
+        symbol: entry["sha256"]
+        for symbol, entry in (acquisition_index["symbols"] if acquisition_route else {}).items()
+        if isinstance(entry.get("sha256"), str) and entry["sha256"]
+    }
     for target, symbols in sorted(acquisition_groups.items()):
         value = acquire_selected(
             store,
@@ -602,6 +619,8 @@ def histories_locked(
             evidence_fingerprints={s: acquisition_fingerprint(work[s]) for s in symbols},
             from_dates={s: work[s].get("pricing_start") for s in symbols},
             context=context.pricing(),
+            missing_route=acquisition_route,
+            lineage_generations=acquisition_lineage_generations,
         )
         pricing["results"].extend(value["results"])
         pricing["requests"][target] = value["requests"]
@@ -699,6 +718,7 @@ def histories_locked(
             work_policy=policy,
             late_bar_repairs=accepted["late_bar_repairs"],
             context=context,
+            excluded_symbols=selection["already_published"],
         )
     )
     result["stages"]["maintenance_after_discovery"] = maintained

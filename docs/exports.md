@@ -11,7 +11,27 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 | `read --symbol TICKER --format csv` | One resolved source-group identity; multiple views add `adjustment`. | [standalone_cli.py](../alpaca_end_of_day/standalone_cli.py): `run_arguments` |
 | `catalogue export --output PATH` | Flat online CSV ordered date → public ID. | [DataLibrary](../alpaca_end_of_day/__init__.py): `write_flat_online_csv` |
 | `export csv` | Online identities; one timestamped run with CSV/digest pairs and final manifest. | [_csv_export.py](../alpaca_end_of_day/_csv_export.py): `plan_export`, `write_export` |
-| `export bloodhound --output PATH` | Resolved standalone histories; one Parquet file. | [command_line.py](../libs/alpaca_bloodhound_export/command_line.py): `export` |
+| `export bloodhound --output PATH` | Online identities; one Bloodhound Parquet file and conversion report. | [command_line.py](../libs/alpaca_bloodhound_export/command_line.py): `export` |
+
+## Shared catalogue input
+
+`export csv` and `export bloodhound` consume the same online catalogue through
+[_catalogue_export.py](../alpaca_end_of_day/_catalogue_export.py). The opened catalogue owns eligibility,
+selected groups, source generations and dated ticker ranges. Under the shared operation gate, its token and
+selected export-input applicability are accepted once. Dirty selected inputs fail before history reads;
+unrelated changed groups do not block a selected export. Missing capabilities require owning catalogue
+maintenance, never an implicit store census.
+
+Each selected group is opened once. Its named receipts and pricing manifests are retained, and decoded
+payloads are shared across identities and adjustment aliases. Consumers assemble the accepted online span;
+they do not reopen the lineage index, authenticate upstream hashes, repeat compatibility checks or replay
+ownership and eligibility decisions. The operation gate remains held through output publication.
+
+`DataLibrary.open_history_export(*, public_ids=None, start=None, end=None)` exposes this same context to
+format adapters. `iter_histories()` is single-use and yields public security metadata, exact decimal-string
+rows for all eight views, and the completed inclusive ticker ranges. Keep the context open through publication
+and treat held values as read-only. `on_error="record"` retains completed peers and reports unreadable selected
+identities without retrying their group; initial selector and operation-lock failures still stop the export.
 
 ## Per-identity CSV export
 
@@ -75,12 +95,7 @@ digests directly. An unfinished run has no `final_manifest.json`; exports neithe
 crawling output directories. A stable destination lock serializes exporters. Completed runs are self-contained
 and independently retainable/removable.
 
-Export trusts the opened catalogue and selected lineage/pricing manifests, processes each selected group once,
-follows named payloads and shares decoding within the group. No directory discovery, upstream digest calculation
-or identity/eligibility replay. Catalogue references select the required receipt bodies directly: export does
-not reopen the lineage index, reread store compatibility, recheck group decision tokens, probe pending/update
-paths or unavailable inputs, or authenticate upstream generations. Each selected receipt and manifest is read
-once and retained for its group's consumption. Each identity's complete CSV is encoded in a memory buffer,
+The [shared catalogue input](#shared-catalogue-input) owns source consumption. Each identity's complete CSV is encoded in a memory buffer,
 with its checksum accumulated during encoding, then passed to the destination stream in one write call.
 Completed CSV and digest bytes accumulate in a batch. One coordinator owns source and destination I/O:
 source iteration pauses while it writes the batch, then resumes using the same selected group and payload memo.
@@ -99,7 +114,7 @@ Small explicit budgets are useful for constrained runs; the default can retain t
 Groups are consumed under reader locks. A store-wide shared operation lock spans the current catalogue-token
 check through final publication; a previously opened `DataLibrary` must still match that token. Store-writing
 CLI commands take the exclusive side, excluding update/writer overlap. [Lock ownership](technical-contracts.md#publication-and-recovery).
-Internal producers invoked outside the CLI must also respect this gate when exports can run. The serving selector also owns version-1 export-input applicability. Pricing and lineage publishers record exact intended generation changes before replacing mutable selected files; serving accepts only matching generations. Export reads catalogue token and selected applicability together once, rejecting dirty selected inputs without opening them or authenticating upstream generations. Unselected changed groups do not block a selected export. Older catalogues lacking this guarantee require explicit `catalogue rebuild`, which reuses accepted numerical checkpoints and records completed group bindings for interrupted continuation. The accepted catalogue and applicability handoff remain authority for the operation.
+Internal producers invoked outside the CLI must also respect this gate when exports can run.
 
 `workers`: integer 1–4, default 2; workers only encode in-memory identities. The coordinator opens one group
 at a time and bounds outstanding encoding jobs by worker count. Group identities share decoded payloads even
@@ -135,23 +150,31 @@ store-wide promise that every group remains latest at installation.
 
 ```bash
 python3.11 -m pip install -r requirements-bloodhound.txt
-./alpaca-cli-eod export bloodhound --output ./alpaca.parquet --symbol DELL
+./alpaca-cli-eod export bloodhound --output exports/bloodhound.parquet
 ```
 
-Requires [PyArrow](../requirements-bloodhound.txt) and an existing output parent outside the source store.
-Default selection: all indexed lineage groups, not the online catalogue. Rejected identities abort by default;
-`--include-all-passed` permits output despite rejections, reported on stderr. `--replace` allows replacement only
-after successful conversion. Output is one Parquet file; no diagnostic sidecar or Bloodhound registration.
+Default selection is all online identities, using the [same catalogue input](#shared-catalogue-input) as CSV.
+No intermediate CSV is created, discovered or parsed. `--public-id` selects online identities; `--symbol`
+selects every online identity with that dated label. Date filters apply after full accepted online-history
+factor inference. Destinations must be outside the source store. `--replace` permits replacing a prior export;
+rejected histories abort by default. Explicit `--include-all-passed` publishes a partial result and reports
+its omissions.
 
-Complete resolved eight-view histories produce fully adjusted OHLC, raw close/volume and a jointly inferred
-split factor. [factors.py](../libs/alpaca_bloodhound_export/factors.py) and
-[projection.py](../libs/alpaca_bloodhound_export/projection.py) own exact conversion; schema compatibility is not
-independent corporate-action certification. Assumptions/full public-ID mappings are in the `alpaca_bloodhound` footer.
+The existing [Bloodhound converter](../bloodhound_app/README.md) owns the unchanged 18-column schema,
+float64 numerical rules, inferred split scales, metadata handling, stable SHA-256-derived series IDs,
+precision checks and serialized-output validation. Fully adjusted OHLC is copied exactly into float64;
+raw close and raw fractional volume remain separate. Dated ticker labels come from the completed catalogue
+ranges. Output is sorted by stable series ID and session. Existing completed-CSV and legacy-file conversion
+remain supported inputs to the standalone app.
 
-Convert full histories before filtering. Ambiguous labels/incompatible factors reject an identity; ID collision,
-snapshot change, memory exhaustion or writer failure aborts export. Accepted output stays within its RAM
-allowance, serializes once, checks source freshness and installs atomically, without spill.
+Completed Arrow tables accumulate within `--memory-mib` (256–8192 MiB, default 8192). The retained-output limit
+reserves one quarter, capped at 2 GiB, for working memory; active histories, catalogue and Python overhead are
+additional. Sources are read once, then accepted tables serialize in one Parquet write. Memory exhaustion is
+fatal even with explicit omission enabled: no spill, history reread or automatic retry occurs.
 
-Installation determines success. Later progress, temporary-cleanup or CLI-reporting failures enter
-`diagnostic_errors` without changing committed success; failed temporary cleanup can leave the temporary name.
-Pre-installation failures abort publication and preserve an existing destination.
+A JSON conversion report accompanies `FILE.parquet` as `FILE.parquet.report.json`. It records the accepted
+catalogue generation, factor evidence, per-identity results, exact schema/equation validation and omissions.
+The [standalone publication limits](../bloodhound_app/README.md#8-known-limitations-and-scope) apply to this
+converter's Parquet/report pair. A failed conversion preserves an existing pair; an interrupted two-file
+publication needs inspection before consumption. The shared source gate does not supply a destination
+journal or change those existing limits. No provider requests, pricing writes or Bloodhound registration occur.

@@ -568,15 +568,26 @@ already executed singly, including a 414 subdivision, is not repeated. Confirmat
 the same limiter/retry policy; failed confirmations remain failures and completed empty confirmations remain
 missing. A missing selected endpoint may use an alternative dated provider label only when the selected,
 source-generation-bound lineage receipt already publishes its positive UUID membership and same-CUSIP rename
-observations tied to that identity's UUID. Historical mapping uses the endpoint's date and requests only that
-session in `all`; other acquired endpoints remain held. Unknown membership, unlike exchanges, conflicting routes
-and changed source bindings select no alternate request. Only missing selected sources need receipt bodies;
-carried receipts remain authoritative. This is provider request planning from accepted facts, not a new identity
-calculation. Backward routing stops at each earlier rename; later reuse of that label cannot redirect the old identity.
+observations tied to that identity's UUID. The current source label normally supplies that UUID through its exact
+positive lookup. If that exact lookup instead completed with a 404, the receipt's producer-held last positive exact
+own-label lookup may supply the UUID only when one accepted membership and every traversed same-CUSIP rename agree.
+Historical mapping uses the endpoint's date and requests only that session in `all`; other acquired endpoints remain
+held. The provider response retains its actual historical ticker and mapping provenance. Unknown membership, unlike
+exchanges, conflicting identifiers or routes and changed source bindings select no alternate request. Only missing
+selected sources need receipt bodies; each selected body is read once per selected comparison operation and carried
+as authoritative.
+A routed comparison is additionally bound to that receipt generation, so a changed receipt invalidates that
+comparison without invalidating unrelated ordinary comparisons. This is provider request planning from accepted
+facts, not a new identity calculation or a peer metadata lookup. Backward routing stops at each earlier rename;
+later reuse of that label cannot redirect the old identity.
 This request choice does not allocate rows or require already allocated ownership of the missing date.
 Recovered observations enter the original single comparison. Missing alternate observations stay
-incomplete and route errors preserve independent completed peers. Results and debug events identify each missing endpoint; request metrics count probes and recovered
-endpoints. This rule does not infer ticker identity from a companion's returned bar.
+incomplete and route errors preserve independent completed peers. A mapped difference also fails closed: this
+focused route does not manufacture current-label evidence or select a correction/replacement that would need
+historical-label acquisition. Results and debug events identify each missing endpoint; request metrics count probes
+and recovered endpoints. Once the resulting suffix and exact workflow obligation are committed in the lineage projection,
+an interrupted acknowledgement consumes that compact publication on restart and excludes the already-published
+label from another live comparison. This rule does not infer ticker identity from a companion's returned bar.
 Transport, shape or pagination errors leave actions incomplete. Replacement emptying a
 previously nonempty view needs bounded fresh producer confirmation; ordinary empty appends/initial empty histories
 retain batched acquisition.

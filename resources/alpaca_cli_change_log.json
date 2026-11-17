@@ -211,5 +211,10 @@
     "modifications": [
       "Describe compact native stage DEBUG captures for ordinary updates; independent JSON stage adapters retain explicit full captures."
     ]
+  },
+  {
+    "modifications": [
+      "Export Bloodhound Parquet directly from the online catalogue, sharing source selection with CSV and reporting the converter result and compatibility report."
+    ]
   }
 ]

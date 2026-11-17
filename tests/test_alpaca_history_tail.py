@@ -19,6 +19,7 @@ from libs.alpaca_pricing_download import check_summary, download, storage
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, COLUMNS, DownloadError, timestamp, transform
 from libs.alpaca_pricing_download.endpoints import (
     EndpointSelection,
+    HistoryComparison,
     compare_history,
     comparison_rows,
     endpoints_of,
@@ -104,6 +105,38 @@ class HistoryTailTests(unittest.TestCase):
         self.assertEqual(selected.consume("store", "GOOG", "generation", "end", "asof").tail_all, history)
         with self.assertRaises(DownloadError):
             selected.consume("store", "GOOG", "new-generation", "end", "asof")
+
+    def test_route_binding_invalidates_only_the_completed_comparison(self):
+        history = rows(3)
+        endpoints = endpoints_of({name: history for name in ADJUSTMENTS})
+        comparison = HistoryComparison("unchanged", (), history)
+        selected = EndpointSelection(
+            "store",
+            "GOOG",
+            "generation",
+            "end",
+            "asof",
+            tuple(endpoints.items()),
+            matched=True,
+            tail_all=endpoints.tail_all,
+            comparison=comparison,
+            lineage_generation="receipt-1",
+        )
+        self.assertIs(selected.for_lineage("receipt-1"), selected)
+        changed = selected.for_lineage("receipt-2")
+        self.assertIsNone(changed.comparison)
+        self.assertIsNone(changed.matched)
+        self.assertIsNone(changed.lineage_generation)
+        self.assertEqual(
+            changed.consume("store", "GOOG", "generation", "end", "asof"),
+            endpoints,
+        )
+        with self.assertRaisesRegex(DownloadError, "cannot select a durable correction"):
+            selected.document()
+        document = changed.document()
+        self.assertNotIn("lineage_generation", document)
+        with self.assertRaisesRegex(DownloadError, "durable pricing lineage generation"):
+            EndpointSelection.from_document({**document, "lineage_generation": "receipt"})
 
     def test_tail_must_be_ten_or_the_complete_short_history(self):
         history = rows(20)

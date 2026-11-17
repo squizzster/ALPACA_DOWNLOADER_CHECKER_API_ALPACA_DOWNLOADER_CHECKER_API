@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 42
+VERSION = 43
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -157,7 +157,7 @@ def build_parser():
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
     )
-    p = export.add_parser("bloodhound", help="offline eight-view Parquet conversion")
+    p = export.add_parser("bloodhound", help="export online catalogue histories directly to Bloodhound Parquet")
     _store(p)
     _dates(p)
     p.add_argument("--output", required=True, type=Path)
