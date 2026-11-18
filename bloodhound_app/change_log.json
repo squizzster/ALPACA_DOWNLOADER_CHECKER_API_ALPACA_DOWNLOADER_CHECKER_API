@@ -23,5 +23,15 @@
     "modifications": [
       "Read online histories directly through the shared public catalogue export stream; preserve existing precision, factor, metadata, series-ID, schema and serialized-output checks, with bounded read-once Arrow buffering and completed CSV/legacy input compatibility."
     ]
+  },
+  {
+    "modifications": [
+      "Serialize completed Bloodhound projections to gzip JSON Lines in daily START/EOD/FINISH batches, preserving all 18 projected fields, dates, duplicate observations, and nulls. Reuse the same numerical projection as Parquet and atomically install the completed stream."
+    ]
+  },
+  {
+    "modifications": [
+      "Make full-history EOD export the default, share identical frame conversions, retain compact bounded output, encode held tables in batches and report stage timings."
+    ]
   }
 ]

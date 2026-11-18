@@ -12,9 +12,10 @@ python3.11 -m pip install -r requirements.txt
 ```
 
 Provider acquisition requires `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` and Alpaca SIP access. Local readers
-and offline catalogue maintenance require compatible publications, not credentials/network. Parquet additionally
-requires [PyArrow](../requirements-bloodhound.txt). Default store: repository `data_pricing/`; override with
-`--store PATH`. [build_parser / dispatch](../libs/alpaca_cli/__init__.py) own commands/options; no abbreviation.
+and offline catalogue maintenance require compatible publications, not credentials/network. Parquet and EOD event
+exports require the [Bloodhound dependencies](../requirements-bloodhound.txt). The default store is the
+repository's `data_pricing/` directory. Use `--store PATH` to select another. The parser requires full option
+names. [CLI command definitions](../libs/alpaca_cli/__init__.py)
 See [CLI reports](cli-reporting.md) for streams, exit codes and monitoring.
 Use `--debug FILE.jsonl` on daily or focused lineage updates for the
 [paired execution trace](cli-reporting.md#optional-update-debug-trace), including reuse/fallback reasons.

@@ -262,5 +262,10 @@
     "modifications": [
       "Share online catalogue export selection, applicability, group assembly and decoded-source reuse between formats; expose a pinned single-use history export context without repeated upstream authentication."
     ]
+  },
+  {
+    "modifications": [
+      "Select catalogue identities by the requested date bounds while lending their full histories for projection. Lend the selected group inputs without rebuilding its summary or digest, share accepted row aliases inside the read-only export context, and clip their online span once."
+    ]
   }
 ]

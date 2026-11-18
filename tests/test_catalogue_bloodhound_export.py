@@ -156,6 +156,8 @@ class CatalogueBloodhoundTests(NativeCase):
 
         def conflicting(*args, **kwargs):
             frames, provenance = original(*args, **kwargs)
+            # Model a genuinely different view, detaching it from accepted physical aliases.
+            frames["split"] = frames["split"].copy()
             frames["split"].loc[0, "trade_count"] += 1
             return frames, provenance
 
@@ -271,6 +273,8 @@ class CatalogueBloodhoundTests(NativeCase):
         def conflicting(history, *args, **kwargs):
             frames, provenance = original(history, *args, **kwargs)
             if history.public_id == rejected:
+                # Model a genuinely different view, detaching it from accepted physical aliases.
+                frames["split"] = frames["split"].copy()
                 frames["split"].loc[0, "trade_count"] += 1
             return frames, provenance
 

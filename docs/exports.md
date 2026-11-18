@@ -12,10 +12,11 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 | `catalogue export --output PATH` | Flat online CSV ordered date → public ID. | [DataLibrary](../alpaca_end_of_day/__init__.py): `write_flat_online_csv` |
 | `export csv` | Online identities; one timestamped run with CSV/digest pairs and final manifest. | [_csv_export.py](../alpaca_end_of_day/_csv_export.py): `plan_export`, `write_export` |
 | `export bloodhound --output PATH` | Online identities; one Bloodhound Parquet file and conversion report. | [command_line.py](../libs/alpaca_bloodhound_export/command_line.py): `export` |
+| `export eod_stream --output PATH` | Full online histories or an inclusive date window, written as daily Bloodhound event batches in one gzip JSON Lines file. | [eod_stream.py](../bloodhound_app/eod_stream.py) |
 
 ## Shared catalogue input
 
-`export csv` and `export bloodhound` consume the same online catalogue through
+`export csv`, `export bloodhound`, and `export eod_stream` consume the same online catalogue through
 [_catalogue_export.py](../alpaca_end_of_day/_catalogue_export.py). The opened catalogue owns eligibility,
 selected groups, source generations and dated ticker ranges. Under the shared operation gate, its token and
 selected export-input applicability are accepted once. Dirty selected inputs fail before history reads;
@@ -27,8 +28,8 @@ payloads are shared across identities and adjustment aliases. Consumers assemble
 they do not reopen the lineage index, authenticate upstream hashes, repeat compatibility checks or replay
 ownership and eligibility decisions. The operation gate remains held through output publication.
 
-`DataLibrary.open_history_export(*, public_ids=None, start=None, end=None)` exposes this same context to
-format adapters. `iter_histories()` is single-use and yields public security metadata, exact decimal-string
+`DataLibrary.open_history_export(*, public_ids=None, start=None, end=None, full_histories=False)` exposes this same context to
+format adapters. With `full_histories=True`, the requested dates select identities with overlapping published coverage and the reader yields their complete online spans. `iter_histories()` is single-use and yields public security metadata, exact decimal-string
 rows for all eight views, and the completed inclusive ticker ranges. Keep the context open through publication
 and treat held values as read-only. `on_error="record"` retains completed peers and reports unreadable selected
 identities without retrying their group; initial selector and operation-lock failures still stop the export.
@@ -178,3 +179,75 @@ The [standalone publication limits](../bloodhound_app/README.md#8-known-limitati
 converter's Parquet/report pair. A failed conversion preserves an existing pair; an interrupted two-file
 publication needs inspection before consumption. The shared source gate does not supply a destination
 journal or change those existing limits. No provider requests, pricing writes or Bloodhound registration occur.
+
+## EOD streaming protocol
+
+```bash
+./alpaca-cli-eod export eod_stream --output exports/full-history.jsonl.gz
+./alpaca-cli-eod export eod_stream --from 2026-10-01 --through 2026-10-31 \
+  --symbol AAPL --symbol MSFT --output exports/october-2026.jsonl.gz
+```
+
+The default includes every online identity and its entire published history. Either inclusive date bound
+is optional. Repeat `--symbol` or `--public-id` to restrict the online selection.
+The stream uses the [Bloodhound projection](#parquet-conversion), including dated labels and split-factor
+inference over each selected identity's full online history before applying the date window. It reads each
+selected group once under the shared operation gate and merges the projected series by date and series ID.
+Identities outside the window are excluded by the catalogue before their source groups open.
+When adjustment views select the same physical rows and dated labels, the converter builds their numerical
+frame once. The writer
+decodes the retained Arrow columns in batches of at most 32 rows per series, sharing a 65,536-row
+lookahead budget with a minimum of one row per series. Completed Arrow tables use the same
+`--memory-mib` budget as Parquet. A rejected history, nonfinite number,
+or exhausted budget fails the export. A newly written gzip file is installed atomically outside the source
+store. `--replace` permits replacing an existing regular file. A busy export source fails immediately.
+Progress goes to stderr, the completion summary goes to stdout, and the events are in the gzip file.
+The summary includes selected identities and groups, retained input sessions, charged table bytes, compressed
+output bytes, process peak RSS in MiB, and wall seconds for setup, source reading and assembly, projection,
+writing and total time.
+
+### Wire format
+
+The file contains one complete UTF-8 JSON object per line. Each event has `blood_id` set to
+`stock_engine_test_v1.0`, `event_type`, and a `run_id` of 32 lowercase hexadecimal characters. A fresh run ID
+identifies each represented date per export. Order comes from the records in the stream.
+
+| `event_type` | Fields in addition to the common envelope |
+|---|---|
+| `START_EOD_MARKER` | The first START in each file includes `source` (`alpaca`) and `date_created` (export creation timestamp in UTC, ending `Z`). |
+| `EOD` | All 18 observation fields listed below. |
+| `FINISH_EOD_MARKER` | No additional fields. |
+
+| Group | Observation fields |
+|---|---|
+| Date | `date` (`YYYY-MM-DD`) |
+| Identity | `ohlcv_series_id` (JSON integer), `symbol`, `cik`, `composite_figi`, `share_class_figi`, `company_name`, `security_type`, `exchange` |
+| Prices | `adjusted_open`, `adjusted_high`, `adjusted_low`, `adjusted_close`, `raw_close` |
+| Volume | `volume`, `dollar_volume` |
+| Adjustments | `adjustment_ratio`, `split_adjustment_ratio` |
+
+Each represented date is a contiguous START, one or more EOD observations, and a FINISH. Observations
+carry the trading date. Both markers omit it. The producer writes dates in ascending order and rows in
+ascending series ID order within a date. It preserves duplicate observations, all projected field values,
+and nulls. A date with no observations emits zero records. An empty export is a valid gzip file whose
+decompressed stream is empty. Consumers must preserve signed 64-bit series IDs when decoding JSON numbers.
+
+### Receiving batches
+
+A receiver tracks `(blood_id, run_id)`. START opens a batch and reserves its queue position. EOD accumulates
+only while that batch is open. FINISH seals it permanently and signals input completion. The receiver can
+continue accepting input while earlier queue positions complete. It analyzes each sealed batch once, using
+only its own observations, and publishes a completed or failed outcome before releasing the next position.
+If the receiver accepts interleaving, START arrival still determines the queue order.
+
+The receiver rejects and reports invalid JSON, missing required fields, unsupported feeds or events,
+EOD or FINISH before START, repeated START or FINISH, and EOD after FINISH. It continues with subsequent
+complete records. A rejected EOD for a known batch prevents a wholly successful outcome. Duplicate
+observations, mixed dates, or backward daily dates fail the batch. A failed batch or failed analysis needs
+an explicit outcome before the next queue position is released.
+
+An open batch waits through silence and temporary input gaps. At confirmed transport closure, the receiver
+drains the ready queue prefix and reports open batches and those blocked behind them. This export defines
+the producer only. Receiver type and nullability enforcement, retransmission, acknowledgements, durable
+recovery, timeouts, aborts, and version negotiation require a separate contract. A fresh run ID cannot
+identify a re-exported day as already processed.

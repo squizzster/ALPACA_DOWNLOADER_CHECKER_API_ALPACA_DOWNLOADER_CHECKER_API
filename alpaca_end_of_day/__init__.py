@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 49
+API_VERSION = 50
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -636,16 +636,17 @@ class DataLibrary:
     def get_history(self, public_id, adjustment="raw", *, start=None, end=None):
         return self.get_histories(public_id, (adjustment,), start=start, end=end)[adjustment]
 
-    def open_history_export(self, *, public_ids=None, start=None, end=None):
+    def open_history_export(self, *, public_ids=None, start=None, end=None, full_histories=False):
         """Pin this catalogue and stream each selected group's histories once.
 
         Keep the returned context open through output publication. Its single-use
         iterator yields exact eight-view rows, public security metadata and the
-        completed inclusive ticker ranges. It performs no format encoding.
+        completed inclusive ticker ranges. With full_histories=True the dates
+        select overlapping identities and each yields its full online history.
         """
         from ._catalogue_export import open_export
 
-        return open_export(self, public_ids=public_ids, start=start, end=end)
+        return open_export(self, public_ids=public_ids, start=start, end=end, full_histories=full_histories)
 
     def plan_csv_export(self, *, public_ids=None, start=None, end=None, workers=2, memory_bytes=None):
         """Describe a per-identity CSV export using only this catalogue snapshot."""

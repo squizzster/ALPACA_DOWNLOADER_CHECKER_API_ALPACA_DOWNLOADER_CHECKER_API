@@ -42,7 +42,7 @@ class CatalogueHistories:
 
 
 @contextmanager
-def open_histories(args, history_type, unique_histories):
+def open_histories(args, history_type, unique_histories, *, select_window=False):
     # Applications use only the supported public boundary. The engine owns
     # selectors, group locking, source reuse and history assembly for both CSV
     # and Parquet. No source-store path discovery belongs in this adapter.
@@ -66,7 +66,8 @@ def open_histories(args, history_type, unique_histories):
             raise ValueError("requested public ID is not available in the selected tickers")
         public_ids = list(public_ids) if public_ids else sorted(resolved)
     # Factors consume the full accepted online history before date filtering.
-    with data.open_history_export(public_ids=public_ids) as exported:
+    window = {"start": args.start_date, "end": args.end_date, "full_histories": True} if select_window else {}
+    with data.open_history_export(public_ids=public_ids, **window) as exported:
         yield CatalogueHistories(exported, data.store, history_type, unique_histories)
 
 
@@ -82,25 +83,19 @@ def load(history, metadata, args, validate_frame):
         history.public_id, sessions, base, args.unknown_security_type, args.unknown_exchange
     )
     symbols = history.projected_metadata["symbol"]
-    frames = {
-        name: validate_frame(
-            pd.DataFrame(
-                {
-                    "session": sessions,
-                    "symbol": symbols,
-                    **{
-                        field: np.asarray([row[field] for row in view["bars"]], dtype=np.float64)
-                        for field in FIELDS
-                    },
-                },
-                copy=False,
-            ),
-            history.directory,
-            history.public_id,
-            accepted_session_grid=True,
-        )
-        for name, view in item.views.items()
-    }
+    frames, by_bars = {}, {}
+    for name, view in item.views.items():
+        bars = view["bars"]
+        key = id(bars)
+        if key not in by_bars:
+            values = {field: np.asarray([row[field] for row in bars], dtype=np.float64) for field in FIELDS}
+            by_bars[key] = validate_frame(
+                pd.DataFrame({"session": sessions, "symbol": symbols, **values}, copy=False),
+                history.directory,
+                history.public_id,
+                accepted_session_grid=True,
+            )
+        frames[name] = by_bars[key]
     return frames, [
         {
             "catalogue_generation": item.catalogue_generation,
@@ -112,7 +107,7 @@ def load(history, metadata, args, validate_frame):
 
 
 class OutputTables:
-    """Bound completed Arrow output, then serialize once in stable series order."""
+    """Bound the completed Arrow tables retained for serialization."""
 
     def __init__(self, memory_bytes):
         self.maximum_bytes = memory_bytes
@@ -123,7 +118,7 @@ class OutputTables:
     def add(self, identifier, table):
         charged = table.get_total_buffer_size() + 32768
         if self.used_bytes + charged > min(self.maximum_bytes, self.retained_limit):
-            raise MemoryError("Parquet output exceeds --memory-mib; no histories omitted or source rereads")
+            raise MemoryError("Export output exceeds --memory-mib; no histories omitted or source rereads")
         self.used_bytes += charged
         self.tables.append((identifier, table))
 

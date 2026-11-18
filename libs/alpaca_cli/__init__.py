@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 44
+VERSION = 46
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -157,17 +157,23 @@ def build_parser():
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
     )
-    p = export.add_parser("bloodhound", help="export online catalogue histories directly to Bloodhound Parquet")
-    _store(p)
-    _dates(p)
-    p.add_argument("--output", required=True, type=Path)
-    p.add_argument("--symbol", action="append")
-    p.add_argument("--public-id", action="append")
-    p.add_argument("--wait", action="store_true")
-    p.add_argument("--memory-mib", type=bounded_integer(256, 8192), default=8192)
-    p.add_argument("--cache-mib", type=bounded_integer(0, 6144), default=2048)
-    p.add_argument("--include-all-passed", action="store_true")
-    p.add_argument("--replace", action="store_true")
+    for name, help_text in (
+        ("bloodhound", "export online catalogue histories directly to Bloodhound Parquet"),
+        ("eod_stream", "export date-ordered Bloodhound events to gzip JSON Lines"),
+    ):
+        p = export.add_parser(name, help=help_text)
+        _store(p)
+        _dates(p)
+        p.add_argument("--output", required=True, type=Path)
+        p.add_argument("--symbol", action="append")
+        p.add_argument("--public-id", action="append")
+        if name == "bloodhound":
+            p.add_argument("--wait", action="store_true")
+        p.add_argument("--memory-mib", type=bounded_integer(256, 8192), default=8192)
+        p.add_argument("--cache-mib", type=bounded_integer(0, 6144), default=2048)
+        if name == "bloodhound":
+            p.add_argument("--include-all-passed", action="store_true")
+        p.add_argument("--replace", action="store_true")
     pricing = commands.add_parser("pricing").add_subparsers(dest="operation", required=True, parser_class=Parser)
     for name in ("acquire", "check", "refresh"):
         p = pricing.add_parser(name)
@@ -406,6 +412,27 @@ def dispatch(args):
                 hold_plan(reporter, result)
                 return result
             return data.write_csv_export(args.output, **options, progress=progress_callback(reporter))
+        if operation == "eod_stream":
+            try:
+                from bloodhound_app.eod_stream import export
+            except ImportError as error:
+                raise ValueError(f"install requirements-bloodhound.txt with Python 3.11: {error}") from error
+
+            try:
+                return export(
+                    args.store,
+                    args.output,
+                    start=args.start,
+                    end=args.end,
+                    public_ids=args.public_id,
+                    symbols=args.symbol,
+                    cache_mib=args.cache_mib,
+                    memory_mib=args.memory_mib,
+                    replace=args.replace,
+                    progress=lambda message: diagnostic(reporter, message),
+                )
+            except MemoryError as error:
+                raise ValueError(str(error)) from error
         from libs.alpaca_bloodhound_export.command_line import run_arguments
 
         return run_arguments(args)

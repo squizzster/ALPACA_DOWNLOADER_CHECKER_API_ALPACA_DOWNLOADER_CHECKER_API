@@ -359,6 +359,9 @@ def _history(
     if key in cache and prefix is None:
         if coverage_out is not None:
             coverage_out.update(cache[("coverage_order", key)])
+        # Export consumers borrow read-only views inside the group lifetime.
+        if io_cache is not None:
+            return cache[key]
         # Public view results remain independently mutable.
         return [{**bar, "tickers": list(bar["tickers"])} for bar in cache[key]]
     observations, coverage = {}, set()
@@ -451,12 +454,14 @@ def _read_views(
         if coverage_out is not None:
             coverage_out[adjustment] = selected_coverage
         # Bounds follow source selection, never change the winning source.
-        bars = [
-            bar
-            for bar in bars
-            if (start is None or bar["session"] >= start.isoformat())
-            and (end is None or bar["session"] <= end.isoformat())
-        ]
+        if start is not None or end is not None:
+            first = start.isoformat() if start else None
+            last = end.isoformat() if end else None
+            bars = [
+                bar
+                for bar in bars
+                if (first is None or bar["session"] >= first) and (last is None or bar["session"] <= last)
+            ]
         views[adjustment] = {"bar_count": len(bars), "bars": bars}
     return views
 
@@ -642,10 +647,10 @@ class StandaloneReader:
 
     @contextmanager
     def _export_snapshot(self, expected):
-        """Consume catalogue-selected bodies once while CSV owns the store gate.
+        """Consume catalogue-selected bodies once while the export holds the store gate.
 
         The completed serving selector guarantees membership, generations and
-        compatibility. CSV holds the shared operation lock for this lifetime;
+        compatibility. The exporter holds the shared operation lock for this lifetime;
         writers must take its exclusive side. Do not reopen the lineage index,
         inspect pending/update paths, authenticate upstream generations, or
         repeat store acceptance here. Only selected bodies and payloads are work.
@@ -653,7 +658,7 @@ class StandaloneReader:
         """
         root = self.store / "end_of_day/lineage"
         index = {"symbols": {name: {"sha256": token} for name, token in expected["lineage"].items()}}
-        sources, receipts, assignments, generations = {}, {}, {}, {}
+        sources, assignments = {}, {}
         with ExitStack() as locks:
             for name in sorted(expected["pricing"]):
                 pricing = published_path(self.store, f"end_of_day/pricing/{name}")
@@ -669,10 +674,9 @@ class StandaloneReader:
                     raise StandaloneReaderError("selected pricing publication is missing")
                 receipt = read_receipt(root, name, index)
                 boundaries = read_boundaries(root, receipt)
-                sources[name], receipts[name] = source, receipt
+                sources[name] = source
                 assignments[name] = tuple(_assignments(boundaries, receipt))
-                generations[name] = expected["lineage"][name]
-            yield assignments, sources, document_digest(generations), receipts, generations
+            yield assignments, sources
 
     def resolve_ticker(self, symbol: str) -> dict:
         """List IDs assigned to this source or bearing its historical label in the group.
@@ -793,7 +797,7 @@ class StandaloneReader:
         export_selection=False,
     ):
         """Shared locked consumption for inspection, serving production and reads."""
-        from ._standalone_group import GroupSnapshot
+        from ._standalone_group import ExportGroup, GroupSnapshot
 
         symbol = _symbol(symbol)
         options = {"reuse_documents": True}
@@ -813,7 +817,10 @@ class StandaloneReader:
         snapshot = manager.__enter__()
         group = None
         try:
-            group = GroupSnapshot(self, symbol, *snapshot, shared_cache=shared_cache)
+            if export_selection:
+                group = ExportGroup(self.store, *snapshot)
+            else:
+                group = GroupSnapshot(self, symbol, *snapshot, shared_cache=shared_cache)
             yield group
         finally:
             if group is not None:

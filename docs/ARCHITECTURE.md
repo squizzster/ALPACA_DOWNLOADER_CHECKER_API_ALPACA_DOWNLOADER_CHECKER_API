@@ -101,9 +101,9 @@ provider requests or identity-rule replay. Empty/ineligible results complete wor
 publications leave work pending.
 
 `StandaloneReader` exposes resolved group histories/evidence; `DataLibrary` exposes online identities. Both
-use the same locked history assembly. CSV and Bloodhound Parquet share the catalogue export selection and
-group reader in [catalogue export](../alpaca_end_of_day/_catalogue_export.py); format conversion never needs
-an intermediate CSV. [Public API](public-api.md) owns reader semantics;
+use the same locked history assembly. CSV, Bloodhound Parquet, and EOD events share the catalogue export
+selection and group reader in [catalogue export](../alpaca_end_of_day/_catalogue_export.py). The EOD event
+writer consumes the same completed numerical projection as Parquet. [Public API](public-api.md) owns reader semantics;
 [exports](exports.md) own output contracts. Default standalone store: repository `data_pricing/`.
 
 ## Code ownership
@@ -111,7 +111,7 @@ an intermediate CSV. [Public API](public-api.md) owns reader semantics;
 | Owner | Responsibility |
 |---|---|
 | [IS_ELIGIBLE_LISTED_BUSINESS_EQUITY](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/) | Independent consumer exporting public-reader identity metadata and group evidence without prices or eligibility assessments. |
-| [bloodhound_app](../bloodhound_app/README.md) | Bloodhound conversion from shared public catalogue histories, completed CSV exports or legacy files; owns precision checks, schema, dependencies and publication limitations. |
+| [bloodhound_app](../bloodhound_app/README.md) | Bloodhound conversion from shared public catalogue histories, completed CSV exports or legacy files. Owns the numerical projection, Parquet schema, and [EOD event writer](../bloodhound_app/eod_stream.py). |
 | [alpaca_end_of_day](../alpaca_end_of_day/) | Public API, shared history assembly, CSV exports, reader adapters. |
 | [alpaca_cli](../libs/alpaca_cli/) | Canonical parser/dispatch, progress adapters and post-update recovery-registry Git commits/pushes. |
 | [alpaca_heartbeat](../libs/alpaca_heartbeat/) | Shared opt-in stderr lifecycle timer, protocol encoding and consumption. |

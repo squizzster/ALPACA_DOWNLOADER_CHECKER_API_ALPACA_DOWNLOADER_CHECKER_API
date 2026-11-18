@@ -2,8 +2,8 @@
 
 Maintains exact US-equity prices in eight adjustment views, dated security identities and an online serving
 catalogue. Incremental checks reuse completed work; journals recover interrupted publications. Local readers
-and CSV/Parquet exports consume published histories and evidence. Research and trading decisions stay outside
-the data boundary.
+and CSV, Parquet, and EOD event exports consume published histories and evidence. Research and trading decisions
+stay outside the data boundary.
 
 [Ownership allocation](docs/lineage.md#ownership-allocation-criterion) seeks the most likely lineage from the
 available evidence. Both incorrect allocation and withholding supported history are errors.
@@ -13,14 +13,14 @@ It records the audit findings, verified fixes, remaining gaps, owning regression
 The review covers trust repairs and evidence-gated lineage extensions. [AGENTS.md](AGENTS.md) remains authoritative.
 
 Requires Python 3.11, Unix `flock` and `America/New_York` timezone data. Production policy compilation uses
-[PyYAML](requirements.txt); Parquet additionally uses the [converter dependencies](requirements-bloodhound.txt).
+[PyYAML](requirements.txt). Parquet and EOD event exports use the [converter dependencies](requirements-bloodhound.txt).
 See [setup and credentials](docs/operations.md#prerequisites). Runtime stores stay outside Git.
 
 ## Run and consume
 
 - [Operations](docs/operations.md): setup, `./alpaca-cli-eod update`, cutoffs, recovery and focused commands.
 - [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
-- [Exports](docs/exports.md): CSV/Parquet selection, formats, memory, locks and publication guarantees.
+- [Exports](docs/exports.md): CSV, Parquet, and EOD event selection, formats, and publication guarantees.
 - [Standalone Bloodhound converter](bloodhound_app/README.md): convert online catalogue histories, completed CSV exports or legacy histories
   with the imported app, its own dependencies, tests and documented limitations.
 - [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.

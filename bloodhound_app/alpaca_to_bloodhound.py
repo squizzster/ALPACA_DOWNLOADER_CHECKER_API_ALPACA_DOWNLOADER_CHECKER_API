@@ -38,7 +38,7 @@ else:
     from bloodhound_factors import infer_split_factors, validate_split_factors
 
 VERSION = "1.3.0"
-RUNTIME_VERSION = 5
+RUNTIME_VERSION = 7
 ADJUSTMENTS = (
     "raw",
     "split",
@@ -405,6 +405,7 @@ def load_history(
     raw = frames["raw"]
     issues = []
     aligned_frames = {id(raw)}
+    checked_issues = {}
     for name, frame in frames.items():
         if not alignment_complete and id(frame) not in aligned_frames:
             # Legacy files are independent inputs. Accept each loaded frame once;
@@ -416,8 +417,14 @@ def load_history(
             if "timestamp" in raw and "timestamp" in frame and not raw["timestamp"].equals(frame["timestamp"]):
                 raise ConversionError(f"{name}: timestamp values differ from raw")
             aligned_frames.add(id(frame))
-        if name == "raw":
+        if frame is raw:
             continue
+        split_view = name == "all" or "split" in name.split(",")
+        check = (id(frame), split_view)
+        if check in checked_issues:
+            issues.extend({**issue, "view": name} for issue in checked_issues[check])
+            continue
+        first_issue = len(issues)
         if "trade_count" in raw and "trade_count" in frame:
             mismatch = (raw["trade_count"] != frame["trade_count"]).to_numpy()
             if mismatch.any():
@@ -439,7 +446,6 @@ def load_history(
                         ],
                     }
                 )
-        split_view = name == "all" or "split" in name.split(",")
         if not split_view:
             mismatch = (raw["volume"] != frame["volume"]).to_numpy()
             if mismatch.any():
@@ -472,6 +478,7 @@ def load_history(
                         ],
                     }
                 )
+        checked_issues[check] = issues[first_issue:]
     security = history.manifest.get("security", {})
     for key, actual in (
         ("first_session", str(raw.iloc[0]["session"])),
@@ -573,18 +580,46 @@ def make_table(
             raise ConversionError(f"Nonpositive output values in {name}")
     if any(not symbol.strip() or re.search(r"[,;|\s]", symbol) for symbol in values["symbol"]):
         raise ConversionError("Output symbol must be a single nonempty dated ticker")
-    mask = np.ones(len(raw), dtype=bool)
-    if args.start_date:
-        mask &= sessions >= args.start_date
-    if args.end_date:
-        mask &= sessions <= args.end_date
     table = pa.Table.from_arrays(
         [pa.array(values[field.name], type=field.type) for field in BLOODHOUND_SCHEMA], schema=BLOODHOUND_SCHEMA
     )
     for field, column in zip(table.schema, table.columns):
         if not field.nullable and column.null_count:
             raise ConversionError(f"Null in required column {field.name}")
-    return table.filter(pa.array(mask))
+    # Every input adapter supplies ordered sessions. Avoid copying the full
+    # table for an unrestricted export. A bounded export retains compact
+    # buffers, since a zero-copy slice would pin the entire source table.
+    if not args.start_date and not args.end_date:
+        return table
+    lo = int(sessions.searchsorted(args.start_date)) if args.start_date else 0
+    hi = int(sessions.searchsorted(args.end_date, side="right")) if args.end_date else len(raw)
+    if lo == 0 and hi == len(raw):
+        return table
+    return table.take(pa.array(np.arange(lo, hi, dtype=np.int64)))
+
+
+def require_source_consistency(issues):
+    if issues:
+        first = issues[0]
+        raise ConversionError(
+            f"Source views conflict: {first['kind']} in {first['view']} ({first['count']} rows)"
+        )
+
+
+def history_split_factors(history, frames, actions=None):
+    numeric_views = {
+        key: {
+            field: frame[field].to_numpy(dtype=np.float64)
+            for field in (*OHLC, "volume", "vwap")
+            if field in frame
+        }
+        for key, frame in frames.items()
+    }
+    if actions is None:
+        return infer_split_factors(numeric_views)
+    factors, diagnostics = actions.factors_for(history.public_id, frames["raw"]["session"].to_numpy(dtype=str))
+    diagnostics["view_consistency"] = validate_split_factors(numeric_views, factors)
+    return factors, diagnostics
 
 
 def write_json_atomic(path: Path, content: dict[str, Any]) -> None:
@@ -923,25 +958,8 @@ def _convert(args, *, root, output, report_path, histories=None):
                     )
                     if issues:
                         item["source_issues"] = issues
-                        first = issues[0]
-                        raise ConversionError(
-                            f"Source views conflict: {first['kind']} in {first['view']} ({first['count']} rows)"
-                        )
-                    numeric_views = {
-                        key: {
-                            field: frame[field].to_numpy(dtype=np.float64)
-                            for field in (*OHLC, "volume", "vwap")
-                            if field in frame
-                        }
-                        for key, frame in frames.items()
-                    }
-                    if actions:
-                        factors, diagnostics = actions.factors_for(
-                            history.public_id, raw["session"].to_numpy(dtype=str)
-                        )
-                        diagnostics["view_consistency"] = validate_split_factors(numeric_views, factors)
-                    else:
-                        factors, diagnostics = infer_split_factors(numeric_views)
+                    require_source_consistency(issues)
+                    factors, diagnostics = history_split_factors(history, frames, actions)
                     for segment in diagnostics.get("segments", []):
                         segment["first_session"] = str(raw.iloc[segment["start_index"]]["session"])
                         segment["last_session"] = str(raw.iloc[segment["end_index"] - 1]["session"])

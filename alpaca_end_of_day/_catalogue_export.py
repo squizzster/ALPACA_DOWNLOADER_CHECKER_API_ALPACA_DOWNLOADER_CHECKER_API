@@ -8,8 +8,10 @@ The gate remains held until the format owner finishes publication. A changed
 catalogue token or dirty selected input rejects before any history body is read.
 """
 
+from bisect import bisect_left, bisect_right
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from operator import itemgetter
 
 from libs.alpaca_serving_catalogue import export_inputs
 from libs.alpaca_serving_catalogue.contract import CatalogueError
@@ -52,16 +54,22 @@ def read_group(data, selected, groups, key, start, end):
                 for public_id, views in histories:
                     security = selected[public_id]
                     first, last = security.first_session.isoformat(), security.last_session.isoformat()
-                    yield (
-                        public_id,
-                        {
-                            adjustment: {
-                                **view,
-                                "bars": [bar for bar in view["bars"] if first <= bar["session"] <= last],
-                            }
-                            for adjustment, view in views.items()
-                        },
-                    )
+                    # The producer owns the ordered session grid. Clip only the
+                    # accepted online span and retain physical aliases by reference.
+                    clipped, output = {}, {}
+                    for name, view in views.items():
+                        bars = view["bars"]
+                        bars_id = id(bars)
+                        if bars_id not in clipped:
+                            if bars and (bars[0]["session"] < first or bars[-1]["session"] > last):
+                                session = itemgetter("session")
+                                lo = bisect_left(bars, first, key=session)
+                                hi = bisect_right(bars, last, lo=lo, key=session)
+                                clipped[bars_id] = bars[lo:hi]
+                            else:
+                                clipped[bars_id] = bars
+                        output[name] = {**view, "bars": clipped[bars_id]}
+                    yield public_id, output
     except ReaderBusyError as error:
         raise ReaderBusyError("export source is busy; retry later") from error
     except (CatalogueError, StandaloneReaderError) as error:
@@ -143,7 +151,7 @@ class CatalogueExport:
 
 
 @contextmanager
-def open_export(data, *, public_ids=None, start=None, end=None):
+def open_export(data, *, public_ids=None, start=None, end=None, full_histories=False):
     try:
         with operation_lock(data.store, exclusive=False):
             selected, groups, start, end = selection(data, public_ids, start, end)
@@ -157,7 +165,9 @@ def open_export(data, *, public_ids=None, start=None, end=None):
                 raise CatalogChangedError(
                     "selected serving catalogue or export inputs changed; finish maintenance and open a new DataLibrary"
                 ) from error
-            exported = CatalogueExport(data, selected, groups, start, end)
+            exported = CatalogueExport(
+                data, selected, groups, None if full_histories else start, None if full_histories else end
+            )
             try:
                 yield exported
             finally:

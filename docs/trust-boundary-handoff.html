@@ -63,6 +63,14 @@ also cover an end-to-end export/conversion and retain publication interruption a
 Its <a href="../bloodhound_app/README.md#8-known-limitations-and-scope">known publication and validation limits</a>
 are separate from the engine findings below. Importing the app does not close those limits or extend
 the engine's publication guarantees to it.</p>
+<p>The <a href="exports.md#eod-streaming-protocol">EOD stream export</a> consumes the same selected catalogue
+handoff and Bloodhound numerical projection. Date bounds prune identities at catalogue selection; each selected identity retains its full factor input span. The selected group lends pricing sources and row assignments without reconstructing catalogue membership, a group summary, or its digest. Read-only views share exact row and label selections and their converted frames. Full-history and one-sided-window regressions cover alias reuse and excluded groups. It merges the completed series by date and series ID and
+installs a single completed gzip file under the source gate. The
+<a href="../tests/test_eod_stream_export.py">stream regressions</a> cover exact Parquet value parity, one selected
+applicability read, one factor inference per identity, one open per selected source body, and publication
+without source reads. They also exercise dirty selected inputs, empty gzip output, duplicate and nonfinite
+observations, and interruption before atomic installation. The all-security October replay matched every
+observation and its order. Full-history production memory and runtime remain unmeasured.</p>
 <h2>Verified behavior</h2>
 <p><a href="../tests/test_alpaca_retained_scope_adapters.py">Retained scope adapter regressions</a> preserve
 known prepared fact envelopes without replaying accepted facts, reject unknown headers, and carry different

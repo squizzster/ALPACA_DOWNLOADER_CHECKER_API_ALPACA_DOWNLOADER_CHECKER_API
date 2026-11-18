@@ -221,5 +221,15 @@
     "modifications": [
       "Report unknown ETA availability separately from retained request-failure reasons and emit bounded normal-run diagnostics. Retire recovered exceptions only at completed producer request scopes; retain failures across unrelated successful requests. Preserve wrapped HTTP status in debug traces."
     ]
+  },
+  {
+    "modifications": [
+      "Add export eod_stream for a selected date window with optional symbol or public-ID filtering, gzip JSON Lines output, and progress and completion diagnostics."
+    ]
+  },
+  {
+    "modifications": [
+      "Default eod_stream to all available history and support optional inclusive start and end bounds."
+    ]
   }
 ]
