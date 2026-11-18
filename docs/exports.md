@@ -192,19 +192,22 @@ The default includes every online identity and its entire published history. Eit
 is optional. Repeat `--symbol` or `--public-id` to restrict the online selection.
 The stream uses the [Bloodhound projection](#parquet-conversion), including dated labels and split-factor
 inference over each selected identity's full online history before applying the date window. It reads each
-selected group once under the shared operation gate and merges the projected series by date and series ID.
+selected group once under the shared operation gate and orders the projected rows by date and series ID.
 Identities outside the window are excluded by the catalogue before their source groups open.
 When adjustment views select the same physical rows and dated labels, the converter builds their numerical
-frame once. The writer
-decodes the retained Arrow columns in batches of at most 32 rows per series, sharing a 65,536-row
-lookahead budget with a minimum of one row per series. Completed Arrow tables use the same
-`--memory-mib` budget as Parquet. A rejected history, nonfinite number,
+frame once. Completed Arrow tables use the same `--memory-mib` budget as Parquet.
+At publication the writer packs one column at a time, builds a stable Arrow sort index on date and
+signed series ID, and gathers up to 65,536 rows at a time. It converts at most 8,192 rows per batch
+to Python values for JSON encoding. The sort index, temporary column buffers and active batch
+use additional working memory. When `pigz` is on PATH, four threads compress the stream at level 6.
+Otherwise Python's gzip writer produces the same event format. Compression must finish successfully
+before publication. A rejected history, nonfinite number,
 or exhausted budget fails the export. A newly written gzip file is installed atomically outside the source
 store. `--replace` permits replacing an existing regular file. A busy export source fails immediately.
 Progress goes to stderr, the completion summary goes to stdout, and the events are in the gzip file.
-The summary includes selected identities and groups, retained input sessions, charged table bytes, compressed
-output bytes, process peak RSS in MiB, and wall seconds for setup, source reading and assembly, projection,
-writing and total time.
+The summary includes selected identities and groups, first and last emitted sessions (null for empty output),
+retained input sessions, charged table bytes, compressed output bytes, Python process peak RSS in MiB, and
+wall seconds for setup, source reading and assembly, projection, writing and total time.
 
 ### Wire format
 

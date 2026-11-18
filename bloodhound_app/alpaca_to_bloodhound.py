@@ -38,7 +38,7 @@ else:
     from bloodhound_factors import infer_split_factors, validate_split_factors
 
 VERSION = "1.3.0"
-RUNTIME_VERSION = 7
+RUNTIME_VERSION = 8
 ADJUSTMENTS = (
     "raw",
     "split",

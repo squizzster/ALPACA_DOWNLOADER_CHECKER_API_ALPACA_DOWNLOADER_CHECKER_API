@@ -33,5 +33,10 @@
     "modifications": [
       "Make full-history EOD export the default, share identical frame conversions, retain compact bounded output, encode held tables in batches and report stage timings."
     ]
+  },
+  {
+    "modifications": [
+      "Order retained EOD projections in Arrow, encode bounded batches, use four-thread pigz when available, and report the first and last emitted sessions."
+    ]
   }
 ]

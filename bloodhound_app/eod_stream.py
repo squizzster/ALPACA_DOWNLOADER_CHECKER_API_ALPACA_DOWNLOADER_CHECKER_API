@@ -5,10 +5,12 @@ import io
 import json
 import os
 import resource
+import shutil
+import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
-from heapq import merge
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
@@ -17,6 +19,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from .alpaca_to_bloodhound import (
     ConversionError,
@@ -33,6 +36,8 @@ from .catalogue_input import OutputTables, open_histories
 
 BLOOD_ID = "stock_engine_test_v1.0"
 SOURCE = "alpaca"
+GATHER_ROWS = 65536
+DECODE_ROWS = 8192
 
 
 def _observations(table, batch_size):
@@ -55,45 +60,95 @@ def _observations(table, batch_size):
             yield dict(zip(names, values))
 
 
-def _write_events(stream, tables, created):
+def _ordered_observations(tables, progress):
+    if not tables:
+        return
+    # Transfer ownership, then pack one column at a time. This releases its
+    # original chunks before the next column needs a contiguous buffer.
+    joined = pa.concat_tables([table for _, table in tables])
+    tables.clear()
+    schema, columns = joined.schema, joined.columns
+    del joined
+    for index, column in enumerate(columns):
+        # Table.combine_chunks respects Arrow's per-buffer limit for strings.
+        columns[index] = pa.table([column], names=["value"]).combine_chunks().column(0)
+    packed = pa.Table.from_arrays(columns, schema=schema)
+    order = pc.sort_indices(packed, sort_keys=[("date", "ascending"), ("ohlcv_series_id", "ascending")])
+    for offset in range(0, len(order), GATHER_ROWS):
+        block = pc.take(packed, order.slice(offset, GATHER_ROWS))
+        yield from _observations(block, DECODE_ROWS)
+        completed = offset + len(block)
+        if progress and (completed % 1048576 == 0 or completed == len(order)):
+            progress(f"Encoded {completed:,}/{len(order):,} observations.")
+
+
+def _write_events(stream, tables, created, progress):
     encode = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode
-    # Each series is already in session order. Bound the total decoded
-    # lookahead as the number of series grows, with at least one row per series.
-    batch_size = max(1, min(32, 65536 // max(1, len(tables))))
-    rows = merge(
-        *(_observations(table, batch_size) for _, table in tables), key=itemgetter("date", "ohlcv_series_id")
-    )
+    rows = _ordered_observations(tables, progress)
+    first_day = last_day = None
     days = 0
     for days, (session, observations) in enumerate(groupby(rows, key=itemgetter("date")), 1):
         header = {"blood_id": BLOOD_ID, "run_id": uuid4().hex}
         meta = {"source": SOURCE, "date_created": created} if days == 1 else {}
         stream.write(encode({**header, "event_type": "START_EOD_MARKER", **meta}) + "\n")
-        day = session.isoformat()
+        day = last_day = session.isoformat()
+        if days == 1:
+            first_day = day
         prefix = {**header, "event_type": "EOD"}
         for row in observations:
             row["date"] = day
             stream.write(encode({**prefix, **row}) + "\n")
         stream.write(encode({**header, "event_type": "FINISH_EOD_MARKER"}) + "\n")
-    return days
+    return days, first_day, last_day
 
 
-def _publish(output, tables, created, *, replace):
+@contextmanager
+def _gzip_stream(raw):
+    executable = shutil.which("pigz")
+    if executable is None:
+        with (
+            gzip.GzipFile(filename="", mode="wb", compresslevel=6, fileobj=raw) as compressed,
+            io.TextIOWrapper(compressed, encoding="utf-8", newline="\n") as stream,
+        ):
+            yield stream
+        return
+
+    env = {key: value for key, value in os.environ.items() if key not in ("PIGZ", "GZIP")}
+    with subprocess.Popen(
+        [executable, "-n", "-6", "-p", "4", "-c"],
+        stdin=subprocess.PIPE,
+        stdout=raw,
+        env=env,
+        text=True,
+        encoding="utf-8",
+    ) as process:
+        try:
+            yield process.stdin
+            process.stdin.close()
+            status = process.wait()
+            if status:
+                raise ConversionError(f"pigz compression failed with exit status {status}")
+        except BaseException:
+            process.kill()
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+            raise
+
+
+def _publish(output, tables, created, *, replace, progress=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".partial", dir=output.parent)
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as raw:
-            with (
-                gzip.GzipFile(filename="", mode="wb", compresslevel=6, fileobj=raw) as compressed,
-                io.TextIOWrapper(compressed, encoding="utf-8", newline="\n") as stream,
-            ):
-                days = _write_events(stream, tables, created)
+            with _gzip_stream(raw) as stream:
+                days, first_day, last_day = _write_events(stream, tables, created, progress)
             output_bytes = raw.tell()
         if replace:
             os.replace(temporary, output)
         else:
             os.link(temporary, output)
-        return days, output_bytes
+        return days, output_bytes, first_day, last_day
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -179,13 +234,18 @@ def export(
         if progress:
             progress(f"Writing {row_count:,} observations to gzip JSON Lines.")
         write_start = perf_counter()
-        days, output_bytes = _publish(output, collected.tables, created, replace=replace)
+        identities = len(collected.tables)
+        days, output_bytes, first_day, last_day = _publish(
+            output, collected.tables, created, replace=replace, progress=progress
+        )
         return {
             "output": str(output),
             "days": days,
             "output_bytes": output_bytes,
             "rows": row_count,
-            "identities": len(collected.tables),
+            "identities": identities,
+            "first_session": first_day,
+            "last_session": last_day,
             "catalogue_generation": histories.catalogue["generation"],
             "selected_identities": selected,
             "groups": groups,

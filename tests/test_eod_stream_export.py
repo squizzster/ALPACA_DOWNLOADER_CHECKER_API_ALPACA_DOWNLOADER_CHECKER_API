@@ -3,8 +3,11 @@
 import gzip
 import io
 import json
+import os
+import sys
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from importlib.util import find_spec
 from pathlib import Path
 from unittest import skipUnless
@@ -202,15 +205,74 @@ class EodStreamTests(NativeCase):
             rows = [e for e in read_events(output) if e["event_type"] == "EOD"]
             self.assertEqual([{**e, "run_id": None} for e in rows], [{**e, "run_id": None} for e in expected])
 
-    def test_writer_preserves_duplicates_assigns_fresh_runs_and_cleans_partial_output(self):
-        from datetime import datetime
+    def test_ordered_blocks_cross_days_with_exact_ids_nullable_fields_and_stable_ties(self):
+        date1, date2 = datetime(2016, 1, 4), datetime(2026, 11, 9)
+        large = 2**62 + 1
 
+        def table(ident, dates, labels):
+            return pa.table({"date": dates, "ohlcv_series_id": [ident] * len(dates), "label": labels})
+
+        tables = [
+            (large, table(large, [date1, date1, date2], ["first", None, "last"])),
+            (-large, table(-large, [date1, date2], ["early", "late"])),
+        ]
+        destination = self.directory / "ordered.jsonl.gz"
+        with (
+            patch.object(eod_stream, "GATHER_ROWS", 2),
+            patch.object(eod_stream, "DECODE_ROWS", 1),
+            patch.object(eod_stream.shutil, "which", return_value=None),
+            patch.object(eod_stream.subprocess, "Popen", side_effect=AssertionError("fallback spawned a child")),
+            patch.object(eod_stream.pc, "sort_indices", wraps=eod_stream.pc.sort_indices) as sort,
+            patch.object(eod_stream.pc, "take", wraps=eod_stream.pc.take) as gather,
+        ):
+            days, _, first, last = eod_stream._publish(destination, tables, "created", replace=False)
+        self.assertEqual((days, first, last), (2, "2016-01-04", "2026-11-09"))
+        self.assertEqual(tables, [])
+        self.assertEqual(sort.call_count, 1)
+        self.assertEqual([len(call.args[1]) for call in gather.call_args_list], [2, 2, 1])
+        events = read_events(destination)
+        self.assertEqual(
+            [(event["ohlcv_series_id"], event["label"]) for event in events if event["event_type"] == "EOD"],
+            [(-large, "early"), (large, "first"), (large, None), (-large, "late"), (large, "last")],
+        )
+        self.assertEqual(sum(event["event_type"] == "START_EOD_MARKER" for event in events), 2)
+
+    def test_compressor_failure_or_interrupted_encoding_cannot_install_output(self):
+        executable = self.directory / "pigz"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "assert sys.argv[1:] == ['-n', '-6', '-p', '4', '-c']\n"
+            "assert 'PIGZ' not in os.environ and 'GZIP' not in os.environ\n"
+            "sys.stdin.buffer.read()\n"
+            "sys.exit(17)\n"
+        )
+        executable.chmod(0o700)
+        output = self.directory / "prior.jsonl.gz"
+        prior = gzip.compress(b"prior")
+        output.write_bytes(prior)
+        with (
+            patch.object(eod_stream.shutil, "which", return_value=str(executable)),
+            patch.dict(os.environ, {"PIGZ": "-d", "GZIP": "-9"}),
+        ):
+            with self.assertRaisesRegex(eod_stream.ConversionError, "exit status 17"):
+                eod_stream._publish(output, [], "created", replace=True)
+            with (
+                patch.object(eod_stream, "_write_events", side_effect=KeyboardInterrupt),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                eod_stream._publish(output, [], "created", replace=True)
+        self.assertEqual(output.read_bytes(), prior)
+        self.assertEqual(list(self.directory.glob(".*.partial")), [])
+
+    def test_writer_preserves_duplicates_assigns_fresh_runs_and_cleans_partial_output(self):
         output = self.directory / "duplicates.jsonl.gz"
         row = {"date": datetime(2026, 10, 7), "ohlcv_series_id": 5, "raw_close": 12.5}
         table = pa.Table.from_pylist([row, row])
         created = "2026-11-17T01:02:03Z"
-        first_days, output_bytes = eod_stream._publish(output, [(5, table)], created, replace=False)
+        first_days, output_bytes, start, end = eod_stream._publish(output, [(5, table)], created, replace=False)
         first = read_events(output)
+        self.assertEqual((start, end), ("2026-10-07", "2026-10-07"))
         self.assertEqual(first_days, 1)
         self.assertEqual(output_bytes, output.stat().st_size)
         self.assertEqual(
