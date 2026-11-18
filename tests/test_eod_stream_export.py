@@ -7,7 +7,7 @@ import os
 import sys
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib.util import find_spec
 from pathlib import Path
 from unittest import skipUnless
@@ -36,6 +36,38 @@ def read_events(path):
 
 @skipUnless(HAS_CONVERTER, "install requirements-bloodhound.txt")
 class EodStreamTests(NativeCase):
+    def test_default_cli_creates_a_fresh_timestamped_run_for_each_export(self):
+        data = self.bootstrap()
+        root = self.directory / "exports" / "eod_stream"
+        started = datetime(2026, 11, 16, 22, 3, 7, 231169, tzinfo=timezone.utc)
+        with (
+            patch.object(eod_stream, "DEFAULT_OUTPUT_ROOT", root),
+            patch.object(eod_stream, "datetime") as clock,
+            patch("alpaca_end_of_day.DataLibrary", return_value=data),
+            redirect_stderr(io.StringIO()),
+        ):
+            for instant in (started, started.replace(microsecond=231170)):
+                clock.now.return_value = instant
+                with redirect_stdout(io.StringIO()) as stdout:
+                    self.assertEqual(main(["export", "eod_stream", "--store", str(self.store)]), 0)
+                output = root / instant.strftime("%Y%m%dT%H%M%S.%fZ") / "eod_stream.jsonl.gz"
+                self.assertEqual(json.loads(stdout.getvalue())["output"], str(output))
+                self.assertEqual(
+                    read_events(output)[0]["date_created"], instant.isoformat().replace("+00:00", "Z")
+                )
+            with (
+                patch.object(eod_stream, "open_histories", side_effect=AssertionError("reopened histories")),
+                self.assertRaisesRegex(eod_stream.ConversionError, "run directory already exists"),
+            ):
+                eod_stream.export(self.store, replace=True)
+        self.assertEqual(len(list(root.iterdir())), 2)
+        # Another run can reserve this timestamp between selection and publication.
+        with (
+            self.assertRaises(FileExistsError),
+            patch.object(eod_stream, "_gzip_stream", side_effect=AssertionError("entered occupied run")),
+        ):
+            eod_stream._publish(output, [], "created", replace=False, new_run=True)
+
     def test_cli_wire_protocol_matches_parquet_with_one_selected_handoff(self):
         self.add_symbol("OTHER", bars=valid_bars(start="2026-10-06"))
         data = self.bootstrap()

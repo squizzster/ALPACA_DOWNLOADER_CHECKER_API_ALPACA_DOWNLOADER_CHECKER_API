@@ -38,6 +38,7 @@ BLOOD_ID = "stock_engine_test_v1.0"
 SOURCE = "alpaca"
 GATHER_ROWS = 65536
 DECODE_ROWS = 8192
+DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[1] / "exports" / "eod_stream"
 
 
 def _observations(table, batch_size):
@@ -135,8 +136,8 @@ def _gzip_stream(raw):
             raise
 
 
-def _publish(output, tables, created, *, replace, progress=None):
-    output.parent.mkdir(parents=True, exist_ok=True)
+def _publish(output, tables, created, *, replace, progress=None, new_run=False):
+    output.parent.mkdir(parents=True, exist_ok=not new_run)
     descriptor, name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".partial", dir=output.parent)
     temporary = Path(name)
     try:
@@ -155,7 +156,7 @@ def _publish(output, tables, created, *, replace, progress=None):
 
 def export(
     store,
-    output,
+    output=None,
     *,
     start=None,
     end=None,
@@ -168,18 +169,26 @@ def export(
 ):
     """Read the selected catalogue histories once and publish a gzip JSON Lines file."""
     began = perf_counter()
-    created = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    started = datetime.now(timezone.utc)
+    created = started.isoformat().replace("+00:00", "Z")
     start = strict_date(start) if start is not None else None
     end = strict_date(end) if end is not None else None
     if start and end and start > end:
         raise ConversionError("--from must not be after --through")
     store = Path(store).expanduser().resolve()
+    new_run = output is None
+    if new_run:
+        output = DEFAULT_OUTPUT_ROOT / started.strftime("%Y%m%dT%H%M%S.%fZ") / "eod_stream.jsonl.gz"
+        replace = False
     output = Path(output).expanduser().absolute()
     if not output.name.endswith(".jsonl.gz"):
         raise ConversionError("--output must end in .jsonl.gz")
     if output.resolve().is_relative_to(store):
         raise ConversionError("EOD stream output must be outside the source store")
-    if output.is_symlink() or (output.exists() and (not replace or not output.is_file())):
+    if new_run:
+        if output.parent.exists():
+            raise ConversionError(f"EOD export run directory already exists: {output.parent}")
+    elif output.is_symlink() or (output.exists() and (not replace or not output.is_file())):
         raise ConversionError("output exists or is unsafe; use --replace for an existing export file")
 
     args = SimpleNamespace(
@@ -236,7 +245,7 @@ def export(
         write_start = perf_counter()
         identities = len(collected.tables)
         days, output_bytes, first_day, last_day = _publish(
-            output, collected.tables, created, replace=replace, progress=progress
+            output, collected.tables, created, replace=replace, progress=progress, new_run=new_run
         )
         return {
             "output": str(output),

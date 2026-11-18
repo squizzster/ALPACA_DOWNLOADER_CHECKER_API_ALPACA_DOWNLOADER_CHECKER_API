@@ -38,5 +38,10 @@
     "modifications": [
       "Order retained EOD projections in Arrow, encode bounded batches, use four-thread pigz when available, and report the first and last emitted sessions."
     ]
+  },
+  {
+    "modifications": [
+      "Publish EOD streams in a new UTC timestamp directory under exports/eod_stream by default and retain explicit file destinations."
+    ]
   }
 ]

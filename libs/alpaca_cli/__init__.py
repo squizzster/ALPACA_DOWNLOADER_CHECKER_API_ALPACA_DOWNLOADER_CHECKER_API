@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 46
+VERSION = 47
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -164,7 +164,14 @@ def build_parser():
         p = export.add_parser(name, help=help_text)
         _store(p)
         _dates(p)
-        p.add_argument("--output", required=True, type=Path)
+        p.add_argument(
+            "--output",
+            required=name == "bloodhound",
+            type=Path,
+            help="output file"
+            if name == "bloodhound"
+            else "output file (default: a UTC run under exports/eod_stream/)",
+        )
         p.add_argument("--symbol", action="append")
         p.add_argument("--public-id", action="append")
         if name == "bloodhound":

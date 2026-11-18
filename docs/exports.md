@@ -12,7 +12,7 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 | `catalogue export --output PATH` | Flat online CSV ordered date → public ID. | [DataLibrary](../alpaca_end_of_day/__init__.py): `write_flat_online_csv` |
 | `export csv` | Online identities; one timestamped run with CSV/digest pairs and final manifest. | [_csv_export.py](../alpaca_end_of_day/_csv_export.py): `plan_export`, `write_export` |
 | `export bloodhound --output PATH` | Online identities; one Bloodhound Parquet file and conversion report. | [command_line.py](../libs/alpaca_bloodhound_export/command_line.py): `export` |
-| `export eod_stream --output PATH` | Full online histories or an inclusive date window, written as daily Bloodhound event batches in one gzip JSON Lines file. | [eod_stream.py](../bloodhound_app/eod_stream.py) |
+| `export eod_stream` | Full online histories or an inclusive date window, written as daily Bloodhound event batches in one gzip JSON Lines file per run. | [eod_stream.py](../bloodhound_app/eod_stream.py) |
 
 ## Shared catalogue input
 
@@ -183,11 +183,13 @@ journal or change those existing limits. No provider requests, pricing writes or
 ## EOD streaming protocol
 
 ```bash
-./alpaca-cli-eod export eod_stream --output exports/full-history.jsonl.gz
+./alpaca-cli-eod export eod_stream
 ./alpaca-cli-eod export eod_stream --from 2026-10-01 --through 2026-10-31 \
-  --symbol AAPL --symbol MSFT --output exports/october-2026.jsonl.gz
+  --symbol AAPL --symbol MSFT
 ```
 
+Each run writes `exports/eod_stream/<UTC timestamp>/eod_stream.jsonl.gz`, using the same microsecond
+timestamp format as CSV. Supply `--output FILE.jsonl.gz` to choose an exact file path.
 The default includes every online identity and its entire published history. Either inclusive date bound
 is optional. Repeat `--symbol` or `--public-id` to restrict the online selection.
 The stream uses the [Bloodhound projection](#parquet-conversion), including dated labels and split-factor

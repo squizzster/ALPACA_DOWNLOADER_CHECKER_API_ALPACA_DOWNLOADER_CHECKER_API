@@ -231,5 +231,10 @@
     "modifications": [
       "Default eod_stream to all available history and support optional inclusive start and end bounds."
     ]
+  },
+  {
+    "modifications": [
+      "Make --output optional for export eod_stream so the standard command creates a timestamped export run."
+    ]
   }
 ]
