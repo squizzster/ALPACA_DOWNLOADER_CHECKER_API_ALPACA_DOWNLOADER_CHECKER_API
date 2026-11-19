@@ -7,11 +7,11 @@ from contextlib import closing
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from alpaca_end_of_day._history_coverage import coverage_sources
 from libs.common.debug_trace import traced
 from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import SCHEMA_VERSION, CatalogueError, policy, validate_version
+from .gaps import PROJECTION_VERSION, identity_gaps
 
 WRITE_TIMEOUT_SECONDS = 120
 
@@ -52,7 +52,7 @@ def _state(connection, *, incomplete=False, old_policy=False):
     return state
 
 
-def _write_state(connection, *, complete):
+def _write_state(connection, *, complete, previous=None):
     state = {
         "boundary": "alpaca_standalone_serving_catalogue",
         "schema_version": SCHEMA_VERSION,
@@ -61,6 +61,10 @@ def _write_state(connection, *, complete):
         "policy": policy(),
         "complete": complete,
     }
+    if previous is None:
+        state["gap_suffix_reviews"] = {}
+    elif "gap_suffix_reviews" in previous:
+        state["gap_suffix_reviews"] = previous["gap_suffix_reviews"]
     connection.execute("INSERT OR REPLACE INTO state VALUES(1, ?)", (encoded(state),))
     return state
 
@@ -100,11 +104,12 @@ def initialize(store, *, rebuild=False):
         )
         connection.execute("CREATE INDEX IF NOT EXISTS identities_group ON identities(group_key)")
         exists = connection.execute("SELECT 1 FROM state WHERE id=1").fetchone()
+        state = None
         if exists:
             state = _state(connection, incomplete=True, old_policy=rebuild)
             if not rebuild and state["complete"]:
                 return state
-        return _write_state(connection, complete=False)
+        return _write_state(connection, complete=False, previous=state)
 
 
 @traced("serving_controls_read")
@@ -163,15 +168,7 @@ def _late_bar_projection(groups):
     selected, identities, selected_groups = {}, 0, 0
     for group in groups:
         group_selected = False
-        decisions = {item["public_id"]: item for item in group["decisions"]}
-        records = {item["public_id"]: item for item in group["history_validation"]["prefix_records"]}
-        coverage = group["history_validation"]["identities"]
-        for public_id, decision in decisions.items():
-            if "unexplained_missing_sessions" not in decision["reasons"]:
-                continue
-            record = records[public_id]
-            sources = {source for order in coverage[public_id].values() for source in coverage_sources(order)}
-            sessions = set(record["missing_sessions"]) - set(decision["explained_missing_sessions"])
+        for sessions, sources in identity_gaps(group):
             identity_selected = False
             for source in sources:
                 facts = group["history_validation"].get("raw_gap_presence", {}).get(source)
@@ -189,7 +186,7 @@ def _late_bar_projection(groups):
             identities += identity_selected
         selected_groups += group_selected
     return {
-        "version": 2,
+        "version": PROJECTION_VERSION,
         "selected_groups": selected_groups,
         "selected_identities": identities,
         "sources": {
@@ -198,13 +195,13 @@ def _late_bar_projection(groups):
     }
 
 
-def publish_projection(store, key, selection, group, accepted_state):
+def publish_projection(store, key, selection, group, accepted_state, *, retain_body=False):
     """Retain completed decisions while atomically selecting new scheduling facts."""
     projection = (
         _late_bar_projection((group,))
         if group is not None
         else {
-            "version": 2,
+            "version": PROJECTION_VERSION,
             "selected_groups": 0,
             "selected_identities": 0,
             "sources": {},
@@ -215,14 +212,14 @@ def publish_projection(store, key, selection, group, accepted_state):
         if state["generation"] != accepted_state["generation"]:
             raise CatalogueError("catalogue changed during projection migration")
         revised = {**selection, "late_bar_repairs": projection}
-        if group is None:
+        if group is None or retain_body:
             connection.execute("UPDATE groups SET selection=? WHERE group_key=?", (encoded(revised), key))
         else:
             connection.execute(
                 "UPDATE groups SET selection=?, body=? WHERE group_key=?",
                 (encoded(revised), encoded(group), key),
             )
-        published = _write_state(connection, complete=state["complete"])
+        published = _write_state(connection, complete=state["complete"], previous=state)
     from libs.alpaca_lineage_build.recovery_handoffs import serving_published
 
     serving_published(store, state["generation"], published["generation"], {key})
@@ -244,7 +241,7 @@ def retarget_decision(store, key, handoff, accepted_state):
         from . import export_inputs
 
         export_inputs.accept(connection, {"lineage": handoff["lineage_after"], "pricing": handoff["pricing"]})
-        published = _write_state(connection, complete=state["complete"])
+        published = _write_state(connection, complete=state["complete"], previous=state)
     from libs.alpaca_lineage_build.recovery_handoffs import serving_published
 
     serving_published(store, state["generation"], published["generation"], {key})
@@ -260,13 +257,17 @@ def select_late_bar_repairs(store, accepted):
     """
     selected, identities, selected_groups, inspected = {}, 0, 0, 0
     for selection in accepted["groups"].values():
-        if not selection["ineligible_identities"]:
-            continue
         projection = selection.get("late_bar_repairs")
-        if not isinstance(projection, dict) or projection.get("version") != 2:
+        if not isinstance(projection, dict) or projection.get("version") != PROJECTION_VERSION:
+            # Before suffix publication, an all-online group could have no
+            # repair work. Its legacy selector remains sufficient for Prepare.
+            if not selection["ineligible_identities"] and not selection.get("partial_gap"):
+                continue
             raise CatalogueError(
                 "late-bar selector missing or incompatible; run alpaca-cli-eod catalogue rebuild --store PATH"
             )
+        if not projection["selected_groups"] and not selection["ineligible_identities"]:
+            continue
         inspected += 1
         identities += projection["selected_identities"]
         selected_groups += projection["selected_groups"]
@@ -400,6 +401,8 @@ def commit(store, previous, groups, *, held_lineage=None):
                     "ineligible_identities": sum(not d["eligible"] for d in group["decisions"]),
                     "late_bar_repairs": _late_bar_projection((group,)),
                 }
+                if any(d.get("publication_start_after_missing_session") for d in group["decisions"]):
+                    selection["partial_gap"] = True
                 from .offline import projection as offline_projection
 
                 offline = offline_projection(group)
@@ -436,7 +439,10 @@ def commit(store, previous, groups, *, held_lineage=None):
             export_inputs.accept(
                 connection, {"lineage": {s: g for s, g in held_lineage.items() if s in selected}}
             )
-        published = _write_state(connection, complete=state["complete"])
+        if "gap_suffix_reviews" in state:
+            for key in previous:
+                state["gap_suffix_reviews"].pop(key, None)
+        published = _write_state(connection, complete=state["complete"], previous=state)
     from libs.alpaca_lineage_build.recovery_handoffs import serving_published
 
     serving_published(
@@ -547,7 +553,7 @@ def finish_bootstrap(store):
         from . import export_inputs
 
         export_inputs.finish(connection)
-        return state if state["complete"] else _write_state(connection, complete=True)
+        return state if state["complete"] else _write_state(connection, complete=True, previous=state)
 
 
 def other_ticker_ranges(store, ticker, public_id, owning_group, peer):

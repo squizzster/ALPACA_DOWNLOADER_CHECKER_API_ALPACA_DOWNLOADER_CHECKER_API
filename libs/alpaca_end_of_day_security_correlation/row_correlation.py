@@ -25,6 +25,7 @@ from .mapped_rename_chain import SPLIT_ADJUSTED_RENAME_TAPE
 from .name_change import (
     PRE_ENTRY_CARRY_FORWARD_REASON,
     NameChangeAssessment,
+    action_labels,
     assess_name_change_history,
     name_change_dates,
 )
@@ -161,6 +162,7 @@ class _RowRuleContext:
     retired_source_selection: bool = False
     retired_lower_bound: date | None = None
     retired_continuation: RetiredContinuation | None = None
+    retired_label_observation: tuple[str, date] | None = None
     bounded_aliases: frozenset[tuple] = frozenset()
     name_change_date_conflicts: tuple[tuple[date, date], ...] = ()
     terminal_carry_forward_exclusions: tuple = ()
@@ -269,6 +271,7 @@ class CorrelationCache:
         public_common_certificates=False,
         new_public_parent_continuations=False,
         closed_departure_current_sources=True,
+        retired_label_observations=True,
     ):
         if any(
             (
@@ -284,6 +287,8 @@ class CorrelationCache:
                 "researched assertion certificates are inadmissible for new inference"
             )
         self.ownership_interval_rules = ownership_interval_rules
+        self.retired_label_observations = retired_label_observations
+        self._retired_labels = {}
         self.row_correlation_rules = row_correlation_rules
         self.exact_same_symbol_handoffs = exact_same_symbol_handoffs
         self.bounded_entry_same_symbol_handoffs = bounded_entry_same_symbol_handoffs
@@ -728,6 +733,14 @@ class CorrelationCache:
         candidates.append((deepcopy(context), decisions))
         return decisions
 
+    def retired_label(self, symbol, lineage):
+        if not self.retired_label_observations:
+            return None
+        key = symbol, id(lineage)
+        if key not in self._retired_labels:
+            self._retired_labels[key] = (lineage, _retired_label_observation(symbol, lineage))
+        return self._retired_labels[key][1]
+
 
 def _interval_matches(
     intervals: list[TickerOwnershipInterval],
@@ -1115,6 +1128,68 @@ def _apply_requested_symbol_interval_rule(context: _RowRuleContext) -> _RowDecis
     return None
 
 
+def _retired_label_observation(symbol, lineage):
+    """An observed old spelling dates its source evidence, never a rename boundary."""
+    lookups = lineage.get("asset_lookups", ())
+    observation = next((item for item in lookups if item.get("lookup_kind") == "asset_id"), None)
+    if observation is None:
+        return None
+    previous = observation.get("retained_symbol_lookup") or {}
+    old, current = previous.get("asset") or {}, observation.get("asset") or {}
+    identifier = observation.get("lookup")
+    if not (
+        previous.get("lookup") == symbol == old.get("symbol")
+        and old.get("id") == identifier == current.get("id")
+        and old.get("class") == current.get("class") == "us_equity"
+        and current.get("symbol")
+        and current["symbol"] != symbol
+        and previous.get("outcome") == observation.get("outcome") == "found"
+        and previous.get("http_status") == observation.get("http_status") == 200
+        and any(
+            item.get("lookup_kind") == "symbol"
+            and item.get("lookup") == symbol
+            and item.get("outcome") == "not_found"
+            and item.get("http_status") == 404
+            for item in lookups
+        )
+    ):
+        return None
+    # A dated route has its own ordered rules. An unresolved structural endpoint
+    # is a genuine alternative owner and cannot be silently overridden here.
+    if any(
+        item.get("symbol") == symbol and item.get("asset_id") != identifier
+        for field in ("input_symbol_occupants", "symbol_occupancy_evidence")
+        for item in lineage.get(field, ())
+    ) or any(
+        action.get("action_type")
+        in {
+            "name_change",
+            "merger",
+            "cash_merger",
+            "stock_and_cash_merger",
+            "stock_merger",
+            "reorganization",
+            "unit_split",
+            "unit_separation",
+            "spin_off",
+            "worthless_removal",
+        }
+        and symbol in action_labels(action)
+        for action in lineage.get("corporate_actions", ())
+    ):
+        return None
+    observed_at = previous.get("observed_at_utc") or previous.get("catalogue_observed_at_utc")
+    if not isinstance(observed_at, str):
+        return None
+    try:
+        instant = datetime.fromisoformat(observed_at)
+        if instant.tzinfo is not None:
+            return identifier, instant.astimezone(NEW_YORK_TIME_ZONE).date()
+    except (ValueError, OverflowError):
+        return None
+    return None
+
+
 def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision | None:
     if any(
         item.symbol == context.requested_symbol and item.first <= context.session_date <= item.last
@@ -1163,6 +1238,15 @@ def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision 
     candidate_keys = tuple(
         (str(candidate["asset_id"]), candidate.get("cusip")) for candidate in candidate_objects
     )
+    retired = context.retired_label_observation
+    if retired and context.session_date <= retired[1] and not own_intervals and not candidate_keys:
+        return _RowDecision(
+            branch=CORRELATED_BRANCH,
+            asset_id=retired[0],
+            historical_symbol=context.requested_symbol,
+            identity_confidence="retained_own_label_and_current_uuid",
+            warning_codes=("effective_rename_date_unknown",),
+        )
     if len(candidate_keys) != 1:
         return None
     asset_id, cusip = candidate_keys[0]
@@ -1824,6 +1908,9 @@ def correlate_download_rows(
         retired_source_selection=retired_selection,
         retired_lower_bound=retired_lower_bound,
         retired_continuation=retired_continuation,
+        retired_label_observation=cache.retired_label(requested_symbol, lineage)
+        if cache is not None
+        else _retired_label_observation(requested_symbol, lineage),
         bounded_aliases=bounded_aliases,
         terminal_carry_forward_exclusions=name_change_assessment.terminal_carry_forward_exclusions,
         pre_entry_carry_forward_exclusions=(name_change_assessment.pre_entry_carry_forward_exclusions),

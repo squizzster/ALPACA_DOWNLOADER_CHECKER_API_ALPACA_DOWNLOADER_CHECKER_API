@@ -294,6 +294,22 @@ def _rows(root, source, kind, adjustment, cache, retained=None):
     return cache[rows_key]
 
 
+def _extension_segments(segments, skip, offset, additions):
+    """Yield newly selected positions without opening an accepted-only partition."""
+    from bisect import bisect_right
+
+    for segment in segments:
+        start = segment["row_start"] - 1 + offset
+        end = segment["row_end"] + offset
+        index = bisect_right(additions, start, key=lambda run: run[1])
+        while index < len(additions) and additions[index][0] < end:
+            left, right = additions[index]
+            yield {**segment, "row_start": max(left, start) - offset + 1, "row_end": min(right, end) - offset}
+            index += 1
+        if skip < end:
+            yield {**segment, "row_start": max(start, skip) - offset + 1}
+
+
 def _history(
     assignments,
     sources,
@@ -341,20 +357,8 @@ def _history(
             if prefix is not None:
                 skip = prefix["rows"].get(symbol, {}).get(adjustment, 0)
                 offset = prefix["offsets"][symbol][adjustment][kind]
-                before = prefix.get("first_rows", {}).get(symbol, {}).get(adjustment, 0)
-                segments = [
-                    {**segment, "row_start": left, "row_end": right}
-                    for segment in segments
-                    for left, right in (
-                        (
-                            (segment["row_start"], min(segment["row_end"], before - offset)),
-                            (max(segment["row_start"], skip - offset + 1), segment["row_end"]),
-                        )
-                        if "accepted_span" in prefix
-                        else ((max(segment["row_start"], skip - offset + 1), segment["row_end"]),)
-                    )
-                    if left <= right
-                ]
+                additions = prefix.get("added_positions", {}).get(symbol, {}).get(adjustment, ())
+                segments = list(_extension_segments(segments, skip, offset, additions))
                 if not segments:
                     continue
             root = _selected_path(cache, store, f"end_of_day/pricing/{symbol}")
@@ -395,7 +399,8 @@ def _history(
             if prefix is not None:
                 day = session_day(row)
                 span = prefix.get("accepted_span")
-                if (span[0] <= day <= span[1]) if span else day <= prefix["last_session"]:
+                overlaps = span[0] <= day <= span[1] if span else day <= prefix["last_session"]
+                if overlaps and day not in prefix.get("fillable_sessions", ()):
                     raise HistoryPrefixChanged("new assigned observations overlap the approved history")
             if coverage_out is not None:
                 coverage.add(symbol)

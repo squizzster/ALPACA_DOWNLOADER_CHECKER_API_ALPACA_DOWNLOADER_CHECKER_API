@@ -129,5 +129,10 @@
     "modifications": [
       "Admit the exact completed v92 policy for read-only control comparison."
     ]
+  },
+  {
+    "modifications": [
+      "Compare current donor components under correlation v94 and admit exact frozen v93 publications as baselines."
+    ]
   }
 ]

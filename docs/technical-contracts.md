@@ -621,9 +621,10 @@ consumes that projection without group-body or source reads. Adjusted-only prese
 present but unassigned raw observations remain lineage work. Contributors and explained gaps retain their
 existing ownership rules; absence alone does not establish that a historical label owns a requested date.
 
-Missing or incompatible projections require explicit `catalogue rebuild`. Projection conversion reads completed
-ineligible bodies, including old empty projections, and only the raw source/date boundaries needed for missing
-provenance. It preserves decisions, decision generations, numerical checkpoints and unrelated pending work.
+Missing or incompatible projections require explicit `catalogue rebuild`. Projection conversion uses completed
+raw-presence handoffs from online partial or offline groups. Older offline decisions without that handoff select
+only the raw source/date boundaries needed for missing provenance. Conversion preserves decisions, decision
+generations, numerical checkpoints and unrelated pending work.
 Matching pricing generations are required under selected locks. Completed all-view absence may prove raw absence
 for each unchanged source; group-wide presence cannot be attributed to a particular source. Prefix reuse carries
 these facts under producer ancestry and reads only changed or new gap scope.
@@ -1053,6 +1054,36 @@ publishes the completed date projection. Existing exact ranges remain payload-fr
 outcomes remain accepted; a declared current projection missing its dates still fails.
 Earlier-policy checkpoints migrate only when the complete group's pricing
 generations and row ownership selections are identical; current eligibility is evaluated again.
+
+An identity can have accepted sessions on both sides of a recorded gap, supplied by different sources.
+When lineage assigns rows to that gap, serving retains the applicable selections on both sides and assesses
+the newly assigned sessions in all eight views. A filled raw session leaves the missing list. A partial fill
+retains the remaining gaps and their dated label boundaries. An additional choice on a date already accepted
+requires the owning reconciliation for that date. The existing catalogue transaction publishes the updated
+coverage, dated labels and eligibility together.
+
+When earlier assigned history exposes a gap before an already published recent range under the same ID,
+serving retains the range while its ownership, numerical approval and other eligibility checks still apply.
+The public range starts at the first supported session after the latest unresolved gap or applicable ownership
+or price restriction. The full private checkpoint keeps its earlier assignments and exact gaps.
+The compact late-bar selector schedules the contributing raw-absent source dates even when the identity is
+online. When a missing bar returns, pricing publishes its complete selected bundle. Serving uses the
+generation-bound insertion positions and current dated ownership to retain unchanged rows. As gaps close,
+the published range can extend backward under the same ID. An unassigned or conflicting bar cannot establish
+the missing session for that identity.
+
+For a one-session gap at a ticker change, a developer can query raw SIP daily bars for that session
+under each dated label. Compare the stored `asof` mapping with the session date, or use `asof=-`
+to query the literal symbols. A fully paginated empty response establishes only what that request
+returned at the time. The gap stays eligible for a future update. If another mapping yields a bar,
+keep its request mapping with the observation so lineage can assess its dated owner.
+
+Older catalogues may already have withdrawn the recent public range. A one-time review selects only
+gap-bearing groups from their existing compact repair selections. A gap-only decision can support the
+distinct later ticker range when its dated witnesses isolate that range and every contributor records raw
+absence across the separating gap. The catalogue records selected group reviews before publication and retires
+them with the component commit. Completed negative screens require no group publication. Exact prices,
+ownership, calendar outcomes and unrelated decisions retain their original approvals.
 
 Reuse covers the latest validated session in every view; changed coverage can clear negative cross-view decisions.
 Raw continuity labels remain separate from public all-view labels. Gaps use current evidence; changed group inputs

@@ -248,6 +248,12 @@ def build_identity_report(
         ):
             queue_symbol(candidate)
 
+    own = asset_lookups_by_key["symbol", symbol]
+    resolve_retirement = getattr(client, "retired_asset_lookup", None)
+    if resolve_retirement is not None and own["outcome"] == "not_found" and own["http_status"] == 404:
+        observation = resolve_retirement()
+        if observation is not None:
+            asset_lookups_by_key["asset_id", observation["lookup"]] = observation
     return accept_provider_evidence(
         report_from_observations(
             symbol,
@@ -297,7 +303,8 @@ def report_from_observations(
                 "lookup_cusips": set(),
             },
         )
-        identity[f"lookup_{lookup_kind}s"].add(identifier)
+        if lookup_kind in {"symbol", "cusip"}:
+            identity[f"lookup_{lookup_kind}s"].add(identifier)
         if lookup_kind == "cusip":
             asset_id_by_cusip[identifier] = asset_id
 

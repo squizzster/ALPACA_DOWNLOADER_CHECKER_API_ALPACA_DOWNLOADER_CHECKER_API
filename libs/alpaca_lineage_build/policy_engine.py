@@ -167,6 +167,9 @@ def _correlate_until_stable(
                 include_action_anchored_current_suffix=symbol in suffix_sources,
                 established_report=established_reports[symbol] if established_reports is not None else accepted,
             )
+            if getattr(policy, "implementation_correlation_version", 0) >= 94:
+                # These are the dates already normalized by this group's row producer.
+                view.membership_session_dates = cache._sessions
             prior = previous.get(symbol)
             reports[symbol] = prior if report == prior else report
             completed[symbol] = reports[symbol]
@@ -223,6 +226,7 @@ def _correlation_cache(policy) -> CorrelationCache:
         public_common_certificates=False,
         new_public_parent_continuations=False,
         closed_departure_current_sources=policy.implementation_correlation_version >= 80,
+        retired_label_observations=policy.implementation_correlation_version >= 94,
         sourced_succession_certificates=False,
         completed_event_scope=(
             policy.implementation_correlation_version >= COMPLETED_EVENT_SCOPE_CORRELATION_VERSION

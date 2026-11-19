@@ -26,6 +26,27 @@ def historical_bindings():
     producer = "accepted_same_security_containing_component_v1"
     return [
         {
+            "debug": 25,
+            "policy_lab": 27,
+            "correlation_runtime": 100,
+            "lineage_runtime": 122,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 24,
+            "policy_lab": 27,
+            "correlation_runtime": 100,
+            "lineage_runtime": 121,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 23,
+            "policy_lab": 26,
+            "correlation_runtime": 99,
+            "lineage_runtime": 120,
+            "membership_refinement": producer,
+        },
+        {
             "debug": 22,
             "policy_lab": 26,
             "correlation_runtime": 99,
@@ -185,6 +206,19 @@ class ReportBindingCompatibilityTests(TestCase):
         with patch("libs.alpaca_lineage_debug.implementation_binding", return_value=future):
             with self.assertRaisesRegex(ValueError, "incompatible contract"):
                 accept_report(report_for(historical_bindings()[0]), "run", allow_previous=True)
+
+    def test_v93_control_has_original_semantics_and_enabled_producers(self):
+        from libs.alpaca_lineage_build.correlation_policy_contract import RETAINED_V93_SEMANTIC_SHA256
+        from libs.alpaca_lineage_build.policy_engine import _correlation_cache
+
+        frozen = load_policy(DEFAULT_POLICY.with_name("alpaca_security_correlation_v93_legacy_policy.yaml"))
+        current = load_policy(DEFAULT_POLICY)
+        self.assertEqual(RETAINED_V93_SEMANTIC_SHA256, frozen.semantic_sha256)
+        self.assertEqual(current.membership_refinement, frozen.membership_refinement)
+        self.assertIsNotNone(frozen.membership_refinement)
+        self.assertFalse(_correlation_cache(frozen).retired_label_observations)
+        self.assertTrue(_correlation_cache(current).retired_label_observations)
+        self.assertFalse(policy_applies(frozen.as_report_object(), current))
 
     def test_empty_control_research_options_match_absence_without_erasing_candidates(self):
         control = replace(

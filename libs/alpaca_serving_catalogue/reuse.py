@@ -1,5 +1,6 @@
 """Select completed serving prefixes using producer-owned change decisions."""
 
+from bisect import bisect_right
 from copy import deepcopy
 
 from alpaca_end_of_day._history_coverage import coverage_sources, extend_coverage
@@ -14,6 +15,10 @@ def validate_history_validation(group):
     completed = group["history_validation"]
     if completed.get("revision_prefix_version", 1) != 1:
         raise ValueError("unsupported serving revision prefix")
+    if "gap_suffix_version" in completed and (
+        type(completed["gap_suffix_version"]) is not int or completed["gap_suffix_version"] != 1
+    ):
+        raise ValueError("unsupported serving gap suffix checkpoint")
     choices = completed.get("observation_choice_handoffs")
     if choices is not None and (
         not isinstance(choices, dict)
@@ -41,6 +46,20 @@ def validate_history_validation(group):
             ):
                 raise ValueError("invalid published ownership checkpoint")
     decisions = {record["public_id"] for record in group["decisions"]}
+    limited = {
+        item["public_id"]: item
+        for item in group["decisions"]
+        if "publication_start_after_missing_session" in item
+    }
+    limited_ranges = (
+        {
+            item["public_id"]: item["first_session"]
+            for item in group["securities"]
+            if item["public_id"] in limited
+        }
+        if limited
+        else {}
+    )
     seen = set()
     for record in completed["prefix_records"]:
         span = record.get("dated_price_span")
@@ -109,6 +128,18 @@ def validate_history_validation(group):
             )
         ):
             raise ValueError("invalid completed continuity evidence")
+        if public_id in limited:
+            item = limited[public_id]
+            cutoff = item["publication_start_after_missing_session"]
+            if (
+                completed.get("gap_suffix_version") != 1
+                or not item["eligible"]
+                or public_id not in limited_ranges
+                or cutoff != max(set(missing).difference(item["explained_missing_sessions"]), default=None)
+                or not isinstance(cutoff, str)
+                or cutoff >= limited_ranges[public_id]
+            ):
+                raise ValueError("invalid published coverage after missing session")
         seen.add(public_id)
         coverage = completed["identities"][public_id]
         if set(coverage) != set(ADJUSTMENTS):
@@ -124,6 +155,8 @@ def validate_history_validation(group):
                 name not in subsets or not set(subsets) <= sources for name, subsets in order["subsets"].items()
             ) or any(len(pair) != 2 or not set(pair) <= sources for pair in order["overlaps"]):
                 raise ValueError("invalid legacy source coverage order")
+    if limited.keys() - seen:
+        raise ValueError("published gap suffix lacks its completed history")
 
 
 def _identity_prefix(runs, count, public_id):
@@ -189,6 +222,7 @@ def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=Fals
             if prefix is None:
                 prefix = _select_revision_prefix(group, completed, record, inputs, offsets)
             if prefix is not None:
+                prefix["previous_publication"] = prior_group["decision_generation"]
                 prefixes[record["public_id"]] = prefix
     from .source_revision import select_revisions
 
@@ -599,6 +633,58 @@ def _unchanged_history_checkpoint(prior_group, inputs):
     return {**completed, "inputs": inputs} if translated == inputs else None
 
 
+def _added_positions(accepted, current):
+    """Subtract accepted half-open source runs while preserving every old row and label."""
+    if current == accepted:
+        return []
+    added = []
+    index = 0
+    for start, end, labels in current:
+        cursor = start
+        while index < len(accepted) and accepted[index][0] < end:
+            left, right, prior_labels = accepted[index]
+            if left < cursor or right > end or labels != prior_labels:
+                return None
+            if cursor < left:
+                added.append((cursor, left))
+            cursor = right
+            index += 1
+        if cursor < end:
+            added.append((cursor, end))
+    return added if index == len(accepted) else None
+
+
+def _shift_retained_runs(runs, inserted):
+    """Move accepted half-open runs past physical insertions, leaving holes for new observations."""
+    # Convert zero-based positions in the new grid to insertion points in the old
+    # grid. Consecutive new rows share one old insertion point.
+    points = [position - i for i, position in enumerate(inserted)]
+    shifted = []
+    for left, right, labels in runs:
+        i = bisect_right(points, left)
+        while i < len(points) and points[i] < right:
+            split = points[i]
+            shifted.append((left + i, split + i, labels))
+            left = split
+            i = bisect_right(points, split, lo=i + 1)
+        shifted.append((left + i, right + i, labels))
+    return shifted
+
+
+def _extension_scope(record, added, has_other_sources):
+    # Raw's missing-date projection applies to every view only when their
+    # accepted grids matched. A new source can also fill a recorded hole.
+    missing = record["missing_sessions"]
+    if not added and not missing and not has_other_sources:
+        return {}
+    aligned = "incompatible_sessions" not in record["price_reasons"]
+    return {
+        "accepted_span": (record["first_session"] if aligned else "", record["validated_through"]),
+        "added_positions": added,
+        "fillable_sessions": frozenset(missing) if aligned else frozenset(),
+    }
+
+
 def _select_identity_prefix(group, completed, record, inputs, offsets):
     public_id = record["public_id"]
     coverage = completed["identities"][public_id]
@@ -607,13 +693,21 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
     if not contributing <= inputs.keys():
         event("serving_prefix", public_id=public_id, accepted=False, reason="contributing_source_removed")
         return None
-    rows, first_rows, extends_before = {}, {}, False
+    rows, additions = {}, {}
     for symbol in contributing:
         prior = prior_inputs[symbol]
         # Numeric and session-compatibility outcomes cover every selected view,
         # including adjusted observations beyond raw's last session. A change
         # within that span invalidates this identity's completed facts together.
-        if not group.preserves_pricing_prefix(symbol, prior, through=record["validated_through"]):
+        through_session = record["validated_through"]
+        inserted = {}
+        if not group.preserves_pricing_prefix(symbol, prior, through=through_session):
+            inserted = (
+                group.retained_pricing_insertions(symbol, prior, through=through_session)
+                if hasattr(group, "retained_pricing_insertions")
+                else None
+            )
+        if inserted is None:
             event(
                 "serving_prefix",
                 public_id=public_id,
@@ -623,22 +717,24 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
                 through=record["validated_through"],
             )
             return None
-        rows[symbol], first_rows[symbol] = {}, {}
+        rows[symbol] = {}
         for adjustment, old in prior["views"].items():
             current = inputs[symbol]["views"][adjustment]
             accepted = _identity_prefix(old["ownership"], old["rows"], public_id)
+            if inserted and accepted:
+                positions = sorted(
+                    offsets[symbol][adjustment][kind] + position - 1
+                    for kind, views in inserted.items()
+                    for position, day in views.get(adjustment, ())
+                    if day <= through_session
+                )
+                accepted = _shift_retained_runs(accepted, positions)
             through = accepted[-1][1] if accepted else 0
-            # A source can already contain later rows belonging to a different
-            # identity. Reassigning those rows extends this identity's accepted
-            # history; it does not revoke its earlier numerical approval. The
-            # completed ownership runs give the exact last selected position.
-            # Exact old selections and labels inside the accepted span remain
-            # fixed. New earlier positions select bounded prepend assembly;
-            # the reader rejects dates overlapping the accepted middle.
-            first = accepted[0][0] if accepted else 0
+            # Retain exact accepted positions. Newly assigned positions may
+            # lie before, between or after them on the same physical source.
             actual = _identity_prefix(current["ownership"], through, public_id)
-            retained = [(max(left, first), right, labels) for left, right, labels in actual if right > first]
-            if retained != accepted:
+            extra = _added_positions(accepted, actual)
+            if extra is None:
                 event(
                     "serving_prefix",
                     public_id=public_id,
@@ -649,15 +745,15 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
                 )
                 return None
             rows[symbol][adjustment] = through
-            first_rows[symbol][adjustment] = first
-            extends_before |= any(left < first for left, _, _ in actual)
+            if extra:
+                additions.setdefault(symbol, {})[adjustment] = extra
     # Gap source-presence facts concern the complete group, independently of the
     # identity's numeric history. Refresh those facts only if their inputs changed.
     missing = record["missing_sessions"]
     refresh_gap_sources = bool(missing) and (
         inputs.keys() != prior_inputs.keys()
         or any(
-            not group.preserves_pricing_prefix(symbol, prior, through=max(missing))
+            inputs[symbol]["pricing_generation"] != prior["pricing_generation"]
             for symbol, prior in prior_inputs.items()
         )
     )
@@ -675,11 +771,7 @@ def _select_identity_prefix(group, completed, record, inputs, offsets):
         "last_session": record["validated_through"],
         "record": record,
         "refresh_gap_sources": refresh_gap_sources,
-        **(
-            {"accepted_span": (record["first_session"], record["last_session"]), "first_rows": first_rows}
-            if extends_before
-            else {}
-        ),
+        **_extension_scope(record, additions, bool(inputs.keys() - contributing)),
     }
 
 
@@ -805,9 +897,8 @@ def compose_membership_rebind(group, previous, inputs, offsets, *, completed=())
             donor_selections.append(selections)
         if not valid:
             raise ValueError("membership transfer source generation changed; selected serving recovery required")
-        first_rows, extends_before = {}, False
+        additions = {}
         for source, views in rows.items():
-            first_rows[source] = {}
             for adjustment, through in views.items():
                 actual = _identity_prefix(inputs[source]["views"][adjustment]["ownership"], through, new_id)
                 # Current labels and positions are verified against the exact
@@ -825,14 +916,11 @@ def compose_membership_rebind(group, previous, inputs, offsets, *, completed=())
                         merged[-1] = (merged[-1][0], last, labels)
                     else:
                         merged.append((first, last, labels))
-                first = min((run[0] for run in merged), default=through)
-                first_rows[source][adjustment] = first
-                retained_actual = [
-                    (max(left, first), right, labels) for left, right, labels in actual if right > first
-                ]
-                if merged != retained_actual:
+                extra = _added_positions(merged, actual)
+                if extra is None:
                     raise ValueError("new membership transfer changed row/label selection")
-                extends_before |= any(left < first for left, _, _ in actual)
+                if extra:
+                    additions.setdefault(source, {})[adjustment] = extra
         ordered = sorted(donors, key=lambda record: record["first_session"])
         if any(left["last_session"] >= right["first_session"] for left, right in zip(ordered, ordered[1:])):
             raise ValueError("membership donors overlap; bounded observation-selection reconciliation required")
@@ -959,10 +1047,6 @@ def compose_membership_rebind(group, previous, inputs, offsets, *, completed=())
             "last_session": record["validated_through"],
             "record": record,
             "refresh_gap_sources": False,
-            **(
-                {"accepted_span": (record["first_session"], record["last_session"]), "first_rows": first_rows}
-                if extends_before
-                else {}
-            ),
+            **_extension_scope(record, additions, bool(inputs.keys() - set().union(*dated_sources.values()))),
         }
     return result

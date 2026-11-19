@@ -200,7 +200,9 @@ def update_everything(
                 workers=workers,
                 progress=progress,
                 context=context.pricing(),
-                retained_partitions=append_partitions(store, (e["symbol"] for e in snapshot["entries"])),
+                retained_partitions=append_partitions(
+                    store, (e["symbol"] for e in snapshot["entries"] if e["end_exclusive"][:10] < end)
+                ),
             )
             if work_policy is not None:
                 work_policy.record_results(appended, stage="append")

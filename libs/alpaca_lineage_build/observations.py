@@ -163,7 +163,19 @@ def _partition_choices(reports, retained, opened):
                 left, right = max(position, run.row_start), min(end, run.row_end)
                 if left > position:
                     segments.append({**segment, "row_start": position, "row_end": left - 1})
-                if owner != run.owner:
+                if owner != run.owner and segment.get("membership_prefix_owner") != run.owner:
+                    transfer = segment.get("completed_membership_refinement")
+                    if (
+                        transfer is not None
+                        and transfer["source"] == symbol
+                        and transfer["old_public_id"] == run.owner
+                        and transfer["new_public_id"] == owner
+                        and transfer["adjustment"] == adjustment
+                        and transfer["row_start"] <= left <= right <= transfer["row_end"]
+                    ):
+                        segments.append({**segment, "row_start": left, "row_end": right})
+                        position = right + 1
+                        continue
                     raise LineageError(f"{symbol}: applicable retained numerical choice changed row ownership")
                 first = left
                 for index in (

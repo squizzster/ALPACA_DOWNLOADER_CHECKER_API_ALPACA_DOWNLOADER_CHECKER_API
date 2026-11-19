@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from libs.common.us_equity_market_session_calendar import (
     expected_market_session_coverage,
 )
 
+from . import insertions
 from .adaptive import AdjustmentAcquisition
 from .context import accept_context
 from .contract import (
@@ -219,23 +221,28 @@ def _selected_session_views(symbol, acquisitions, selected):
 
 def _merge_selected_partition(symbol, retained, additions):
     """Construct a selected partition; accepted rows supply data, not new checks."""
-    merged, added, inserted = {}, set(), {}
+    merged, added, inserted, positions = {}, set(), {}, {}
     for name in ADJUSTMENTS:
         rows = retained[name]
-        existing = {timestamp(row[0]).astimezone(NEW_YORK).date(): row for row in rows}
-        fresh = []
+        fresh, assembled, pairs = [], [], []
+        retained_start = 0
         for row in additions[name]:
-            day = timestamp(row[0]).astimezone(NEW_YORK).date()
-            prior = existing.get(day)
-            if prior is not None:
-                if not same_row(prior, row):
+            day = insertions.session(row)
+            index = bisect_left(rows, day, lo=retained_start, key=insertions.session)
+            if index < len(rows) and insertions.session(rows[index]) == day:
+                if not same_row(rows[index], row):
                     raise DownloadError(f"{symbol}: selected-session acquisition conflicts with retained {name}")
                 continue
+            assembled.extend(rows[retained_start:index])
+            assembled.append(row)
+            pairs.append([len(assembled), day.isoformat()])
+            retained_start = index
             fresh.append(row)
             added.add(day)
-        merged[name] = tuple(sorted((*rows, *fresh), key=lambda row: timestamp(row[0]))) if fresh else rows
+        merged[name] = (*assembled, *rows[retained_start:]) if fresh else rows
         inserted[name] = tuple(fresh)
-    return merged, added, inserted
+        positions[name] = pairs
+    return merged, added, inserted, positions
 
 
 def _inserted_endpoints(endpoints, additions):
@@ -417,6 +424,7 @@ def publish_acquired(
     session_correction=None,
     preserve_correction=True,
     previous_source_sha256=None,
+    inserted_positions=None,
     activity_views=None,
     full_activity=False,
     replacement=True,
@@ -496,6 +504,18 @@ def publish_acquired(
         # new history can establish it for otherwise unvalidated retained data.
         "activity_consistent": bool((previous or {}).get("activity_consistent")) or full_activity,
     }
+    insertion_history = insertions.publication(
+        previous,
+        previous_source_sha256,
+        request,
+        anchor,
+        changed_views,
+        update,
+        inserted=inserted_positions,
+        replacement=replacement,
+    )
+    if insertion_history:
+        source["session_insertions"] = insertion_history
     if observation_resolution is not None:
         source["history_correction_observation_resolution"] = observation_resolution
     elif preserve_correction and (previous or {}).get("history_correction_observation_resolution"):
@@ -531,8 +551,9 @@ def publish_acquired(
         if scope is not None:
             source["history_correction_scope"] = scope
     identical_generation = None
-    if previous is not None and {key: value for key, value in source.items() if key != "history_changes"} == {
-        key: value for key, value in previous.items() if key != "history_changes"
+    ancestry = {"history_changes", "session_insertions"}
+    if previous is not None and {key: value for key, value in source.items() if key not in ancestry} == {
+        key: value for key, value in previous.items() if key not in ancestry
     }:
         # Identical selected output is already complete. A repeated acquisition
         # notice must not manufacture a new generation solely for its ancestry.
@@ -549,7 +570,7 @@ def publish_acquired(
         # Attempt IDs and acquisition provenance belong to correction completion,
         # not to the published data identity. Preserve the accepted source intact.
         ignored = {
-            "history_changes",
+            *ancestry,
             "history_correction_id",
             "history_correction_scope",
             "latest_adjustment_acquisition",
@@ -676,27 +697,20 @@ def publish_selected_session_correction(
         endpoints = read_validator(root, previous, published=True)
         if endpoints is None or endpoints.tail_all is None:
             raise DownloadError("selected-session publication requires its completed comparison boundary")
-        documents, changed_views = {}, {}
+        documents, changed_views, positions = {}, {}, {}
         added, inserted = set(), {name: [] for name in ADJUSTMENTS}
         anchor = previous["anchor_month"]
-
-        def kind_of(month):
-            return (
-                "current_month"
-                if month == anchor
-                else "current_year"
-                if month[:4] == anchor[:4]
-                else "completed_years"
-            )
 
         by_kind = {}
         for name, rows in additions.items():
             for row in rows:
-                by_kind.setdefault(kind_of(month_of(row)), {view: [] for view in ADJUSTMENTS})[name].append(row)
+                kind = insertions.partition(month_of(row), anchor)
+                by_kind.setdefault(kind, {view: [] for view in ADJUSTMENTS})[name].append(row)
         for kind, selected in by_kind.items():
             retained = read_boundary(root, previous, kind, documents=documents)
-            merged, new_days, fresh = _merge_selected_partition(symbol, retained, selected)
+            merged, new_days, fresh, pairs = _merge_selected_partition(symbol, retained, selected)
             if new_days:
+                positions[kind] = pairs
                 changed_views[kind] = merged
                 added.update(new_days)
                 for name in ADJUSTMENTS:
@@ -722,6 +736,7 @@ def publish_selected_session_correction(
             adjustment_acquisitions=acquisitions,
             preserve_correction=False,
             previous_source_sha256=current_sha256,
+            inserted_positions=positions,
             activity_views=(additions,),
             replacement=False,
         )

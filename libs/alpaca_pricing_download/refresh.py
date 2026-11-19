@@ -353,8 +353,8 @@ def probe_late_bar_repairs(
 ):
     """Probe only exact sessions named by a completed serving handoff.
 
-    A positive raw-bar response selects the ordinary generation-bound full-span
-    replacement. Empty responses leave the completed stored decision untouched.
+    A positive raw-bar response supplies the first view for a generation-bound
+    correction of the returned sessions. Empty responses leave the gap available for a later update.
     """
     context = accept_context(store, context)
     sources = selection["sources"]

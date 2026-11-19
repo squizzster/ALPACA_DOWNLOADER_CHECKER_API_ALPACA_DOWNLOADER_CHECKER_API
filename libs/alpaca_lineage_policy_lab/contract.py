@@ -7,7 +7,7 @@ from pathlib import Path
 from libs.alpaca_lineage_build import correlation_policy_contract as policies
 from libs.alpaca_lineage_build.contract import CorrelationPolicyError as PolicyLabError
 
-LAB_VERSION = 26
+LAB_VERSION = 27
 LAB_SCHEMA_VERSION = 8
 SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset((1, 2, 3, 4))
 LAB_REPORT_BOUNDARY = "alpaca_lineage_policy_lab_comparison"
@@ -32,6 +32,7 @@ FROZEN_BASELINE_POLICIES = {
     (37, 90): policies.RETAINED_V90_SEMANTIC_SHA256,
     (37, 91): policies.RETAINED_V91_SEMANTIC_SHA256,
     (37, 92): policies.RETAINED_V92_SEMANTIC_SHA256,
+    (37, 93): policies.RETAINED_V93_SEMANTIC_SHA256,
 }
 
 

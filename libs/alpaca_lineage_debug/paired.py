@@ -143,7 +143,11 @@ def _retained(control, changes, selected):
 def _refined_candidate(selected, control, *, dated_labels, correlation_version):
     if "raw_reports" not in control:
         raise ValueError("membership comparison requires the completed unrefined ownership reports")
-    reports, trace = refine(control["raw_reports"], control["refinement_evidence"], selected)
+    reports, trace = refine(
+        control["raw_reports"],
+        control["refinement_evidence"],
+        {**selected, "membership_version": correlation_version, "current_donors": correlation_version >= 94},
+    )
     if not trace["changes"]:
         return control["candidate"], control["reports"], trace, control.get("label_trace")
     for source, report in reports.items():

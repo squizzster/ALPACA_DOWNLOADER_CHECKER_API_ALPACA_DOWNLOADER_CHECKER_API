@@ -58,7 +58,7 @@ def selected_source(store, symbol):
     return held[1], held[2]
 
 
-def remember_partition(store, source, kind, generation, views):
+def remember_partition(store, source, kind, generation, views, *, document=None):
     """Lend producer-decoded immutable rows under their selected boundary token.
 
     Consumers still select the current source under their lock. A changed
@@ -75,6 +75,9 @@ def remember_partition(store, source, kind, generation, views):
         selected[1][key] = _FrozenDict(
             {view: rows if isinstance(rows, tuple) else tuple(rows) for view, rows in views.items()}
         )
+    document_key = "pricing_partition_document", key[1]
+    if document is not None and document_key not in selected[1]:
+        selected[1][document_key] = deepcopy(document)
     return selected[1][key]
 
 
@@ -90,6 +93,8 @@ def append_partitions(store, symbols):
     if selected is None or selected[0] != store:
         return {}
     symbols, result = set(symbols), {}
+    if not symbols:
+        return result
     for (record_kind, key), views in selected[1].items():
         if record_kind != "pricing_partition" or key[0] not in symbols:
             continue

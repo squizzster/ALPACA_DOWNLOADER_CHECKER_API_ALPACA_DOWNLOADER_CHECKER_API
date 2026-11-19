@@ -70,6 +70,7 @@ def retained_decision_report(previous, *, policy):
         },
         "correlation_policy": policy.provenance() if policy is not None else previous["correlation_policy"],
         "source_row_count": 0,
+        **{key: previous[key] for key in ("uuid_lineage_edges", "lineage_evidence_sha256") if key in previous},
         **(
             {"numerical_mapping_assessments": previous["numerical_mapping_assessments"]}
             if "numerical_mapping_assessments" in previous
@@ -114,11 +115,26 @@ class _RowIndex:
     months: tuple[str, ...]
 
 
+class _PositionIndex:
+    def __init__(self, rows, field):
+        self.rows, self.field = rows, field
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, position):
+        return getattr(self.rows, self.field)(position)
+
+
 def _row_indexes(view):
     sessions, indexes = {}, {}
     for adjustment in ADJUSTMENTS:
+        rows = view.views[adjustment]
+        if hasattr(rows, "timestamp_at"):
+            indexes[adjustment] = _RowIndex(_PositionIndex(rows, "session"), _PositionIndex(rows, "month"))
+            continue
         dates = []
-        for row in view.views[adjustment]:
+        for row in rows:
             if row[0] not in sessions:
                 sessions[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
             dates.append(sessions[row[0]])
@@ -149,7 +165,10 @@ def boundary(view, report, kind, anchor, indexes):
                 last_index = min(hi, segment["row_end"])
                 if first_index > last_index:
                     continue
-                first, last = full_rows[first_index - 1], full_rows[last_index - 1]
+                if hasattr(full_rows, "timestamp_at"):
+                    first, last = full_rows.timestamp_at(first_index - 1), full_rows.timestamp_at(last_index - 1)
+                else:
+                    first, last = full_rows[first_index - 1][0], full_rows[last_index - 1][0]
                 segments.append(
                     {
                         **{key: deepcopy(value) for key, value in segment.items() if key in ASSIGNMENT_FIELDS},
@@ -157,8 +176,8 @@ def boundary(view, report, kind, anchor, indexes):
                         "row_start": first_index - lo,
                         "row_end": last_index - lo,
                         "row_count": last_index - first_index + 1,
-                        "first_timestamp": first[0],
-                        "last_timestamp": last[0],
+                        "first_timestamp": first,
+                        "last_timestamp": last,
                         "from": index.sessions[first_index - 1],
                         "to": index.sessions[last_index - 1],
                     }
@@ -310,11 +329,11 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
     for segment in report["correlated"]["segments"]:
         identity = segment["security_identity"]
         memberships[identity["security_id"]] = identity
-        rows = view.views[segment["adjustment"]]
+        sessions = indexes[segment["adjustment"]].sessions
         intervals.append(
             {
-                "from": timestamp(rows[segment["row_start"] - 1][0]).astimezone(NEW_YORK).date().isoformat(),
-                "to": timestamp(rows[segment["row_end"] - 1][0]).astimezone(NEW_YORK).date().isoformat(),
+                "from": sessions[segment["row_start"] - 1],
+                "to": sessions[segment["row_end"] - 1],
                 "security_id": identity["security_id"],
             }
         )
@@ -350,6 +369,7 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for key in sorted({(item["from"], item["to"], item["security_id"]) for item in intervals})
         ],
         "evidence": evidence,
+        **{key: report[key] for key in ("uuid_lineage_edges", "lineage_evidence_sha256") if key in report},
         "current_source_ownership": report.get("current_source_ownership"),
         "sourced_rename_ownership": report.get("sourced_rename_ownership"),
         "sourced_rename_membership": report.get("sourced_rename_membership"),

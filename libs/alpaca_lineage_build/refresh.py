@@ -316,25 +316,39 @@ def refresh_existing(
             assert_current(store, baseline_token)
         for item in replaced["results"]:
             if item["status"] == "replaced":
-                generations[item["symbol"]] = item["source_sha256"]
+                symbol = item["symbol"]
+                selected_scope = selected_scopes[symbol]
                 if item.get("completed_scope") == "selected_sessions":
-                    prior = context.history_checks.get(item["symbol"])
-                    prior_scope = (
-                        context.history_scope("check", item["symbol"], prior) if prior is not None else None
+                    # The probe may have just created a new correction ID. Compose
+                    # its publication with the approval accepted before the probe
+                    # for the exact retained source, mapping and target.
+                    prior = verified.get(symbol)
+                    comparison = context.history_comparisons.get(symbol, ())
+                    # A mapped endpoint depends on the old lineage receipt. Its
+                    # successor selecting the new pricing generation expires it.
+                    routed = (
+                        len(comparison) > 3
+                        and comparison[3] is not None
+                        and prior is not None
+                        and comparison[1] == item.get("previous_source_sha256")
+                        and verified_scopes[symbol].producer is None
                     )
                     if (
                         item.get("retained_history_unchanged")
                         and prior is not None
-                        and scope_applies(prior_scope, item["symbol"])
-                        and prior[1] == item.get("previous_source_sha256")
-                        and prior[0]["asof"]
-                        == next(request["asof"] for request in prepared if request["symbol"] == item["symbol"])
+                        and generations[symbol] == item["previous_source_sha256"]
+                        and prior["asof"] == item["request"]["asof"]
+                        and not routed
+                        and verified_scopes[symbol].applies(
+                            selected_scope.target, selected_scope.acquisition_fingerprint
+                        )
                     ):
-                        accepted_insertions[item["symbol"]] = item["source_sha256"]
-                        replacement_scopes[item["symbol"]] = prior_scope
+                        accepted_insertions[symbol] = item["source_sha256"]
+                        replacement_scopes[symbol] = selected_scope
                 else:
-                    completed_replacements[item["symbol"]] = item["source_sha256"]
-                    replacement_scopes[item["symbol"]] = selected_scopes[item["symbol"]]
+                    completed_replacements[symbol] = item["source_sha256"]
+                    replacement_scopes[symbol] = selected_scope
+                generations[symbol] = item["source_sha256"]
         # Reconciliation may replace pricing again after observing a changed
         # identity. Only its completed producer handoff approves that generation.
         generations.update(lineage_replacements)

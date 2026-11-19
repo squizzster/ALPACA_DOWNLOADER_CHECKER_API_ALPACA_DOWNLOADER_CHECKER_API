@@ -352,6 +352,17 @@ class GroupSnapshot:
             for view in previous["views"].values()
         )
 
+    def retained_pricing_insertions(self, symbol, previous, *, through):
+        """Borrow pricing's selected insertions under the accepted ancestor binding."""
+        from libs.alpaca_pricing_download.insertions import retained_insertions
+
+        if not hasattr(self, "_pricing_insertions"):
+            self._pricing_insertions = {}
+        key = symbol, previous["pricing_generation"], through
+        if key not in self._pricing_insertions:
+            self._pricing_insertions[key] = retained_insertions(self._sources[symbol], key[1], through=through)
+        return self._pricing_insertions[key]
+
     def historical_label_intervals(self):
         return getattr(self._assignments, "historical_labels", {})
 
@@ -502,6 +513,58 @@ class GroupSnapshot:
                     ):
                         result.add(session)
         return result
+
+    def _selected_gap_presence(self, queries, observed_raw):
+        """Complete outstanding all-view source/date observations after a component change."""
+        from bisect import bisect_left, bisect_right
+
+        from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
+
+        present, cache, sessions = set(), {}, {}
+
+        def day_of(row):
+            if row[0] not in sessions:
+                sessions[row[0]] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+            return sessions[row[0]]
+
+        for name, dates in queries.items():
+            source = self._sources[name]
+            raw = observed_raw.setdefault(name, {})
+            present.update(day for day in dates if raw.get(day))
+            by_view = {}
+            for view, kind, segment in self.assignments[name]:
+                by_view.setdefault(view, []).append((kind, segment["from"], segment["to"]))
+            for view in ADJUSTMENTS:
+                needed = sorted(dates - present - (raw.keys() if view == "raw" else set()))
+                if not needed:
+                    continue
+                partitions = {}
+                found = set()
+                for kind, first, last in by_view.get(view, ()):
+                    left, right = bisect_left(needed, first), bisect_right(needed, last)
+                    for day in needed[left:right]:
+                        if kind == "current_year" and day[:7] >= source["anchor_month"]:
+                            continue
+                        if day == first or day == last:
+                            found.add(day)
+                        else:
+                            partitions.setdefault(kind, set()).add(day)
+                for kind, possible in partitions.items():
+                    unresolved = possible - found
+                    if not unresolved:
+                        continue
+                    root = self._reader.store / "end_of_day/pricing" / name
+                    rows = _rows(
+                        root, source, kind, view, cache, self._cache if self._cache.maximum_bytes else None
+                    )
+                    for day in unresolved:
+                        index = bisect_left(rows, day, key=day_of)
+                        if index < len(rows) and day_of(rows[index]) == day:
+                            found.add(day)
+                if view == "raw":
+                    raw.update((day, day in found) for day in needed)
+                present.update(found)
+        return present
 
     def source_raw_presence(self, queries):
         if self._sources is None:

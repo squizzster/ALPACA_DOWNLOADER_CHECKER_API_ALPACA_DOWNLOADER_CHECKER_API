@@ -6,9 +6,12 @@ from uuid import uuid4
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.common.debug_trace import traced
-from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
+from libs.common.us_equity_market_session_calendar import (
+    expected_market_session_coverage,
+    market_sessions_between,
+)
 
-from . import cusip_dates
+from . import cusip_dates, gap_suffix
 from .contract import CatalogueError, policy
 from .offline import available_checkpoints, previous_checkpoints, select_offline
 from .reuse import extend_ticker_ranges, select_prefixes
@@ -203,6 +206,99 @@ def _ticker_ranges(bars):
     return sorted([*ranges, *active.values()], key=lambda r: (r["ticker"], r["first_session"]))
 
 
+def _infilled_ranges(prior, dated_bars):
+    from bisect import bisect_left
+    from itertools import groupby
+
+    # Each filled old gap has an accepted raw session at each end. Split the
+    # old all-view label intervals *only* at those two dates. This preserves
+    # even an unchanged single-session absence of an otherwise ambiguous label.
+    edges = [bar["session"] for bar in prior["gap_bars"]]
+    first, last = prior["first_session"], prior["last_session"]
+    old = iter(sorted(prior["ticker_ranges"], key=lambda run: run["first_session"]))
+    upcoming = next(old, None)
+    active = []
+
+    def retained(start, end):
+        nonlocal active, upcoming
+        while upcoming is not None and upcoming["first_session"] <= end:
+            active.append(upcoming)
+            upcoming = next(old, None)
+        clipped = [
+            {
+                **run,
+                "first_session": max(start, run["first_session"]),
+                "last_session": min(end, run["last_session"]),
+            }
+            for run in active
+        ]
+        active = [run for run in active if run["last_session"] > end]
+        return clipped
+
+    ranges, tails = [], {}
+
+    def append(part):
+        nonlocal tails
+        # Only intervals touching the seam can join. Older runs never need
+        # to be visited again as successive gaps are inserted.
+        left = min(run["first_session"] for run in part)
+        right = max(run["last_session"] for run in part)
+        next_tails = {}
+        for run in part:
+            ticker = run["ticker"]
+            if run["first_session"] == left and ticker in tails:
+                tails[ticker]["last_session"] = run["last_session"]
+                run = tails[ticker]
+            else:
+                ranges.append(run)
+            if run["last_session"] == right:
+                next_tails[ticker] = run
+        tails = next_tails
+
+    def gap(bar):
+        day = bar["session"]
+        if day < first:
+            return -1
+        if day > last:
+            return len(edges)
+        index = bisect_left(edges, day)
+        if not 0 < index < len(edges):
+            raise ValueError("missing retained gap boundaries; serving checkpoint recovery required")
+        return index
+
+    start = first
+    for index, bars in groupby(dated_bars, key=gap):
+        if index == len(edges):
+            append(retained(start, last))
+            start = None
+        elif index >= 0:
+            append(retained(start, edges[index - 1]))
+            start = edges[index]
+        append(_ticker_ranges(bars))
+    if start is not None:
+        append(retained(start, last))
+    return sorted(ranges, key=lambda run: (run["ticker"], run["first_session"]))
+
+
+def _remaining_gap_bars(previous, added, remaining):
+    from bisect import bisect_left
+
+    if not remaining:
+        return []
+    # Each existing gap already has its two raw-label witnesses. Filled dates
+    # split or close it; keep only immediate witnesses for the remaining dates.
+    bars = {bar["session"]: bar for bar in previous}
+    bars.update((bar["session"], {"session": bar["session"], "tickers": bar["tickers"]}) for bar in added)
+    dates = sorted(bars)
+    witnesses = set()
+    for day in remaining:
+        right = bisect_left(dates, day)
+        if not 0 < right < len(dates):
+            raise ValueError("missing retained gap boundaries; serving checkpoint recovery required")
+        witnesses.update((dates[right - 1], dates[right]))
+    return [bars[day] for day in sorted(witnesses)]
+
+
 def _ownership_intervals(group, public_id):
     intervals = set()
     for segment in _segments(group, public_id):
@@ -378,11 +474,18 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 "historical_label_intervals": historical,
             },
         )
-    validation = {"inputs": inputs, "identities": {}, "prefix_records": [], "revision_prefix_version": 1}
+    validation = {
+        "inputs": inputs,
+        "identities": {},
+        "prefix_records": [],
+        "revision_prefix_version": 1,
+        "gap_suffix_version": 1,
+    }
     if hasattr(group, "observation_choice_handoffs"):
         validation["observation_choice_handoffs"] = group.observation_choice_handoffs()
     work = {"reused_history_prefixes": 0, "full_history_evaluations": 0, "checked_bars": 0}
     sources = split_dates = None
+    observed_raw = {}
     for security in selected_securities:
         public_id = security["public_id"]
         interval = intervals.get(public_id)
@@ -439,8 +542,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         outside = bool(prefix and "accepted_span" in prefix)
         before = [bar for bar in raw if outside and bar["session"] < prior["first_session"]]
         after = [bar for bar in raw if not outside or bar["session"] > prior["last_session"]]
-        if outside and len(before) + len(after) != len(raw):
-            raise ValueError("serving extension reopened its accepted numerical span")
+        interior = raw[len(before) : len(raw) - len(after)] if outside else []
         final_session = after[-1]["session"] if after else prior["last_session"] if prior else None
         if (
             not after
@@ -464,7 +566,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         for adjustment, view in views.items():
             if [b["session"] for b in view["bars"]] != sessions:
                 price_reasons.add("incompatible_sessions")
-                if sessions and [b["session"] for b in view["bars"] if b["session"] < final_session] != [
+                if final_session and [b["session"] for b in view["bars"] if b["session"] < final_session] != [
                     day for day in sessions if day < final_session
                 ]:
                     before_last_reasons.add("incompatible_sessions")
@@ -482,8 +584,15 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         missing = set(prior["missing_sessions"] if prior else ())
         gap_bars = list(prior["gap_bars"] if prior else ())
         source_sessions = set(prior["source_sessions_in_gaps"] if prior else ())
-        if prefix and prefix["refresh_gap_sources"]:
-            source_sessions = group.source_sessions(start=min(missing), end=max(missing)) & missing
+        if interior:
+            filled = {bar["session"] for bar in interior}
+            missing.difference_update(filled)
+            source_sessions.difference_update(filled)
+            gap_bars = _remaining_gap_bars(gap_bars, interior, missing)
+        if missing and prefix and prefix["refresh_gap_sources"]:
+            from .gaps import refresh_presence
+
+            source_sessions = refresh_presence(group, previous, inputs, missing, observed_raw)
         first_session = (
             before[0]["session"]
             if before
@@ -542,8 +651,6 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         explained = _rename_exclusions(
             group, members, observations, gap_bars, missing, source_sessions=source_sessions
         )
-        if missing - explained:
-            reasons.add("unexplained_missing_sessions")
         unresolved_ends = _unresolved_ends(group, security, members, first_session, last_session)
         coverage_limits = limits.get(public_id, {})
         from libs.alpaca_lineage_build.price_basis_limits import PROXY, RESTRICT, UNPRICED
@@ -566,6 +673,41 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         cutoff = max([*unresolved_ends, *split_limits], default=None)
         if cutoff is not None and cutoff >= last_session:
             reasons.add("unresolved_coverage")
+        unresolved_gaps = missing - explained
+        gap_cutoff = protected = None
+        if unresolved_gaps:
+            latest_gap = max(unresolved_gaps)
+            supported_start = None
+            if prefix and not reasons:
+                previous_publication = next(
+                    (
+                        old
+                        for old in previous
+                        if old["decision_generation"] == prefix.get("previous_publication")
+                    ),
+                    None,
+                )
+                supported_start, protected = gap_suffix.retained_range(
+                    previous_publication, prior, latest_gap, last_session
+                )
+            if supported_start is not None and (
+                protected
+                or gap_suffix.applicable_absence(
+                    group,
+                    previous,
+                    previous_publication,
+                    prior,
+                    supported_start,
+                    unresolved_gaps,
+                    coverage,
+                    inputs,
+                    observed_raw,
+                )
+            ):
+                gap_cutoff = latest_gap
+                cutoff = max(cutoff or latest_gap, latest_gap)
+            else:
+                reasons.add("unexplained_missing_sessions")
         decisions.append(
             {
                 "public_id": public_id,
@@ -588,7 +730,9 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         dated_bars = [{"session": day, "tickers": sorted(labels)} for day, labels in dated_labels.items()]
         ticker_ranges = _ticker_ranges(dated_bars)
         if prior:
-            if outside:
+            if interior:
+                ticker_ranges = _infilled_ranges(prior, dated_bars)
+            elif outside:
                 old_ranges = prior["ticker_ranges"]
                 if before:
                     old_ranges = extend_ticker_ranges(
@@ -636,7 +780,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             next(
                 (
                     item
-                    for old in previous
+                    for old in ((previous_publication,) if gap_cutoff is not None else previous)
                     if any(
                         d["public_id"] == public_id
                         and cutoff
@@ -654,6 +798,20 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             if cutoff is not None and session_dates is None
             else None
         )
+        if gap_cutoff is not None and session_dates is None and prior.get("session_projection_version") is None:
+            # A clean, unmarked checkpoint binds the complete missing-session
+            # list to this market calendar. When the old public range fits the
+            # new seam exactly, it already supplies its own count and bounds.
+            # Otherwise materialize the missing date projection once, directly
+            # from that accepted calendar decision without opening price rows.
+            if cutoff == gap_cutoff and protected and not protected.get("price_exclusions"):
+                right = next(bar["session"] for bar in gap_bars if bar["session"] > gap_cutoff)
+                if protected["first_session"] == right:
+                    accepted_range = protected
+            if accepted_range is None or accepted_range.get("price_exclusions"):
+                session_dates = [
+                    d for d in market_sessions_between(first_session, last_session) if d not in missing
+                ]
         if session_dates is None and (
             any(v.get("pending") and v["terminal"] and last_session > v["witness_end"] for v in gaps)
             or rebuild_projection
@@ -705,6 +863,10 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                     if len(after) >= 2
                     else prior["last_raw_bar"]
                     if after and prior
+                    else {"session": interior[-1]["session"], "tickers": interior[-1]["tickers"]}
+                    if interior
+                    and prior.get("before_last_raw_bar")
+                    and interior[-1]["session"] > prior["before_last_raw_bar"]["session"]
                     else {"session": before[-1]["session"], "tickers": before[-1]["tickers"]}
                     if before and prior["coverage"]["session_count"] == 1
                     else prior.get("before_last_raw_bar")
@@ -712,7 +874,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                     else None
                 ),
                 "before_last_price_reasons": sorted(before_last_reasons)
-                if sessions and not (outside and not after and prior.get("before_last_price_reasons") is None)
+                if any(view["bars"] for view in views.values())
+                and not (outside and not after and prior.get("before_last_price_reasons") is None)
                 else prior.get("before_last_price_reasons"),
                 "missing_sessions": sorted(missing),
                 "gap_bars": gap_bars,
@@ -793,12 +956,17 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 decisions[-1]["publication_start_after_unresolved"] = max(unresolved_ends)
             if split_limits:
                 decisions[-1]["publication_start_after_price_basis"] = max(split_limits)
+            if gap_cutoff is not None:
+                decisions[-1]["publication_start_after_missing_session"] = gap_cutoff
             ticker_ranges = history_summary["ticker_ranges"]
 
         if gaps:
             history_summary = price_gaps.project(history_summary, gaps, session_dates)
             if not history_summary["coverage"]["session_count"]:
                 decisions[-1].update(eligible=False, reasons=["unresolved_coverage"])
+                if gap_cutoff is not None:
+                    decisions[-1].pop("publication_start_after_missing_session")
+                    decisions[-1]["reasons"].append("unexplained_missing_sessions")
                 continue
             ticker_ranges = history_summary["ticker_ranges"]
             last_session = history_summary["last_session"]
@@ -884,5 +1052,5 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         completed["offline_ownership"] = offline
     from .gaps import complete_presence
 
-    complete_presence(group, completed, previous)
+    complete_presence(group, completed, previous, observed_raw=observed_raw)
     return completed

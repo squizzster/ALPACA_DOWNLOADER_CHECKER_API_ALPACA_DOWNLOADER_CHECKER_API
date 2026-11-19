@@ -29,23 +29,8 @@ from .contract import (
     MAX_CLOSURE,
     VERSION,
     LineageError,
-    current_decision,
-    retained_v78_decision,
-    retained_v79_decision,
-    retained_v80_decision,
-    retained_v81_decision,
-    retained_v82_decision,
-    retained_v83_decision,
-    retained_v84_decision,
-    retained_v85_decision,
-    retained_v86_decision,
-    retained_v87_decision,
-    retained_v88_decision,
-    retained_v89_decision,
-    retained_v90_decision,
-    retained_v91_decision,
-    retained_v92_decision,
     reusable_computation,
+    reusable_decision,
     reusable_metadata_versions,
     versions,
 )
@@ -111,6 +96,7 @@ class CompletedGroupPublication:
     historical_rows_reused: int
     pricing_rows_processed: int
     membership_refinement: dict | None = None
+    expanded_prefixes: tuple = ()
 
 
 def consume_membership_plan(context, completion):
@@ -187,6 +173,7 @@ def publish_completed_group(
             previous=previous,
             sources=sources,
             continued=publication.reused_closed_boundaries,
+            **({"expanded_prefixes": publication.expanded_prefixes} if publication.expanded_prefixes else {}),
             full_materialization=not (publication.reused_decision or publication.reused_closed_boundaries),
         )
         effects["published"] = {symbol: index["symbols"][symbol] for symbol in receipts}
@@ -385,7 +372,9 @@ def finish_correlated_group(
                     sorted(set(deps[symbol]) | unavailable.keys()),
                     prior,
                     old,
-                    resume_closed=resume,
+                    resume_closed=resume
+                    and prior is not None
+                    and symbol not in completion.get("expanded_prefixes", ()),
                 )
             receipts[symbol], boundaries[symbol] = parts[symbol]
             receipts[symbol]["input_sources"] = {
@@ -426,11 +415,12 @@ def finish_correlated_group(
                 sum(
                     item["rows"]
                     for view in inputs.values()
-                    if resume
+                    if resume and view.previous_assignment_summary is not None
                     for item in view.previous_assignment_summary.values()
                 ),
                 sum(len(rows) for view in inputs.values() for rows in view.views.values()),
                 membership_refinement=completion.get("membership_refinement"),
+                expanded_prefixes=tuple(completion.get("expanded_prefixes", ())),
             )
             completion["publication"] = publication.__dict__
         return publish_completed_group(
@@ -818,8 +808,17 @@ def process_group(
                 context._ruleset is None or context._ruleset.membership_refinement is None
             ):
                 raise LineageError("completed membership input requires its enabled registered producer")
-            membership_projection_requested = explicit_membership is not None
-            from .metadata import DEPENDENCY_HANDOFF_CORRELATION_VERSION
+            from .metadata import (
+                DEPENDENCY_HANDOFF_CORRELATION_VERSION,
+                retired_successor_observations,
+                retired_uuid_lookup_required,
+            )
+
+            missing_retirements = {
+                name
+                for name, prior in previous.items()
+                if not retained_rebuild and retired_uuid_lookup_required(prior)
+            }
 
             if not retained_rebuild and any(
                 prior and prior["versions"]["correlation"] < DEPENDENCY_HANDOFF_CORRELATION_VERSION
@@ -834,51 +833,22 @@ def process_group(
                     ]
                 )
             reuse_metadata = services.reuse_metadata(seed, group, selected, previous, notices, metadata_refresh)
-            metadata_current = reuse_metadata and (
-                retained_rebuild
-                or all(evidence_client.evidence_current(prior["evidence"]) for prior in previous.values())
+            metadata_current = (
+                reuse_metadata
+                and not missing_retirements
+                and (
+                    retained_rebuild
+                    or all(evidence_client.evidence_current(prior["evidence"]) for prior in previous.values())
+                )
             )
             computation_current = retained_recovery is None and all(
                 reusable_computation(prior) for prior in previous.values()
             )
             # Select completed-decision compatibility once for this coherent
             # receipt view; acknowledgement consumes the selected mode below.
-            decision_modes = {
-                name: "v78"
-                if retained_v78_decision(prior)
-                else "v79"
-                if retained_v79_decision(prior)
-                else "v80"
-                if retained_v80_decision(prior)
-                else "v81"
-                if retained_v81_decision(prior)
-                else "v82"
-                if retained_v82_decision(prior)
-                else "v83"
-                if retained_v83_decision(prior)
-                else "v84"
-                if retained_v84_decision(prior)
-                else "v85"
-                if retained_v85_decision(prior)
-                else "v86"
-                if retained_v86_decision(prior)
-                else "v87"
-                if retained_v87_decision(prior)
-                else "v88"
-                if retained_v88_decision(prior)
-                else "v89"
-                if retained_v89_decision(prior)
-                else "v90"
-                if retained_v90_decision(prior)
-                else "v91"
-                if retained_v91_decision(prior)
-                else "v92"
-                if retained_v92_decision(prior)
-                else "current"
-                if current_decision(prior)
-                else None
-                for name, prior in previous.items()
-            }
+            accepted_decisions = {name: reusable_decision(prior) for name, prior in previous.items()}
+            from .retained_membership import FIELD, selected_pairs
+
             # Absence belongs to its own request/mapping, not its siblings' price
             # envelopes. The locked source selection has already established that
             # no source or pending publication supersedes it.
@@ -904,6 +874,22 @@ def process_group(
                 work_policy.check(group)
             if register_discoveries is not None:
                 register_discoveries(group)
+            check_legacy_membership = (
+                explicit_membership is None
+                and not retained_rebuild
+                and not refresh
+                and metadata_current
+                and all(accepted_decisions.values())
+                and reuse_metadata
+                and not missing
+                and context.accept_ruleset().membership_refinement
+            )
+            legacy_pairs = (
+                selected_pairs(previous, selected, correlation_policy, source_work_cache, index["symbols"])
+                if check_legacy_membership
+                else None
+            )
+            membership_projection_requested = explicit_membership is not None or bool(legacy_pairs)
             promoted_decision = (
                 reuse_metadata
                 and metadata_current
@@ -916,21 +902,22 @@ def process_group(
                     if "evidence" in item
                 )
             )
-            if (
+            reusable_inputs = (
                 reuse_metadata
                 and metadata_current
                 and computation_current
-                and not membership_projection_requested
                 and (
                     promoted_decision
                     or all(
-                        decision_modes[name]
+                        accepted_decisions[name]
                         or services.can_promote_observation_decision(prior, correlation_policy)
                         for name, prior in previous.items()
                     )
                 )
                 and (work_policy is None or work_policy.decision_inputs_satisfied(sources, selected, end))
-            ):
+            )
+
+            def finish_unchanged():
                 services.event(
                     "lineage_required", symbol=seed, required=False, reason="accepted_unchanged_inputs"
                 )
@@ -953,7 +940,7 @@ def process_group(
                             previous,
                             sources,
                             provider_evidence,
-                            {name: index["symbols"][name]["sha256"] for name in previous},
+                            {name: index["symbols"].get(name, {}).get("sha256") for name in previous},
                             source_work_cache,
                             assignment_cache=assignment_boundaries,
                         )
@@ -965,24 +952,7 @@ def process_group(
                         # it is not a new calculation or header migration.
                         **(
                             {}
-                            if decision_modes[symbol]
-                            in {
-                                "v78",
-                                "v79",
-                                "v80",
-                                "v81",
-                                "v82",
-                                "v83",
-                                "v84",
-                                "v85",
-                                "v86",
-                                "v87",
-                                "v88",
-                                "v89",
-                                "v90",
-                                "v91",
-                                "v92",
-                            }
+                            if accepted_decisions[symbol]
                             else {
                                 "schema_version": VERSION,
                                 "versions": versions(),
@@ -1055,6 +1025,21 @@ def process_group(
                     "unavailable_pricing": sorted(unavailable),
                     "pricing_replacements": pricing_replacements,
                 }
+
+            if reusable_inputs and not membership_projection_requested:
+                if check_legacy_membership and index["symbols"][min(previous)].get(FIELD, {}).get("overlap"):
+                    from .retained_membership import complete_negative
+
+                    if legacy_pairs == []:
+                        reason = "no_containing_pair"
+                    elif any(
+                        not isinstance(prior.get("identity_memberships"), list) for prior in previous.values()
+                    ):
+                        reason = "accepted_membership_scope_unknown"
+                    else:
+                        reason = "previously_assessed"
+                    complete_negative(root, index, previous, reason)
+                return finish_unchanged()
             if end_date and end and end > end_date:
                 raise LineageError(
                     f"{seed}: required group reconciliation extends beyond requested cutoff {end_date}; "
@@ -1151,10 +1136,14 @@ def process_group(
                     and not refresh
                     and all(decision[1][0] for decision in prefix_decisions.values())
                 )
+                new_sources = {name for name, prior in previous.items() if prior is None}
+                successors = (
+                    retired_successor_observations(metadata_cache, selected, new_sources) if prefix_scope else {}
+                )
                 resume = (
                     prefix_scope
                     and not refresh
-                    and all(decision[1][1] for decision in prefix_decisions.values())
+                    and all(decision[1][1] or name in successors for name, decision in prefix_decisions.items())
                 )
                 services.event(
                     "lineage_reuse_gate",
@@ -1205,6 +1194,7 @@ def process_group(
                                 evidence[symbol] = metadata_cache[key]
                             elif (
                                 prior is not None
+                                and symbol not in missing_retirements
                                 and (reuse_metadata or not full and view.source_sha256 == prior["source_sha256"])
                                 and evidence_client.evidence_current(prior["evidence"])
                             ):
@@ -1315,7 +1305,13 @@ def process_group(
                         }
                     # A related input may exist but not cover the selected acquisition range.
                     # Empty published responses count as acquired, not as missing history.
-                    for symbol, source in () if retained_rebuild else sources.items():
+                    # A legacy membership assessment consumes this exact group's
+                    # already accepted, possibly unequal source ranges. Only an
+                    # independent acquisition obligation can extend them.
+                    accepted_range = legacy_pairs and (
+                        work_policy is None or work_policy.decision_inputs_satisfied(sources, selected, end)
+                    )
+                    for symbol, source in () if retained_rebuild or accepted_range else sources.items():
                         if source.get("history_start", HISTORY_START)[:10] > start:
                             required.setdefault(symbol, {"from": start, "end_exclusive": end})
                         elif source["latest_request"]["end_exclusive"][:10] < end:
@@ -1345,7 +1341,20 @@ def process_group(
                             cache=source_work_cache,
                             ruleset=context._ruleset,
                             accepted_membership_plan=accepted_membership_plan,
+                            **({"legacy_pairs": legacy_pairs} if legacy_pairs else {}),
                         )
+                        refinement = source_plan.membership_refinement
+                        if (
+                            reusable_inputs
+                            and legacy_pairs
+                            and refinement is not None
+                            and not refinement["changes"]
+                            and set(source_plan.dispositions.values()) == {"retained"}
+                        ):
+                            from .retained_membership import complete_negative
+
+                            complete_negative(root, index, previous, "retained_ownership", refinement["issues"])
+                            return finish_unchanged()
                         if any(
                             source_plan.memberships.get(member, identity)["security_id"]
                             != identity["security_id"]
@@ -1414,6 +1423,13 @@ def process_group(
                             for name, receipt in receipts.items():
                                 receipt["dependencies"] = sorted(set(deps[name]) | unavailable.keys())
                                 receipt["input_sources"] = dict(selected)
+                                if legacy_pairs and source_plan.membership_refinement is not None:
+                                    receipt["retained_membership_assessed"] = dict(selected)
+                                    recovered = source_work_cache.get("legacy_membership_edges", {}).get(
+                                        (name, controls[name].previous_receipt_generation, id(evidence[name]))
+                                    )
+                                    if recovered is not None:
+                                        receipt["uuid_lineage_edges"] = recovered[1]
                                 if unavailable:
                                     receipt["unavailable_pricing"] = unavailable
                             completion_key = ("source_completed", *assembly_key[1:])
@@ -1567,7 +1583,7 @@ def process_group(
                             retained_kinds[symbol] = {
                                 kind for kind in prior["boundaries"] if assignment_handoff(prior, kind) is None
                             }
-                        if resume and "assignment_summary" in prior:
+                        if resume and prior and "assignment_summary" in prior:
                             old_anchor, anchor = prior["anchor_month"], sources[symbol]["anchor_month"]
                             if sources[symbol]["latest_request"]["end_exclusive"] <= prior["processed_through"]:
                                 retained_kinds[symbol] = set()
@@ -1613,15 +1629,17 @@ def process_group(
                             {
                                 "symbols": sorted(sources),
                                 "active_only": resume,
-                                "from": previous[seed]["processed_through"][:10] if resume else start,
+                                "from": previous[seed]["processed_through"][:10]
+                                if resume and previous.get(seed)
+                                else start,
                                 "scope": "added_sessions" if resume else "complete_group",
                             },
                         )
                     for symbol in sorted(sources):
                         scope = (
                             selected[symbol],
-                            resume,
-                            previous[symbol]["boundaries"] if resume else None,
+                            resume and previous[symbol] is not None,
+                            previous[symbol]["boundaries"] if resume and previous[symbol] else None,
                             projections.get(symbol),
                         )
                         cached = pricing_inputs.get(symbol)
@@ -1641,7 +1659,7 @@ def process_group(
                                         or corrections[symbol]
                                         or previous[symbol]["processed_through"][:10]
                                     )
-                                    if resume
+                                    if resume and previous[symbol] is not None
                                     else None,
                                     previous=previous[symbol],
                                     partitions=partitions[symbol],
@@ -1660,7 +1678,11 @@ def process_group(
                                 evidence[symbol] = evidence_client.provider_view(
                                     prior["evidence"], local_report=view.local
                                 )
-                            elif reuse_metadata and evidence_client.evidence_current(prior["evidence"]):
+                            elif (
+                                symbol not in missing_retirements
+                                and reuse_metadata
+                                and evidence_client.evidence_current(prior["evidence"])
+                            ):
                                 # Only the downstream rules changed. Consume the approved
                                 # evidence directly, then recalculate the complete group.
                                 evidence[symbol] = evidence_client.provider_view(
@@ -1812,7 +1834,21 @@ def process_group(
                             provider_previous,
                             evidence,
                             pricing_unchanged=resume
-                            and (unchanged or all(complete_append(view) for view in inputs.values())),
+                            and (
+                                unchanged
+                                or all(
+                                    complete_append(view)
+                                    for name, view in inputs.items()
+                                    if name not in successors
+                                )
+                            ),
+                            empty_successors={
+                                name
+                                for name, identifier in successors.items()
+                                if not any(inputs[name].views.values())
+                                and not evidence[name]["corporate_actions"]
+                                and {item["id"] for item in evidence[name]["identities"]} == {identifier}
+                            },
                             refresh=refresh,
                             append=resume,
                             completed_deltas=membership_deltas,
@@ -1869,8 +1905,10 @@ def process_group(
                             and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
                         }
                         original_choice_inputs = dict(inputs)
-                        no_new_rows = not historical_lineage and not any(
-                            rows for view in inputs.values() for rows in view.views.values()
+                        no_new_rows = (
+                            not historical_lineage
+                            and not new_sources
+                            and not any(rows for view in inputs.values() for rows in view.views.values())
                         )
                         services.event(
                             "lineage_required",
@@ -1907,6 +1945,8 @@ def process_group(
                                 scope="complete_group",
                             )
                             for name, prior in previous.items():
+                                if prior is None:
+                                    continue
                                 missing = {
                                     kind
                                     for kind in prior["boundaries"].keys() - old_boundaries[name].keys()
@@ -1942,13 +1982,15 @@ def process_group(
                             inputs[name].accepted_current_source_ownership = certificate.get(
                                 "current_source_ownership"
                             )
-                        scoped_memberships = services.scoped_identity_memberships(
-                            choice_prefix_sources, old_boundaries
+                        scoped_memberships = (
+                            services.scoped_identity_memberships(choice_prefix_sources, old_boundaries)
+                            if historical_lineage
+                            else {}
                         )
                         for name, memberships in scoped_memberships.items():
                             view = inputs[name]
                             view.accepted_identity_memberships = memberships
-                            if historical_lineage and corrections[name] is None and name not in projections:
+                            if corrections[name] is None and name not in projections:
                                 # A peer selected complete-group work, but this
                                 # source's pricing prefix and owner metadata remain
                                 # accepted. Carry its old row decisions in their
@@ -1964,7 +2006,9 @@ def process_group(
                                     len(rows) for rows in view.views.values()
                                 )
                         if resume and not no_new_rows:
-                            resumed_previous = dict(previous)
+                            resumed_previous = {
+                                name: prior for name, prior in previous.items() if prior is not None
+                            }
                             for name, prior in resumed_previous.items():
                                 last = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
                                 if "identity_memberships" not in prior and last:
@@ -2029,31 +2073,99 @@ def process_group(
                                 services=services,
                                 completion=completion,
                             )
-                            if not no_new_rows and all(previous.values()):
-                                from .membership_updates import invalidations, update_reports
+                            if any(previous.values()) and (
+                                correlation_policy.implementation_correlation_version >= 94
+                                or not no_new_rows
+                                and all(previous.values())
+                            ):
+                                from .membership_updates import (
+                                    compose_growing_prefixes,
+                                    invalidations,
+                                    update_reports,
+                                )
 
+                                selected_membership = {
+                                    "store": str(store),
+                                    "selected_group": sorted(group),
+                                    "components": components,
+                                    "receipts": previous,
+                                    "pricing_generations": selected,
+                                    "receipt_generations": {
+                                        name: index["symbols"].get(name, {}).get("sha256") for name in previous
+                                    },
+                                }
+                                if (
+                                    resume
+                                    and correlation_policy.implementation_correlation_version >= 94
+                                    and context._ruleset.membership_refinement
+                                ):
+                                    from .membership_prices import compose as membership_prices
+                                    from .retained_membership import donor_edges
+
+                                    reports, combined = compose_growing_prefixes(
+                                        reports,
+                                        selected_membership,
+                                        evidence,
+                                        inputs,
+                                        recover_edges=lambda report, donor: {
+                                            **report,
+                                            "uuid_lineage_edges": donor_edges(
+                                                evidence[donor],
+                                                donor,
+                                                source_work_cache,
+                                                receipt_generation=selected_membership["receipt_generations"][
+                                                    donor
+                                                ],
+                                                accepted_issues=(
+                                                    previous[donor]["evidence_issues"]
+                                                    if prefix_decisions[donor][1][0]
+                                                    and membership_deltas[donor]["scope"] == "none"
+                                                    else ()
+                                                ),
+                                            ),
+                                        },
+                                        load_prefix=lambda name: retained_ownership_report(
+                                            previous[name], inputs[name].local, {}, root, assignment_boundaries
+                                        ),
+                                        load_prices=lambda name, prefix: membership_prices(
+                                            store,
+                                            inputs[name],
+                                            prefix,
+                                            partitions[name],
+                                        ),
+                                    )
+                                    if combined is not inputs:
+                                        completion["expanded_prefixes"] = [
+                                            n for n in inputs if combined[n] is not inputs[n]
+                                        ]
+                                        completion["membership_inputs"] = combined
+                                        inputs = combined
                                 reports, trace = update_reports(
                                     reports,
                                     evidence,
-                                    selected={
-                                        "store": str(store),
-                                        "selected_group": sorted(group),
-                                        "receipts": previous,
-                                        "pricing_generations": selected,
-                                        "receipt_generations": {
-                                            name: index["symbols"][name]["sha256"] for name in previous
-                                        },
-                                    },
+                                    {**selected_membership, "inputs": inputs},
                                     ruleset=context._ruleset,
                                 )
-                                affected = dict(affected)
-                                for day, identifiers in invalidations(
-                                    inputs, reports, trace, instants=completion.setdefault("instant_keys", {})
-                                ).items():
-                                    affected[day] = set(affected.get(day, ())) | identifiers
+                                if correlation_policy.implementation_correlation_version < 94:
+                                    affected = dict(affected)
+                                    for day, identifiers in invalidations(
+                                        inputs,
+                                        reports,
+                                        trace,
+                                        instants=completion.setdefault("instant_keys", {}),
+                                    ).items():
+                                        affected[day] = set(affected.get(day, ())) | identifiers
+                                # Current membership hands the numerical owner the exact
+                                # reclassified positions. Its normal newly joined contest
+                                # opens the matching donor even on a reassembled prefix.
                                 completion["membership_refinement"] = trace
                             completion["correlation"] = components, reports, affected
                         components, reports, affected = completion["correlation"]
+                        inputs = completion.get("membership_inputs", inputs)
+                        if completion.get("expanded_prefixes"):
+                            # An empty new suffix can still expose a legacy duplicate
+                            # in the retained prefix. It has a real numerical contest.
+                            no_new_rows = False
                         completion["finish_args"] = {
                             "dated_labels": context.accept_ruleset().dated_labels,
                             "mapping_cache": source_work_cache.setdefault("numerical_mapping", {}),

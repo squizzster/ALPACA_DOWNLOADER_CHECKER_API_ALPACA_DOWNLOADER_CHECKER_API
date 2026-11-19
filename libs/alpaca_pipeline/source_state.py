@@ -32,6 +32,7 @@ ADAPTER_EXTRAS = (
     "accepted_sourced_rename_ownership",
     "previous",
     "observation_instant_keys",
+    "membership_session_dates",
 )
 
 
@@ -85,6 +86,7 @@ def _references(roots):
         "partitions",
         "counterpart_partitions",
         "numerical_mapping",
+        "membership_session_dates",
         "market_date_partitions",
         "source_bundles",
         "views",
@@ -179,6 +181,7 @@ def export_sourced(value, *, roots):
         "partitions",
         "counterpart_partitions",
         "numerical_mapping",
+        "legacy_membership_pairs",
     }
     keyed = {
         "owner_applicability": lambda k: (k[0], prior(k[1]), identity(k[2])),
@@ -187,6 +190,7 @@ def export_sourced(value, *, roots):
         "donor_grid_ids": lambda k: (k[0], k[1], identity(k[2]), k[3]),
         "completed_source_work": scope,
         "membership_plans": scope,
+        "legacy_membership_edges": lambda k: (k[0], k[1], identity(k[2])),
     }
     source_work = value.get("source_work", {})
     if not isinstance(source_work, dict) or set(source_work) - stable - keyed.keys():

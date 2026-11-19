@@ -41,7 +41,15 @@ from .work_contract import (
 
 @traced("boundaries")
 @compact_selection
-def boundaries(store, registry, *, context=None, coalesce_late_bars=True, pending_serving=None):
+def boundaries(
+    store,
+    registry,
+    *,
+    context=None,
+    coalesce_late_bars=True,
+    pending_serving=None,
+    publish_membership_screens=False,
+):
     # TRUST BOUNDARY: accept the compact owners below before choosing work.
     # The index supplies membership/generations; the summary supplies live-check
     # baselines. Neither registry labels nor directory contents can replace them.
@@ -69,6 +77,19 @@ def boundaries(store, registry, *, context=None, coalesce_late_bars=True, pendin
     if not checks["complete"]:
         raise LineageError("lineage scheduling coverage missing; explicit lineage update is required")
     serving = serving_controls(store) if context is None else context.select_serving()
+    from .retained_membership import select_legacy_groups
+
+    changed_rules = {s for s, entry in index["symbols"].items() if not reusable_decision(entry)}
+    memberships = (
+        select_legacy_groups(
+            store, index, serving, changed_rules=changed_rules, publish=publish_membership_screens
+        )
+        if context is not None and context.accept_ruleset().membership_refinement
+        else {}
+    )
+    catalogue_status = serving_status(
+        store, controls=serving, pending=pending_serving, adopt_gap_suffixes=publish_membership_screens
+    )
     repairs = select_late_bar_repairs(store, serving)
     repairs["window_policy"] = "consecutive_sessions" if coalesce_late_bars else "exact_sessions"
     for symbol, selected in repairs["sources"].items():
@@ -94,8 +115,10 @@ def boundaries(store, registry, *, context=None, coalesce_late_bars=True, pendin
         "checks": checks,
         "registry": set(load_labels(registry)),
         "state": universe_state.read_state(store),
-        "serving_catalogue": serving_status(store, controls=serving, pending=pending_serving),
+        "serving_catalogue": catalogue_status,
         "late_bar_repairs": repairs,
+        "legacy_memberships": memberships,
+        "changed_rules": changed_rules,
     }
 
 
@@ -140,6 +163,27 @@ def changed_evidence(index, observation, evidence_client, *, excluded=(), work=N
                 if (old.get("id"), old.get("symbol")) != ((asset or {}).get("id"), (asset or {}).get("symbol")):
                     mapping.add(symbol)
     return changed, mapping, failures
+
+
+def retired_lookup_due(symbol, projection, evidence_client):
+    """Select a missing UUID assessment using only the accepted index and catalogue."""
+    from .metadata import retired_uuid_anchor
+
+    if not projection.get("source_rows"):
+        return False
+    prior = projection.get("retired_uuid_lookup")
+    if prior is not None:
+        conflict = evidence_client.catalogue_uuid_conflicts.get(prior["lookup"])
+        if conflict and prior.get("catalogue_conflict") != conflict:
+            return True
+        current = evidence_client.observed_uuid_lookup(prior["lookup"])
+        return current is not None and lookup_fact(prior) != lookup_fact(current)
+    if not any(
+        item.get("lookup") == symbol and item.get("outcome") == "not_found" and item.get("http_status") == 404
+        for item in projection.get("symbol_lookups", ())
+    ):
+        return False
+    return retired_uuid_anchor(symbol, projection.get("last_observed_symbol_lookup")) is not None
 
 
 @traced("selection")
@@ -191,11 +235,28 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     def add(symbol, why):
         reasons.setdefault(symbol, set()).add(why)
 
+    for symbol in accepted.get("legacy_memberships", {}):
+        add(symbol, "legacy_membership_overlap")
     for symbol in accepted["checks"]["checks"]:
         add(symbol, "pending_lineage")
+    changed_rules = accepted.get("changed_rules")
+    if changed_rules is None:
+        changed_rules = {s for s, entry in entries.items() if not reusable_decision(entry)}
+    for symbol in changed_rules:
+        add(symbol, "changed_rules")
     for symbol, entry in entries.items():
-        if not reusable_decision(entry):
-            add(symbol, "changed_rules")
+        if symbol not in excluded:
+            try:
+                if retired_lookup_due(symbol, entry.get("projection", {}), evidence_client):
+                    add(symbol, "retired_uuid_resolution")
+            except (RuntimeError, OSError, ValueError) as error:
+                from libs.alpaca_pricing_download.contract import failure_outcome
+
+                failures[symbol] = {
+                    "error": str(error),
+                    "outcome": failure_outcome(error),
+                    "request_identifiers": getattr(error, "request_identifiers", []),
+                }
 
     # Stored active identity remains maintenance authority when the catalogue omits
     # a label. Explicit current inactivity is a reconciliation event, not absence.
@@ -703,7 +764,13 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             + pages(correction_plans)
             + pages(append_plans),
             "http_page_assumptions": "known work only, not an ETA: acquisition minimum assumes raw/all equivalence; action and dense-history estimates budget all eight views before adaptive decisions, excluding the accepted all observation for local correction; one daily row per selected exchange session and full pages; sparse histories reduce rows, underfilled pages and retries increase requests; exhaust every page token",
-            "conditional_work": "exact producer-selected late-bar probes trigger full-span replacement only on a positive raw response; fresh first/tail comparisons may select local correction or replacement; source-only completed correction IDs reduce pending estimates when execution selects their manifests; dependency checks/acquisition, new full-history first-session confirmations, additional exact/CUSIP lookups, corporate actions and complete-group expansion remain conditional",
+            "conditional_work": (
+                "Positive late-bar probes select the remaining required views for the returned sessions. "
+                "Independent first/tail comparisons may select local correction or replacement. "
+                "Source-only completed correction IDs reduce pending estimates when execution selects their manifests. "
+                "Dependency checks/acquisition, new full-history first-session confirmations, additional exact/CUSIP "
+                "lookups, corporate actions and complete-group expansion remain conditional."
+            ),
             "pricing_publications_estimate": len(initial)
             + len(empty)
             + len(append)

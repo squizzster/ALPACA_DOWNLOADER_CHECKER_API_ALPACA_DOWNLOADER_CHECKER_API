@@ -186,7 +186,7 @@ class IncrementalServingTests(NativeCase):
             result = maintain(self.store)
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["checked_bars"], 0)
-        self.assertEqual(len(opened), 1, "physical adjustment aliases should share the selected gap payload")
+        self.assertEqual(opened, [], "the completed adjusted segment already supplies its exact session")
         group = self.catalogue_groups("AUX")["AUX"]
         decision = next(item for item in group["decisions"] if item["public_id"] == public_id)
         self.assertEqual(decision["reasons"], ["unexplained_missing_sessions"])

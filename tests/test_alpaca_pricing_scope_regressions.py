@@ -17,6 +17,7 @@ from libs.alpaca_pricing_download.context import accept_context
 from libs.alpaca_pricing_download.contract import timestamp, transform
 from libs.alpaca_pricing_download.endpoints import EndpointSelection, compare_history
 from libs.alpaca_pricing_download.http import BarsClient
+from libs.alpaca_pricing_download.insertions import publication, retained_insertions
 
 
 class PricingScopeRegressions(unittest.TestCase):
@@ -145,7 +146,7 @@ class PricingScopeRegressions(unittest.TestCase):
         self.assertEqual([call["adjustment"] for call in self.calls], ["raw", "all"])
 
     def test_selected_session_reads_only_its_partition_and_validates_only_new_rows(self):
-        self.seed()
+        generation = self.seed()["source_sha256"]
         self.live = [bar("2026-10-02")]
         prepared, _ = refresh.probe_late_bar_repairs(
             self.store,
@@ -191,10 +192,64 @@ class PricingScopeRegressions(unittest.TestCase):
         self.assertEqual(item["updated_boundaries"], ["current_year"])
         source = storage.load_source(self.store / "end_of_day/pricing/AAA", "AAA")
         self.assertEqual(source["history_correction_scope"], "selected_sessions")
+        positions = retained_insertions(source, generation, through="2026-11-05")
+        self.assertEqual(positions, {"current_year": dict.fromkeys(download.ADJUSTMENTS, [[3, "2026-10-02"]])})
+        self.assertIsNone(retained_insertions(source, "another-generation", through="2026-11-05"))
         all_rows = download.read_pricing_views(self.store, "AAA")["all"]
         self.assertEqual(
             [row[0][:10] for row in all_rows],
             ["2016-01-04", "2026-02-02", "2026-10-01", "2026-10-02", "2026-11-05"],
+        )
+
+    def test_inserted_coordinates_compose_across_a_second_insert_append_and_year_rollover(self):
+        request = {"asof": "2026-12-31", "end_exclusive": "2026-12-31T00:00:00Z"}
+        source = {"anchor_month": "2026-12", "latest_request": request}
+        later, earlier = "2026-12-21", "2026-12-16"
+        for generation, day in (("initial", later), ("first-insert", earlier)):
+            positions = {"current_month": dict.fromkeys(download.ADJUSTMENTS, [[2, day]])}
+            source["session_insertions"] = publication(
+                source,
+                generation,
+                request,
+                "2026-12",
+                {},
+                {"from": day, "to": day},
+                inserted=positions,
+                replacement=False,
+            )
+        expected = [[2, earlier], [3, later]]
+        self.assertEqual(retained_insertions(source, "initial", through=later)["current_month"]["raw"], expected)
+        new_request = {"asof": "2027-01-06", "end_exclusive": "2027-01-06T00:00:00Z"}
+        december = transform(
+            [bar(day) for day in ("2026-01-02", "2026-12-15", earlier, later)],
+            timestamp("2026-01-01T00:00:00Z"),
+            timestamp(new_request["end_exclusive"]),
+        )
+        additions = {"from": "2027-01-05", "to": "2027-01-05"}
+        closed = {"completed_years": dict.fromkeys(download.ADJUSTMENTS, december)}
+        after = publication(
+            source, "second-insert", new_request, "2027-01", closed, additions, inserted=None, replacement=False
+        )
+        rolled = {"session_insertions": after}
+        self.assertEqual(
+            retained_insertions(rolled, "initial", through="2027-01-04")["completed_years"]["raw"],
+            [[3, earlier], [4, later]],
+        )
+        self.assertIsNone(retained_insertions(rolled, "initial", through="2027-01-05"))
+        self.assertIsNone(
+            publication(
+                source,
+                "changed",
+                {**new_request, "asof": "2019-05-01"},
+                "2027-01",
+                closed,
+                additions,
+                inserted=None,
+                replacement=False,
+            )
+        )
+        self.assertIsNone(
+            publication(source, "replaced", request, "2026-12", {}, additions, inserted=None, replacement=True)
         )
 
     def test_selected_partition_interruption_recovers_without_reacquisition_or_old_reads(self):

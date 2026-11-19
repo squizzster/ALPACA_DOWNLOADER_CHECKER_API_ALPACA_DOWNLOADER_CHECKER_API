@@ -21,6 +21,7 @@ _FIELDS = (
     "by_id",
     "catalogue",
     "catalogue_assets",
+    "catalogue_uuid_conflicts",
     "exact_lookup_reasons",
     "catalogue_attempted",
     "catalogue_error",

@@ -594,5 +594,10 @@
     "modifications": [
       "Recognize a dated terminal predecessor episode or a closed same-label entry within a retained split-adjusted successor tape, using complete held assignment and raw trade evidence."
     ]
+  },
+  {
+    "modifications": [
+      "Scope retired symbol ownership to observed UUID evidence and refine containing components using completed current donor membership and same-issue alias observations."
+    ]
   }
 ]

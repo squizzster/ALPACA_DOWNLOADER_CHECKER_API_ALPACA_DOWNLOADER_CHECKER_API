@@ -35,6 +35,11 @@ def obligation(item, previous=None):
     prior_id = previous.get("obligation_id")
     same = prior_id and all(item.get(k) == previous.get(k) for k in keys)
     result = {**item, "obligation_id": prior_id if same else uuid4().hex}
+    if previous.get("retired_uuid_observation") and previous.get("status") != "complete":
+        # Group expansion can renew the workflow ID while the old label and
+        # its retained UUID observation still describe the very same request.
+        # The metadata owner checks cutoff, current label and UUID on use.
+        result["retired_uuid_observation"] = previous["retired_uuid_observation"]
     if previous.get("dependency_suffixes"):
         # A metadata refinement can renew the workflow ID while the same
         # dependency request remains unfinished. Transfer its exact pricing
@@ -162,6 +167,7 @@ def conditional_dependency(item):
             "changed_metadata",
             "changed_rules",
             "explicit_lineage_refresh",
+            "legacy_membership_overlap",
             "unfinished_dependency_suffix_selection",
         }
         and not any(
@@ -759,6 +765,12 @@ class WorkPolicy:
         group = set(sources) if group is None else set(group)
         self.check(group)
         observed = symbol_lookups(evidence)
+        retired = {
+            name: lookup["lookup"]
+            for name, facts in evidence.items()
+            for lookup in facts["asset_lookups"]
+            if lookup.get("lookup_kind") == "asset_id" and lookup.get("retained_symbol_lookup")
+        }
         lookups, changed, mapping = {}, set(), False
         for symbol in sorted(group):
             prior = self.work.get(symbol, {})
@@ -782,6 +794,13 @@ class WorkPolicy:
                     continue
                 changed.add(symbol)
                 before, after = old[label].get("asset") or {}, current.get("asset") or {}
+                if (
+                    label in retired
+                    and before.get("id") == retired[label]
+                    and current.get("outcome") == "not_found"
+                    and current.get("http_status") == 404
+                ):
+                    continue
                 mapping |= (before.get("id"), before.get("symbol")) != (after.get("id"), after.get("symbol"))
         updates = {}
         group_fingerprint = replacement_fingerprint(observed)

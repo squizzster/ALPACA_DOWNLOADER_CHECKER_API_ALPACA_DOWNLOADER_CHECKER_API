@@ -8,7 +8,7 @@ from libs.alpaca_lineage_build import storage as lineage
 from libs.common.debug_trace import span, traced
 from libs.common.work_scope import accept_expansion
 
-from . import export_inputs, storage, work
+from . import export_inputs, gap_adoption, storage, work
 from .contract import CatalogueError, policy, validate_version
 from .policy import evaluate
 
@@ -72,6 +72,8 @@ def preview(store, *, bootstrap=False, rebuild=False):
     else:
         try:
             pending = work.read(store)
+            if "state" in controls:
+                pending = pending.keys() | gap_adoption.select(store, controls).keys()
         except CatalogueError as error:
             blockers.append(str(error))
             pending = {}
@@ -188,6 +190,7 @@ def maintain(
         if (root / ".pending.json").exists():
             raise CatalogueError("lineage publication pending; resume its owner first")
         intentions, matching_groups = {}, {}
+        reviews = {}
         if not (bootstrap or rebuild):
             selected_state = (
                 controls["state"]
@@ -198,7 +201,14 @@ def maintain(
             # this read. An empty queue needs no membership reload or payloads.
             pending = work.read(store)
             intentions = export_inputs.pending_lineage(store)
-            if (not pending and not intentions) or scope == set():
+            if "gap_suffix_reviews" not in selected_state and scope is None:
+                if controls is None:
+                    controls = storage.controls(store)
+                reviews = gap_adoption.select(store, controls, publish=True)
+                selected_state = controls["state"]
+            else:
+                reviews = selected_state.get("gap_suffix_reviews", {})
+            if (not pending and not intentions and not reviews) or scope == set():
                 outstanding = export_inputs.pending_counts(store, scope)
                 return {
                     **result,
@@ -265,7 +275,7 @@ def maintain(
         )
         if rebuild:
             work.upgrade(store)
-        if rebuild and storage.path(store).exists() and not rebind_exports:
+        if rebuild and storage.path(store).exists():
             from .gaps import PROJECTION_VERSION, migrate_projections
 
             prior_controls = storage.controls(store, incomplete=True, old_policy=True)
@@ -274,16 +284,17 @@ def maintain(
                 for group in prior_controls["groups"].values()
             ):
                 migrated = migrate_projections(store, prior_controls, progress=progress)
-                outstanding = export_inputs.pending_counts(store)
-                return {
-                    **result,
-                    **migrated,
-                    "reused_groups": migrated["projection_groups"],
-                    "complete": migrated["catalogue_complete"] and not any(outstanding.values()),
-                    "operation": "projection_migration",
-                    "pending_symbols": sorted(work.read(store)),
-                    "pending_export_inputs": outstanding,
-                }
+                if not rebind_exports:
+                    outstanding = export_inputs.pending_counts(store)
+                    return {
+                        **result,
+                        **migrated,
+                        "reused_groups": migrated["projection_groups"],
+                        "complete": migrated["catalogue_complete"] and not any(outstanding.values()),
+                        "operation": "projection_migration",
+                        "pending_symbols": sorted(work.read(store)),
+                        "pending_export_inputs": outstanding,
+                    }
         # This accepted view remains pinned by the lineage worker and is passed
         # intact to selected-group readers below. Bootstrap updates this same
         # view after its explicit membership migration; steady state never scans
@@ -297,12 +308,15 @@ def maintain(
         if controls is None:
             controls = storage.controls(store, incomplete=True)
             pending = work.read(store)
+        if bootstrap or rebuild:
+            reviews = gap_adoption.select(store, controls, publish=True)
+        scheduled = set(pending) | reviews.keys()
         reader = StandaloneReader(store, wait=True, cache_bytes=64 * 1024 * 1024)
         selected = set()
-        for component in _components(entries, pending if scope is None else scope, controls):
-            if not component & pending.keys():
+        for component in _components(entries, scheduled if scope is None else scope, controls):
+            if not component & scheduled:
                 continue
-            accept_expansion(store, component, anchors=component & pending.keys(), authority="serving_component")
+            accept_expansion(store, component, anchors=component & scheduled, authority="serving_component")
             selected.update(component)
             previous = {controls["members"][n] for n in component if n in controls["members"]}
             groups, covered = [], set()
@@ -322,7 +336,8 @@ def maintain(
             try:
                 with ExitStack() as locks:
                     retained = set()
-                    handoffs = work.read_handoffs(store, {s: pending[s] for s in component if s in pending})
+                    targets = {s: pending[s] for s in component if s in pending}
+                    handoffs = work.read_handoffs(store, targets) if targets else ()
                     for key in sorted(previous):
                         prior = controls["groups"][key]
                         # This completed selector already proves the published
@@ -334,7 +349,7 @@ def maintain(
                         bound = not rebind_exports or export_bindings.get(key) == prior["decision_generation"]
                         if key not in matching_groups:
                             matching_groups[key] = _matches(prior, entries)
-                        if matching_groups[key] and bound:
+                        if matching_groups[key] and bound and key not in reviews:
                             retained.add(key)
                             covered.update(prior["references"]["lineage"])
                             result["reused_groups"] += 1
@@ -356,7 +371,7 @@ def maintain(
                                 ),
                                 None,
                             )
-                            if bound
+                            if bound and key not in reviews
                             else None
                         )
                         if handoff is not None:
@@ -372,6 +387,16 @@ def maintain(
                         if replaced
                         else {}
                     )
+                    if "gap_suffix_reviews" in controls["state"]:
+                        # The catalogue screen covers its own policy only. During
+                        # an explicit policy migration the selected group can still
+                        # reuse an identical held checkpoint through select_prefixes.
+                        prior_groups = {
+                            key: {**group, "_legacy_gap_starts": reviews.get(key, {})}
+                            if group["policy"] == controls["state"]["policy"]
+                            else group
+                            for key, group in prior_groups.items()
+                        }
                     for symbol in sorted(component & entries.keys()):
                         if symbol in covered:
                             continue
@@ -431,8 +456,8 @@ def maintain(
                         result["published_components"] += 1
                     # Commit is authoritative after interruption. Next invocation
                     # matches these input references and skips every calculation.
-                    targets = {s: pending[s] for s in component if s in pending}
-                    work.acknowledge(store, targets)
+                    if targets:
+                        work.acknowledge(store, targets)
                 if progress:
                     progress("serving_catalogue", {"state": "completed", "symbols": sorted(component)})
             except (RuntimeError, OSError, ValueError) as error:
@@ -451,8 +476,8 @@ def maintain(
             finally:
                 details.update({key: result[key] - before[key] for key in before})
                 tracing.close()
-        remaining = work.read(store)
-        result["pending_symbols"] = sorted(remaining.keys() & selected if scope is not None else remaining)
+        remaining = work.read(store).keys() | controls["state"].get("gap_suffix_reviews", {}).keys()
+        result["pending_symbols"] = sorted(remaining & selected if scope is not None else remaining)
         result["pending_export_inputs"] = export_inputs.pending_counts(store, scope)
         if (
             not result["pending_symbols"]
@@ -468,18 +493,19 @@ def maintain(
     return result
 
 
-def status(store, *, controls=None, pending=None):
+def status(store, *, controls=None, pending=None, adopt_gap_suffixes=False):
     store = Path(store).absolute()
     controls = storage.controls(store, incomplete=True) if controls is None else controls
     pending = work.read(store) if pending is None else pending
     groups = controls["groups"]
+    reviews = gap_adoption.select(store, controls, publish=adopt_gap_suffixes)
     return {
         "generation": controls["state"]["generation"],
         "coverage_complete": controls["state"]["complete"],
         "groups": len(groups),
         "online_identities": sum(g["online_identities"] for g in groups.values()),
         "ineligible_identities": sum(g["ineligible_identities"] for g in groups.values()),
-        "pending_symbols": sorted(pending),
+        "pending_symbols": sorted(set(pending) | reviews.keys()),
         "offline_reviews": [
             {"group": key, **group["offline_ownership"]}
             for key, group in sorted(groups.items())

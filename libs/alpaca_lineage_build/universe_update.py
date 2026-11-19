@@ -402,7 +402,12 @@ def _prepare_locked(
                 ],
             }
     accepted = universe_plan.boundaries(
-        store, registry, context=context, coalesce_late_bars=coalesce_late_bars, pending_serving=pending_serving
+        store,
+        registry,
+        context=context,
+        coalesce_late_bars=coalesce_late_bars,
+        pending_serving=pending_serving,
+        publish_membership_screens=True,
     )
     metadata_before = identity_client.request_count
     if progress:
@@ -695,7 +700,9 @@ def histories_locked(
             or item["invalidate_pricing"]
             or item["refresh_metadata"]
             or symbol in accepted["checks"]["checks"]
-            or "changed_rules" in item.get("reasons", ())
+            or {"changed_rules", "retired_uuid_resolution", "legacy_membership_overlap"}.intersection(
+                item.get("reasons", ())
+            )
         )
     }
     lineage_results = []

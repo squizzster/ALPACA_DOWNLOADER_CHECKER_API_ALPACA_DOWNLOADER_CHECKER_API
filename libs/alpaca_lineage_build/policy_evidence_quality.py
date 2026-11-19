@@ -428,13 +428,13 @@ def _rebuild_document(
         for lookup in lookups
         if isinstance(lookup, dict)
         and (
-            lookup.get("lookup_kind") == "symbol"
+            lookup.get("lookup_kind") in {"symbol", "asset_id"}
             or lookup.get("lookup_kind") == "cusip"
             and lookup.get("lookup") in referenced_cusips
         )
     ]
     if any(
-        not isinstance(lookup, dict) or lookup.get("lookup_kind") not in {"symbol", "cusip"}
+        not isinstance(lookup, dict) or lookup.get("lookup_kind") not in {"symbol", "cusip", "asset_id"}
         for lookup in lookups
     ):
         raise CorrelationPolicyError("candidate evidence projection found an unsupported lookup kind")
@@ -452,7 +452,7 @@ def _rebuild_document(
         )
         kind = lookup["lookup_kind"]
         identifier = lookup.get("lookup")
-        if isinstance(identifier, str):
+        if isinstance(identifier, str) and kind in {"symbol", "cusip"}:
             identity[f"lookup_{kind}s"].add(identifier)
             if kind == "cusip":
                 asset_id_by_cusip[identifier] = asset_id

@@ -3,12 +3,20 @@
 from .contract import policy
 
 
-def _applicable_dates(group, source, generation, dates):
+def applicable_dates(group, source, previous, dates, *, inserted_sessions=None):
     """A real generation change invalidates only its affected dated suffix."""
     ordered = sorted(dates)
-    previous = {"pricing_generation": generation}
     if group.preserves_pricing_prefix(source, previous, through=ordered[-1]):
         return set(ordered)
+    if hasattr(group, "retained_pricing_insertions"):
+        inserted = group.retained_pricing_insertions(source, previous, through=ordered[-1])
+        if inserted is not None:
+            changed = {day for views in inserted.values() for rows in views.values() for _, day in rows}
+            if inserted_sessions is not None:
+                # Selected-session pricing acquired a complete bundle and
+                # merged every view, including any previously present raw row.
+                inserted_sessions.update(dates.intersection(changed))
+            return set(ordered) - changed
     if len(ordered) == 1 or not group.preserves_pricing_prefix(source, previous, through=ordered[0]):
         return set()
     left, right = 0, len(ordered) - 1
@@ -80,7 +88,7 @@ def accepted_dates(group, previous, inputs, *, public_id=None, sessions=None):
                     for field in ("pricing_generations", "previous_pricing_generations"):
                         scopes.setdefault((source, frame[field][source]), set()).add(day)
         applicable = {
-            key: _applicable_dates(group, key[0], key[1], dates)
+            key: applicable_dates(group, key[0], {"pricing_generation": key[1]}, dates)
             for key, dates in scopes.items()
             if key[0] in inputs
         }

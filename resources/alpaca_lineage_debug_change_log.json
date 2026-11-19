@@ -117,5 +117,20 @@
     "modifications": [
       "Preserve completed diagnostic report bindings across the workflow recovery change."
     ]
+  },
+  {
+    "modifications": [
+      "Replay v94 retired-label and component rules alongside frozen v93 controls under their recorded policy bindings."
+    ]
+  },
+  {
+    "modifications": [
+      "Reuse completed diagnostic comparisons across the same-cutoff membership scheduling and serving gap repairs under their original input bindings."
+    ]
+  },
+  {
+    "modifications": [
+      "Keep completed comparisons applicable across the selected-session pricing handoff and partial serving publication under the original lineage and policy bindings."
+    ]
   }
 ]

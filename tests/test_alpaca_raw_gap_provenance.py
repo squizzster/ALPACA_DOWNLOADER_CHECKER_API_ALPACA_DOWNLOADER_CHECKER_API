@@ -4,7 +4,7 @@ import copy
 import json
 import unittest
 from contextlib import closing
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_alpaca_end_of_day_api as native
 import test_alpaca_serving_incremental as incremental
@@ -14,12 +14,53 @@ from test_alpaca_pricing_download import FakeClient
 from alpaca_end_of_day import StandaloneReader
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download.download import download_pricing
-from libs.alpaca_serving_catalogue import producer, storage, work
+from libs.alpaca_serving_catalogue import gaps, producer, storage, work
 from libs.alpaca_serving_catalogue.contract import CatalogueError
 from libs.common.sqlite_connections import connect_sqlite
 
 
 class RawGapProvenanceTests(unittest.TestCase):
+    def test_completed_inserted_bundle_owns_raw_presence_even_when_lineage_does_not_assign_it(self):
+        day = "2026-10-06"
+        previous = {
+            "history_validation": {
+                "inputs": {"OLD": {"pricing_generation": "before"}},
+                "prefix_records": [{"missing_sessions": [day], "source_sessions_in_gaps": [day]}],
+            }
+        }
+        current = {"OLD": {"pricing_generation": "after"}}
+        snapshot = Mock()
+        snapshot.preserves_pricing_prefix.return_value = False
+        # Raw already matched at pricing publication. The adjusted view was
+        # the only physical insertion in this completed selected bundle.
+        snapshot.retained_pricing_insertions.return_value = {"current_month": {"all": [[2, day]]}}
+        snapshot._selected_gap_presence.side_effect = AssertionError("accepted source day checked again")
+        snapshot.source_raw_presence.side_effect = AssertionError("accepted raw row reopened")
+        held = {}
+        self.assertEqual(gaps.refresh_presence(snapshot, [previous], current, {day}, held), {day})
+        self.assertEqual(held, {"OLD": {day: True}})
+        completed = {
+            "decisions": [
+                {
+                    "public_id": "history",
+                    "eligible": True,
+                    "reasons": [],
+                    "explained_missing_sessions": [],
+                    "publication_start_after_missing_session": day,
+                }
+            ],
+            "references": {"pricing": {"OLD": "after"}},
+            "history_validation": {
+                "identities": {"history": {"raw": {"version": 2, "sources": ["OLD"]}}},
+                "prefix_records": [{"public_id": "history", "missing_sessions": [day]}],
+            },
+        }
+        # The cold path can consume the same durable pricing evidence when no
+        # operation-local observations are available.
+        gaps.complete_presence(snapshot, completed, [previous])
+        self.assertEqual(completed["history_validation"]["raw_gap_presence"]["OLD"]["present_sessions"], [day])
+        self.assertEqual(storage._late_bar_projection([completed])["sources"], {})
+
     def test_present_unassigned_raw_is_not_scheduled_again_in_multi_identity_group(self):
         case = incremental.IncrementalServingTests()
         case.setUp()

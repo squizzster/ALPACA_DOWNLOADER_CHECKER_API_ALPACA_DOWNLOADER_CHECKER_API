@@ -41,12 +41,25 @@ def possible(names, evidence):
     if len(names) < 2:
         return False
     if len(names) == 2:
-        return any(
+        actions = [action for facts in evidence.values() for action in facts.get("corporate_actions", ())]
+        if not any(
             action.get("symbol") in names
             and (action.get("ex_date") or action.get("effective_date") or action.get("process_date"))
-            for facts in evidence.values()
-            for action in facts.get("corporate_actions", ())
-        )
+            for action in actions
+        ):
+            return False
+        # In a pair, the dated-label producer uses a rename only for a round
+        # trip. A one-way rename cannot change labels even after a UUID join.
+        edges = {
+            (action["old_symbol"], action["new_symbol"])
+            for action in actions
+            if action.get("action_type") == "name_change"
+            and action.get("old_symbol")
+            and action.get("new_symbol")
+            and action["old_symbol"] != action["new_symbol"]
+        }
+        left, right = names
+        return not edges or ((left, right) in edges and (right, left) in edges)
     return any(
         action.get("action_type") == "name_change"
         and action.get("old_symbol") in names

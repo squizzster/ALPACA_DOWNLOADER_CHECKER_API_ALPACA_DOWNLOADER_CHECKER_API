@@ -564,15 +564,42 @@ or treating a missing handoff as permission to reconstruct accepted history. Ind
 continues. A new generic assessment may connect reasonably supported ownership or complete ownerless lineage;
 its reasons, evidence limits and competing interpretations remain recorded.
 
-The optional `accepted_same_security_containing_component_v1` membership producer consumes completed
-same-security rename evidence, a containing accepted component and certified extension edges. It remains
-disabled when `producers.membership_refinement` is null. Mere UUID containment does not authorize a join;
-missing legacy edge metadata preserves existing assignments without a provider or rebuild fallback.
-[Membership updates](../libs/alpaca_lineage_build/membership_updates.py) can also consume an explicitly supplied
-completed plan under the same store, complete group, pricing generations and changed-source/donor receipt
-generations. It applies the recorded positions without repeating the route or UUID-edge proof. This is an
-internal operation-context handoff, not a CLI plan-import option. Its completed values cross stage JSON;
-only actually changed membership intervals and their new numerical overlap reopen selection.
+The optional `accepted_same_security_containing_component_v1` producer starts from an accepted predecessor
+assignment. Within the same current component it compares that assignment with the donor's completed
+membership, directed split edges, dated UUID, CUSIP and sessions. A same-UUID, same-CUSIP label change can
+support the dated route. Distinct competing transitions and conflicting dated owners retain their
+dispositions. Coverage can span several assignment runs. A hole limits the transfer to the supported
+positions. Newly joined numerical contests select one source across adjustment views. Unrelated
+assignments and applicable numerical selections carry forward.
+
+A fresh correlation report lends its completed edges to membership refinement and publication. For an
+already selected legacy group with unchanged inputs and containing memberships, the owner can recover
+missing split and same-UUID alias edges from retained provider metadata. A donor that requires historical
+continuity evidence uses explicit complete-group retained recovery. At an unchanged cutoff, ordinary
+update can select a group with applicable pre-v94 decisions when two published identities have overlapping
+dates under the same ticker.
+The planner examines dated label ranges for legacy groups with multiple sources and identities, including
+accepted ranges held by an ineligible identity. The compact lineage index retains the screening result.
+The overlap selects the complete group for assessment. Its lineage producer decides ownership using the
+dated source evidence and records completion for the applicable group. Each source keeps its accepted
+coverage cutoff unless pricing has a separate obligation to advance it.
+[Membership updates](../libs/alpaca_lineage_build/membership_updates.py) can also consume a completed
+internal plan under its store, component, pricing, metadata and assignment bindings. The plan carries its
+selected donor identity and exact positions through stage transport. Completed negative decisions bind all
+selected receipt generations, including potential competing owners, and the metadata used for fresh
+correlation. A changed binding selects new owner work. A one-way label transition between two sources does not select the round-trip label rule.
+Setting `producers.membership_refinement` to null disables the membership producer.
+
+An exact 404 for a source's own label and its retained last positive UUID select a metadata assessment.
+The metadata producer uses the held UUID catalogue or exact observation first and requests the UUID only
+when required. New conflicts in the catalogue select one exact UUID lookup. Reordering the same conflicting
+entries preserves that completed result. The old-label 404 and the current spelling remain separate
+observations. Completed UUID
+responses for unfinished update work survive interruption. The compact lineage projection lets an ordinary
+update select an outstanding retirement or changed UUID observation without opening receipts. The
+correlation owner uses the prior observation date, source mapping, dated claims and competing owners to
+determine the supported sessions. The UUID observation supplies no effective rename date. Missing identity
+evidence can yield completed ownerless history. A failed provider request retains its workflow obligation.
 
 
 Closed source-work and publication mechanics remain separate from fresh inference. Applicable accepted owners
@@ -812,8 +839,10 @@ work; requesting a fresh description is not itself a request to recalculate hist
 
 Validate each new session grid and its accepted seam, then send only added rows from every group member through
 the same compiled policy evaluator. An empty accepted prefix has no seam; the pricing producer validates its first
-rows. No new rows means no ownership or numerical rule execution. A separately uncompleted dated-label collision can still select its metadata-only producer. Closed pricing/assignment payloads stay closed except for assignment
-bodies needed to regroup publication at month/year rollover or project an older receipt without a summary. The
+rows. An empty append with applicable ownership and numerical decisions skips both evaluations. A newly
+supported membership or retired-label identity selects just its affected assignments and any newly joined
+numerical contest. An uncompleted dated-label collision can select its metadata-only producer. An ordinary
+rollover or an older receipt without a summary can require retained assignment bodies for publication. The
 active pricing partition supplies the added rows. A completed unresolved or incomplete prior row partition is
 explicitly conditional on later group facts: new rows in that group select complete-group work until an owning
 producer can certify a narrower affected interval. Resolved completed assignments remain closed.

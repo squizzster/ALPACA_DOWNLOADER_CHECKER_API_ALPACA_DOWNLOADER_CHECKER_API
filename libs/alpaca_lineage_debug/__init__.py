@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 23
+VERSION = 26
 SCHEMA_VERSION = 1
 
 
@@ -23,6 +23,24 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (26, 27, 100, 123):
+        # Pricing insertions and the public range change neither recorded
+        # lineage comparisons nor their input-generation and policy bindings.
+        binding = {**binding, "debug": 25, "lineage_runtime": 122}
+        bindings.append(binding)
+        current = (25, 27, 100, 122)
+    if allow_previous and current == (25, 27, 100, 122):
+        # Update scheduling and serving changed. Selected lineage comparisons
+        # still have the same policy, evidence and input-generation contracts.
+        binding = {**binding, "debug": 24, "lineage_runtime": 121}
+        bindings.append(binding)
+        current = (24, 27, 100, 121)
+    if allow_previous and current == (24, 27, 100, 121):
+        # Frozen reports keep their original policy bindings. The caller
+        # checks both policies and the selected generations before reuse.
+        binding = {**binding, "debug": 23, "policy_lab": 26, "correlation_runtime": 99, "lineage_runtime": 120}
+        bindings.append(binding)
+        current = (23, 26, 99, 120)
     if allow_previous and current == (23, 26, 99, 120):
         # Workflow retry scope does not change completed diagnostic calculations.
         bindings.append({**binding, "debug": 22, "lineage_runtime": 119})

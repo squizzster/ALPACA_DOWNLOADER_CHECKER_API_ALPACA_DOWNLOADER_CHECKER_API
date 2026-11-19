@@ -26,7 +26,9 @@ def last_observed_symbol_lookup(receipt):
         if asset.get("symbol") == receipt["symbol"] and asset.get("class") == "us_equity":
             return {
                 **lookups[0],
-                "catalogue_observed_at_utc": receipt["evidence"].get("catalogue_observed_at_utc"),
+                "catalogue_observed_at_utc": lookups[0].get(
+                    "observed_at_utc", receipt["evidence"].get("catalogue_observed_at_utc")
+                ),
             }
     return receipt.get("last_observed_symbol_lookup")
 
@@ -38,6 +40,9 @@ def project_receipt(receipt):
     evidence = [receipt["evidence"]]
     evidence.extend(
         item["evidence"] for item in receipt.get("unavailable_pricing", {}).values() if "evidence" in item
+    )
+    retired = next(
+        (item for item in receipt["evidence"]["asset_lookups"] if item.get("lookup_kind") == "asset_id"), None
     )
     return {
         "schema_version": PROJECTION_VERSION,
@@ -71,6 +76,18 @@ def project_receipt(receipt):
         "history_correction_id": receipt.get("history_correction_id"),
         "assignment_handoffs_complete": assignment_handoffs_complete(receipt),
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),
+        **(
+            {
+                "retired_uuid_assessed": True,
+                "retired_uuid_lookup": {
+                    key: retired[key]
+                    for key in ("lookup", "outcome", "http_status", "asset", "catalogue_conflict")
+                    if key in retired
+                },
+            }
+            if retired is not None
+            else {}
+        ),
         "sourced_fact_applications": receipt["evidence"].get("sourced_fact_applications", {}),
         "membership_transfers_complete": receipt.get("membership_transfer_handoff_version") == 1,
         "has_membership_rebind": bool(receipt.get("membership_only_rebind")),

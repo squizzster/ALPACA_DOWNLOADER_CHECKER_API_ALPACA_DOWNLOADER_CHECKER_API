@@ -436,7 +436,6 @@ def select_scopes(reports, closed_reports):
 def counterpart(store, control, report, scopes, cache):
     """Assemble only named counterpart observations; never execute its rules."""
     source, prior = control.source, control.previous
-    root = store / "end_of_day/pricing" / control.symbol
     selected, positions = {name: [] for name in ADJUSTMENTS}, {name: [] for name in ADJUSTMENTS}
     dates = {name: {} for name in ADJUSTMENTS}
     kinds = set()
@@ -451,13 +450,7 @@ def counterpart(store, control, report, scopes, cache):
     for kind in ("completed_years", "current_year", "current_month"):
         if kind not in kinds:
             continue
-        key = str(root), kind, source["boundaries"][kind]["sha256"]
-        if key not in cache:
-            cache[key] = load_published_boundary(root, source, kind, selected=True)
-        from .recovery_handoffs import remember_partition
-
-        remember_partition(store, control.symbol, kind, key[-1], cache[key])
-        for adjustment, rows in cache[key].items():
+        for adjustment, rows in counterpart_partition(store, control, kind, cache).items():
             offset = prior["serving_ownership"]["offsets"][adjustment][kind]
             for index, row in enumerate(rows):
                 day = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
@@ -505,6 +498,40 @@ def selection_changes(report, rows, positions):
     return result
 
 
+def counterpart_partition(store, control, kind, cache):
+    """Lend a selected pricing partition across membership and numerical assembly."""
+    source = control.source
+    root = store / "end_of_day/pricing" / control.symbol
+    from .recovery_handoffs import recall, remember_partition
+
+    key = str(root), kind, source["boundaries"][kind]["sha256"]
+    document_key = "numerical_counterpart_document", *key
+    if key not in cache:
+        held = recall(store, "pricing_partition", (control.symbol, kind, key[-1]))
+        if held is not None:
+            cache[key] = held
+        else:
+            documents = {}
+            raw = cache.get(("selected_raw", *key))
+            cache[key] = load_published_boundary(
+                root,
+                source,
+                kind,
+                selected=True,
+                documents=documents,
+                **({"raw_rows": raw[0], "accepted_document": raw[1]} if raw is not None else {}),
+            )
+            document = documents.get(source["boundaries"][kind]["manifest"])
+            if document is None:
+                raise LineageError("materialized numerical counterpart lacks its publication document")
+            cache[document_key] = document
+            cache.pop(("selected_raw", *key), None)
+    cache[key] = remember_partition(
+        store, control.symbol, kind, key[-1], cache[key], document=cache.get(document_key)
+    )
+    return cache[key]
+
+
 def counterpart_positions(store, control, report, intervals, cache):
     """Materialize admitted boundary-local positions without a date search.
 
@@ -515,8 +542,7 @@ def counterpart_positions(store, control, report, intervals, cache):
     """
     from .numerical_completion import NumericalInput
 
-    source, previous = control.source, control.previous
-    root = store / "end_of_day/pricing" / control.symbol
+    previous = control.previous
     offsets = previous["serving_ownership"]["offsets"]
     requested = {}
     for interval in intervals:
@@ -538,35 +564,6 @@ def counterpart_positions(store, control, report, intervals, cache):
     dates = {name: {} for name in ADJUSTMENTS}
     kinds = {name: {} for name in ADJUSTMENTS}
     instants = {}
-    remembered = set()
-
-    def partition(kind):
-        from .recovery_handoffs import recall, remember, remember_partition
-
-        key = str(root), kind, source["boundaries"][kind]["sha256"]
-        document_key = "numerical_counterpart_document", *key
-        if key not in cache:
-            held = recall(store, "pricing_partition", (control.symbol, kind, key[-1]))
-            if held is not None:
-                cache[key] = held
-            else:
-                documents = {}
-                cache[key] = load_published_boundary(root, source, kind, selected=True, documents=documents)
-                document = documents.get(source["boundaries"][kind]["manifest"])
-                if document is None:
-                    raise LineageError("materialized numerical counterpart lacks its publication document")
-                cache[document_key] = document
-        if key not in remembered:
-            cache[key] = remember_partition(store, control.symbol, kind, key[-1], cache[key])
-            if document_key in cache:
-                remember(
-                    store,
-                    "pricing_partition_document",
-                    (control.symbol, kind, key[-1]),
-                    cache[document_key],
-                )
-            remembered.add(key)
-        return cache[key]
 
     def date_of(row):
         stamp = row[0]
@@ -582,7 +579,7 @@ def counterpart_positions(store, control, report, intervals, cache):
     for kind in ("completed_years", "current_year", "current_month"):
         if not any(key[0] == kind for key in requested):
             continue
-        views = partition(kind)
+        views = counterpart_partition(store, control, kind, cache)
         for adjustment in ADJUSTMENTS:
             ranges = requested.get((kind, adjustment), ())
             if not ranges:
@@ -636,7 +633,7 @@ def counterpart_positions(store, control, report, intervals, cache):
                         dates[adjustment][adjacent] = _dates(segment)[1], segment["last_timestamp"]
                     else:
                         kind = kinds[adjustment][selected_position]
-                        rows = partition(kind)[adjustment]
+                        rows = counterpart_partition(store, control, kind, cache)[adjustment]
                         index = adjacent - offsets[adjustment][kind] - 1
                         key = "numerical_counterpart_endpoint", id(rows), index
                         if key not in cache:
@@ -665,7 +662,7 @@ def counterpart_positions(store, control, report, intervals, cache):
     }
     return (
         NumericalInput(
-            source=source,
+            source=control.source,
             source_sha256=control.source_sha256,
             views=selected,
             instant_keys=instants,

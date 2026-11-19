@@ -453,6 +453,44 @@ def refresh_index(root, index=None):
     return read_index(root)
 
 
+def publish_membership_screens(root, index, updates):
+    """Persist compact scheduling outcomes without publishing or invalidating accepted histories."""
+    from .retained_membership import FIELD
+
+    with (
+        publication_lock(root, exclusive=True),
+        closing(connect_sqlite(path_at(root, "index.sqlite3"))) as db,
+        db,
+    ):
+        db.execute("BEGIN IMMEDIATE")
+        previous = _projection_state(db)
+        if previous != index["projection_state"]:
+            # Across a real lock gap only the selected group generations govern
+            # this assessment. Never stamp a changed peer's former disposition.
+            expected = {s: g for item in updates.values() for s, g in item["lineage"].items()}
+            current = {
+                s: (generation, json.loads(marker) if marker else None)
+                for s, generation, marker in db.execute(
+                    f"SELECT symbol,json_extract(receipt,'$.sha256'),json_extract(receipt,'$.{FIELD}') FROM symbols "
+                    "WHERE symbol IN (SELECT value FROM json_each(?))",
+                    (json.dumps(sorted(expected)),),
+                )
+            }
+            if any(current.get(s, (None,))[0] != g for s, g in expected.items()) or any(
+                current[s][1] != index["symbols"][s].get(FIELD) for s in updates
+            ):
+                raise LineageError("selected lineage changed during legacy membership assessment")
+        db.executemany(
+            f"UPDATE symbols SET receipt=json_set(receipt, '$.{FIELD}', json(?)) WHERE symbol=?",
+            [(json.dumps(item), name) for name, item in updates.items()],
+        )
+        db.execute("UPDATE projection_state SET revision=revision+1 WHERE id=1")
+    for name, item in updates.items():
+        index["symbols"][name][FIELD] = item
+    if index["projection_state"] == previous:
+        index["projection_state"] = {**previous, "revision": previous["revision"] + 1}
+
+
 def _update_index(root: Path, entries: dict, *, projection_complete=False, serving_handoff=None) -> dict:
     # One tiny indexed row per ticker, not a full-universe JSON rewrite on each
     # update. The chronological JSON boundaries remain the authoritative outputs.
@@ -835,6 +873,7 @@ def publish(
     selection_inputs=None,
     continued=False,
     full_materialization=False,
+    expanded_prefixes=(),
     completed_overlap=None,
     completed_occupation=None,
 ) -> None:
@@ -1104,20 +1143,21 @@ def publish(
         from .dated_price_publication import TOKENS as DATED_TOKENS
         from .dated_price_publication import retain
 
+        source_continued = continued and symbol not in expanded_prefixes
         if old and old.get(occupation_storage.FIELD):
-            occupation_storage.carry(old, receipt, continued=continued)
+            occupation_storage.carry(old, receipt, continued=source_continued)
         if completed_occupation is not None:
             receipt[occupation_storage.FIELD] = {
                 **receipt.get(occupation_storage.FIELD, {}),
                 item["public_id"]: item,
             }
-        price_basis_limits.retain(old, receipt, continued=continued)
-        historical_labels.retain(old, receipt, continued=continued)
+        price_basis_limits.retain(old, receipt, continued=source_continued)
+        historical_labels.retain(old, receipt, continued=source_continued)
         retain(
             old,
             receipt,
-            continued=continued,
-            full_materialization=full_materialization,
+            continued=source_continued,
+            full_materialization=full_materialization or symbol in expanded_prefixes,
             source=(sources or {}).get(symbol),
         )
         if completed_overlap is not None:
@@ -1127,7 +1167,7 @@ def publish(
         if (
             old
             and old.get("provider_split_relations")
-            and (continued or old["boundaries"] == receipt["boundaries"])
+            and (source_continued or old["boundaries"] == receipt["boundaries"])
         ):
             receipt.setdefault("provider_split_relations", old["provider_split_relations"])
         updated[symbol] = {

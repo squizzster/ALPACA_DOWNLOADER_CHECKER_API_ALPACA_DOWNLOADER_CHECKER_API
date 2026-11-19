@@ -504,6 +504,7 @@ def _compile_schema_four(
         (90, 37),
         (91, 37),
         (92, 37),
+        (93, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -640,6 +641,7 @@ def _compile_schema_four(
                 (90, 37),
                 (91, 37),
                 (92, 37),
+                (93, 37),
                 (CORRELATION_VERSION, LINEAGE_VERSION),
             }
             else "published_reference"
@@ -784,6 +786,10 @@ def _compile_schema_four(
             },
         },
     }
+    if correlation_version >= 94:
+        semantic["execution"]["established_fixed_point"]["retired_label_observation"] = (
+            "retained_own_label_and_current_uuid_v1"
+        )
     if fallback_profile == CORRECTED_PROFILE:
         semantic.update(
             fact_producers=[*evidence_fact_producers, *active_suffix_fact_producers],

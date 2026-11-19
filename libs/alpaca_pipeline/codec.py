@@ -19,6 +19,7 @@ from libs.alpaca_lineage_build.assignment_handoff import AcceptedObservationChoi
 from libs.alpaca_lineage_build.context import HistoryScope
 from libs.alpaca_lineage_build.correlation_policy import CompiledPolicy
 from libs.alpaca_lineage_build.market_assignments import CompletedMarketProjection
+from libs.alpaca_lineage_build.membership_prices import MembershipRows
 from libs.alpaca_lineage_build.numerical_completion import NumericalCompletion, NumericalInput
 from libs.alpaca_lineage_build.numerical_mapping import AcceptedAssessments, PendingNumericalWork
 from libs.alpaca_lineage_build.numerical_recovery import NumericalRecoveryGroup, NumericalRecoverySelection
@@ -96,6 +97,7 @@ DATACLASSES = {
         RetainedChoices,
         ChoiceRun,
         CompletedMarketProjection,
+        MembershipRows,
         UuidLineageEdge,
     )
 }

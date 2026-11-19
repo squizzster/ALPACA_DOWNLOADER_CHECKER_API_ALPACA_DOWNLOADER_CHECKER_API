@@ -347,6 +347,19 @@ def accept_dependency_suffixes(store, updates, *, batch=None):
             raise LineageError(f"{owner}: dependency suffix selection belongs to superseded work")
 
 
+def accept_retired_uuid(store, symbol, obligation_id, observation):
+    """Checkpoint the metadata owner's selected UUID before group discovery or publication."""
+    with outcome_batch(store) as batch:
+        connection = batch.require_active(store)
+        changed = connection.execute(
+            "UPDATE work SET body=json_set(body,'$.retired_uuid_observation',json(?)) WHERE symbol=? "
+            "AND json_extract(body,'$.obligation_id')=? AND json_extract(body,'$.status')!='complete'",
+            (json.dumps(observation), symbol, obligation_id),
+        ).rowcount
+        if changed != 1:
+            raise LineageError(f"{symbol}: retired UUID observation belongs to superseded work")
+
+
 @traced("correction_completion_accept")
 def accept_correction_completion(store, symbol, expected, completed):
     """A producer outcome cannot acknowledge a concurrently renewed requirement."""
@@ -473,6 +486,7 @@ def record_outcome(store, symbol, *, status, outcome, attempts=0, batch=None, ex
         finished_at_utc=now_utc(),
     )
     if status == "complete":
+        value.pop("retired_uuid_observation", None)
         released = value.pop("dependency_suffixes", {})
         batch.completed.add(symbol)
         if released:

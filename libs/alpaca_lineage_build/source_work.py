@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from libs.alpaca_end_of_day_security_correlation import security_relations
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.alpaca_security_lineage.inference_evidence import provider_evidence, reject_assertions
 
 from . import source_observations, storage
@@ -18,7 +18,7 @@ from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_dige
 from .numerical_mapping import PendingNumericalWork
 from .observation_carry import membership_choices
 from .pricing import ClosedAcceptedSource
-from .resume import _evidence_facts, continuing_request, unchanged_rows
+from .resume import _evidence_facts, continuing_request, preserves_retired_prefix, unchanged_rows
 from .source_work_contract import SourceWorkPlan, require_generic_plan
 from .source_work_contract import binding_applies as _binding_applies
 
@@ -81,8 +81,15 @@ def _accepted_owners_apply(previous, after, *, scope=None, prior_evidence=None):
     the prior source/owner scope, never the newly joined membership component.
     Pricing generation and effective mapping are checked by the caller.
     """
+    if preserves_retired_prefix(previous, after):
+        return True
     left = _provider_facts(previous["evidence"] if prior_evidence is None else prior_evidence)
     right = _provider_facts(after)
+    if previous.get("unresolved_rows") and any(
+        item.get("lookup_kind") == "asset_id" and item.get("asset") and item not in left.get("asset_lookups", ())
+        for item in right.get("asset_lookups", ())
+    ):
+        return False
     owner_ids, labels = _accepted_owner_scope(previous) if scope is None else scope
     cusips = {
         item["lookup"]
@@ -165,8 +172,54 @@ def _accepted_owners_apply(previous, after, *, scope=None, prior_evidence=None):
     return left == right
 
 
+def _membership_sessions(controls, cache):
+    """Read only selected assignment positions whose interior dates are needed."""
+    sessions, days, boundaries = {}, {}, {}
+    parts = cache.setdefault("counterpart_partitions", {})
+
+    def read(name, segment):
+        first, last = segment["row_start"], segment["row_end"]
+        ends = (
+            (segment["first_session_date"], segment["first_timestamp"]),
+            (segment["last_session_date"], segment["last_timestamp"]),
+        )
+        if first == last:
+            return ends[:1]
+        if last == first + 1:
+            return ends
+        control = controls[name]
+        adjustment = segment["adjustment"]
+        first_day = ends[0][0]
+        anchor = control.previous["anchor_month"]
+        kind = (
+            "completed_years"
+            if first_day[:4] < anchor[:4]
+            else "current_year"
+            if first_day[:7] < anchor
+            else "current_month"
+        )
+        offset = control.previous["serving_ownership"]["offsets"][adjustment][kind]
+        if (name, kind) not in boundaries:
+            boundaries[name, kind] = source_observations.counterpart_partition(
+                Path(control.store), control, kind, parts
+            )
+        rows = boundaries[name, kind][adjustment]
+        key = id(rows), first - offset, last - offset
+        if key not in sessions:
+            positions = []
+            for row in rows[first - offset - 1 : last - offset]:
+                stamp = row[0]
+                if stamp not in days:
+                    days[stamp] = timestamp(stamp).astimezone(NEW_YORK).date().isoformat()
+                positions.append((days[stamp], stamp))
+            sessions[key] = tuple(positions)
+        return sessions[key]
+
+    return read
+
+
 def prepare_group_evidence_and_source_work(
-    controls, evidence, auxiliary, *, cache, ruleset=None, accepted_membership_plan=None
+    controls, evidence, auxiliary, *, cache, ruleset=None, accepted_membership_plan=None, legacy_pairs=None
 ):
     """Select ordinary source work and any explicitly enabled scoped refinement."""
     plan = _prepare_group_evidence_and_source_work(controls, evidence, auxiliary, cache=cache)
@@ -192,8 +245,31 @@ def prepare_group_evidence_and_source_work(
             }
         return report
 
+    def recover_edges(report, name):
+        from .retained_membership import donor_edges
+
+        control = controls[name]
+        edges = donor_edges(
+            evidence[name],
+            name,
+            cache,
+            receipt_generation=control.previous_receipt_generation,
+            accepted_issues=control.previous["evidence_issues"],
+        )
+        return {**report, "uuid_lineage_edges": edges}
+
     return prepare(
-        controls, evidence, auxiliary, plan, ruleset, cache, report_loader, completed=accepted_membership_plan
+        controls,
+        evidence,
+        auxiliary,
+        plan,
+        ruleset,
+        cache,
+        report_loader,
+        completed=accepted_membership_plan,
+        pairs=legacy_pairs,
+        recover_edges=recover_edges if legacy_pairs else None,
+        session_reader=_membership_sessions(controls, cache),
     )
 
 

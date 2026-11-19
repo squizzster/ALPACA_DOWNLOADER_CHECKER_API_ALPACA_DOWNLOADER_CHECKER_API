@@ -63,5 +63,10 @@
     "modifications": [
       "Carry operation-local dependency suffix decisions with their selected workflow through the stage adapter."
     ]
+  },
+  {
+    "modifications": [
+      "Carry selected membership price rows, retained positions and completed catalogue UUID conflict observations through stage handoffs."
+    ]
   }
 ]

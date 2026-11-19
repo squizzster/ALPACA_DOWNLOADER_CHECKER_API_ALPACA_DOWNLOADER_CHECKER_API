@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from datetime import date, timedelta
+from uuid import UUID
 
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.alpaca_data_api_solver import build_plan, split_action
@@ -21,9 +22,61 @@ from libs.alpaca_security_lineage.lineage import (
 from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, MAX_NAME_CHANGE_SYMBOLS
 from libs.common.debug_trace import event
 
-from .contract import LineageError
+from .contract import LineageError, document_digest
 
 DEPENDENCY_HANDOFF_CORRELATION_VERSION = 77
+
+
+def retired_uuid_anchor(symbol, lookup):
+    """Only a positive observation of the requested label can anchor its retirement."""
+    asset = (lookup or {}).get("asset") or {}
+    if not (
+        (lookup or {}).get("lookup_kind") == "symbol"
+        and lookup.get("lookup") == symbol
+        and lookup.get("outcome") == "found"
+        and lookup.get("http_status") == 200
+        and asset.get("class") == "us_equity"
+        and asset.get("symbol") == symbol
+        and isinstance(asset.get("id"), str)
+    ):
+        return None
+    try:
+        UUID(asset["id"])
+    except ValueError:
+        return None
+    return asset["id"]
+
+
+def retired_uuid_lookup_required(receipt):
+    if not receipt or not receipt.get("last_observed_symbol_lookup"):
+        return False
+    symbol = receipt.get("symbol")
+    identifier = retired_uuid_anchor(symbol, receipt.get("last_observed_symbol_lookup"))
+    if identifier is None:
+        return False
+    lookups = receipt["evidence"]["asset_lookups"]
+    return any(
+        item.get("lookup_kind") == "symbol"
+        and item.get("lookup") == symbol
+        and item.get("outcome") == "not_found"
+        and item.get("http_status") == 404
+        for item in lookups
+    ) and not any(item.get("lookup_kind") == "asset_id" and item["lookup"] == identifier for item in lookups)
+
+
+def retired_successor_observations(metadata_cache, generations, new_sources):
+    """Lend a discovered successor's UUID into the enlarged group's first load."""
+    if not new_sources:
+        return {}
+    observed = {
+        item["asset"]["symbol"]: item["lookup"]
+        for symbol, generation in generations.items()
+        for full in (False, True)
+        if (evidence := metadata_cache.get((symbol, generation, full))) is not None
+        for item in evidence["asset_lookups"]
+        if item["lookup_kind"] == "asset_id" and item.get("asset") and item["asset"]["symbol"] in new_sources
+    }
+    return observed if new_sources == observed.keys() else {}
 
 
 def mapping_dependencies(evidence, lookup):
@@ -130,6 +183,7 @@ class EvidenceClient:
         self.by_id = {}
         self.catalogue = None
         self.catalogue_assets = {}
+        self.catalogue_uuid_conflicts = {}
         self.exact_lookup_reasons = {}
         self.catalogue_attempted = False
         self.catalogue_error = None
@@ -240,15 +294,40 @@ class EvidenceClient:
                 "asset": self.catalogue[symbol],
                 "source": "asset_catalogue",
             }
+        resume = self.unfinished_retirement(symbol)
+        if resume is not None and symbol not in (self.catalogue or {}):
+            return {"outcome": "not_found", "http_status": 404, "asset": None}
+        return None
+
+    def unfinished_retirement(self, symbol):
+        policy = self.work_policy
+        item = (getattr(policy, "work", None) or {}).get(symbol, {})
+        saved = item.get("retired_uuid_observation")
+        if saved and saved["cutoff"] == policy.end and item.get("status") != "complete":
+            return saved["lookup"]
+        return None
+
+    def observed_uuid_lookup(self, identifier):
+        if identifier in self.assets:
+            return self._value(self.assets[identifier])
+        asset = self.catalogue_assets.get(identifier)
+        if asset is not None:
+            return {"outcome": "found", "http_status": 200, "asset": asset, "source": "asset_catalogue"}
         return None
 
     def evidence_current(self, evidence):
         """New producer reports must use this operation's acquired observations."""
         for lookup in evidence["asset_lookups"]:
             identifier = lookup["lookup"]
+            if lookup["lookup_kind"] == "asset_id":
+                conflict = self.catalogue_uuid_conflicts.get(identifier)
+                if conflict and lookup.get("catalogue_conflict") != conflict:
+                    return False
             observed = (
                 self.observed_symbol_lookup(identifier)
                 if lookup["lookup_kind"] == "symbol"
+                else self.observed_uuid_lookup(identifier)
+                if lookup["lookup_kind"] == "asset_id"
                 else self._value(self.assets[identifier])
                 if identifier in self.assets
                 else None
@@ -316,7 +395,7 @@ class EvidenceClient:
         """Only explicitly typed ticker needs may use the catalogue; CUSIPs never do."""
         if not self.supports_plans:
             return
-        pending = sorted({s for s in symbols if s not in self.assets and not (self.catalogue or {}).get(s)})
+        pending = sorted({s for s in symbols if s not in self.assets and self.observed_symbol_lookup(s) is None})
         if self.work_policy is not None:
             pending = [s for s in pending if self.work_policy.allowed({s})]
         pending = [s for s in pending if s not in self.restricted_identifiers]
@@ -355,32 +434,41 @@ class EvidenceClient:
     def _load_catalogue(self, assets):
         if not isinstance(assets, list):
             raise LineageError("asset catalogue must be an array")
-        catalogue, assets_by_id = {}, {}
+        catalogue, assets_by_id, conflicts = {}, {}, {}
         for asset in assets:
             if not isinstance(asset, dict) or not isinstance(asset.get("symbol"), str) or not asset["symbol"]:
                 raise LineageError("invalid asset catalogue entry")
             symbol = asset["symbol"]
-            if (
+            complete = not (
                 any(
                     not isinstance(asset.get(key), str) or not asset[key]
                     for key in ("id", "class", "exchange", "name", "status")
                 )
                 or asset["class"] != "us_equity"
                 or not isinstance(asset.get("tradable"), bool)
-            ):
+            )
+            identifier = asset.get("id")
+            compact = compact_asset(asset)
+            if isinstance(identifier, str) and identifier:
+                prior = assets_by_id.get(identifier)
+                if not complete or identifier in assets_by_id and prior != compact:
+                    distinct = conflicts.setdefault(identifier, set())
+                    if prior is not None:
+                        distinct.add(document_digest(prior))
+                    distinct.add(document_digest(compact))
+                    assets_by_id[identifier] = None
+                else:
+                    assets_by_id[identifier] = compact
+            if not complete:
                 catalogue[symbol] = None  # This label needs exact evidence; other valid entries remain useful.
                 self.exact_lookup_reasons[symbol] = "catalogue_incomplete"
                 continue
-            compact = compact_asset(asset)
             if symbol in catalogue:
                 self.exact_lookup_reasons[symbol] = "catalogue_ambiguous"
             catalogue[symbol] = None if symbol in catalogue else compact
-            identity = asset["id"]
-            assets_by_id[identity] = (
-                None if identity in assets_by_id and assets_by_id[identity] != compact else compact
-            )
         self.catalogue = catalogue
         self.catalogue_assets = assets_by_id
+        self.catalogue_uuid_conflicts = {identifier: sorted(values) for identifier, values in conflicts.items()}
         self.catalogue_records = assets
 
     def prefetch_corporate_actions(self, requests):
@@ -625,7 +713,15 @@ class RetainedReportClient:
         if observed is not None:
             return observed
         if symbol in self.symbols and symbol not in self.invalidated_symbols:
-            return self.symbols[symbol]
+            saved = self.symbols[symbol]
+            if saved.get("asset"):
+                return {
+                    **saved,
+                    "observed_at_utc": saved.get(
+                        "observed_at_utc", self.evidence.get("catalogue_observed_at_utc")
+                    ),
+                }
+            return saved
         return self.client.get_symbol_lookup(symbol)
 
 
@@ -674,6 +770,81 @@ class WindowClient:
         self.consumed_symbols[symbol] = lookup
         if "source" in lookup:
             self.lookup_sources[symbol] = lookup["source"]
+        return lookup
+
+    def retired_asset_lookup(self):
+        """Join the last positive own-label observation to its exact asset UUID."""
+        from .projection import last_observed_symbol_lookup
+
+        if self.previous is None or "symbol" not in self.previous:
+            return None
+        positive = last_observed_symbol_lookup(self.previous)
+        identifier = retired_uuid_anchor(self.symbol, positive)
+        if identifier is None:
+            return None
+        current = self.client.observed_uuid_lookup(identifier)
+        conflict = self.client.catalogue_uuid_conflicts.get(identifier)
+        unfinished = self.client.unfinished_retirement(self.symbol)
+        if (
+            unfinished is not None
+            and unfinished.get("retained_symbol_lookup") == positive
+            and current is None
+            and (conflict is None or unfinished.get("catalogue_conflict") == conflict)
+        ):
+            return unfinished
+        if current is None:
+            prior = next(
+                (
+                    item
+                    for item in self.previous["evidence"]["asset_lookups"]
+                    if item["lookup_kind"] == "asset_id" and item["lookup"] == identifier
+                ),
+                None,
+            )
+            if (
+                prior
+                and prior.get("retained_symbol_lookup") == positive
+                and (conflict is None or prior.get("catalogue_conflict") == conflict)
+            ):
+                return prior
+            current = self.client.get_asset_lookup(identifier, lookup_kind="asset_id", reason="retired_symbol")
+        asset = current.get("asset")
+        positive_asset = (
+            current.get("outcome") == "found"
+            and current.get("http_status") == 200
+            and isinstance(asset, dict)
+            and asset.get("id") == identifier
+            and asset.get("class") == "us_equity"
+            and isinstance(asset.get("symbol"), str)
+            and asset["symbol"]
+        )
+        if not positive_asset and not (
+            asset is None and current.get("outcome") == "not_found" and current.get("http_status") == 404
+        ):
+            error = LineageError(
+                f"{self.symbol}: exact UUID lookup returned an incomplete or incompatible response"
+            )
+            error.request_identifiers = [identifier]
+            raise error
+        lookup = {
+            "lookup_kind": "asset_id",
+            "lookup": identifier,
+            "outcome": current["outcome"],
+            "http_status": current["http_status"],
+            "asset": compact_asset(asset) if asset else None,
+            "found": asset is not None,
+            "source": current.get("source", "exact_uuid"),
+            "retained_symbol_lookup": positive,
+            **({"catalogue_conflict": conflict} if conflict else {}),
+        }
+        policy = self.client.work_policy
+        work = (getattr(policy, "work", None) or {}).get(self.symbol)
+        if work and lookup != unfinished:
+            from .universe_state import accept_retired_uuid
+
+            saved = {"cutoff": policy.end, "lookup": lookup}
+            accept_retired_uuid(policy.store, self.symbol, work["obligation_id"], saved)
+            work["retired_uuid_observation"] = saved
         return lookup
 
     def evidence_current(self, evidence):
@@ -761,7 +932,7 @@ def retained_metadata(view, client, previous, *, refresh=False):
         > query["corporate_actions_end"]
     ):
         return None
-    if client.evidence_current(evidence):
+    if not retired_uuid_lookup_required(previous) and client.evidence_current(evidence):
         return evidence
     # Changed descriptions or operator facts need their new metadata projection,
     # while the already completed provider action union keeps its exact scope.
@@ -819,6 +990,10 @@ def _finish_evidence(evidence, window):
     for lookup in evidence["asset_lookups"]:
         if lookup["lookup_kind"] == "symbol" and lookup["lookup"] in window.lookup_sources:
             lookup["source"] = window.lookup_sources[lookup["lookup"]]
+        if lookup["lookup_kind"] == "symbol":
+            observed = window.consumed_symbols.get(lookup["lookup"], {})
+            if "observed_at_utc" in observed:
+                lookup["observed_at_utc"] = observed["observed_at_utc"]
     mapping_observations = {}
     for lookup in evidence["asset_lookups"]:
         if lookup["lookup_kind"] != "cusip":

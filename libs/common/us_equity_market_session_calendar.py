@@ -1,6 +1,6 @@
 import hashlib
 import json
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -82,6 +82,12 @@ def _calendar():
 
 def us_market_hours_sha256() -> str:
     return _calendar()[1]
+
+
+def market_sessions_between(first: str, last: str) -> tuple[str, ...]:
+    """Return known exchange dates in an inclusive, already selected range."""
+    dates, _, _ = _calendar()
+    return dates[bisect_left(dates, first) : bisect_right(dates, last)]
 
 
 def regular_market_hours(session_date):

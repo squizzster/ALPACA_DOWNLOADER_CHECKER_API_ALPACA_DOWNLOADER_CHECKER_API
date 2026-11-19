@@ -209,6 +209,10 @@ def _evidence_facts(value, *, append=False, historical=False):
     result.pop("sourced_fact_intents", None)
     for lookup in result.get("asset_lookups", ()):
         lookup.pop("source", None)
+        if lookup.get("lookup_kind") == "symbol":
+            lookup.pop("observed_at_utc", None)
+        elif lookup.get("lookup_kind") == "asset_id":
+            lookup.pop("catalogue_conflict", None)
     if append:
         # The accepted pricing handoff already covers this advancement.
         # Actual actions, disposition and coverage quality still participate;
@@ -224,6 +228,21 @@ def _evidence_facts(value, *, append=False, historical=False):
         # Returned actions, lookups and unresolved endpoints remain compared.
         result.pop("queried_symbols", None)
     if historical:
+        # A newly completed negative UUID lookup supplies no owner for a
+        # previously unresolved row. Keep the assessment on the receipt while
+        # comparing only facts that can change accepted dated ownership.
+        if "asset_lookups" in result:
+            result["asset_lookups"] = [
+                item
+                for item in result["asset_lookups"]
+                if not (
+                    item.get("lookup_kind") == "asset_id"
+                    and item.get("outcome") == "not_found"
+                    and item.get("http_status") == 404
+                    and item.get("asset") is None
+                )
+            ]
+
         # Names and current active/tradable presentation describe a fresh asset
         # observation. With the same provider UUID, symbol, class and exchange,
         # they affect new suffix projection but cannot revoke completed row owners.
@@ -240,6 +259,42 @@ def _evidence_facts(value, *, append=False, historical=False):
 
         result = without_descriptions(result)
     return result
+
+
+def preserves_retired_prefix(prior, current):
+    """An own-label retirement does not revoke an already assigned single-UUID tape.
+
+    Callers establish pricing/mapping applicability. A previously unresolved
+    position or a competing action/mapping remains work for the ownership producer.
+    """
+    if not prior or prior.get("unresolved_rows") != 0 or not prior.get("source_rows"):
+        return False
+    before = prior["evidence"]
+    record = next((r for r in current.get("asset_lookups", ()) if r.get("lookup_kind") == "asset_id"), None)
+    if record is None:
+        return False
+    anchor = record["lookup"]
+    memberships = prior.get("identity_memberships", ())
+    if len(memberships) != 1 or memberships[0]["member_alpaca_asset_ids"] != [anchor]:
+        return False
+    previous = next(
+        (
+            item
+            for item in before.get("asset_lookups", ())
+            if item.get("lookup_kind") == "symbol" and item.get("lookup") == prior["symbol"]
+        ),
+        None,
+    )
+    if (previous or {}).get("asset") != record.get("retained_symbol_lookup", {}).get("asset") or not (
+        previous or {}
+    ).get("asset"):
+        return False
+    if before.get("corporate_actions") != current.get("corporate_actions"):
+        return False
+    return all(
+        not (lookup.get("asset") or {}).get("id") or lookup["asset"]["id"] == anchor
+        for lookup in current["asset_lookups"]
+    ) and all(lookup in current["asset_lookups"] for lookup in before["asset_lookups"] if lookup is not previous)
 
 
 def evidence_delta(previous, current, *, append=False):
@@ -332,6 +387,7 @@ def requires_lineage(
     auxiliary_previous=None,
     auxiliary_current=None,
     classification_sources=None,
+    empty_successors=(),
 ):
     """Unknown or changed inputs select the existing complete lineage pipeline."""
     if previous.keys() != evidence.keys() or (refresh or not pricing_unchanged) and completed_deltas is None:
@@ -339,6 +395,8 @@ def requires_lineage(
     required = refresh or not pricing_unchanged
     empty_history = append and all(prior and prior.get("source_rows") == 0 for prior in previous.values())
     for symbol, prior in previous.items():
+        if prior is None and symbol in empty_successors:
+            continue
         if prior is None or not reusable_decision(prior):
             required = True
             continue
@@ -347,8 +405,16 @@ def requires_lineage(
             # No retained choice or nonempty membership decision consumes a
             # metadata classification for it in this operation.
             continue
-        delta = evidence_delta(
-            prior["evidence"], evidence[symbol], append=append or completed_deltas is not None
+        delta = (
+            {
+                "scope": "added_sessions",
+                "reason": "accepted_retired_label_prefix",
+                "changed_fields": ["asset_lookups"],
+            }
+            if (append or completed_deltas is not None) and preserves_retired_prefix(prior, evidence[symbol])
+            else evidence_delta(
+                prior["evidence"], evidence[symbol], append=append or completed_deltas is not None
+            )
         )
         if completed_deltas is not None:
             completed_deltas[symbol] = delta

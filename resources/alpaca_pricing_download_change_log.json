@@ -376,5 +376,10 @@
     "modifications": [
       "Hand off completed empty dependency selections before later adaptive work and return an accepted correction from its first bound source selection."
     ]
+  },
+  {
+    "modifications": [
+      "Publish the inserted dates and row positions from selected-session corrections with their source generations, and carry applicable positions through later appends and rollover."
+    ]
   }
 ]

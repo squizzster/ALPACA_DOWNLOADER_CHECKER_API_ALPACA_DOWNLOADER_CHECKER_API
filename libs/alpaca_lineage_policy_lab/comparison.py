@@ -678,7 +678,15 @@ def _compare_loaded_group(
     raw_reports = reports
     refinement = None
     if refine is not None:
-        reports, refinement = refine(reports, raw_evidence, selected)
+        reports, refinement = refine(
+            reports,
+            raw_evidence,
+            {
+                **selected,
+                "membership_version": policy.implementation_correlation_version,
+                "current_donors": policy.implementation_correlation_version >= 94,
+            },
+        )
     reports, mapping_corrections = select_observations(
         inputs, reports, correlation_version=policy.implementation_correlation_version
     )
