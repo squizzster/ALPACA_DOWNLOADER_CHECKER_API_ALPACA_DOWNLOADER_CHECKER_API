@@ -9,6 +9,10 @@ from typing import Any
 from libs.alpaca_end_of_day_security_correlation.correlation import (
     build_security_correlation_report,
 )
+from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
+    BOUNDED_RENAME_PREFIX_VERSION,
+    SPLIT_ADJUSTED_RENAME_PREFIX_VERSION,
+)
 from libs.alpaca_end_of_day_security_correlation.name_change import (
     BOUNDED_ENTRY_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
     COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION,
@@ -279,6 +283,10 @@ def _correlation_cache(policy) -> CorrelationCache:
         mapped_successor_split_chains=(
             policy.implementation_correlation_version >= SUCCESSOR_PREFIX_SPLIT_CHAIN_CORRELATION_VERSION
         ),
+        split_adjusted_rename_prefixes=(
+            policy.implementation_correlation_version >= SPLIT_ADJUSTED_RENAME_PREFIX_VERSION
+        ),
+        bounded_rename_prefixes=policy.implementation_correlation_version >= BOUNDED_RENAME_PREFIX_VERSION,
         active_successor_prefixes=(
             policy.implementation_correlation_version >= ACTIVE_SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION
         ),

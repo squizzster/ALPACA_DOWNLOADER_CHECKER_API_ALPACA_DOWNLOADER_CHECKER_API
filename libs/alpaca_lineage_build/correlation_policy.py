@@ -502,6 +502,8 @@ def _compile_schema_four(
         (88, 37),
         (89, 37),
         (90, 37),
+        (91, 37),
+        (92, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -636,6 +638,8 @@ def _compile_schema_four(
                 (88, 37),
                 (89, 37),
                 (90, 37),
+                (91, 37),
+                (92, 37),
                 (CORRELATION_VERSION, LINEAGE_VERSION),
             }
             else "published_reference"
@@ -653,8 +657,12 @@ def _compile_schema_four(
         ("type", "implementation"),
     )
     expected_observation = f"lineage_v{lineage_version}" + (
-        "_documented_public_continuity_v1"
-        if correlation_version >= 91
+        "_split_adjusted_rename_prefix_v2"
+        if correlation_version >= 93
+        else "_split_adjusted_rename_prefix_v1"
+        if correlation_version == 92
+        else "_documented_public_continuity_v1"
+        if correlation_version == 91
         else "_documented_dated_refinement_v1"
         if correlation_version == 90
         else "_documented_public_reclassification_v1"
@@ -750,8 +758,12 @@ def _compile_schema_four(
             },
             "observation_selection": {
                 "type": "fixed_python_postprocessor",
-                "implementation": "lineage_observation_selection_documented_public_continuity_v1"
-                if correlation_version >= 91
+                "implementation": "lineage_observation_selection_split_adjusted_rename_prefix_v2"
+                if correlation_version >= 93
+                else "lineage_observation_selection_split_adjusted_rename_prefix_v1"
+                if correlation_version == 92
+                else "lineage_observation_selection_documented_public_continuity_v1"
+                if correlation_version == 91
                 else "lineage_observation_selection_documented_dated_refinement_v1"
                 if correlation_version == 90
                 else "lineage_observation_selection_documented_public_reclassification_v1"

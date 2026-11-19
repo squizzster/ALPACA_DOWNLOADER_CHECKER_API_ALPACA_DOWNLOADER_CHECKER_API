@@ -136,6 +136,7 @@ class MappingAcquisition:
         witness,
         *,
         required_sessions=None,
+        successor_witness=None,
     ):
         self.store = str(Path(store).absolute())
         self.symbol, self.source_generation = symbol, source_generation
@@ -148,9 +149,21 @@ class MappingAcquisition:
         if len(witness.rows) > 1:
             raise DownloadError("mapping witness must cover one selected observation")
         self.fragments = [witness]
-        self.remaining_all_ranges = [
-            (lower, upper) for lower, upper in ((start, witness.start), (witness.end, end)) if lower < upper
-        ]
+        if successor_witness is not None:
+            if not isinstance(successor_witness, CompletedBars):
+                raise DownloadError("successor witness requires completed provider observations")
+            self._check_fragment(successor_witness)
+            if not witness.rows or len(successor_witness.rows) != 1 or witness.end > successor_witness.start:
+                raise DownloadError("invalid successor coverage witness")
+            self.fragments.append(successor_witness)
+        self.remaining_all_ranges = []
+        lower = start
+        for observed in self.fragments:
+            if lower < observed.start:
+                self.remaining_all_ranges.append((lower, observed.start))
+            lower = observed.end
+        if lower < end:
+            self.remaining_all_ranges.append((lower, end))
         self.assembled_all = None
         self.state = AdjustmentAcquisition(symbol, start, end, asof)
         self.confirmations, self.confirmed = {}, None

@@ -74,6 +74,7 @@ from libs.alpaca_lineage_policy_lab.contract import (
     LAB_SCHEMA_VERSION,
     LAB_VERSION,
     PolicyLabError,
+    replayable_lineage_versions,
     validate_change_log,
 )
 from libs.alpaca_lineage_policy_lab.evidence_quality import (
@@ -2877,12 +2878,69 @@ class PolicyComparisonTests(TestCase):
         with self.assertRaisesRegex(PolicyLabError, "overlapping assignment"):
             _normalize_boundaries("AAA", overlapping, view, "2026-10")
 
+    def test_retained_baseline_requires_exact_policy_and_version_envelope(self):
+        current = versions()
+        for correlation in range(82, 92):
+            policy = load_policy(
+                ROOT / f"resources/alpaca_security_correlation_v{correlation}_legacy_policy.yaml"
+            )
+            frozen = {**current, "correlation": correlation, "correlation_policy_sha256": policy.semantic_sha256}
+            with self.subTest(correlation=correlation):
+                self.assertTrue(replayable_lineage_versions(frozen))
+        for changed in (
+            {"lineage": 36},
+            {"lineage": 37.0},
+            {"correlation": 81},
+            {"correlation": 91.0},
+            {"correlation_policy_sha256": current["correlation_policy_sha256"]},
+            {"calendar_sha256": "0" * 64},
+            {"identity_report": current["identity_report"] + 1},
+            {"extra": None},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(replayable_lineage_versions({**frozen, **changed}))
+        self.assertFalse(
+            replayable_lineage_versions({k: v for k, v in frozen.items() if k != "calendar_sha256"})
+        )
+
+    def test_v79_is_an_exact_read_only_baseline_without_production_approval(self):
+        from libs.alpaca_lineage_build.contract import current_decision, retained_v79_decision
+        from libs.alpaca_lineage_build.correlation_policy_contract import RETAINED_V79_SEMANTIC_SHA256
+
+        current = versions()
+        frozen = {
+            **current,
+            "lineage": 34,
+            "correlation": 79,
+            "identity_report": 4,
+            "correlation_policy_sha256": RETAINED_V79_SEMANTIC_SHA256,
+        }
+        self.assertTrue(replayable_lineage_versions(frozen))
+        # The header can identify published comparison data. It supplies no
+        # calculation revision, policy provenance or decision-reuse evidence.
+        self.assertFalse(current_decision({"versions": frozen}))
+        self.assertFalse(retained_v79_decision({"versions": frozen}))
+        for changes in (
+            {"lineage": 35},
+            {"correlation": 78},
+            {"identity_report": 5},
+            {"calendar_sha256": "0" * 64},
+            {"correlation_policy_sha256": current["correlation_policy_sha256"]},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(replayable_lineage_versions({**frozen, **changes}))
+        with patch(
+            "libs.alpaca_lineage_build.contract.versions", return_value={**current, "identity_report": 5}
+        ):
+            self.assertFalse(replayable_lineage_versions({**frozen, "identity_report": 5}))
+
     def test_group_loader_is_scoped_read_only_and_generation_bound(self):
         policy_input = {"document": "selected-source"}
         generation = document_digest(policy_input)
+        frozen = load_policy(ROOT / "resources/alpaca_security_correlation_v91_legacy_policy.yaml")
         receipt = {
             "symbol": "AAA",
-            "versions": versions(),
+            "versions": {**versions(), "correlation": 91, "correlation_policy_sha256": frozen.semantic_sha256},
             "input_sources": {"AAA": generation},
             "evidence": {},
             "anchor_month": "2026-10",
@@ -2976,10 +3034,10 @@ class PolicyComparisonTests(TestCase):
         evidence = {"identities": [], "corporate_actions": [], "symbol_occupancy_evidence": []}
         rule_order = row_correlation_rule_order(rules=policy.row_rules)
         ownership_order = ownership_interval_rule_order(rules=policy.ownership_rules)
+        frozen = load_policy(ROOT / "resources/alpaca_security_correlation_v91_legacy_policy.yaml")
         receipt = {
-            # The current 33/59 publication is comparison data only; it is not
-            # evidence for the historical v58 candidate execution.
-            "versions": versions(),
+            # The frozen v91 publication supplies the baseline for a v58 candidate.
+            "versions": {**versions(), "correlation": 91, "correlation_policy_sha256": frozen.semantic_sha256},
             "evidence": evidence,
             "dependencies": [],
             "anchor_month": "2026-10",
@@ -3061,7 +3119,7 @@ class PolicyComparisonTests(TestCase):
             patch(
                 "libs.alpaca_lineage_policy_lab.comparison.select_observations",
                 return_value=({"AAA": report}, {}),
-            ),
+            ) as select_prices,
             patch(
                 "libs.alpaca_lineage_policy_lab.comparison.make_publication",
                 return_value=(candidate_receipt, {"candidate": "in-memory"}),
@@ -3084,6 +3142,7 @@ class PolicyComparisonTests(TestCase):
         self.assertEqual({"AAA": evidence}, candidate_evidence)
         self.assertNotIn("published", str(candidate_evidence))
         self.assertIs(policy, correlate.call_args.kwargs["policy"])
+        self.assertEqual(58, select_prices.call_args.kwargs["correlation_version"])
 
         receipt["source_rows"] = 2
         with (

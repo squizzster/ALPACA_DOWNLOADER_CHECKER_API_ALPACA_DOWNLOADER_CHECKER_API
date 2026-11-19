@@ -36,6 +36,7 @@ from libs.alpaca_security_lineage.inference_evidence import (
 )
 
 from .contract import (
+    FROZEN_BASELINE_POLICIES,
     LAB_REPORT_BOUNDARY,
     LAB_SCHEMA_VERSION,
     LAB_VERSION,
@@ -588,21 +589,7 @@ def _compare_loaded_group(
         "corrected_candidate",
         "production",
     }:
-        allowed_baselines = {
-            (33, 59),
-            (34, 76),
-            (34, 77),
-            (37, 82),
-            (37, 83),
-            (37, 84),
-            (37, 85),
-            (37, 86),
-            (37, 87),
-            (37, 88),
-            (37, 89),
-            (37, 90),
-            (LINEAGE_VERSION, CORRELATION_VERSION),
-        }
+        allowed_baselines = FROZEN_BASELINE_POLICIES.keys() | {(LINEAGE_VERSION, CORRELATION_VERSION)}
         if any(
             (
                 receipt["versions"].get("lineage"),
@@ -612,7 +599,7 @@ def _compare_loaded_group(
             for receipt in receipts.values()
         ):
             raise PolicyLabError(
-                "policy comparison requires a completed 33/59 or current publication as baseline-only data"
+                "policy comparison requires a supported completed publication as baseline-only data"
             )
     else:
         if any(
@@ -692,7 +679,9 @@ def _compare_loaded_group(
     refinement = None
     if refine is not None:
         reports, refinement = refine(reports, raw_evidence, selected)
-    reports, mapping_corrections = select_observations(inputs, reports)
+    reports, mapping_corrections = select_observations(
+        inputs, reports, correlation_version=policy.implementation_correlation_version
+    )
     candidate_boundaries = {}
     for symbol, view in inputs.items():
         _, candidate_boundaries[symbol] = make_publication(

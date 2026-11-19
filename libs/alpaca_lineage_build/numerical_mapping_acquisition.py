@@ -2,7 +2,8 @@
 
 from datetime import datetime
 
-from libs.alpaca_pricing_download.contract import DownloadError
+from libs.alpaca_pricing_download.contract import NEW_YORK, DownloadError
+from libs.alpaca_pricing_download.endpoints import session_window
 from libs.alpaca_pricing_download.mapping import restore_observation
 from libs.alpaca_pricing_download.responses import completed_bars
 from libs.alpaca_pricing_download.storage import read_document
@@ -24,11 +25,26 @@ def _witness_document(value):
     }
 
 
-def _restore_witness(value):
+def _successor_window(request):
+    binding = request["numerical_mapping"]["binding"]
+    if "split_rename_members" not in binding:
+        return None
+    last = binding["routes"][binding["symbol"]][0]
+    cutoff = datetime.fromisoformat(request["end_exclusive"] + "T00:00:00+00:00")
+    return session_window((last,), cutoff=cutoff)
+
+
+def _restore_witness(value, request, window):
     try:
         witness = restore_observation(value)
         if witness.adjustment != "all" or len(witness.rows) > 1:
             raise ValueError("expected one fully adjusted witness session")
+        if window is None or (witness.symbol, witness.asof, witness.start, witness.end) != (
+            request["numerical_mapping"]["binding"]["symbol"],
+            request["mapping_asof"],
+            *window,
+        ):
+            raise ValueError("completed mapping witness has a different scope")
         return witness
     except (DownloadError, TypeError, ValueError, OverflowError) as error:
         raise RecoveryRequired("invalid completed mapping witness; owning recovery required") from error
@@ -88,21 +104,21 @@ def _load_stage(path, request):
             value["witness"] = value["acquisition"]["fragments"][0]
             stage.update(acquisition=acquisition, witness=witness)
         elif "witness" in value:
-            witness = _restore_witness(value["witness"])
-            if (witness.symbol, witness.asof, witness.start, witness.end) != (
-                need["binding"]["symbol"],
-                need["binding"]["asof"],
-                *witness_window(need),
-            ):
-                raise ValueError("completed mapping witness has a different scope")
+            witness = _restore_witness(value["witness"], request, witness_window(need))
             stage["witness"] = witness
+            if "successor_witness" in value:
+                if not witness.rows:
+                    raise ValueError("missing positive predecessor witness")
+                stage["successor_witness"] = _restore_witness(
+                    value["successor_witness"], request, _successor_window(request)
+                )
             if "required_sessions" in value and (
                 not isinstance(value["required_sessions"], list)
                 or not value["required_sessions"]
                 or any(not isinstance(day, str) for day in value["required_sessions"])
             ):
                 raise ValueError("invalid mapping contribution grid")
-        elif "required_sessions" in value:
+        elif "required_sessions" in value or "successor_witness" in value:
             raise ValueError("missing completed mapping witness")
         return stage
     except (DownloadError, KeyError, IndexError, AttributeError, TypeError, ValueError, OverflowError) as error:
@@ -138,8 +154,8 @@ def execute(
     if stage.get("pending_write"):
         persist()
 
-    def finish(outcome, generation, *, missing_sessions=()):
-        scope = (
+    def finish(outcome, generation, *, missing_sessions=(), scope=None):
+        scope = scope or (
             {"kind": "one_session_all_witness", "session": need["binding"]["witness_session"]}
             if outcome == "provider_mapping_unavailable"
             else {
@@ -170,12 +186,10 @@ def execute(
             "source_sha256": assessment["result_generation"],
             "changed": False,
         }
-    if "witness" in stage:
-        witness = stage["witness"]
-    else:
-        start, end = witness_window(need)
-        persist()  # An interruption cannot forget the selected request context.
-        witness = completed_bars(
+
+    def observe(field, window):
+        start, end = window
+        observation = completed_bars(
             client.fetch(symbol, "all", start, end, asof=request["mapping_asof"]),
             symbol,
             "all",
@@ -183,14 +197,36 @@ def execute(
             end,
             request["mapping_asof"],
         )
-        value["witness"] = _witness_document(witness)
-        stage["witness"] = witness
+        value[field] = _witness_document(observation)
+        stage[field] = observation
         persist()  # Complete this observation before any independent action.
+        return observation
+
+    witness = stage.get("witness")
+    if witness is None:
+        persist()  # An interruption cannot forget the selected request context.
+        witness = observe("witness", witness_window(need))
     if not witness.rows:
         return finish("provider_mapping_unavailable", request["selected_source_sha256"])
     from libs.alpaca_pricing_download.mapping import MappingAcquisition, MappingCoverageIncomplete
 
     if "acquisition" not in stage:
+        successor_witness = stage.get("successor_witness")
+        if "split_rename_members" in need["binding"]:
+            if successor_witness is None:
+                successor_witness = observe("successor_witness", _successor_window(request))
+            if not successor_witness.rows:
+                session = successor_witness.start.astimezone(NEW_YORK).date().isoformat()
+                return finish(
+                    "provider_coverage_insufficient",
+                    request["selected_source_sha256"],
+                    scope={
+                        "kind": "one_session_all_successor_witness",
+                        "session": session,
+                        "missing_sessions": [session],
+                        "observation": value["successor_witness"],
+                    },
+                )
         if not required_sessions:
             required_sessions = value.get("required_sessions") or cache.get("required_sessions", {}).get(
                 identifier
@@ -214,6 +250,7 @@ def execute(
                 identifier,
                 witness,
                 required_sessions=required_sessions,
+                successor_witness=successor_witness,
             )
         except (DownloadError, TypeError, ValueError, OverflowError) as error:
             raise RecoveryRequired("invalid selected mapping capability; owning recovery required") from error

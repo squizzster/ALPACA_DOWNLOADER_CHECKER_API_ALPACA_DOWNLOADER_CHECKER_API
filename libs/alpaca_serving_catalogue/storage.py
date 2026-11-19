@@ -302,7 +302,22 @@ def refresh_controls(store, selected=None, *, recover=False):
     return controls(store, recover=recover)
 
 
-def snapshot(store):
+def price_review_group(store, public_id):
+    """Select one internal decision even when its product quotes are offline."""
+    validate_version()
+    with closing(connect_sqlite(path(store), readonly=True)) as connection:
+        connection.execute("BEGIN")
+        state = _state(connection)
+        row = connection.execute(
+            "SELECT g.body FROM identities i JOIN groups g ON g.group_key=i.group_key WHERE i.public_id=?",
+            (public_id,),
+        ).fetchone()
+        if row is None:
+            raise CatalogueError("price review identity unavailable")
+        return state["generation"], json.loads(row[0])
+
+
+def snapshot(store, *, public_id=None):
     """Materialize public fields and selectors, then release the read transaction."""
     # The serving producer already selected online identities. Read public rows
     # and their references in one transaction; DO NOT inspect the private reasons
@@ -313,13 +328,17 @@ def snapshot(store):
             connection.execute("BEGIN")
             state = _state(connection)
             records, groups = {}, {}
+            predicate, args = (" WHERE public_id=?", (public_id,)) if public_id else ("", ())
             for public_id, body, key in connection.execute(
-                "SELECT public_id, body, group_key FROM securities ORDER BY public_id"
+                "SELECT public_id, body, group_key FROM securities" + predicate + " ORDER BY public_id", args
             ):
                 records[public_id] = {"public": json.loads(body), "group_key": key}
             for key, token, references, locator in connection.execute(
                 "SELECT group_key, decision_generation, json_extract(selection, '$.references'), "
-                "json_extract(selection, '$.locator') FROM groups WHERE group_key IN (SELECT group_key FROM securities)"
+                "json_extract(selection, '$.locator') FROM groups WHERE group_key IN (SELECT group_key FROM securities"
+                + predicate
+                + ")",
+                args,
             ):
                 groups[key] = {
                     "decision_generation": token,
@@ -529,3 +548,28 @@ def finish_bootstrap(store):
 
         export_inputs.finish(connection)
         return state if state["complete"] else _write_state(connection, complete=True)
+
+
+def other_ticker_ranges(store, ticker, public_id, owning_group, peer):
+    """Consume the selected owning/peer groups inside the exclusive review operation."""
+    with closing(connect_sqlite(path(store), readonly=True)) as db:
+        rows = db.execute(
+            """SELECT json_extract(body,'$.ticker_ranges') FROM securities
+               WHERE public_id != ? AND group_key IN (?,?)""",
+            (public_id, owning_group, peer[0] if peer else owning_group),
+        )
+        return [r for (ranges,) in rows for r in json.loads(ranges) if r["ticker"] == ticker]
+
+
+def ticker_group_token(store, generation, ticker, owning_group):
+    """Bind an independent current ticker's selected group before using its dated ranges."""
+    with closing(connect_sqlite(path(store), readonly=True)) as db:
+        db.execute("BEGIN")
+        if _state(db)["generation"] != generation:
+            raise CatalogueError("selected catalogue changed before ticker occupation selection")
+        row = db.execute(
+            """SELECT g.group_key,g.decision_generation FROM members m JOIN groups g USING(group_key)
+                WHERE m.symbol=? AND g.group_key != ?""",
+            (ticker, owning_group),
+        ).fetchone()
+        return list(row) if row else None

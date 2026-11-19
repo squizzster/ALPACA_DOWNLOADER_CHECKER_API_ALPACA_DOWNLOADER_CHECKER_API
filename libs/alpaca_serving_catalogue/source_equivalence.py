@@ -95,6 +95,11 @@ def accepted_dates(group, previous, inputs, *, public_id=None, sessions=None):
                         continue
                     record, _history = found
                     source = donor["source"]
+                    span = record.get("dated_price_span")
+                    if span and span[0] <= day < span[1]:
+                        # Equality describes the original source files. The dated
+                        # numerical publication validated different prices here.
+                        continue
                     # The first selection proved exact equality to this donor.
                     # Its accepted dates and clean numerical outcome apply to
                     # every advertised view; ownership is not that guarantee.

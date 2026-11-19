@@ -239,7 +239,7 @@
   {
     "modifications": [
       "Within dated source-label competition, resolve a complete first informative trading episode when its exact existing departure interval aligns within four market sessions with the first prolonged last-close carry-forward bridge and the later resumed episode is separately terminally anchored. Require all eight grids, a complete prefix calendar, agreeing bridge observations and a unique supported departing owner.",
-      "Stop before every synthetic bridge row; reject earlier inactivity, incomplete prefixes, competing departures and positive contradictory owners. Preserve earlier as-of allocation, all UUID membership and later episode decisions; a later occupant\u2019s undated terminal claim cannot erase the positively anchored original episode."
+      "Stop before every synthetic bridge row; reject earlier inactivity, incomplete prefixes, competing departures and positive contradictory owners. Preserve earlier as-of allocation, all UUID membership and later episode decisions; a later occupant’s undated terminal claim cannot erase the positively anchored original episode."
     ]
   },
   {
@@ -583,6 +583,16 @@
       "Reject authored research assertions and certificate capabilities in fresh correlation; retain generic provider-evidence rules and completed scoped decisions.",
       "Prevent retained research recipes from extending ownership into new observations; remove assertion-based postprocessing from the common policy flow.",
       "Reject legacy ticker-exclusion assertions and direct researched row recipes before allocation, carrying the same accepted evidence identity across phases without repeating its checks."
+    ]
+  },
+  {
+    "modifications": [
+      "Recognize supported successor-mapped histories across dated rename and split chains using independently owned predecessor trades."
+    ]
+  },
+  {
+    "modifications": [
+      "Recognize a dated terminal predecessor episode or a closed same-label entry within a retained split-adjusted successor tape, using complete held assignment and raw trade evidence."
     ]
   }
 ]

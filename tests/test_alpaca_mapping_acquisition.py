@@ -73,6 +73,25 @@ def persisted(value):
 
 
 class MappingAcquisitionTests(unittest.TestCase):
+    def test_both_bound_witnesses_survive_restore_and_are_excluded_from_all_requests(self):
+        last = timestamp("2016-01-06T05:00:00Z")
+        terminal = CompletedBars("NOVA", "all", last, END, ASOF, (row(DAYS[-1]),))
+        value = MappingAcquisition.from_document(persisted(acquisition(successor_witness=terminal)))
+        client = Client()
+
+        def fetch(mode, start, end):
+            if mode == "all":
+                for observed in (witness(), terminal):
+                    self.assertFalse(
+                        start < observed.end and observed.start < end, "completed witness requested"
+                    )
+            return client.selected(mode, start, end)
+
+        completed = value.finish(fetch)
+        self.assertEqual(tuple(row(day) for day in DAYS), completed.views["all"])
+        self.assertTrue(value.confirm(fetch))
+        self.assertEqual(2, sum(1 for _, mode, _, _, _ in client.calls if mode == "all"))
+
     def test_completed_witness_is_assembled_without_download_or_normalization(self):
         value, client = acquisition(), Client()
         accepted_row = value.fragments[0].rows[0]

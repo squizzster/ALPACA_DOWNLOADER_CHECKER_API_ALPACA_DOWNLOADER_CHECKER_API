@@ -8,9 +8,19 @@ Keep those assignments intact and publish a separate choice for all eight views.
 from bisect import bisect_left
 from collections import defaultdict
 from copy import deepcopy
+from decimal import Decimal
+from functools import cache
+from operator import eq
 
+from libs.alpaca_end_of_day_security_correlation.correlation_version import CORRELATION_VERSION
+from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
+    CLOSED_ENTRY_RENAME_PREFIX,
+    SPLIT_ADJUSTED_RENAME_TAPE,
+    TERMINAL_RENAME_PREFIX,
+)
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 
+from .adjustment_basis import INCOMPATIBLE_SPLIT_BASIS, bounded_prefixes, incompatible_prefixes
 from .contract import LineageError
 
 # DO NOT REMOVE WITHOUT USER AUTH!#
@@ -246,8 +256,12 @@ def select_observations(
     dated_label_evidence=None,
     dated_label_decision=None,
     dated_label_output=None,
+    correlation_version=CORRELATION_VERSION,
 ):
     """Carry completed choices, selecting only genuinely active observations."""
+    # Read-only replay must use the numerical semantics of its compiled
+    # implementation. Production selects the current implementation by default.
+    compare_values = _same_values if correlation_version >= 92 else eq
 
     def selected_label_plan():
         if dated_label_evidence is None:
@@ -278,6 +292,7 @@ def select_observations(
             equality_outcomes=equality_outcomes,
             source_occupants=source_occupants,
             dated_label_plan=selected_label_plan(),
+            compare_values=compare_values,
         )
         return selected, corrections
     for name, carry in retained_choices.items():
@@ -297,6 +312,8 @@ def select_observations(
             instants=instants,
             equality_outcomes=equality_outcomes,
             dated_label_plan=selected_label_plan(),
+            compare_values=compare_values,
+            reopened_choices=opened,
         )
     else:
         selected, corrections = deepcopy(active), {}
@@ -311,7 +328,18 @@ def select_observations(
     return selected, corrections
 
 
-def _continuous_adjustments(pid, complete, dated, authorities, values, equal, inputs, own, instants):
+def _same_values(left, right):
+    # The candidate key already establishes a common instant. Published fields
+    # retain the provider's original decimal spelling, including trailing zeros.
+    return all(a == b or Decimal(a) == Decimal(b) for a, b in zip(left, right, strict=True))
+
+
+def _agree(rows, same):
+    first = next(rows, None)
+    return all(first == other or same(first, other) for other in rows)
+
+
+def _continuous_adjustments(pid, complete, dated, authorities, values, equal, inputs, own, instants, same):
     """Prefer positive adjustment continuity over an otherwise direct WI route.
 
     The sourced same-security assertion and accepted later dividend are both
@@ -345,8 +373,8 @@ def _continuous_adjustments(pid, complete, dated, authorities, values, equal, in
             for day in proof["post_market_dividends"].values()
         ):
             continue
-        if all(values[temporary][adjusted] == values[temporary][base] for adjusted, base in pairs) and all(
-            values[name][adjusted] != values[temporary][adjusted] for adjusted, _base in pairs
+        if all(same(values[temporary][adjusted], values[temporary][base]) for adjusted, base in pairs) and all(
+            not same(values[name][adjusted], values[temporary][adjusted]) for adjusted, _base in pairs
         ):
             preferred.add(name)
     return preferred
@@ -361,6 +389,8 @@ def _select_new_observations(
     instants=None,
     equality_outcomes=None,
     dated_label_plan=None,
+    compare_values=_same_values,
+    reopened_choices=None,
 ):
     """Return selected reports and only the mapping corrections they require.
 
@@ -379,6 +409,8 @@ def _select_new_observations(
     labels = defaultdict(set)
     market_sources = defaultdict(set)
     adjustment_sources = defaultdict(dict)
+    mapped_starts = defaultdict(list)
+    bounded_scopes = defaultdict(list)
     for symbol, report in reports.items():
         for pid, route in report.get("retained_observation_routes", {}).items():
             own[pid][symbol] = route
@@ -391,6 +423,22 @@ def _select_new_observations(
                 if segment["adjustment"] != adjustment:
                     continue
                 pid = segment["security_identity"]["security_id"]
+                mapped_start = (
+                    adjustment == "raw"
+                    and segment["row_start"] == 1
+                    and SPLIT_ADJUSTED_RENAME_TAPE in segment.get("warnings", ())
+                )
+                reason = None
+                if adjustment == "raw":
+                    reason = next(
+                        (
+                            code
+                            for code in segment.get("warnings", ())
+                            if code in (TERMINAL_RENAME_PREFIX, CLOSED_ENTRY_RENAME_PREFIX)
+                        ),
+                        None,
+                    )
+                scope = (pid, symbol, segment["historical_symbol"])
                 for index in range(segment["row_start"] - 1, segment["row_end"]):
                     key = id(view.views[adjustment]), index
                     if key not in row_cache:
@@ -398,6 +446,15 @@ def _select_new_observations(
                     row = row_cache[key]
                     owners[index] = pid
                     instant = _instant(row[0], instants)
+                    if reason:
+                        # An opened comparison can use its already accepted
+                        # counterpart. It does not select the whole old episode.
+                        if reopened_choices is None or index + 1 not in reopened_choices.get(
+                            (symbol, "raw"), ()
+                        ):
+                            bounded_scopes[(*scope, reason)].append((pid, instant))
+                    elif mapped_start and index < 2:
+                        mapped_starts[scope].append((pid, instant))
                     labels[(pid, instant)].update(
                         segment.get("observation_tickers") or [segment["historical_symbol"]]
                     )
@@ -426,8 +483,20 @@ def _select_new_observations(
                         )
             ownership[symbol][adjustment] = owners
 
+    incompatible = bounded_prefixes(
+        bounded_scopes,
+        candidates,
+        labels,
+        market_sources,
+        own,
+        lambda value: _instant(value, instants),
+        complete_selection=reopened_choices is None,
+    )
     choices, corrections, contested, incomplete = {}, {}, set(), set()
     label_days = {}
+    # The same physical rows can represent several views. Reuse a comparison
+    # across those views and the complete-bundle tie breaker for this contest.
+    same = cache(compare_values)
     for (pid, instant), sources in candidates.items():
         if len(sources) == 1:
             name, bundle = next(iter(sources.items()))
@@ -439,9 +508,10 @@ def _select_new_observations(
                 # complementary partial sources into a false complete bundle.
                 incomplete.add((pid, instant))
             continue
+        same.cache_clear()
         values = {name: {view: row[1:] for view, row in bundle.items()} for name, bundle in sources.items()}
         equal = {
-            view: len({bundle[view] for bundle in values.values() if view in bundle}) <= 1
+            view: _agree((bundle[view] for bundle in values.values() if view in bundle), same)
             for view in ADJUSTMENTS
         }
         if not all(equal.values()):
@@ -449,7 +519,7 @@ def _select_new_observations(
         complete = {name: views for name, views in sources.items() if set(views) == set(ADJUSTMENTS)}
         dated = market_sources[(pid, instant)] & complete.keys()
         adjusted = _continuous_adjustments(
-            pid, complete, dated, adjustment_sources[(pid, instant)], values, equal, inputs, own, instants
+            pid, complete, dated, adjustment_sources[(pid, instant)], values, equal, inputs, own, instants, same
         )
         if len(adjusted) == 1:
             choices[(pid, instant)] = next(iter(adjusted))
@@ -468,12 +538,15 @@ def _select_new_observations(
         if len(preferred) != 1:
             # Exact bundles need no authority contest. A lexical tie is safe only
             # after complete numerical equality; genuine ambiguity stays explicit.
-            bundles = {tuple(values[name][a] for a in ADJUSTMENTS) for name in complete}
-            choices[(pid, instant)] = min(complete) if len(bundles) == 1 else None
+            same_bundle = bool(complete) and all(
+                equal[view] or _agree((values[name][view] for name in complete), same) for view in ADJUSTMENTS
+            )
+            choices[(pid, instant)] = min(complete) if same_bundle else None
             continue
         winner = preferred[0]
         choices[(pid, instant)] = winner
 
+    incompatible.update(incompatible_prefixes(mapped_starts, candidates, choices, labels))
     if equality_outcomes is not None:
         equality_outcomes.update(
             {
@@ -494,7 +567,7 @@ def _select_new_observations(
     selected_routes = {
         (pid, winner)
         for (pid, instant), winner in choices.items()
-        if winner is not None and (pid, instant) not in incomplete
+        if winner is not None and (pid, instant) not in incomplete and (pid, instant) not in incompatible
     }
     correction_routes = {
         (pid, choices[(pid, instant)])
@@ -528,7 +601,9 @@ def _select_new_observations(
                         label_days[instant] = instant.astimezone(NEW_YORK).date().isoformat()
                     tickers = select_labels(pid, label_days[instant], tickers, dated_label_plan)
                 state = (
-                    "conflict"
+                    "superseded"
+                    if (pid, instant) in incompatible
+                    else "conflict"
                     if winner is None
                     else "incomplete"
                     if (pid, instant) in incomplete
@@ -542,7 +617,13 @@ def _select_new_observations(
                 # Price authority cannot erase independently accepted ticker
                 # labels. Publish their union separately, including ambiguity,
                 # and split a run whenever either accepted decision changes.
-                if run is None or run["observation_selection"] != state or run["observation_tickers"] != tickers:
+                unsupported_basis = (pid, instant) in incompatible
+                if (
+                    run is None
+                    or run["observation_selection"] != state
+                    or run["observation_tickers"] != tickers
+                    or (INCOMPATIBLE_SPLIT_BASIS in run.get("warnings", ())) != unsupported_basis
+                ):
                     run = {
                         **segment,
                         "row_start": index + 1,
@@ -550,6 +631,12 @@ def _select_new_observations(
                         "observation_selection": state,
                         "observation_tickers": tickers,
                     }
+                    if unsupported_basis:
+                        run["warnings"] = sorted({*segment.get("warnings", ()), INCOMPATIBLE_SPLIT_BASIS})
+                    elif INCOMPATIBLE_SPLIT_BASIS in run.get("warnings", ()):
+                        run["warnings"] = [
+                            value for value in run["warnings"] if value != INCOMPATIBLE_SPLIT_BASIS
+                        ]
                     segments.append(run)
                 else:
                     run["row_end"] = index + 1

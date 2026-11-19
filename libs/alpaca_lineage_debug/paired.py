@@ -140,7 +140,7 @@ def _retained(control, changes, selected):
     return choices
 
 
-def _refined_candidate(selected, control, *, dated_labels):
+def _refined_candidate(selected, control, *, dated_labels, correlation_version):
     if "raw_reports" not in control:
         raise ValueError("membership comparison requires the completed unrefined ownership reports")
     reports, trace = refine(control["raw_reports"], control["refinement_evidence"], selected)
@@ -156,6 +156,7 @@ def _refined_candidate(selected, control, *, dated_labels):
         selected["inputs"],
         reports,
         retained_choices=_retained(control["reports"], trace["changes"], selected),
+        correlation_version=correlation_version,
     )
     affected = {item["old_public_id"] for item in trace["changes"]} | {
         item["new_public_id"] for item in trace["changes"]
@@ -257,7 +258,12 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
         if removing_membership:
             # Produce the unrefined side first. The control then opens only the
             # newly joined contest. Both sides retain their actual decisions.
-            control_frame, reports, trace, _ = _refined_candidate(selected, control, dated_labels=control_labels)
+            control_frame, reports, trace, _ = _refined_candidate(
+                selected,
+                control,
+                dated_labels=control_labels,
+                correlation_version=control_policy.implementation_correlation_version,
+            )
             if trace["changes"] and candidate_labels != control_labels:
                 raise ValueError("compare one changed producer at a time")
             control_report["comparison"] = compare_publication(
@@ -286,7 +292,10 @@ def evaluate(store, seed, policy, control_policy, selected, maximum):
                 }
         else:
             candidate, _, trace, label_trace = _refined_candidate(
-                selected, control, dated_labels=candidate_labels
+                selected,
+                control,
+                dated_labels=candidate_labels,
+                correlation_version=policy.implementation_correlation_version,
             )
     else:
         candidate_completed = {}

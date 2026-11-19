@@ -55,6 +55,9 @@ class SourceEquivalenceTests(TestCase):
         )
         inputs = {"BEFORE": {}, "AFTER": {}}
         self.assertEqual({NEW: {DAY}}, accepted_dates(group, [prior], inputs))
+        corrected = deepcopy(prior)
+        corrected["history_validation"]["prefix_records"][0]["dated_price_span"] = [DAY, "2024-01-03"]
+        self.assertEqual({}, accepted_dates(group, [corrected], inputs))
         changed = deepcopy(prior)
         changed["references"]["lineage"]["BEFORE"] = "6" * 64
         self.assertEqual({}, accepted_dates(group, [changed], inputs))

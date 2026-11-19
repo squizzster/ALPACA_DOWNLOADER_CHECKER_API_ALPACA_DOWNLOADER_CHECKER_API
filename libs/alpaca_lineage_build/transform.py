@@ -260,6 +260,10 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
 
     anchor = view.source["anchor_month"]
     indexes = _row_indexes(view)
+    if previous and previous.get("dated_occupations"):
+        from .occupation_continuation import apply as apply_occupations
+
+        report = apply_occupations(previous, evidence, view, report, indexes, continued=resume_closed)
     report = _split_months(report, indexes)
     old_boundaries = old_boundaries or {}
     documents = (
@@ -386,6 +390,14 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
             for kind, relative in boundary_paths(anchor).items()
         },
     }
+    if previous and previous.get("dated_occupations"):
+        terminal = {
+            pid: r["token"]
+            for pid, r in previous["dated_occupations"].items()
+            if r.get("retained_side") == "prior"
+        }
+        if terminal:
+            receipt["applied_unit_retirements"] = terminal
     if resume_closed:
         # These are closed prefix results, not evidence or recipes for new rows.
         # Preserve their original bounds; the fresh cache never certifies or
@@ -461,6 +473,25 @@ def make_publication(view, evidence, report, deps, previous=None, old_boundaries
     if handoffs:
         receipt["assignment_handoffs"] = handoffs
         receipt["assignment_handoff_kinds"] = sorted(handoffs)
+    if resume_closed and (
+        previous.get("dated_price_intervals")
+        or previous.get("price_basis_limits")
+        or previous.get("historical_label_intervals")
+    ):
+        from .dated_price_publication import continue_closed
+
+        starts = [index.sessions[0] for index in indexes.values() if index.sessions]
+        if view.correction_from:
+            starts.append(view.correction_from)
+        if previous.get("historical_label_intervals"):
+            from .historical_labels import continue_closed as continue_labels
+
+            continue_labels(previous, receipt, min(starts, default=None))
+        if previous.get("price_basis_limits"):
+            from . import price_basis_limits
+
+            price_basis_limits.continue_closed(previous, receipt, min(starts, default=None))
+        continue_closed(previous, receipt, min(starts, default=None))
     if resume_closed and previous.get("membership_only_rebind") is not None:
         from .membership_transfer import carry_prefix as carry_membership_prefix
 

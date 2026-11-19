@@ -21,6 +21,7 @@ from .evidence import (
     identity_candidates_for_symbol,
 )
 from .identity_partition import OneSessionDistinctUuidTransition
+from .mapped_rename_chain import SPLIT_ADJUSTED_RENAME_TAPE
 from .name_change import (
     PRE_ENTRY_CARRY_FORWARD_REASON,
     NameChangeAssessment,
@@ -259,6 +260,8 @@ class CorrelationCache:
         mapped_successor_prefixes=True,
         mapped_successor_split_chains=True,
         active_successor_prefixes=True,
+        split_adjusted_rename_prefixes=True,
+        bounded_rename_prefixes=True,
         closed_prior_action_anchored_suffixes=True,
         stable_phase_handoffs=True,
         sourced_succession_certificates=False,
@@ -301,6 +304,8 @@ class CorrelationCache:
         self.mapped_successor_prefixes = mapped_successor_prefixes
         self.mapped_successor_split_chains = mapped_successor_split_chains
         self.active_successor_prefixes = active_successor_prefixes
+        self.split_adjusted_rename_prefixes = split_adjusted_rename_prefixes
+        self.bounded_rename_prefixes = bounded_rename_prefixes
         self.closed_prior_action_anchored_suffixes = closed_prior_action_anchored_suffixes
         self.stable_phase_handoffs = stable_phase_handoffs
         self.sourced_succession_certificates = sourced_succession_certificates
@@ -796,6 +801,8 @@ def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | N
             *(("inferred_lower_ownership_boundary",) if interval.start_date_inclusive is None else ()),
             *((INDEPENDENT_HISTORY_WARNING,) if independent else ()),
             *((MAPPED_CONTINUATION_WARNING,) if mapped_match else ()),
+            *((SPLIT_ADJUSTED_RENAME_TAPE,) if any(item.split_adjusted_rename for item in mapped) else ()),
+            *dict.fromkeys(item.scope_reason for item in mapped if item.scope_reason),
         ),
         correlation_method=MAPPED_CONTINUATION_RULE_NAME if mapped_match else None,
     )

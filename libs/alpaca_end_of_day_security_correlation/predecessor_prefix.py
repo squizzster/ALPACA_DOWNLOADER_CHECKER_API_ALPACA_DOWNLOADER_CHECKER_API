@@ -17,6 +17,7 @@ from libs.common.us_equity_market_session_calendar import (
 
 from .errors import SecurityCorrelationError
 from .identity_partition import _session_date
+from .mapped_rename_chain import MappedContinuation, _known_label_asset_ids, split_adjusted_prefix
 from .name_change import _complete_action_query_covers
 from .ownership_interval_rules import TickerOwnershipInterval
 from .terminal_episode import (
@@ -50,40 +51,6 @@ class IndependentHistoricalInterval:
     first: date
     last: date
     interval: TickerOwnershipInterval
-
-
-@dataclass(frozen=True)
-class MappedContinuation:
-    sessions: frozenset[date]
-    interval: TickerOwnershipInterval
-    donor_symbol: str
-    action_id: str
-
-    def contains(self, session: date) -> bool:
-        return session in self.sessions
-
-
-def _known_label_asset_ids(lineage, symbol):
-    known = {
-        item.get("id")
-        for item in lineage.get("identities", [])
-        if item.get("symbol") == symbol and item.get("id")
-    }
-    for field in ("symbol_occupancy_evidence", "input_symbol_occupants"):
-        known.update(
-            item.get("asset_id")
-            for item in lineage.get(field, [])
-            if item.get("symbol") == symbol and item.get("asset_id")
-        )
-    known.update(
-        item["asset"].get("id")
-        for item in lineage.get("asset_lookups", [])
-        if isinstance(item.get("asset"), dict)
-        and item["asset"].get("id")
-        and item.get("lookup_kind") == "symbol"
-        and item.get("lookup") == symbol
-    )
-    return known
 
 
 def _mapped_donor_positions(report, descriptor, edge, source):
@@ -421,6 +388,8 @@ def assess_mapped_continuations(
     include_successor_prefix=False,
     include_successor_split_chain=False,
     include_active_successor_prefix=False,
+    split_adjusted_prefix_sessions=None,
+    include_bounded_rename_prefix=False,
 ):
     """Bind mapped predecessor rows only after the successor independently owns them."""
     if correlation_loader is None or source_rows_loader is None:
@@ -433,6 +402,19 @@ def assess_mapped_continuations(
     grids = {sessions for _, _, sessions in sources.values()}
     if len(grids) != 1:
         return ()
+    if split_adjusted_prefix_sessions is not None:
+        mapped = split_adjusted_prefix(
+            symbol,
+            lineage,
+            edges,
+            sources,
+            correlation_loader,
+            source_rows_loader,
+            split_adjusted_prefix_sessions,
+            **({"bounded_intervals": intervals} if include_bounded_rename_prefix else {}),
+        )
+        if mapped:
+            return mapped
     qualified = []
     for edge in edges:
         if (

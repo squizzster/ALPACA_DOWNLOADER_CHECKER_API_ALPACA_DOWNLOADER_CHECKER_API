@@ -46,6 +46,17 @@ class CompletedGroupPublicationTests(unittest.TestCase):
         }
         return group_engine.CompletedGroupPublication(self.receipts, self.boundaries, True, True, 37, 0)
 
+    def test_materialization_lends_the_selected_pricing_sources_to_publication(self):
+        for reused, continued in ((False, False), (False, True), (True, False)):
+            publication = replace(self.publication(), reused_decision=reused, reused_closed_boundaries=continued)
+            with (
+                self.subTest(reused=reused, continued=continued),
+                patch.object(group_engine.storage, "publish") as publish,
+            ):
+                group_engine.publish_completed_group(publication, **self.kwargs)
+            self.assertEqual(publish.call_args.kwargs["full_materialization"], not (reused or continued))
+            self.assertIs(publish.call_args.kwargs["sources"], self.kwargs["sources"])
+
     def test_completed_publication_carries_exact_owner_result_before_acknowledgement(self):
         publication = self.publication()
         with (

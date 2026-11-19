@@ -345,5 +345,31 @@
     "modifications": [
       "Use the accepted mapped all-view witness at its exact first-session endpoint. Fetch distinct confirmation scopes once."
     ]
+  },
+  {
+    "modifications": [
+      "Carry the completed predecessor and successor coverage observations into split-aware mapped acquisitions, fetching only the remaining fully adjusted ranges across retries."
+    ]
+  },
+  {
+    "modifications": [
+      "Acquire eight-view dated price intervals against a published identity and corroborate changed raw sessions under their historical labels."
+    ]
+  },
+  {
+    "modifications": [
+      "Derive bounded split-timing corrections from provider action terms and traded or carried observations across all eight published adjustment views.",
+      "Retain dated ticker labels and correct carried rename quotes where the literal-symbol provider history establishes their units.",
+      "Select an opening ticker’s dated adjustment basis when the full raw tape and traded successor witnesses agree.",
+      "Derive a selected predecessor split basis from native share terms, calibrated successor observations and the existing dated raw tape.",
+      "Carry the selected last SIP trade in each split-adjusted view over an evidenced zero-activity interval with a compatible reopening.",
+      "Remove duplicated split adjustments when dated share terms and traded observations establish one share change, preserving other adjustment views and cash distributions.",
+      "Assess disputed share units from original split terms, the adjustment views, traded openings and unmapped regular-session observations, retaining each completed stage.",
+      "Correct marked sessions up to an observed same-label conversion, recognize either edge of a confirmed carried rename, and identify traded NAV-relative product marks using their native instrument and literal tape.",
+      "Extend an accepted former-ticker witness across new raw observations and checkpoint each literal trading occupation.",
+      "Identify nontraded last-price marks still in pre-action share units using native dated terms, retained adjustment views, resumed trading when available, and literal prices including declared alternate labels.",
+      "Identify a prior trading label from selected raw observations of a displaced occupation and corroborated successor trades.",
+      "Restore the original unit denominations of a wholly retired unit when every retained split, cash and spin view matches the exact reported post-retirement share factor."
+    ]
   }
 ]

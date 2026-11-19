@@ -43,6 +43,17 @@ def validate_history_validation(group):
     decisions = {record["public_id"] for record in group["decisions"]}
     seen = set()
     for record in completed["prefix_records"]:
+        span = record.get("dated_price_span")
+        if ("dated_price_token" in record) != ("dated_price_span" in record) or (
+            "dated_price_span" in record
+            and (
+                not isinstance(span, list)
+                or len(span) != 2
+                or not record["dated_price_token"]
+                or span[0] >= span[1]
+            )
+        ):
+            raise ValueError("invalid serving dated price checkpoint")
         dates = record.get("session_dates")
         if (
             record.get("session_projection_version") not in (None, 1)
@@ -129,12 +140,17 @@ def _identity_prefix(runs, count, public_id):
     return selected
 
 
-def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=False):
+def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=False, dated_intervals=None):
     # These bodies came from the accepted serving selector. Its producer already
     # validated the checkpoint. Compare current input guarantees in memory; DO
     # NOT revalidate old records or scan old prices to earn permission to reuse.
     # Failed ancestry/ownership gates leave that identity to ordinary evaluation.
-    prefixes = {}
+    from .duplicate_slices import prefix as duplicate_prefix
+
+    prefixes = duplicate_prefix(group, previous, inputs, offsets)
+    borrowed = set(prefixes)
+    changed = set()
+    intervals = dated_intervals or {}
     for prior_group in previous:
         if prior_group["policy"] == policy():
             completed = prior_group["history_validation"]
@@ -143,6 +159,8 @@ def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=Fals
             if completed is None:
                 continue
         for record in completed["prefix_records"]:
+            if record["public_id"] in borrowed:
+                continue
             if (
                 record.get("session_projection_version") not in (None, 1)
                 or record.get("session_projection_version") == 1
@@ -152,6 +170,21 @@ def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=Fals
                 raise ValueError(
                     "missing or unsupported serving date projection; explicit catalogue rebuild required"
                 )
+            pid = record["public_id"]
+            interval = intervals.get(pid)
+            token = interval["token"] if interval else None
+            if record.get("dated_price_token") != token:
+                # The acquisition owner validated each new price and kept the entire
+                # grid and later views of its selected clean publication. A carried
+                # rename also supplies a bounded label handoff for that grid.
+                # Only that publication supplies the other eligibility outcomes.
+                if (
+                    not interval
+                    or interval["source_decision"] != prior_group["decision_generation"]
+                    or record["price_reasons"]
+                ):
+                    changed.add(pid)
+                    continue
             prefix = _select_identity_prefix(group, completed, record, inputs, offsets)
             if prefix is None:
                 prefix = _select_revision_prefix(group, completed, record, inputs, offsets)
@@ -159,10 +192,14 @@ def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=Fals
                 prefixes[record["public_id"]] = prefix
     from .source_revision import select_revisions
 
-    prefixes.update(select_revisions(group, previous, inputs, offsets, prefixes))
-    prefixes.update(_dated_market_prefixes(group, previous, inputs, offsets, prefixes))
-    prefixes.update(_relabelled_whole_donors(group, previous, inputs, offsets, prefixes))
-    prefixes.update(compose_membership_rebind(group, previous, inputs, offsets, completed=prefixes))
+    # Numerical and membership handoffs for original source rows cannot lend
+    # their outcomes to an identity whose immutable dated payload changed.
+    skipped = set(prefixes) | changed | intervals.keys()
+    for selector in (select_revisions, _dated_market_prefixes, _relabelled_whole_donors):
+        more = selector(group, previous, inputs, offsets, skipped)
+        prefixes.update(more)
+        skipped.update(more)
+    prefixes.update(compose_membership_rebind(group, previous, inputs, offsets, completed=skipped))
     return prefixes
 
 
@@ -287,6 +324,8 @@ def _relabelled_whole_donors(group, previous, inputs, offsets, completed):
             continue
         history = prior["history_validation"]
         for record in history["prefix_records"]:
+            if record.get("dated_price_token"):
+                continue  # A dated payload belongs to its original public identity.
             old_id = record["public_id"]
             sources = {
                 source
@@ -705,6 +744,9 @@ def compose_membership_rebind(group, previous, inputs, offsets, *, completed=())
                     "membership transfer lacks one exact numerical donor; explicit serving projection required"
                 )
             prior, donor_checkpoint, record = matches[0]
+            if record.get("dated_price_token"):
+                valid = False
+                break
             if record.get("session_dates") is None and record.get("session_projection_version") is not None:
                 raise ValueError(
                     "membership transfer has incomplete declared date projection; explicit serving projection required"

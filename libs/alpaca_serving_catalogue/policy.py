@@ -8,6 +8,7 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timesta
 from libs.common.debug_trace import traced
 from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
+from . import cusip_dates
 from .contract import CatalogueError, policy
 from .offline import available_checkpoints, previous_checkpoints, select_offline
 from .reuse import extend_ticker_ranges, select_prefixes
@@ -92,11 +93,11 @@ def _unresolved_ends(group, security, members, first, last):
     return ends
 
 
-def _metadata(group, public_id):
+def _metadata(group, public_id, *, sources=None):
     segments = _segments(group, public_id)
     members = {i for s in segments for i in s["security_identity"]["member_alpaca_asset_ids"]}
     observations = {}
-    for source in group.evidence["sources"].values():
+    for source in (sources if sources is not None else group.evidence["sources"]).values():
         evidence = source["evidence"]
         for lookup in evidence["asset_lookups"]:
             asset = lookup.get("asset") or {}
@@ -338,6 +339,14 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         if prepared
         else select_offline(group, previous, inputs, offsets, securities=selected_securities)
     )
+    if prepared is None:
+        intervals = group.dated_price_intervals() if hasattr(group, "dated_price_intervals") else {}
+        historical = group.historical_label_intervals() if hasattr(group, "historical_label_intervals") else {}
+        limits = group.price_basis_limits() if hasattr(group, "price_basis_limits") else {}
+    else:
+        intervals = prepared["dated_intervals"]
+        limits = prepared.get("price_basis_limits", {})
+        historical = prepared.get("historical_label_intervals", {})
     prefixes = (
         prepared["prefixes"]
         if prepared
@@ -347,6 +356,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 available_checkpoints(previous, offline_ids),
                 inputs,
                 offsets,
+                **({"dated_intervals": intervals} if intervals else {}),
                 **({"rebuild_projection": True} if rebuild_projection else {}),
             )
             if any(item["public_id"] not in offline_ids for item in selected_securities)
@@ -363,14 +373,19 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 "securities": selected_securities,
                 "offline": (offline_ids, offline),
                 "prefixes": prefixes,
+                "dated_intervals": intervals,
+                "price_basis_limits": limits,
+                "historical_label_intervals": historical,
             },
         )
     validation = {"inputs": inputs, "identities": {}, "prefix_records": [], "revision_prefix_version": 1}
     if hasattr(group, "observation_choice_handoffs"):
         validation["observation_choice_handoffs"] = group.observation_choice_handoffs()
     work = {"reused_history_prefixes": 0, "full_history_evaluations": 0, "checked_bars": 0}
+    sources = split_dates = None
     for security in selected_securities:
         public_id = security["public_id"]
+        interval = intervals.get(public_id)
         if public_id in offline_ids:
             decisions.append({"public_id": public_id, "eligible": False, "reasons": [offline["reason"]]})
             continue
@@ -381,7 +396,9 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         prefix = prefixes.get(public_id)
         if prefix is not None and "source_revision" in prefix:
             prefix = preparation.revised(binding, group, public_id, prefix, work)
-        members, observations = _metadata(group, public_id)
+        if sources is None:
+            sources = group.evidence["sources"]
+        members, observations = _metadata(group, public_id, sources=sources)
         if prefix is None:
             work["full_history_evaluations"] += 1
         try:
@@ -411,10 +428,13 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         validation["identities"][public_id] = coverage
         raw = views["raw"]["bars"]
         sessions = [b["session"] for b in raw]
+        unchecked = (
+            {day for day in sessions if day < interval["first"] or day >= interval["cut"]}
+            if interval
+            else set(sessions)
+        )
         equal_source_dates = (
-            accepted_dates(group, previous, inputs, public_id=public_id, sessions=set(sessions))
-            if sessions
-            else {}
+            accepted_dates(group, previous, inputs, public_id=public_id, sessions=unchecked) if unchecked else {}
         )
         outside = bool(prefix and "accepted_span" in prefix)
         before = [bar for bar in raw if outside and bar["session"] < prior["first_session"]]
@@ -449,6 +469,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 ]:
                     before_last_reasons.add("incompatible_sessions")
             for bar in view["bars"]:
+                if interval and interval["first"] <= bar["session"] < interval["cut"]:
+                    continue  # The dated acquisition already checked each value for this view.
                 if bar["session"] in equal_source_dates.get(public_id, ()):
                     continue
                 bar_reasons = _bar_reasons(bar, adjustment)
@@ -523,7 +545,25 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         if missing - explained:
             reasons.add("unexplained_missing_sessions")
         unresolved_ends = _unresolved_ends(group, security, members, first_session, last_session)
-        cutoff = max(unresolved_ends) if unresolved_ends else None
+        coverage_limits = limits.get(public_id, {})
+        from libs.alpaca_lineage_build.price_basis_limits import PROXY, RESTRICT, UNPRICED
+
+        from . import price_gaps
+
+        gaps = price_gaps.active(coverage_limits)
+        if any(
+            item["reason"] == PROXY or item.get("pending") and item.get("restored_review") == PROXY
+            for item in coverage_limits.values()
+        ):
+            reasons.add(PROXY)
+        split_limits = [
+            item["previous_session"]
+            for item in coverage_limits.values()
+            if item["reason"] not in (PROXY, UNPRICED)
+            and not item.get("restored_review")
+            and (item["reason"] == RESTRICT or item.get("pending"))
+        ]
+        cutoff = max([*unresolved_ends, *split_limits], default=None)
         if cutoff is not None and cutoff >= last_session:
             reasons.add("unresolved_coverage")
         decisions.append(
@@ -532,6 +572,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 "eligible": not reasons,
                 "reasons": sorted(reasons),
                 "explained_missing_sessions": sorted(explained),
+                **({"price_basis_limits": coverage_limits} if coverage_limits else {}),
             }
         )
         if not first_session:
@@ -565,6 +606,12 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 )
             else:
                 ticker_ranges = extend_ticker_ranges(prior, ticker_ranges)
+        label_changes = (interval or {}).get("label_changes", ())
+        new_labels = label_changes and (not prior or prior.get("dated_price_token") != interval["token"])
+        if new_labels:
+            from .carried_labels import project_ranges
+
+            ticker_ranges = project_ranges(ticker_ranges, label_changes)
         history_summary = {
             "public_id": public_id,
             "first_session": first_session,
@@ -591,7 +638,12 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                     item
                     for old in previous
                     if any(
-                        d["public_id"] == public_id and d.get("publication_start_after_unresolved") == cutoff
+                        d["public_id"] == public_id
+                        and cutoff
+                        in (
+                            d.get("publication_start_after_unresolved"),
+                            d.get("publication_start_after_price_basis"),
+                        )
                         for d in old["decisions"]
                     )
                     for item in old["securities"]
@@ -603,7 +655,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             else None
         )
         if session_dates is None and (
-            rebuild_projection
+            any(v.get("pending") and v["terminal"] and last_session > v["witness_end"] for v in gaps)
+            or rebuild_projection
             and (
                 cutoff is not None
                 and accepted_range is None
@@ -624,6 +677,14 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         validation["prefix_records"].append(
             {
                 **history_summary,
+                **(
+                    {
+                        "dated_price_token": interval["token"],
+                        "dated_price_span": [interval["first"], interval["cut"]],
+                    }
+                    if interval
+                    else {}
+                ),
                 **(
                     {"session_dates": session_dates, "session_projection_version": 1}
                     if session_dates is not None
@@ -706,6 +767,16 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                         ],
                     }
                     supported_ranges = extend_ticker_ranges(retained, _ticker_ranges(supported))
+                if new_labels:
+                    supported_ranges = project_ranges(supported_ranges, label_changes)
+            if accepted_range and accepted_range.get("historical_label_interval"):
+                # Partial output previously exposed the historic ticker. Rebuild its
+                # labels from the original accepted prefix in case that scope changed.
+                supported_ranges = [
+                    {**r, "first_session": max(r["first_session"], first_supported)}
+                    for r in ticker_ranges
+                    if r["last_session"] >= first_supported
+                ]
             history_summary = {
                 **history_summary,
                 "first_session": first_supported,
@@ -718,8 +789,26 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                     ),
                 },
             }
-            decisions[-1]["publication_start_after_unresolved"] = cutoff
+            if unresolved_ends:
+                decisions[-1]["publication_start_after_unresolved"] = max(unresolved_ends)
+            if split_limits:
+                decisions[-1]["publication_start_after_price_basis"] = max(split_limits)
             ticker_ranges = history_summary["ticker_ranges"]
+
+        if gaps:
+            history_summary = price_gaps.project(history_summary, gaps, session_dates)
+            if not history_summary["coverage"]["session_count"]:
+                decisions[-1].update(eligible=False, reasons=["unresolved_coverage"])
+                continue
+            ticker_ranges = history_summary["ticker_ranges"]
+            last_session = history_summary["last_session"]
+
+        historical_interval = historical.get(public_id)
+        if historical_interval:
+            from .carried_labels import project_ranges
+
+            ticker_ranges = project_ranges(ticker_ranges, [historical_interval["change"]])
+            history_summary = {**history_summary, "ticker_ranges": ticker_ranges}
 
         # Metadata can come from a superseded contributing source whose dated
         # assignments extend beyond the selected numerical history. Project its
@@ -740,12 +829,36 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             )
         ]
 
+        ownership = _ownership_intervals(group, public_id)
+        if any(interval["cusip"] for interval in ownership):
+            if split_dates is None:
+                split_dates = cusip_dates.split_evidence(sources)
+            periods = cusip_dates.supported_periods(split_dates, members, security["tickers"])
+            ownership, observations = cusip_dates.constrain(ownership, observations, periods)
+
+        if label_changes:
+            from .carried_labels import project_ownership
+
+            ownership = project_ownership(ownership, label_changes)
+
+        if historical_interval:
+            from .carried_labels import project_ownership
+
+            ownership = project_ownership(ownership, [historical_interval["change"]], carry_cusip=False)
+            if historical_interval.get("occupation"):
+                from .carried_labels import add_witnessed_occupation
+
+                ownership = add_witnessed_occupation(ownership, historical_interval["change"])
+
         def values(field):
             return sorted({o["value"] for o in observations if o["field"] == field})
 
         securities.append(
             {
                 **history_summary,
+                **({"dated_price_interval": interval} if interval else {}),
+                **({"price_basis_limits": coverage_limits} if coverage_limits else {}),
+                **({"historical_label_interval": historical_interval} if historical_interval else {}),
                 "tickers": sorted({item["ticker"] for item in ticker_ranges}),
                 "names": values("name"),
                 "cusips": values("cusip"),
@@ -754,7 +867,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 "external_identifiers": [],
                 "adjustments": list(ADJUSTMENTS),
                 "observations": observations,
-                "ticker_ownership_intervals": _ownership_intervals(group, public_id),
+                "ticker_ownership_intervals": ownership,
             }
         )
     completed = {

@@ -50,7 +50,27 @@ def read_group(data, selected, groups, key, start, end):
         with data._reader._open_group(
             expected["locator"], expected=expected["references"], wait=False, export_selection=True
         ) as group:
-            with closing(group._iter_export_histories(groups[key], start=start, end=end)) as histories:
+            starts, visible = {}, {}
+            for pid in groups[key]:
+                if data._records[pid].get("public", {}).get("price_basis_limits"):
+                    online = selected[pid].first_session
+                    starts[pid] = max(start, online) if start else online
+                intervals = data._records[pid].get("public", {}).get("price_exclusions")
+                if intervals:
+                    from ._online_price_spans import spans
+
+                    last = selected[pid].last_session
+                    visible[pid] = list(
+                        spans(
+                            starts.get(pid, start or selected[pid].first_session),
+                            min(end, last) if end else last,
+                            intervals,
+                        )
+                    )
+            scoped = {"online_starts": starts} if starts else {}
+            if visible:
+                scoped["online_windows"] = visible
+            with closing(group._iter_export_histories(groups[key], start=start, end=end, **scoped)) as histories:
                 for public_id, views in histories:
                     security = selected[public_id]
                     first, last = security.first_session.isoformat(), security.last_session.isoformat()

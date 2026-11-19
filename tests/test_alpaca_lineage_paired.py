@@ -159,7 +159,9 @@ class PairedImpactTests(unittest.TestCase):
 
             previous = self.directory / "previous.json"
             report["debug_version"] = 14
-            report["implementation_binding"].update(debug=14, lineage_runtime=111)
+            report["implementation_binding"].update(
+                debug=14, policy_lab=24, correlation_runtime=97, lineage_runtime=111
+            )
             impact["parity"] = True
             previous.write_text(json.dumps(report))
             retried = debug_fixtures.request("run", reuse_report=str(previous), **options)

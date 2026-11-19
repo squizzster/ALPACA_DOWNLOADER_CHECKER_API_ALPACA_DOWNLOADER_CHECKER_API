@@ -477,6 +477,9 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False, servi
                 # The serving obligation commits with the lineage selector, before
                 # upstream acknowledgement. Recovery can replay this transaction.
                 record_publication(connection, entries, empty=count == 0, handoff=serving_handoff)
+                from .occupation_pivots import record as record_occupation_pivots
+
+                record_occupation_pivots(connection, entries)
                 connection.execute(
                     "INSERT OR IGNORE INTO projection_state VALUES (1, ?, 0, ?)",
                     (PROJECTION_VERSION, int(count == 0)),
@@ -536,6 +539,22 @@ def read_receipt(root: Path, symbol: str, index: dict, *, selected_loader=None) 
     from .numerical_mapping import accept_assessments
 
     accept_assessments(value)
+    if "historical_label_intervals" in value or "historical_label_tokens" in entry:
+        from .historical_labels import accept as accept_labels
+
+        accept_labels(value, entry)
+    if "dated_occupations" in value or "dated_occupation_tokens" in entry:
+        from .occupation_storage import accept as accept_occupations
+
+        accept_occupations(value, entry)
+    if "price_basis_limits" in value or "price_basis_limit_tokens" in entry:
+        from .price_basis_limits import accept as accept_limits
+
+        accept_limits(value, entry)
+    if "dated_price_intervals" in value or "dated_price_tokens" in entry:
+        from .dated_price_publication import accept
+
+        accept(value, entry)
     from .recovery_handoffs import remember
 
     remember(root.parent.parent, "receipt", (symbol, entry["sha256"]), value)
@@ -614,10 +633,11 @@ def read_assignment_projection(root, receipt, kind, handoff, *, selected_loader=
     )
 
 
-def _install(root: Path, journal: dict, *, compare=True) -> dict:
+def _install(root: Path, journal: dict, *, compare=True, policy_accepted=False) -> dict:
     # The journal and brief publication gate make multi-symbol visibility atomic to
     # cooperating readers. Index is the selector and is always installed last.
-    _validate_journal_policy(journal)
+    if not policy_accepted:
+        _validate_journal_policy(journal)
     from libs.alpaca_serving_catalogue.export_inputs import invalidate as invalidate_exports
 
     changes = journal.get("export_input_changes")
@@ -742,13 +762,14 @@ def finish_publication(store: Path, root: Path, journal: dict, *, receipts=None,
     from .check_summary import refresh
 
     recovering = receipts is None
-    if recovering and not journal.get("projection_only"):
+    independent = journal.get("projection_only") or journal.get("dated_price_publication")
+    if recovering and not independent:
         invalidate(store, journal["sources"], owner="lineage")
     # A fresh journal contains only known changes. Recovery may already have
     # installed some of them, so compare existing files only on that path.
-    state = _install(root, journal, compare=recovering)
-    if journal.get("projection_only"):
-        # Frozen representation-only output does not consume upstream work.
+    state = _install(root, journal, compare=recovering, policy_accepted=not recovering)
+    if independent:
+        # Frozen representation and newly selected dated prices consume no upstream work.
         # Newer pricing notices/checks remain owned by ordinary maintenance.
         path_at(root, ".pending.json").unlink()
         return state
@@ -777,7 +798,11 @@ def recover(store: Path, root: Path) -> bool:
     pending = path_at(root, ".pending.json")
     if not pending.exists():
         return False
-    journal = read_document(pending)
+    return recover_journal(store, root, read_document(pending))
+
+
+def recover_journal(store, root, journal):
+    """Resume the owner's already selected pending transaction under its bound locks."""
     if (
         journal.get("schema_version") not in SUPPORTED_VERSIONS
         or journal.get("boundary") != "alpaca_lineage_transaction"
@@ -808,6 +833,10 @@ def publish(
     membership_transfer_recovery=False,
     application_inventory_recovery=False,
     selection_inputs=None,
+    continued=False,
+    full_materialization=False,
+    completed_overlap=None,
+    completed_occupation=None,
 ) -> None:
     if application_inventory_recovery:
         raise LineageError(
@@ -978,7 +1007,26 @@ def publish(
         receipt.get("correlation_policy") != frozen_policy for receipt in receipts.values()
     ):
         raise LineageError("lineage publication receipts have inconsistent policy provenance")
+    from . import occupation_storage
+
     documents, retire = {}, []
+    overlap_marker = {}
+    if completed_occupation is not None:
+        item, rows = completed_occupation
+        overlap_marker = {
+            occupation_storage.MARKER: {
+                "public_id": item["public_id"],
+                "source_decision": item["source_decision"],
+            }
+        }
+        if rows is not None:
+            documents[occupation_storage.payload_name(item)] = {
+                "boundary": "alpaca_dated_occupation_literal_rows",
+                "token": item["token"],
+                "raw": rows,
+            }
+    elif completed_overlap is not None:
+        overlap_marker = {"selected_owner_repair": completed_overlap["source_decision"]}
     export_input_changes = {}
     updated = {}
     from .projection import assignment_handoffs_complete, project_receipt
@@ -1051,7 +1099,59 @@ def publish(
             else:
                 receipt.pop("serving_ownership", None)
             receipt["assignment_handoff_kinds"] = sorted(receipt["assignment_handoffs"])
+        from . import historical_labels, price_basis_limits
+        from .dated_price_publication import FIELD as DATED_PRICES
+        from .dated_price_publication import TOKENS as DATED_TOKENS
+        from .dated_price_publication import retain
+
+        if old and old.get(occupation_storage.FIELD):
+            occupation_storage.carry(old, receipt, continued=continued)
+        if completed_occupation is not None:
+            receipt[occupation_storage.FIELD] = {
+                **receipt.get(occupation_storage.FIELD, {}),
+                item["public_id"]: item,
+            }
+        price_basis_limits.retain(old, receipt, continued=continued)
+        historical_labels.retain(old, receipt, continued=continued)
+        retain(
+            old,
+            receipt,
+            continued=continued,
+            full_materialization=full_materialization,
+            source=(sources or {}).get(symbol),
+        )
+        if completed_overlap is not None:
+            from .duplicate_history import retain_selected_fragments
+
+            retain_selected_fragments(old, receipt, completed_overlap)
+        if (
+            old
+            and old.get("provider_split_relations")
+            and (continued or old["boundaries"] == receipt["boundaries"])
+        ):
+            receipt.setdefault("provider_split_relations", old["provider_split_relations"])
         updated[symbol] = {
+            **overlap_marker,
+            **occupation_storage.index_fields(receipt, index["symbols"].get(symbol)),
+            **(
+                {"selected_owner_repair": completed_overlap["source_decision"]}
+                if completed_overlap is not None
+                else {}
+            ),
+            **(
+                {
+                    price_basis_limits.TOKENS: {
+                        key: item["token"] for key, item in receipt[price_basis_limits.FIELD].items()
+                    }
+                }
+                if receipt.get(price_basis_limits.FIELD)
+                else {}
+            ),
+            **(
+                {DATED_TOKENS: {pid: item["token"] for pid, item in receipt[DATED_PRICES].items()}}
+                if DATED_PRICES in receipt
+                else {}
+            ),
             "sha256": document_digest(receipt),
             "source_sha256": receipt["source_sha256"],
             "dependencies": receipt["dependencies"],
@@ -1062,7 +1162,13 @@ def publish(
             "correlation_policy": receipt["correlation_policy"],
             "projection": project_receipt(receipt),
         }
-        if old is None or old["boundaries"] != receipt["boundaries"]:
+        if (
+            old is None
+            or old["boundaries"] != receipt["boundaries"]
+            or old.get(DATED_PRICES) != receipt.get(DATED_PRICES)
+            or old.get(price_basis_limits.FIELD) != receipt.get(price_basis_limits.FIELD)
+            or old.get(historical_labels.FIELD) != receipt.get(historical_labels.FIELD)
+        ):
             export_input_changes[symbol] = updated[symbol]["sha256"]
         if index["symbols"].get(symbol, {}).get("sha256") != updated[symbol]["sha256"]:
             documents[f"{symbol}/lineage.manifest.json"] = receipt
@@ -1071,6 +1177,7 @@ def publish(
     journal = {
         "schema_version": VERSION,
         "boundary": "alpaca_lineage_transaction",
+        **overlap_marker,
         "correlation_policy": frozen_policy,
         "documents": documents,
         "retire": retire,

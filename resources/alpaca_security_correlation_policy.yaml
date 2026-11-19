@@ -5,7 +5,7 @@ policy:
   policy_version: 1.0.0
   policy_role: production
   implementation:
-    correlation_version: 91
+    correlation_version: 93
     lineage_version: 37
   execution:
     established_fixed_point:
@@ -47,7 +47,7 @@ policy:
       dependency: legacy_frozen_reconciliation_projection_may_enable_suffix
     observation_selection:
       type: fixed_python_postprocessor
-      implementation: lineage_v37_documented_public_continuity_v1
+      implementation: lineage_v37_split_adjusted_rename_prefix_v2
 producers:
   membership_refinement: accepted_same_security_containing_component_v1
   dated_labels: observed_rename_periods_over_mapped_alias_v1

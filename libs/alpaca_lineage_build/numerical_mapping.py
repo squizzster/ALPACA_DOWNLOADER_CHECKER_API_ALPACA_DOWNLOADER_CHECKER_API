@@ -6,8 +6,12 @@ assessment records provider-view limits without changing identity or eligibility
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
+from libs.alpaca_end_of_day_security_correlation.uuid_lineage import (
+    IDENTITY_PRESERVING_SPLIT_EDGE_TYPES,
+    _positive_rate,
+)
 from libs.alpaca_pricing_download.contract import NEW_YORK, timestamp
 from libs.alpaca_security_lineage.inference_evidence import provider_evidence
 
@@ -84,7 +88,7 @@ def stamp(receipts, decisions):
                 "reason_code": item["outcome"],
                 "source": binding["symbol"],
                 "asof": binding["asof"],
-                "witness_session": binding["witness_session"],
+                "witness_session": item["scope"].get("session", binding["witness_session"]),
                 "scope": item["scope"]["kind"],
             }
             if issue not in issues:
@@ -101,11 +105,65 @@ def _within(day, interval):
     return (lower is None or lower <= day) and (upper is None or day < upper)
 
 
+def _split_mapping(splits, members, lookups, outside, old, new, boundary, witness, last, rename_cusip):
+    """Select a dated trial only for one share-class chain and a subsequent split."""
+    transitions = []
+    has_later_split = False
+    for split in splits:
+        day = split.get("ex_date") or split.get("effective_date")
+        name = split.get("symbol")
+        left, right = split.get("old_cusip"), split.get("new_cusip")
+        try:
+            date.fromisoformat(day)
+        except (ValueError, TypeError):
+            return False
+        old_rate, new_rate = _positive_rate(split.get("old_rate")), _positive_rate(split.get("new_rate"))
+        if (
+            not left
+            or not right
+            or left == right
+            or old_rate is None
+            or new_rate is None
+            or old_rate == new_rate
+            or (old_rate > new_rate) != (split["action_type"] == "reverse_split")
+            or name != (old if day < boundary else new)
+            or split.get("new_symbol", name) != name
+        ):
+            return False
+        transitions.append((day, left, right))
+        has_later_split |= boundary <= day <= last
+    if not has_later_split:
+        return False
+    transitions.sort()
+    cusips = [transitions[0][1], *(right for _, _, right in transitions)]
+    if (
+        rename_cusip not in cusips
+        or len({day for day, _, _ in transitions}) != len(transitions)
+        or len(cusips) != len(set(cusips))
+        or any(
+            right != following_left
+            for (_, _, right), (_, following_left, _) in zip(transitions, transitions[1:])
+        )
+    ):
+        return False
+    ids = [lookups.get(("cusip", cusip)) for cusip in cusips]
+    if any(not value or value[0] != "found" or not value[1] for value in ids):
+        return False
+    assets = [value[1] for value in ids]
+    if outside:
+        # Only the queried successor is replaced. An old-label CUSIP which
+        # exited before the witness need not belong to the selected public ID.
+        # Never transfer that UUID or allow an outside successor/suffix owner.
+        if transitions[0][0] >= witness or outside != {(assets[0], old)}:
+            return False
+        assets = assets[1:]
+    return set(assets) == members
+
+
 def select(store, sources, generations, reports, evidence, *, selected=False, completed=None):
     """Return only an admitted generic mapping need, with no provider/storage I/O.
 
-    This first rule supports a two-source, unchanged-UUID/CUSIP direct rename.
-    More complex or ambiguous groups retain their existing owning decision.
+    Two disjoint complete sources may select a direct-rename dividend or split mapping.
     """
     if not selected or len(sources) != 2 or sources.keys() != reports.keys():
         return {}
@@ -121,19 +179,19 @@ def select(store, sources, generations, reports, evidence, *, selected=False, co
         assigned = report.get("correlated_rows", report.get("correlated", {}).get("row_count"))
         if total is None or assigned != total:
             return {}
-    if any(len(items) != 1 or len(items[0]["member_alpaca_asset_ids"]) != 1 for items in memberships):
+    if any(len(items) != 1 or not items[0]["member_alpaca_asset_ids"] for items in memberships):
         return {}
-    owners = {(items[0]["security_id"], items[0]["member_alpaca_asset_ids"][0]) for items in memberships}
+    owners = {(items[0]["security_id"], frozenset(items[0]["member_alpaca_asset_ids"])) for items in memberships}
     if len(owners) != 1:
         return {}
-    public_id, uuid = next(iter(owners))
+    public_id, members = next(iter(owners))
     routes = {}
     for name, report in reports.items():
         route = report.get("observation_routes", {}).get(public_id)
         if (
             not route
             or route[1].get("historical_symbol") != name
-            or route[1].get("asset_id") != uuid
+            or route[1].get("asset_id") not in members
             or not _within(_day(route[0]), route[1])
         ):
             return {}
@@ -142,32 +200,49 @@ def select(store, sources, generations, reports, evidence, *, selected=False, co
     if len(cusips) != 1 or not next(iter(cusips)):
         return {}
     cusip = next(iter(cusips))
+    endpoints = {route[1]["asset_id"] for route in routes.values()}
+    if len(endpoints) != 1:
+        return {}
+    uuid = next(iter(endpoints))
     actions, lookups = {}, {}
     facts_by_name = {name: provider_evidence(evidence[name]) for name in names}
+    split_cusips = {
+        action.get(field)
+        for facts in facts_by_name.values()
+        for action in facts.get("corporate_actions", ())
+        if action.get("action_type") in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+        for field in ("old_cusip", "new_cusip")
+    }
+    outside = set()
     for facts in facts_by_name.values():
         if (
             facts.get("unresolved_cusips")
             or facts.get("query", {}).get("corporate_actions_data_quality") != "complete"
             or not names <= set(facts.get("queried_symbols", ()))
-            or any(asset.get("id") not in {None, uuid} for asset in facts.get("identities", ()))
         ):
             return {}
+        outside.update(
+            (asset["id"], asset.get("symbol"))
+            for asset in facts.get("identities", ())
+            if asset.get("id") and asset["id"] not in members
+        )
         for lookup in facts.get("asset_lookups", ()):
-            if lookup.get("lookup") not in names | {cusip}:
+            if lookup.get("lookup") not in names | {cusip} | split_cusips:
                 continue
             asset = lookup.get("asset") or {}
-            if asset.get("id") not in {None, uuid}:
-                return {}
+            if asset.get("id") and asset["id"] not in members:
+                label = lookup.get("lookup") if lookup.get("lookup_kind") == "symbol" else asset.get("symbol")
+                outside.add((asset["id"], label))
             key = lookup.get("lookup_kind"), lookup.get("lookup")
             value = lookup.get("outcome"), asset.get("id")
             if key in lookups and lookups[key] != value:
                 return {}
             lookups[key] = value
         if any(
-            item.get("symbol") in names and item.get("asset_id") not in {None, uuid}
+            item.get("symbol") in names and item.get("asset_id") and item["asset_id"] not in members
             for item in facts.get("symbol_occupancy_evidence", ())
         ):
-            return {}
+            return {}  # A separate positively observed occupant competes with the selected dated owner.
         for action in facts.get("corporate_actions", ()):
             key = action.get("id")
             if not key or key in actions and actions[key] != action:
@@ -180,7 +255,8 @@ def select(store, sources, generations, reports, evidence, *, selected=False, co
         and names & {action.get("old_symbol"), action.get("new_symbol")}
     ]
     if len(renames) != 1 or any(
-        action.get("action_type") not in {"cash_dividend", "name_change"} for action in actions.values()
+        action.get("action_type") not in {"cash_dividend", "name_change", *IDENTITY_PRESERVING_SPLIT_EDGE_TYPES}
+        for action in actions.values()
     ):
         return {}
     rename = renames[0]
@@ -207,8 +283,7 @@ def select(store, sources, generations, reports, evidence, *, selected=False, co
         return {}
     if not all(_within(day, routes[name][1]) for name in names for day in (first[name], last[name])):
         return {}
-    asof = _day(routes[new][0])
-    if asof != last[new] or sources[new]["latest_request"]["asof"] == asof:
+    if _day(routes[new][0]) != last[new]:
         return {}
     for facts in facts_by_name.values():
         query = facts["query"]
@@ -219,12 +294,32 @@ def select(store, sources, generations, reports, evidence, *, selected=False, co
             or query["corporate_actions_end"] < last[new]
         ):
             return {}
-    if not any(
-        item.get("action_type") == "cash_dividend"
-        and item.get("symbol") in names
-        and boundary <= (item.get("ex_date") or "") <= last[new]
-        for item in actions.values()
+    splits = [
+        action for action in actions.values() if action["action_type"] in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+    ]
+    asof, witness = last[new], first[old]
+    if splits:
+        if (
+            first[new] != boundary
+            or lookups.get(("cusip", cusip)) != ("found", uuid)
+            or not _split_mapping(
+                splits, members, lookups, outside, old, new, boundary, last[old], last[new], cusip
+            )
+        ):
+            return {}
+        asof, witness = boundary, last[old]
+    elif (
+        outside
+        or len(members) != 1
+        or not any(
+            item.get("action_type") == "cash_dividend"
+            and item.get("symbol") in names
+            and boundary <= (item.get("ex_date") or "") <= last[new]
+            for item in actions.values()
+        )
     ):
+        return {}
+    if sources[new]["latest_request"]["asof"] == asof:
         return {}
     # This is a new decision digest, not authentication of accepted receipt bytes.
     # Receipt generations are deliberately excluded: stamping this result must
@@ -242,8 +337,10 @@ def select(store, sources, generations, reports, evidence, *, selected=False, co
         "lookups": [[*key, *value] for key, value in sorted(lookups.items())],
         "symbol": new,
         "asof": asof,
-        "witness_session": first[old],
+        "witness_session": witness,
     }
+    if splits:
+        binding["split_rename_members"] = sorted(members)
     candidate_id = document_digest(binding)
     accepted = dict(completed or {})
     for report in reports.values():

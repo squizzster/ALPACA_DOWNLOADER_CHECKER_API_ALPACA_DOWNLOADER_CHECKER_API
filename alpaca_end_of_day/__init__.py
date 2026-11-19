@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 50
+API_VERSION = 52
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -493,6 +493,17 @@ class DataLibrary:
             raise TypeError(
                 "DataLibrary now accepts store=PATH; positional repository roots and path= are removed. Bootstrap the standalone serving catalogue and migrate CLI callers to --store."
             )
+        self._load(store, wait, cache_bytes)
+
+    @classmethod
+    def _for_online_identity(cls, store, public_id):
+        from .standalone import _public_id
+
+        data = cls.__new__(cls)
+        data._load(store, False, 0, public_id=_public_id(public_id))
+        return data
+
+    def _load(self, store, wait, cache_bytes, *, public_id=None):
         _validate_api_change_log()
         self.store = Path(_DEFAULT_STORE if store is None else store).absolute()
         self._reader = StandaloneReader(self.store, wait=wait, cache_bytes=cache_bytes)
@@ -500,7 +511,7 @@ class DataLibrary:
             # The serving producer owns eligibility and public projections. Accept
             # its transactional snapshot once; list/search/resolve must stay in
             # memory. DO NOT reopen ticker receipts to certify online membership.
-            selected = catalogue_storage.snapshot(self.store)
+            selected = catalogue_storage.snapshot(self.store, **({"public_id": public_id} if public_id else {}))
             self._generation = selected["state"]["generation"]
             self._published_at = datetime.fromisoformat(selected["state"]["published_at"])
             self._records, self._groups = selected["records"], selected["groups"]
@@ -581,6 +592,12 @@ class DataLibrary:
         end = min(end or security.last_session, security.last_session)
         if start > end:
             return {adjustment: {"bars": []} for adjustment in adjustments}
+        from ._online_price_spans import assemble, spans
+
+        excluded = self._records[security.public_id]["public"].get("price_exclusions", ())
+        visible = list(spans(start, end, excluded)) if excluded else [(start, end)]
+        if not visible:
+            return {adjustment: {"bars": [], "bar_count": 0} for adjustment in adjustments}
         key = self._records[security.public_id]["group_key"]
         expected = self._groups[key]
         try:
@@ -597,9 +614,13 @@ class DataLibrary:
                     self.store, key, expected["decision_generation"]
                 ),
             ) as group:
-                return group.get_histories(
-                    public_id=security.public_id, adjustments=adjustments, start=start, end=end
-                )["views"]
+
+                def read(first, last):
+                    return group.get_histories(
+                        public_id=security.public_id, adjustments=adjustments, start=first, end=last
+                    )["views"]
+
+                return assemble(adjustments, visible, read) if excluded else read(start, end)
         except ReaderBusyError:
             raise
         except (CatalogueError, StandaloneReaderError) as error:

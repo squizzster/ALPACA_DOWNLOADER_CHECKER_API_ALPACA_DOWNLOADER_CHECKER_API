@@ -144,7 +144,7 @@
   },
   {
     "modifications": [
-      "Honor the serving catalogue\u2019s approved date range in public histories, flat CSV and per-identity CSV exports, including supported recent suffixes."
+      "Honor the serving catalogue’s approved date range in public histories, flat CSV and per-identity CSV exports, including supported recent suffixes."
     ]
   },
   {
@@ -154,7 +154,7 @@
   },
   {
     "modifications": [
-      "Publish per-identity CSV schema 2 with the accepted catalogue\u2019s dated ticker ranges in each security digest, retaining inclusive endpoints and genuine ambiguity without reconstructing labels from prices or ownership evidence. Preserve the complete range handoff for filtered exports and existing source I/O and publication guarantees."
+      "Publish per-identity CSV schema 2 with the accepted catalogue’s dated ticker ranges in each security digest, retaining inclusive endpoints and genuine ambiguity without reconstructing labels from prices or ownership evidence. Preserve the complete range handoff for filtered exports and existing source I/O and publication guarantees."
     ]
   },
   {
@@ -194,7 +194,7 @@
   },
   {
     "modifications": [
-      "Expose the selected snapshot\u2019s completed explicit choice handoffs to the serving producer independently of serving ownership; no additional price reads or selection calculations."
+      "Expose the selected snapshot’s completed explicit choice handoffs to the serving producer independently of serving ownership; no additional price reads or selection calculations."
     ]
   },
   {
@@ -266,6 +266,21 @@
   {
     "modifications": [
       "Select catalogue identities by the requested date bounds while lending their full histories for projection. Lend the selected group inputs without rebuilding its summary or digest, share accepted row aliases inside the read-only export context, and clip their online span once."
+    ]
+  },
+  {
+    "modifications": [
+      "Compose selected dated prices with the published suffix for online reads and exports."
+    ]
+  },
+  {
+    "modifications": [
+      "Expose corrected traded ticker handovers in histories, exports, and dated ticker resolution.",
+      "Expose dated provider split relationships between existing public IDs in standalone group evidence.",
+      "Apply dated price eligibility consistently to ticker resolution, online histories and exports while standalone access retains the resolved source observations.",
+      "Expose historical literal ticker occupations on standalone bars, online date resolution and exports.",
+      "Assemble supported date spans around accepted unpriced split carries in online reads and exports, retaining the complete diagnostic source history.",
+      "Expose independently confirmed prior trading tickers on existing online identities and their original standalone source histories."
     ]
   }
 ]

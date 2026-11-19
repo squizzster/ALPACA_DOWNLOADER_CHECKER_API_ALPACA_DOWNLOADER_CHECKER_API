@@ -209,8 +209,8 @@ def finish(connection):
 
 
 @traced("serving_export_inputs_select")
-def select(store, generation, symbols):
-    """One coherent applicability/token read for the selected export scope."""
+def select(store, generation, symbols, *, recover_lineage=False):
+    """Read scope applicability once. A recovering lineage owner must match any returned intentions."""
     from .storage import _state, path
 
     try:
@@ -220,13 +220,16 @@ def select(store, generation, symbols):
                 raise CatalogueError("selected serving catalogue changed")
             if not complete(connection):
                 raise CatalogueError("export input applicability incomplete; run catalogue rebuild")
-            invalid = connection.execute(
-                "SELECT symbol FROM export_inputs WHERE symbol IN (SELECT value FROM json_each(?)) LIMIT 1",
-                (json.dumps(sorted(symbols)),),
-            ).fetchone()
-            if invalid is not None:
-                raise CatalogueError(
-                    "selected export inputs changed; finish pricing, lineage and catalogue maintenance"
-                )
+            selected = (json.dumps(sorted(symbols)),)
+            scope = " FROM export_inputs WHERE symbol IN (SELECT value FROM json_each(?))"
+            if recover_lineage:
+                dirty = connection.execute("SELECT symbol,kind,generation" + scope, selected).fetchall()
+                if all(kind == "lineage" for _, kind, _ in dirty):
+                    return {symbol: observed for symbol, _, observed in dirty}
+            elif connection.execute("SELECT 1" + scope + " LIMIT 1", selected).fetchone() is None:
+                return
+            raise CatalogueError(
+                "selected export inputs changed; finish pricing, lineage and catalogue maintenance"
+            )
     except sqlite3.Error as error:
         raise CatalogueError("export input applicability unavailable; finish owning recovery") from error

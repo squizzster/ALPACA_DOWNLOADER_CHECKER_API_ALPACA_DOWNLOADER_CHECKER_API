@@ -319,6 +319,10 @@ def build_security_correlation_report(
             include_successor_prefix=cache.mapped_successor_prefixes,
             include_successor_split_chain=cache.mapped_successor_split_chains,
             include_active_successor_prefix=cache.active_successor_prefixes,
+            split_adjusted_prefix_sessions=(
+                authenticated_symbol_sessions if cache.split_adjusted_rename_prefixes else None
+            ),
+            include_bounded_rename_prefix=cache.bounded_rename_prefixes,
         )
     )
     independent_history = (

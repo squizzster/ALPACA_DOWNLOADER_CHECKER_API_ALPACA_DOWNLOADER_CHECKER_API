@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 15
+VERSION = 21
 SCHEMA_VERSION = 1
 
 
@@ -23,6 +23,14 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (21, 26, 99, 118):
+        bindings.append({**binding, "debug": 20, "lineage_runtime": 117})
+        current = (20, 26, 99, 117)
+    if allow_previous and current == (20, 26, 99, 117):
+        # Only production publication changed. The diagnostic producer can use
+        # exactly the reports its preceding release accepted, with their own bindings.
+        bindings.append({**binding, "debug": 19, "lineage_runtime": 116})
+        current = (19, 26, 99, 116)
     # This release consolidates the existing producers and their JSON transport.
     # Known completed comparisons remain applicable under the separate policy,
     # store, selector and generation checks. Future producer versions must make
@@ -59,6 +67,10 @@ def accept_report(value, operation, *, allow_previous=False):
         (13, 24, 97, 110),
         (14, 24, 97, 111),
         (15, 24, 97, 112),
+        (16, 25, 98, 113),
+        (17, 26, 99, 114),
+        (18, 26, 99, 115),
+        (19, 26, 99, 116),
     }:
         # Generic completed comparisons retain their exact policy/generation
         # bindings. Runtimes 109 through 111 change production mapping acquisition and
@@ -94,6 +106,20 @@ def accept_report(value, operation, *, allow_previous=False):
                 (14, 24, 97, 111),
             )
         )
+        if current in {(16, 25, 98, 113), (17, 26, 99, 114), (18, 26, 99, 115), (19, 26, 99, 116)}:
+            # Explicit older-policy replay retains the numerical selection
+            # semantics recorded in these completed comparisons.
+            bindings.append(
+                {**binding, "debug": 15, "policy_lab": 24, "correlation_runtime": 97, "lineage_runtime": 112}
+            )
+        if current in {(17, 26, 99, 114), (18, 26, 99, 115), (19, 26, 99, 116)}:
+            bindings.append(
+                {**binding, "debug": 16, "policy_lab": 25, "correlation_runtime": 98, "lineage_runtime": 113}
+            )
+        if current in {(18, 26, 99, 115), (19, 26, 99, 116)}:
+            bindings.append({**binding, "debug": 17, "lineage_runtime": 114})
+        if current == (19, 26, 99, 116):
+            bindings.append({**binding, "debug": 18, "lineage_runtime": 115})
     if (
         not isinstance(value, dict)
         or value.get("schema") != "alpaca.lineage.debug.report"

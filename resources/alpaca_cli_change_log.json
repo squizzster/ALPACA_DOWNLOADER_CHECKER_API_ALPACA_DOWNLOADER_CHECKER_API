@@ -236,5 +236,24 @@
     "modifications": [
       "Make --output optional for export eod_stream so the standard command creates a timestamped export run."
     ]
+  },
+  {
+    "modifications": [
+      "Expose pricing repair-rename for a selected online public identity and dated ticker transition."
+    ]
+  },
+  {
+    "modifications": [
+      "Select split timing, mapped ticker and action-derived rename reviews using a public identity and an observed session under the exclusive maintenance operation.",
+      "Select both candidate traded bounds explicitly for pricing repair-split-carry.",
+      "Expose pricing repair-duplicate-split for a dated online security.",
+      "Select one published group for lineage repair-overlap under the exclusive store operation.",
+      "Expose pricing repair-conversion-timing and review-product-quote for selected identities.",
+      "Add pricing project-historical-label to publish dated historical ticker intervals from an accepted historical review.",
+      "Review bounded zero-activity split intervals through pricing review-untraded-split.",
+      "Add pricing project-displaced-label to match an existing identity against completed native trading occupations on a selected date.",
+      "Select dated occupation repairs by an existing online public ID under the exclusive store operation.",
+      "Expose pricing repair-retired-unit for a published prior unit occupation and a later dated share action."
+    ]
   }
 ]

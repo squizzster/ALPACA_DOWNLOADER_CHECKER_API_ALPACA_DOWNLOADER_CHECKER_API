@@ -43,6 +43,8 @@ from .contract import (
     retained_v88_decision,
     retained_v89_decision,
     retained_v90_decision,
+    retained_v91_decision,
+    retained_v92_decision,
     reusable_computation,
     reusable_metadata_versions,
     versions,
@@ -182,6 +184,8 @@ def publish_completed_group(
             checks=checks,
             previous=previous,
             sources=sources,
+            continued=publication.reused_closed_boundaries,
+            full_materialization=not (publication.reused_decision or publication.reused_closed_boundaries),
         )
         effects["published"] = {symbol: index["symbols"][symbol] for symbol in receipts}
     if not effects.get("receipt_cache"):
@@ -855,6 +859,10 @@ def process_group(
                 if retained_v89_decision(prior)
                 else "v90"
                 if retained_v90_decision(prior)
+                else "v91"
+                if retained_v91_decision(prior)
+                else "v92"
+                if retained_v92_decision(prior)
                 else "current"
                 if current_decision(prior)
                 else None
@@ -961,6 +969,8 @@ def process_group(
                                 "v88",
                                 "v89",
                                 "v90",
+                                "v91",
+                                "v92",
                             }
                             else {
                                 "schema_version": VERSION,

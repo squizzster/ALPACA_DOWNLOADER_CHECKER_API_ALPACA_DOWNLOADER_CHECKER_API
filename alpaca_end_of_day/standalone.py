@@ -135,6 +135,10 @@ def _matches(assignments, symbol=None):
                 "adjustments": [name for name in ADJUSTMENTS if any(a == name for a, _ in matching)],
             }
         )
+    for result in results:
+        label = getattr(assignments, "historical_labels", {}).get(result["public_id"])
+        if label:
+            result["tickers"] = sorted(set(result["tickers"]) | {label["change"]["new"]})
     return results
 
 
@@ -206,6 +210,10 @@ def _group_evidence(assignments, sources, receipts, generations, generation):
             "generation": generation,
             "source_symbols": sorted(receipts),
             "securities": securities,
+            "provider_split_relations": next(
+                (r["provider_split_relations"] for r in receipts.values() if r.get("provider_split_relations")),
+                [],
+            ),
             "security_relations": next(
                 (
                     receipt["security_relations"]
@@ -298,8 +306,18 @@ def _history(
     prefix=None,
     coverage_out=None,
     io_cache=None,
+    minimum_session=None,
+    maximum_session=None,
 ):
+    from bisect import bisect_left, bisect_right
+
     from ._history_coverage import extend_coverage
+
+    def session_day(row):
+        key = "session", row[0]
+        if key not in cache:
+            cache[key] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+        return cache[key]
 
     selected = []
     for symbol, items in assignments.items():
@@ -315,7 +333,10 @@ def _history(
                     continue
                 if selection == "conflict":
                     raise UnservableHistoryError("producer could not establish an observation source")
-                by_boundary[kind].append(segment)
+                if (minimum_session is None or segment["to"] >= minimum_session) and (
+                    maximum_session is None or segment["from"] <= maximum_session
+                ):
+                    by_boundary[kind].append(segment)
         for kind, segments in by_boundary.items():
             if prefix is not None:
                 skip = prefix["rows"].get(symbol, {}).get(adjustment, 0)
@@ -347,6 +368,10 @@ def _history(
                 # Numerical selection and dated labels are independent producer
                 # decisions. Preserve every accepted label, including ambiguity.
                 labels = tuple(segment.get("observation_tickers", [segment["historical_symbol"]]))
+                if minimum_session is not None and segment["from"] < minimum_session:
+                    start = 1 + bisect_left(rows, minimum_session, start - 1, end, key=session_day)
+                if maximum_session is not None and segment["to"] > maximum_session:
+                    end = bisect_right(rows, maximum_session, start - 1, end, key=session_day)
                 selected.append((symbol, kind, rows, start, end, labels))
     # Exact physical aliases with identical accepted row and label selections
     # need only one assembly. All views consume the same producer decision.
@@ -368,15 +393,9 @@ def _history(
     for symbol, _, rows, start, end, label in selected:
         for row in rows[start - 1 : end]:
             if prefix is not None:
-                session_key = "session", row[0]
-                if session_key not in cache:
-                    cache[session_key] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
+                day = session_day(row)
                 span = prefix.get("accepted_span")
-                if (
-                    (span[0] <= cache[session_key] <= span[1])
-                    if span
-                    else cache[session_key] <= prefix["last_session"]
-                ):
+                if (span[0] <= day <= span[1]) if span else day <= prefix["last_session"]:
                     raise HistoryPrefixChanged("new assigned observations overlap the approved history")
             if coverage_out is not None:
                 coverage.add(symbol)
@@ -399,12 +418,9 @@ def _history(
         retained.ledger.record("uncontested_observations", len(observations))
     result, sessions, session_reuses = [], set(), 0
     for row, tickers in chosen:
-        session_key = "session", row[0]
-        if session_key not in cache:
-            cache[session_key] = timestamp(row[0]).astimezone(NEW_YORK).date().isoformat()
-        else:
+        if ("session", row[0]) in cache:
             session_reuses += 1
-        session = cache[session_key]
+        session = session_day(row)
         if session in sessions:
             raise UnservableHistoryError("multiple observations for one daily session")
         sessions.add(session)
@@ -430,7 +446,49 @@ def _read_views(
     prefix=None,
     coverage_out=None,
     io_cache=None,
+    dated_interval=None,
+    minimum_session=None,
+    maximum_session=None,
+    project_labels=True,
 ):
+    def labels(views):
+        interval = getattr(assignments, "historical_labels", {}).get(public_id)
+        if (
+            project_labels
+            and interval
+            and coverage_out is None
+            and not (
+                start
+                and start.isoformat() > interval["change"]["last"]
+                or end
+                and end.isoformat() < interval["change"]["first"]
+            )
+        ):
+            from libs.alpaca_lineage_build.historical_labels import project_views
+
+            return project_views(views, interval["change"])
+        return views
+
+    if dated_interval is not None and coverage_out is None:
+        from libs.alpaca_pricing_download.dated_publication import assemble
+
+        def suffix(first, last):
+            return _read_views(
+                assignments,
+                sources,
+                store,
+                public_id,
+                adjustments,
+                first,
+                last,
+                retained,
+                io_cache=io_cache,
+                minimum_session=first.isoformat() if first else None,
+                maximum_session=last.isoformat() if last else None,
+                project_labels=False,
+            )
+
+        return labels(assemble(store, dated_interval, adjustments, start, end, suffix))
     views, cache = {}, {}
     for adjustment in adjustments:
         selected_coverage = {} if coverage_out is not None else None
@@ -439,6 +497,10 @@ def _read_views(
             if prefix is not None or coverage_out is not None
             else {}
         )
+        if minimum_session is not None:
+            incremental["minimum_session"] = minimum_session
+        if maximum_session is not None:
+            incremental["maximum_session"] = maximum_session
         if io_cache is not None:
             incremental["io_cache"] = io_cache
         bars = _history(
@@ -463,7 +525,7 @@ def _read_views(
                 if (first is None or bar["session"] >= first) and (last is None or bar["session"] <= last)
             ]
         views[adjustment] = {"bar_count": len(bars), "bars": bars}
-    return views
+    return labels(views)
 
 
 class StandaloneReader:
@@ -505,7 +567,9 @@ class StandaloneReader:
     ):
         try:
             if export_selection:
-                with self._export_snapshot(expected) as snapshot:
+                with self._export_snapshot(
+                    expected, **({"borrow_receipts": True} if export_selection == "acquisition" else {})
+                ) as snapshot:
                     yield snapshot
                 return
             if writer_view is not None and expected is None:
@@ -636,6 +700,10 @@ class StandaloneReader:
                             all_assignments[name] = tuple(
                                 _assignments(boundaries, receipt, include_unresolved=True)
                             )
+                if any(r.get("historical_label_intervals") for r in receipts.values()):
+                    from libs.alpaca_lineage_build.historical_labels import with_labels
+
+                    assignments = with_labels(assignments, receipts, absent)
                 values = assignments, sources, document_digest(generations), receipts, generations
                 yield (*values, all_assignments) if include_unresolved else values
         except LineageBusyError as error:
@@ -646,7 +714,7 @@ class StandaloneReader:
             raise StandaloneReaderError(f"cannot read standalone publication: {error}") from error
 
     @contextmanager
-    def _export_snapshot(self, expected):
+    def _export_snapshot(self, expected, *, borrow_receipts=False):
         """Consume catalogue-selected bodies once while the export holds the store gate.
 
         The completed serving selector guarantees membership, generations and
@@ -658,7 +726,7 @@ class StandaloneReader:
         """
         root = self.store / "end_of_day/lineage"
         index = {"symbols": {name: {"sha256": token} for name, token in expected["lineage"].items()}}
-        sources, assignments = {}, {}
+        sources, assignments, selections = {}, {}, {}
         with ExitStack() as locks:
             for name in sorted(expected["pricing"]):
                 pricing = published_path(self.store, f"end_of_day/pricing/{name}")
@@ -675,8 +743,28 @@ class StandaloneReader:
                 receipt = read_receipt(root, name, index)
                 boundaries = read_boundaries(root, receipt)
                 sources[name] = source
+                selections[name] = (
+                    receipt
+                    if borrow_receipts
+                    else {
+                        f: receipt[f]
+                        for f in ("dated_price_intervals", "historical_label_intervals", "price_basis_limits")
+                        if f in receipt
+                    }
+                )
                 assignments[name] = tuple(_assignments(boundaries, receipt))
-            yield assignments, sources
+            from ._standalone_group import dated_intervals
+
+            if any(r.get("historical_label_intervals") for r in selections.values()):
+                from libs.alpaca_lineage_build.historical_labels import with_labels
+
+                assignments = with_labels(assignments, selections, set(expected["lineage"]) - set(sources))
+            yield (
+                assignments,
+                sources,
+                dated_intervals(selections, set(expected["lineage"]) - set(sources)),
+                selections,
+            )
 
     def resolve_ticker(self, symbol: str) -> dict:
         """List IDs assigned to this source or bearing its historical label in the group.
@@ -802,7 +890,7 @@ class StandaloneReader:
         symbol = _symbol(symbol)
         options = {"reuse_documents": True}
         if export_selection:
-            options["export_selection"] = True
+            options["export_selection"] = export_selection
         if writer_view is not None:
             options["writer_view"] = writer_view
         if wait is not None:
@@ -894,6 +982,11 @@ class StandaloneReader:
                 raise StandaloneReaderError("public ID is unavailable for this ticker")
             if any(adjustment not in selected["adjustments"] for adjustment in adjustments):
                 raise StandaloneReaderError("adjustment is unavailable for this public ID")
+            from libs.alpaca_lineage_build.acquisition import unavailable_pricing
+
+            from ._standalone_group import dated_intervals
+
+            intervals = dated_intervals(receipts, unavailable_pricing(receipts[symbol]))
             views = _read_views(
                 assignments,
                 sources,
@@ -903,6 +996,7 @@ class StandaloneReader:
                 start,
                 end,
                 self._cache if self._cache.maximum_bytes else None,
+                **({"dated_interval": intervals[public_id]} if public_id in intervals else {}),
             )
             return {
                 "api_version": API_VERSION,

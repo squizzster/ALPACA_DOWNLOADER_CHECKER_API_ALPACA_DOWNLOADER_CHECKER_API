@@ -118,8 +118,12 @@ class ExceptionReportingTests(TestCase):
                 self.assertIsNone(item["retry_after_utc"])
 
     def test_broken_witness_and_changed_journal_binding_require_owning_recovery(self):
+        from test_alpaca_numerical_mapping import select
+
+        selected = select()["NOVA27"]
+        window = numerical_mapping.witness_window(selected["numerical_mapping"])
         with self.assertRaises(RecoveryRequired):
-            numerical_mapping_acquisition._restore_witness({})
+            numerical_mapping_acquisition._restore_witness({}, selected, window)
         request = {"numerical_mapping": {"candidate_id": "candidate", "binding": {"selected": True}}}
         cache = {"stages": {"candidate": {"path": Mock(), "value": {"binding": {"selected": False}}}}}
         with (

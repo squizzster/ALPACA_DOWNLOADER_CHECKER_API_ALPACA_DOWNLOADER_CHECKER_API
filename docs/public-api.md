@@ -121,9 +121,20 @@ history and export contracts. `get_histories` locks once, returning adjustment â
 views. OHLC/VWAP/volume are `Decimal`, trade count integral; `to_dict()` emits exact decimal strings.
 `wait`/`cache_bytes` match standalone semantics.
 
+A dated price-basis decision can limit an online identity to its supported sessions. Its first session,
+ticker lookup, raw and adjusted histories, and exports all use that same date range. Standalone access
+continues to return the resolved source observations in all views, including earlier adjusted prices
+whose economic interpretation the pricing producer could not establish. A selected former-ticker
+interval appears in standalone bar labels and in online dated ticker resolution and exports. A
+standalone query still takes the published source locator.
+
 Metadata separates known/conflicting observations from supported effective intervals. Undated exact fallbacks
 stay undated; catalogue time dates only catalogue-sourced lookups. Ownership can support historical labels/CUSIPs
-with unknown endpoints; observed names/exchanges/classes do not establish historical periods. Resolution ranges
+with unknown endpoints. When provider splits change CUSIPs and exact endpoint lookups belong to the published
+identity, serving restricts an existing dated CUSIP claim to compatible periods. The trading label retains its
+ownership span with a null CUSIP where the dated claim lacks support. Undated observations remain available.
+This projection applies when the serving owner evaluates a selected identity, including evaluations that reuse a
+numerical checkpoint. Observed names/exchanges/classes do not establish historical periods. Resolution ranges
 describe labels on stored histories; undated names remain searchable. `resolve_ticker` trims/ignores case and
 accepts a leading letter or digit followed by letters, digits, periods or hyphens, including historical numeric
 labels. FIGIs are not supplied/fabricated. Provider IDs, internal status/reasons and diagnostic paths stay hidden.

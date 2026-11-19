@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from libs.common.provider_http import balanced_batches
 
-VERSION = 4
+VERSION = 5
 BAR_URL = "https://data.alpaca.markets/v2/stocks/bars"
 ASSET_URL = "https://paper-api.alpaca.markets/v2/assets"
 ACTION_URL = "https://data.alpaca.markets/v1/corporate-actions"
@@ -149,6 +149,19 @@ def _merge_nearby(groups, fits):
     return sorted(nodes.values(), key=lambda group: (group["start"], group["end"], sorted(group["symbols"])))
 
 
+def market_split_parameters(day):
+    if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+        raise ValueError("market split selection requires one ISO session")
+    return {
+        "start": day,
+        "end": day,
+        "types": "forward_split,reverse_split",
+        "region": "us",
+        "data_quality": "all",
+        "limit": 1000,
+    }
+
+
 def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
     """Plan daily bars and exact asset lookups; unknown need kinds fail closed.
 
@@ -166,6 +179,12 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
         if not isinstance(need, dict) or not isinstance(need.get("why"), str) or not need["why"].strip():
             raise ValueError("each need requires a nonempty why")
         why, kind = need["why"], need.get("kind")
+        if kind == "market_split_session":
+            day = need.get("session")
+            if set(need) != {"kind", "why", "session"}:
+                raise ValueError("market split selection requires one ISO session")
+            order.append((kind, (need_index, why, day)))
+            continue
         if kind == "asset_catalogue":
             if set(need) != {"kind", "why"}:
                 raise ValueError("asset catalogue need requires only kind and why")
@@ -223,7 +242,8 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
         if set(adjustments) - ADJUSTMENTS:
             raise ValueError("unsupported adjustment view")
         asof = need["asof"]
-        if not isinstance(asof, str) or date.fromisoformat(asof).isoformat() != asof:
+        literal_raw = asof == "-" and why == "boundary_check" and adjustments == ["raw"]
+        if not literal_raw and (not isinstance(asof, str) or date.fromisoformat(asof).isoformat() != asof):
             raise ValueError("asof must be YYYY-MM-DD")
         if not isinstance(need["ranges"], list) or not need["ranges"]:
             raise ValueError("ranges must be a nonempty array")
@@ -247,6 +267,21 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
 
     actions = []
     for kind, key in order:
+        if kind == "market_split_session":
+            index, why, day = key
+            actions.append(
+                {
+                    "strategy": kind,
+                    "why": why,
+                    "request": {
+                        "url": ACTION_URL,
+                        "params": market_split_parameters(day),
+                    },
+                    "pagination": {"parameter": "page_token", "response_field": "next_page_token"},
+                    "deliver": [{"need": index}],
+                }
+            )
+            continue
         if kind == "asset_catalogue":
             need_index, why = key
             actions.append(

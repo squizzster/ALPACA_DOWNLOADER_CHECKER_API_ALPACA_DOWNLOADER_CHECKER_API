@@ -26,6 +26,27 @@ def historical_bindings():
     producer = "accepted_same_security_containing_component_v1"
     return [
         {
+            "debug": 17,
+            "policy_lab": 26,
+            "correlation_runtime": 99,
+            "lineage_runtime": 114,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 20,
+            "policy_lab": 26,
+            "correlation_runtime": 99,
+            "lineage_runtime": 117,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 19,
+            "policy_lab": 26,
+            "correlation_runtime": 99,
+            "lineage_runtime": 116,
+            "membership_refinement": producer,
+        },
+        {
             "debug": 3,
             "policy_lab": 22,
             "correlation_runtime": 95,
@@ -102,6 +123,13 @@ def historical_bindings():
             "lineage_runtime": 110,
             "membership_refinement": producer,
         },
+        {
+            "debug": 15,
+            "policy_lab": 24,
+            "correlation_runtime": 97,
+            "lineage_runtime": 112,
+            "membership_refinement": producer,
+        },
     ]
 
 
@@ -173,21 +201,22 @@ class CompletedHistoricalReportReuseTests(TestCase):
     setUp = fixtures.DebugStoreTests.setUp
 
     def test_known_previous_reports_reuse_exact_results_and_retain_scope_invalidation(self):
+        frozen = DEFAULT_POLICY.with_name("alpaca_security_correlation_v91_legacy_policy.yaml")
         report = fixtures.request(
             "run",
             store=str(self.store),
-            policy=str(self.policy),
-            control_policy=str(DEFAULT_POLICY),
+            policy=str(frozen),
+            control_policy=str(frozen),
             symbols=["GOOG"],
         )
         path = self.directory / "previous-comparison.json"
 
-        def consume():
+        def consume(candidate=frozen):
             return fixtures.request(
                 "run",
                 store=str(self.store),
-                policy=str(self.policy),
-                control_policy=str(DEFAULT_POLICY),
+                policy=str(candidate),
+                control_policy=str(frozen),
                 symbols=["GOOG"],
                 reuse_report=str(path),
             )
@@ -218,6 +247,8 @@ class CompletedHistoricalReportReuseTests(TestCase):
                     self.assertTrue(result["execution_complete"], result)
                     self.assertEqual(1, result["summary"]["reused_groups"])
                     self.assertEqual(report["groups"], result["groups"])
+            with self.assertRaisesRegex(LineageDebugError, "changed generic policy bindings"):
+                consume(DEFAULT_POLICY)
             for invalidation in ("store", "selector", "receipt"):
                 changed = copy.deepcopy(previous)
                 if invalidation == "store":

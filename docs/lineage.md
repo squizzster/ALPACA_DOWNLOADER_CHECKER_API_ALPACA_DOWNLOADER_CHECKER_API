@@ -49,6 +49,51 @@ legacy provenance. [F67](trust-boundary-handoff.html#f67) records the implementa
 limits. Existing certificate gates can still withhold reasonably supported ownership;
 [F64](trust-boundary-handoff.html#f64) remains open. Mechanism tests do not establish correct ownership in every case.
 
+### Duplicate traded histories
+
+`alpaca-cli-eod lineage repair-overlap --group-key KEY --store PATH` selects one published serving group.
+A strict subset of a later split-linked provider UUID component can yield to the complete existing owner when
+both have the same dated labels and every raw traded session matches. An explicitly dated ticker change in a
+split can instead bound two existing identities. Exact old and new CUSIP lookups select the endpoints, and
+matching raw OHLCV, VWAP and trade counts identify the duplicated prefix. Each existing ID keeps its valid
+dates. The standalone group's `provider_split_relations` reports the endpoint IDs, CUSIPs, terms and date.
+Distinct classes, carry-only overlap, conflicting routes and incomplete coverage retain their prior decisions.
+Only raw price histories supply the new cross-owner evidence. Serving consumes slices of the prior accepted
+history checkpoints and their existing numerical selections. A retry resumes the selected group's journal.
+
+### Reused trading labels
+
+`alpaca-cli-eod lineage repair-occupation --public-id ID --store PATH` assesses one selected online
+identity. A flat, zero-trade interval identifies a possible boundary between two periods of real trading.
+The literal ticker and date-mapped issuer routes must distinguish those periods. A prior route that keeps
+trading against the frozen literal price and then supplies a distinct concurrent tape supports separate
+occupations. When the prior route ends instead, the current route must exclude the older trades, the
+prior route must exclude the later trades, and the intervening carry must span at least 21 sessions.
+A contemporary CUSIP identifying the accepted owner on an older trade date protects its prior scope.
+A later corporate action can identify its own endpoint without establishing retroactive ownership.
+
+For units whose own mappings span both offerings, a common-stock component can distinguish two separate
+unit issues. Each unit starts trading before its common stock. The common tape stops with the earlier unit
+and its two dated issuer routes supply distinct trades. A dated common rename plus its successor's matching
+trade history corroborates the later issue. A unit separation whose exact CUSIP resolves to the accepted old
+issuer, with both named components merging on that date, keeps the older scope instead. Later assignments
+to that retired unit become ownerless. A material change in its native terminal evidence or historical
+pricing selects owning recovery.
+
+After a terminal unit decision, `pricing repair-retired-unit --public-id ID --session YYYY-MM-DD`
+can remove a later split factor from the old unit's adjusted prices. The session selects the
+reported post-retirement split. Its exact reported terms must explain the affected fields across
+the whole owned interval. Raw and independently selected cash and spin views supply the comparison.
+The producer consumes the completed terminal decision and preserves every raw trade. A full lineage
+rebuild carries the accepted price interval when the same retirement, group and action terms still apply
+and each member's pricing generation is unchanged or its mapped price history changed only after the
+last witnessed session. An overlapping change or missing binding requires selected recovery before publication.
+
+The journal binds completed route responses and unresolved outcomes to the selected group's original
+generations. Publication retains the existing ID, its supported dates and the existing numerical
+observations. The lineage owner also retains the displaced literal observations and registers their last
+traded date for independent attribution to another issuer with a matching traded history.
+
 ## Lineage reuse
 
 [contract.py](../libs/alpaca_lineage_build/contract.py), `reusable_decision`, and
@@ -126,8 +171,9 @@ to consume compatible header handoffs. This transition does not authorize any ot
 separately from identity assignment. Each identity/session takes all numerical views from one complete eight-view
 bundle. Applicable completed market and source decisions keep their accepted scope. For fresh selection,
 the latest independently observed own-label source normally wins. This selects observations, not historical completeness.
-Equal complete bundles can collapse; unresolved authority stays explicit. Numerical selection preserves dated
-labels independently, including ambiguity. The separate dated-label producer below can resolve supported
+Complete bundles with equal exact decimal values can collapse regardless of the provider's spelling of a
+number. The selected rows retain their original precision and spelling. Unresolved authority stays explicit.
+Numerical selection preserves dated labels independently, including ambiguity. The dated-label producer can resolve supported
 collisions without changing that numerical choice. Readers/exports consume completed decisions without
 repeating selection/activity checks.
 
@@ -173,19 +219,140 @@ consume the published numerical decisions and reject competing selected observat
 
 ### Dated numerical mapping
 
-Selected retained-source work can request a dated continuing-label mapping when completed ownership routes
-and provider evidence establish one direct, unchanged-UUID/CUSIP rename, disjoint source histories and a
-post-transition cash distribution within observed coverage. The generic planner in
-[numerical_mapping.py](../libs/alpaca_lineage_build/numerical_mapping.py) runs after the unchanged-work
-shortcut and before selected acquisition or numerical materialization. It uses the continuing label's
-accepted own-label observation date; an inactive asset or an old last bar alone supplies no mapping decision.
+For a selected published rename, `alpaca-cli-eod pricing repair-rename --public-id ID --session YYYY-MM-DD`
+acquires the earlier eight-view interval under the successor’s dated mapping. Repeat the ID and session
+options in matching order. If a batch selects a group twice, serving publishes the first correction before
+the next selection uses that group. The public ID and date select work.
+The accepted ticker history determines the provider route. Traded successor sessions must match in every
+view, every earlier session must be present, and independently dated original-label observations must
+corroborate revised raw bars. The pricing owner stages completed requests and comparisons, then commits
+immutable prices. The lineage journal selects their token for the complete group under its original
+ownership provenance. Standalone reads and online exports consume that decision. Applicable closed
+assignments retain the selection on continuation. Changed inputs invalidate their affected scope.
+
+Use `alpaca-cli-eod pricing repair-carried-rename --public-id ID --session YYYY-MM-DD` when a published
+ticker carries a stale close across a provider name change. Traded witnesses on both sides, complete
+successor coverage, literal ticker observations and competing dated ownership determine which prices
+and labels the producer can replace. The catalogue projects the accepted dates through ticker lookup
+and the public history.
+
+Use `alpaca-cli-eod pricing repair-same-label-basis --public-id ID --session YYYY-MM-DD` for a
+price-basis change inside the opening ticker range. The dated route must reproduce the entire opening raw
+tape and the successor witnesses in all eight views. Traded prices must support comparable raw units
+across the step. The producer replaces only the earlier numerical basis and preserves dated ownership.
+
+Use `alpaca-cli-eod pricing repair-rename-split-basis --public-id ID --session YYYY-MM-DD` when a
+rename joins disjoint price routes or Alpaca’s successor mapping uses a different later adjustment
+basis. The producer uses the accepted public ID and the predecessor’s raw bars. Later provider split
+terms must reproduce the traded successor witnesses at provider precision, including volume and VWAP.
+The earlier views must isolate split adjustments and support any earlier splits. Competing traded
+occupations, unresolved share conversion terms and a split at the rename select an unsupported result.
+The accepted fragment preserves the share basis on the successor, historical ticker labels and raw
+observations. Changes to supporting share terms or overlapping ownership invalidate the selection.
+
+Use `alpaca-cli-eod pricing review-split-basis --public-id ID --session YYYY-MM-DD` to assess whether
+a reported share split can price the earlier online history. The producer compares its native terms,
+the eight adjustment views on the boundary, nearby traded daily opens and the literal ticker's regular
+session close and opening trades. When a material reported share change conflicts with those observations
+and the other adjustment views lack independent economic terms, serving starts the complete history on
+the selected event date. The receipt preserves ownership, source prices, the witness window and the
+reason for restricting the online range. Applicable continuations retain that decision. Changed witness
+prices, terms or numerical selection require a new assessment. Repeating the command can restore the
+earlier online range once observations positively resolve the share units. Completed checkpoints survive
+interruption. The command accepts repeated ID/session pairs in matching order.
+
+Use `alpaca-cli-eod pricing repair-split-timing --public-id ID --session YYYY-MM-DD` to review
+a factor change bracketed by traded sessions. The pricing producer compares the preceding, selected and
+following exchange sessions. Dated provider actions, share units at the open and the eight published views
+must support the same timing correction. It reconstructs only the split-containing views on the affected
+session when the observed price and volume precision determines the corrected values. A single flat session
+with zero trading activity can carry each adjusted view’s own previous close when the raw tape and corporate
+action establish a change of units on the next session. The receipt selects this bounded fragment. A completed
+assessment with insufficient support records the reason. Changed relevant actions or a changed price
+window invalidate the affected selection. A full rebuild carries the accepted one-session correction when
+each member's pricing ancestry covers all three witnesses and their owner, trading label, selected
+sources and action terms still agree. An incompatible or missing binding selects pricing recovery
+before publication.
+
+Use `pricing review-historical-split-basis` for a flagged day before the published ticker traded
+under its own name. A single-session market action request selects candidate terms. Literal raw
+observations must identify one historical ticker across the full traded window, including OHLC,
+VWAP, volume and trade count. Its regular-session trades then supply the ordinary price eligibility
+assessment. The prior ticker is evidence for the selected window. A whole-occupation label assignment
+requires its own dated evidence.
+
+A completed historical review can select the actual trading label for further dated projection.
+Run `alpaca-cli-eod pricing project-historical-label --public-id ID --session YYYY-MM-DD` with its
+original pivot. The label producer consumes the completed literal witness and extends its dated scope
+using the actual former and successor routes on additional sessions. A unique traded match across all
+raw fields, supported successor observations and dated occupations of other selected owners determine
+the interval. The lineage journal selects the resulting labels independently of prices. Each online
+view and export exposes only eligible sessions. Standalone history exposes the dates on the original
+resolved source. A change to supporting ownership, source prices, relevant actions or the original
+historical review can revoke the dependent labels.
+
+Use `alpaca-cli-eod pricing project-displaced-label --public-id ID --session YYYY-MM-DD` for an
+existing owner's first session under its present ticker when another completed lineage decision has
+displaced an earlier occupation. The preceding exchange session selects candidate former tickers
+from the lineage index. The candidate's recorded literal raw observations must match the existing
+owner's earlier tape. Its current ticker must have no competing earlier trades and must match the
+following traded observations. Only a unique supported occupation supplies an earlier label. The
+dated label and ownership interval retain the original public ID and all prices. Existing CUSIP
+evidence keeps its scope, with a null CUSIP where the earlier label has no independent CUSIP evidence.
+The same ticker can resolve to unrelated identities in later periods.
+
+For `pricing repair-former-label-basis`, select the first published session after the rename.
+The producer checks whether share terms for the future ticker explain a price step during the prior
+ticker’s tenure. The earlier ticker’s dated route must cover the entire prefix and agree with traded
+witnesses on both sides of the actual rename in every view. Literal raw observations corroborate any
+revisions. A simultaneous genuine split retains its documented units and requires matching adjusted
+witnesses before the rename.
+
+`pricing repair-split-carry` takes a selected public ID and session, with `--from` and `--through`
+selecting the two bracketing traded dates. Intervening zero-activity bars can carry a last traded value
+in the corrected units when the observed closes, volume-weighted prices, provider endpoints and
+complete sequence of bars support that interpretation. `pricing repair-duplicate-split` checks whether
+two reported split factors describe one observed change of share units. A supported correction
+removes the extra application only within the affected prefix. The producer preserves independently
+witnessed cash adjustments and the actual trading-date transition.
+
+`pricing repair-conversion-timing` selects the first session where a reported split
+changed the adjusted basis. A later same-ticker conversion must identify the destination CUSIP,
+agree on the exchange ratio, and coincide with a traded change in close and VWAP. When the
+intervening sessions still trade in the earlier units, the producer corrects their split-adjusted
+views. The raw trades and the conversion session retain their published values.
+
+`pricing review-untraded-split` uses the last traded session and the next traded session or the
+stored endpoint to bound a review. When a native split changes share units and the literal tape
+continues to repeat the old price without trades, the public history omits the unsupported marks
+from the split date. The review preserves earlier prices and subsequent supported trades. An
+observed reopening compatible with a numerical carry correction selects that separate assessment.
+The source bars remain accessible through the standalone reader.
+
+`pricing review-product-quote` checks whether the provider's product metadata and traded quote
+convention support dollar prices. A Nasdaq NextShares fund with a NAV-relative price near 100
+on both sides of a corroborated share change supplies a quoted premium or discount. Without a
+dollar NAV, the entire identity is ineligible for public dollar-price history. The retained
+source and eligibility decision remain available for diagnosis.
+
+Selected retained-source work can request a dated continuing-label mapping for a direct rename with disjoint
+source histories. A shared UUID/CUSIP and a post-transition cash distribution support a request using the
+continuing label's accepted observation date. A documented chain of same-label splits with a split under the
+successor can support a request as of the rename itself. The latter uses the predecessor's last observed
+session as its witness. Both source reports must select one public membership, with dated ownership and
+provider CUSIP lookups that support the route. An older outside UUID can qualify only as a predecessor's
+retired split endpoint before the witness. It acquires no ownership from this decision.
+The [planner](../libs/alpaca_lineage_build/numerical_mapping.py) runs after the unchanged-work shortcut and
+before selected acquisition or numerical materialization.
 Fresh sources without applicable completed ownership routes remain outside this retained-source rule.
 Mapped acquisition requires the existing durable work policy so an interrupted installation retains its
 exact selected request. Pending mapping work resumes before ordinary pricing maintenance advances its sources.
 
-The pricing owner first requests one exact fully adjusted predecessor session. A returned observation can
-continue through the selected full mapped acquisition; an empty completed response records that bounded
-mapping limitation in the receipt's existing evidence issues. Neither outcome changes identity membership,
+The pricing owner first requests one exact fully adjusted predecessor session. An empty response records the
+mapping limitation in the receipt's existing evidence issues. For a split-chain trial, the owner next requests
+the last accepted successor session under the same mapping. If that date is absent, it records insufficient
+coverage before assembling the contribution grid or fetching the history. Positive witnesses supply their
+rows to the remaining acquisition and endpoint checks, including after interruption. Neither outcome changes identity membership,
 fills missing sessions or derives prices from cash distributions. A missing internal contribution-grid
 capability requires owning recovery. An acquired history that omits known required contributions completes
 a provider-coverage assessment without replacing accepted pricing. Provider request failures retain their
@@ -337,6 +504,23 @@ Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
   any mismatch as a whole. It reuses the donor assignment; it does not infer identity from equal prices, move the
   action boundary or change UUID membership.
   [predecessor_prefix.py](../libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py).
+- A successor request can also carry actively traded history through multiple dated renames and intervening
+  splits. Each original-label donor must independently own the corresponding dates across all eight views.
+  The producer checks its raw trade fields against the mapped prefix, rejects competing routes and carries
+  the dated owner forward. The continuing request supplies the numerical observations on the common basis.
+  If it starts later than a donor, the selector tests the first two overlapping sessions for a consistent
+  change of scale in the split-adjusted open, high, low and close. When the change is established, the
+  public eight-view history starts at the overlap. The contiguous earlier donor-only positions retain their
+  ownership and prices internally and carry the reason `incompatible_split_adjustment_basis`.
+  A dated terminal traded episode can limit the matched prefix even when the mapped request also contains an
+  earlier ticker episode. The selection requires the actual donor's complete assignments for that interval and
+  one complete later source. It supersedes earlier donor-only prices only when the first two traded matches
+  establish the incompatible split basis. A single dated same-label CUSIP change can also bound entry to the
+  donor's accepted share-class route. That scope must cover the start of the public history and cannot move a
+  discontinuity to an earlier published session. Both paths preserve dated labels and assignments outside
+  their scope. Ordinary continuation carries completed numerical choices and compares only reopened positions.
+  [Mapped ownership](../libs/alpaca_end_of_day_security_correlation/mapped_rename_chain.py) and
+  [numerical selection](../libs/alpaca_lineage_build/adjustment_basis.py).
 
 Corporate-action dates retain provider field semantics and exact supported endpoints. Do not rewrite them from
 earliest or next-session dates, bar boundaries, researched marketplace dates or ticker exceptions. A separately

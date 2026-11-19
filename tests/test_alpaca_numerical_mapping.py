@@ -87,7 +87,93 @@ def select(values=None, **options):
     return mapping.select("synthetic-store", *(values or fixture()), selected=True, **options)
 
 
+def split_fixture():
+    sources, generations, reports, evidence = fixture()
+    for report in reports.values():
+        report["identity_memberships"][0]["member_alpaca_asset_ids"].append("successor-uuid")
+    for facts in evidence.values():
+        observed = [
+            ("earlier", "closed-uuid", "FUTURE.A"),
+            ("000000001", "provider-uuid", "NOVA27"),
+            ("later", "successor-uuid", "NOVA27"),
+        ]
+        facts["identities"] = [{"id": uuid, "symbol": name} for _, uuid, name in observed]
+        facts["asset_lookups"] = [
+            {"lookup_kind": "cusip", "lookup": cusip, "outcome": "found", "asset": asset}
+            for (cusip, _, _), asset in zip(observed, facts["identities"], strict=True)
+        ]
+        facts["corporate_actions"] = facts["corporate_actions"][:1]
+        for name, day, before, after in (
+            ("FUTURE.A", "2018-01-02", "earlier", "000000001"),
+            ("NOVA27", "2020-01-07", "000000001", "later"),
+        ):
+            facts["corporate_actions"].append(
+                {
+                    "id": "split-" + before,
+                    "symbol": name,
+                    "action_type": "reverse_split",
+                    "ex_date": day,
+                    "old_cusip": before,
+                    "new_cusip": after,
+                    "old_rate": 10,
+                    "new_rate": 1,
+                }
+            )
+    return sources, generations, reports, evidence
+
+
 class NumericalMappingTests(TestCase):
+    def test_split_trial_selects_only_accepted_successor_and_dated_predecessor_witness(self):
+        values = split_fixture()
+        with patch("pathlib.Path.open", side_effect=AssertionError("opened closed input")):
+            needs = select(values)
+            self.assertEqual(["NOVA27"], list(needs))
+            need = needs["NOVA27"]
+            key = need["numerical_mapping"]["candidate_id"]
+            self.assertEqual("2020-01-06", need["mapping_asof"])
+            self.assertEqual("2020-01-03", need["numerical_mapping"]["binding"]["witness_session"])
+            self.assertEqual(
+                ["provider-uuid", "successor-uuid"], need["numerical_mapping"]["binding"]["split_rename_members"]
+            )
+            self.assertEqual({}, select(values, completed={key: {"outcome": "provider_coverage_insufficient"}}))
+
+    def test_split_trial_rejects_competitors_disconnected_events_and_existing_mapping(self):
+        for case in (
+            "outside successor",
+            "extra owner",
+            "outside witness",
+            "fork",
+            "unresolved endpoint",
+            "unknown asset",
+            "same mapping",
+            "wrong rate",
+        ):
+            with self.subTest(case=case):
+                sources, _, reports, evidence = values = split_fixture()
+                if case == "same mapping":
+                    sources["NOVA27"]["latest_request"]["asof"] = "2020-01-06"
+                elif case == "extra owner":
+                    reports["NOVA27"]["identity_memberships"].append(
+                        {"security_id": "other", "member_alpaca_asset_ids": ["other"]}
+                    )
+                else:
+                    for facts in evidence.values():
+                        if case == "outside successor":
+                            facts["identities"][0]["symbol"] = "NOVA27"
+                        elif case == "outside witness":
+                            facts["corporate_actions"][1]["ex_date"] = "2020-01-03"
+                        elif case == "fork":
+                            facts["corporate_actions"].append(
+                                {**facts["corporate_actions"][-1], "id": "fork", "ex_date": "2020-01-08"}
+                            )
+                        elif case == "unresolved endpoint":
+                            facts["asset_lookups"].pop()
+                        elif case == "unknown asset":
+                            facts["identities"].append({"id": "stranger", "symbol": "FUTURE.A"})
+                        elif case == "wrong rate":
+                            facts["corporate_actions"][-1]["new_rate"] = 20
+                self.assertEqual({}, select(values))
+
     def test_fresh_route_is_not_admitted_after_materialization(self):
         sources, generations, reports, evidence = fixture()
         self.assertEqual(
@@ -366,6 +452,94 @@ class NumericalMappingTests(TestCase):
 
 
 class NumericalMappingAcquisitionTests(TestCase):
+    def test_missing_successor_split_witness_finishes_without_grid_or_history_after_restart(self):
+        with TemporaryDirectory() as directory:
+            store = Path(directory)
+            request = mapping.select(store, *split_fixture(), selected=True)["NOVA27"]
+            calls = []
+
+            def fetch(symbol, adjustment, start, end, *, asof):
+                calls.append((adjustment, start.date().isoformat(), asof))
+                rows = () if len(calls) == 2 else ((start.isoformat(), "1", "1", "1", "1", "100", "1", "1"),)
+                return CompletedBars(symbol, adjustment, start, end, asof, rows)
+
+            original = acquisition.storage.atomic_json
+
+            def interrupt(path, value, **options):
+                original(path, value, **options)
+                if "successor_witness" in value:
+                    raise RuntimeError("durable terminal response")
+
+            def execute(client):
+                return acquisition.execute(
+                    store,
+                    store / "end_of_day/lineage",
+                    "NOVA27",
+                    request,
+                    client=client,
+                    download=lambda *_a, **_k: self.fail("full mapped history requested"),
+                    context=None,
+                    cache={},
+                    required_sessions=None,
+                    grid_provider=lambda: self.fail("full contribution grid opened"),
+                )
+
+            with patch.object(acquisition.storage, "atomic_json", side_effect=interrupt):
+                with self.assertRaisesRegex(RuntimeError, "durable terminal response"):
+                    execute(SimpleNamespace(fetch=fetch))
+            forbidden = SimpleNamespace(fetch=lambda *_a, **_k: self.fail("completed witness repeated"))
+            result = execute(forbidden)
+            self.assertEqual(result, execute(forbidden))
+            assessment = result["mapping_assessment"]
+            self.assertEqual("provider_coverage_insufficient", assessment["outcome"])
+            self.assertEqual(["2020-01-07"], assessment["scope"]["missing_sessions"])
+            self.assertEqual("one_session_all_successor_witness", assessment["scope"]["kind"])
+            self.assertEqual(request["selected_source_sha256"], result["source_sha256"])
+            self.assertFalse(result["changed"])
+            self.assertEqual([("all", "2020-01-03", "2020-01-06"), ("all", "2020-01-07", "2020-01-06")], calls)
+            receipts = {"NOVA27": {}}
+            mapping.stamp(receipts, {assessment["candidate_id"]: assessment})
+            self.assertEqual("2020-01-07", receipts["NOVA27"]["evidence_issues"][0]["witness_session"])
+
+    def test_two_positive_witnesses_are_lent_to_full_acquisition_after_grid_recovery(self):
+        with TemporaryDirectory() as directory:
+            store = Path(directory)
+            request = mapping.select(store, *split_fixture(), selected=True)["NOVA27"]
+            observed = []
+
+            def fetch(symbol, adjustment, start, end, *, asof):
+                observed.append(start.date().isoformat())
+                return CompletedBars(
+                    symbol,
+                    adjustment,
+                    start,
+                    end,
+                    asof,
+                    ((start.isoformat(), "1", "1", "1", "1", "1", "1", "1"),),
+                )
+
+            with self.assertRaisesRegex(LineageError, "contribution grid"):
+                self.execute(store, request, SimpleNamespace(fetch=fetch), {})
+            self.assertEqual(["2020-01-03", "2020-01-07"], observed)
+
+            def download(*_a, mapping_acquisition, **_k):
+                self.assertEqual(observed, [x.start.date().isoformat() for x in mapping_acquisition.fragments])
+                self.assertEqual(tuple(observed), mapping_acquisition.required_sessions)
+                return {"source_sha256": "new-generation", "changed": True}
+
+            result = acquisition.execute(
+                store,
+                store / "end_of_day/lineage",
+                "NOVA27",
+                request,
+                client=SimpleNamespace(fetch=lambda *_a, **_k: self.fail("witness requested twice")),
+                download=download,
+                context=None,
+                cache={},
+                required_sessions=observed,
+            )
+            self.assertEqual("mapped_history_acquired", result["mapping_assessment"]["outcome"])
+
     def execute(self, store, request, client, cache, *, required_sessions=()):
         root = store / "end_of_day/lineage"
         return acquisition.execute(
@@ -381,22 +555,25 @@ class NumericalMappingAcquisitionTests(TestCase):
         )
 
     def test_empty_response_is_processed_and_survives_restart_without_request(self):
-        with TemporaryDirectory() as directory:
-            store = Path(directory)
-            values = fixture()
-            request = mapping.select(store, *values, selected=True)["NOVA27"]
-            calls = []
+        for group in (fixture, split_fixture):
+            with self.subTest(group=group.__name__), TemporaryDirectory() as directory:
+                store = Path(directory)
+                values = group()
+                request = mapping.select(store, *values, selected=True)["NOVA27"]
+                calls = []
 
-            def fetch(symbol, adjustment, start, end, *, asof):
-                calls.append((symbol, adjustment, start, end, asof))
-                return CompletedBars(symbol, adjustment, start, end, asof, ())
+                def fetch(symbol, adjustment, start, end, *, asof):
+                    calls.append((symbol, adjustment, start, end, asof))
+                    return CompletedBars(symbol, adjustment, start, end, asof, ())
 
-            result = self.execute(store, request, SimpleNamespace(fetch=fetch), {})
-            self.assertEqual("provider_mapping_unavailable", result["mapping_assessment"]["outcome"])
-            self.assertEqual(1, len(calls))
-            forbidden = SimpleNamespace(fetch=lambda *args, **kwargs: self.fail("completed witness repeated"))
-            second = self.execute(store, request, forbidden, {})
-            self.assertEqual(result["mapping_assessment"], second["mapping_assessment"])
+                result = self.execute(store, request, SimpleNamespace(fetch=fetch), {})
+                self.assertEqual("provider_mapping_unavailable", result["mapping_assessment"]["outcome"])
+                self.assertEqual(1, len(calls))
+                forbidden = SimpleNamespace(
+                    fetch=lambda *args, **kwargs: self.fail("completed witness repeated")
+                )
+                second = self.execute(store, request, forbidden, {})
+                self.assertEqual(result["mapping_assessment"], second["mapping_assessment"])
 
     def test_failed_witness_write_retries_persistence_before_acknowledgement(self):
         with TemporaryDirectory() as directory:

@@ -13,11 +13,13 @@ PRODUCTION_POLICY_SCHEMA_VERSION = 4
 PRODUCTION_POLICY_ID = "alpaca_security_correlation"
 PRODUCTION_POLICY_VERSION = "1.0.0"
 PRODUCTION_POLICY_ROLE = "production"
-PRODUCTION_EXECUTION_PROFILE = "correlation_v91_policy_engine"
-PRODUCTION_CORRELATION_VERSION = 91
+PRODUCTION_EXECUTION_PROFILE = "correlation_v93_policy_engine"
+PRODUCTION_CORRELATION_VERSION = 93
 PRODUCTION_LINEAGE_VERSION = 37
 POLICY_PROVENANCE_LINEAGE_VERSION = 34
-PRODUCTION_POLICY_SEMANTIC_SHA256 = "cd121b16a5bef02cb62ea60c6e12e8614f5d6289981c4289b8499b078b021401"
+PRODUCTION_POLICY_SEMANTIC_SHA256 = "79b5d6950948aa7f5a195565e4fea0914bc69abad3ec41d459963d0c973164c7"
+RETAINED_V92_SEMANTIC_SHA256 = "f05e06f02cf9bc67d43025a9f7e89536a99ad470b6048788b9b8a5d3c2212ecb"
+RETAINED_V91_SEMANTIC_SHA256 = "cd121b16a5bef02cb62ea60c6e12e8614f5d6289981c4289b8499b078b021401"
 RETAINED_V90_SEMANTIC_SHA256 = "282c29e5684433d3ecc50d253c4a2946a70c7a5a3bccd439a2d313034f708fa6"
 RETAINED_V89_SEMANTIC_SHA256 = "417e96f3229302e60af32b18e3da4ebe277f4b4a447c0c0147f7051102792b1a"
 RETAINED_V88_SEMANTIC_SHA256 = "55d2d011073c634924ee53bd139c1f48482a9eaa8de2016cb83d4527c21852c5"
@@ -156,6 +158,8 @@ def retained_v79_policy(provenance: Any) -> bool:
             (89, 37),
             (90, 37),
             (91, 37),
+            (92, 37),
+            (93, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -187,6 +191,8 @@ def retained_v80_policy(provenance):
             (89, 37),
             (90, 37),
             (91, 37),
+            (92, 37),
+            (93, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -203,7 +209,20 @@ def retained_v81_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(82, 37), (83, 37), (84, 37), (85, 37), (86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37)}
+        in {
+            (82, 37),
+            (83, 37),
+            (84, 37),
+            (85, 37),
+            (86, 37),
+            (87, 37),
+            (88, 37),
+            (89, 37),
+            (90, 37),
+            (91, 37),
+            (92, 37),
+            (93, 37),
+        }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -223,7 +242,19 @@ def retained_v82_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(83, 37), (84, 37), (85, 37), (86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37)}
+        in {
+            (83, 37),
+            (84, 37),
+            (85, 37),
+            (86, 37),
+            (87, 37),
+            (88, 37),
+            (89, 37),
+            (90, 37),
+            (91, 37),
+            (92, 37),
+            (93, 37),
+        }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -239,7 +270,7 @@ def retained_v83_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(84, 37), (85, 37), (86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37)}
+        in {(84, 37), (85, 37), (86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -255,7 +286,7 @@ def retained_v84_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(85, 37), (86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37)}
+        in {(85, 37), (86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -271,7 +302,7 @@ def retained_v85_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37)}
+        in {(86, 37), (87, 37), (88, 37), (89, 37), (90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -287,7 +318,7 @@ def retained_v86_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(87, 37), (88, 37), (89, 37), (90, 37), (91, 37)}
+        in {(87, 37), (88, 37), (89, 37), (90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -302,7 +333,8 @@ def retained_v87_policy(provenance):
         "semantic_sha256": RETAINED_V87_SEMANTIC_SHA256,
     }
     return (
-        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(88, 37), (89, 37), (90, 37), (91, 37)}
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
+        in {(88, 37), (89, 37), (90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -317,7 +349,8 @@ def retained_v88_policy(provenance):
         "semantic_sha256": RETAINED_V88_SEMANTIC_SHA256,
     }
     return (
-        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(89, 37), (90, 37), (91, 37)}
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
+        in {(89, 37), (90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -332,7 +365,7 @@ def retained_v89_policy(provenance):
         "semantic_sha256": RETAINED_V89_SEMANTIC_SHA256,
     }
     return (
-        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(90, 37), (91, 37)}
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(90, 37), (91, 37), (92, 37), (93, 37)}
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -347,7 +380,37 @@ def retained_v90_policy(provenance):
         "semantic_sha256": RETAINED_V90_SEMANTIC_SHA256,
     }
     return (
-        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) == (91, 37)
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(91, 37), (92, 37), (93, 37)}
+        and valid_policy_provenance(provenance)
+        and all(provenance.get(key) == value for key, value in frozen.items())
+    )
+
+
+def retained_v91_policy(provenance):
+    """Completed v91 publications remain frozen under their recorded provenance."""
+    frozen = {
+        **expected_policy_identity(),
+        "execution_profile": "correlation_v91_policy_engine",
+        "implementation": {"correlation_version": 91, "lineage_version": 37},
+        "semantic_sha256": RETAINED_V91_SEMANTIC_SHA256,
+    }
+    return (
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) in {(92, 37), (93, 37)}
+        and valid_policy_provenance(provenance)
+        and all(provenance.get(key) == value for key, value in frozen.items())
+    )
+
+
+def retained_v92_policy(provenance):
+    """Recognize the frozen pre-terminal-rename producer."""
+    frozen = {
+        **expected_policy_identity(),
+        "execution_profile": "correlation_v92_policy_engine",
+        "implementation": {"correlation_version": 92, "lineage_version": 37},
+        "semantic_sha256": RETAINED_V92_SEMANTIC_SHA256,
+    }
+    return (
+        (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION) == (93, 37)
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )

@@ -7,7 +7,13 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from libs.alpaca_data_api_solver import ACTION_URL, ASSET_URL, build_plan, validate_version
+from libs.alpaca_data_api_solver import (
+    ACTION_URL,
+    ASSET_URL,
+    build_plan,
+    market_split_parameters,
+    validate_version,
+)
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.common.provider_http import (
     RETRY,
@@ -218,6 +224,20 @@ class AlpacaIdentityClient:
         )
         return self.execute_plan(plan)[0][0]
 
+    def get_market_splits(self, session):
+        plan = build_plan(
+            {
+                "steps": [
+                    {
+                        "needs": [
+                            {"kind": "market_split_session", "why": "historical_price_basis", "session": session}
+                        ]
+                    }
+                ]
+            }
+        )
+        return self.execute_plan(plan)[0][0]
+
     def execute_plan(self, plan, *, metrics=None):
         """Execute ordered metadata actions; results retain step/action positions."""
         # The solver owns request construction, but this credential-bearing
@@ -232,12 +252,19 @@ class AlpacaIdentityClient:
                 if not (
                     strategy == "asset_lookup"
                     and url.startswith(ASSET_URL + "/")
-                    or strategy == "corporate_actions_batch"
+                    or strategy in ("corporate_actions_batch", "market_split_session")
                     and url == ACTION_URL
                     or strategy == "asset_catalogue"
                     and url == ASSET_URL
                 ):
                     raise RuntimeError("metadata executor received a different API strategy")
+                if strategy == "market_split_session":
+                    params = action["request"]["params"]
+                    if params != market_split_parameters(params.get("start")) or action.get("pagination") != {
+                        "parameter": "page_token",
+                        "response_field": "next_page_token",
+                    }:
+                        raise ValueError("market split plan exceeds its single-session scope")
         results = []
         for step in plan["steps"]:
             values = []
@@ -256,6 +283,8 @@ class AlpacaIdentityClient:
                             "asset": asset,
                         }
                     )
+                elif action["strategy"] == "market_split_session":
+                    values.append(self._execute_corporate_action(action, metrics=metrics))
                 elif action["strategy"] == "asset_catalogue":
                     values.append(
                         self.request_json(

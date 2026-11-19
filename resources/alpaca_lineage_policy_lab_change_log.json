@@ -119,5 +119,15 @@
     "modifications": [
       "Evaluate the registered dated-label producer over completed numerical frames and retain pre-label outputs for exact producer add/remove comparisons."
     ]
+  },
+  {
+    "modifications": [
+      "Read supported frozen lineage 34 / correlation 79 and lineage 37 / correlation 82 through 91 baselines with their registered exact semantic digests and the applicable identity-report version and calendar for read-only policy comparison. Replay numerical selection under the candidate's recorded correlation version."
+    ]
+  },
+  {
+    "modifications": [
+      "Admit the exact completed v92 policy for read-only control comparison."
+    ]
   }
 ]

@@ -57,6 +57,23 @@ def raw_source_presence(store, sources, generations, queries, *, payload_cache=N
     return result
 
 
+def dated_intervals(receipts, unavailable=()):
+    """Intersect the completed member decisions in the locked snapshot."""
+    if not receipts:
+        return {}
+    selections = next(iter(receipts.values())).get("dated_price_intervals", {})
+    return {
+        pid: item
+        for pid, item in selections.items()
+        if set(item["members"]) == receipts.keys()
+        and set(item["unavailable"]) == set(unavailable)
+        and all(
+            receipt.get("dated_price_intervals", {}).get(pid, {}).get("token") == item["token"]
+            for receipt in receipts.values()
+        )
+    }
+
+
 class GroupSnapshot:
     def __init__(
         self,
@@ -76,6 +93,7 @@ class GroupSnapshot:
         self._all_assignments = all_assignments
         self._receipts, self._generations = receipts, generations
         self._evidence = None
+        self._dated_intervals = dated_intervals(receipts, unavailable_pricing(receipts[symbol]))
         # Keep the requested symbol: it selects the receipt's unavailable-input set.
         self._unavailable = tuple(sorted(unavailable_pricing(receipts[symbol])))
         self._cache = (
@@ -148,6 +166,10 @@ class GroupSnapshot:
         if self._all_assignments is None:
             raise StandaloneReaderError("full assignments were not selected")
         return self._all_assignments
+
+    def duplicate_source_slices(self):
+        """Consume the selected group's completed dated ownership correction."""
+        return next(iter(self._receipts.values())).get("duplicate_source_slices", {})
 
     def membership_rebinds(self):
         """Completed lineage transfers; serving owns only numerical composition."""
@@ -330,6 +352,17 @@ class GroupSnapshot:
             for view in previous["views"].values()
         )
 
+    def historical_label_intervals(self):
+        return getattr(self._assignments, "historical_labels", {})
+
+    def price_basis_limits(self):
+        from libs.alpaca_lineage_build.price_basis_limits import group_limits
+
+        return group_limits(self._receipts, self._unavailable, self._dated_intervals)
+
+    def dated_price_intervals(self):
+        return deepcopy(self._dated_intervals)
+
     def serving_histories(self, public_id, *, prefix=None):
         """One shared assembly, with a producer's completed prefix when selected."""
         coverage = {}
@@ -344,6 +377,11 @@ class GroupSnapshot:
             self._cache if self._cache.maximum_bytes else None,
             prefix=prefix,
             coverage_out=coverage,
+            **(
+                {"dated_interval": self._dated_intervals[public_id]}
+                if public_id in self._dated_intervals
+                else {}
+            ),
         )
         return views, coverage
 
@@ -515,6 +553,13 @@ class GroupSnapshot:
                 start,
                 end,
                 self._cache if self._cache.maximum_bytes else None,
+                minimum_session=start.isoformat() if start else None,
+                maximum_session=end.isoformat() if end else None,
+                **(
+                    {"dated_interval": self._dated_intervals[public_id]}
+                    if public_id in self._dated_intervals
+                    else {}
+                ),
             )
         except StandaloneReaderError:
             raise
@@ -595,13 +640,96 @@ class GroupSnapshot:
 class ExportGroup:
     """Borrow selected rows under the catalogue gate for one export group."""
 
-    def __init__(self, store, assignments, sources):
+    def __init__(self, store, assignments, sources, intervals=None, receipts=None):
+        self._selected_receipts = receipts
+        self._dated_intervals = intervals or {}
         self._store, self._assignments, self._sources = store, assignments, sources
 
     def close(self):
-        self._assignments = self._sources = None
+        self._assignments = self._sources = self._selected_receipts = None
 
-    def _iter_export_histories(self, public_ids, *, start=None, end=None):
+    def bounded_acquisition_views(self, public_id, first, last, *, modes=ADJUSTMENTS, cache=None):
+        from datetime import date
+
+        return _read_views(
+            self._assignments,
+            self._sources,
+            self._store,
+            public_id,
+            modes,
+            date.fromisoformat(first),
+            date.fromisoformat(last),
+            io_cache={} if cache is None else cache,
+            dated_interval=self._dated_intervals.get(public_id),
+            minimum_session=first,
+            maximum_session=last,
+        )
+
+    def dated_acquisition_inputs(self, public_id, first, cut, ranges, *, carried=False, same_label=False):
+        """Lend the earlier bars and the first traded successor witnesses once."""
+        from datetime import date, timedelta
+        from decimal import Decimal
+
+        from libs.alpaca_pricing_download.dated_rename import UnsupportedInterval
+
+        labels = [r for r in ranges if r["first_session"] <= cut <= r["last_session"]]
+        expected_start = first.isoformat() if same_label else cut
+        if len(labels) != 1 or labels[0]["first_session"] != expected_start:
+            raise UnsupportedInterval("select an unambiguous dated ticker range")
+        cache = {}
+
+        def read(modes, lower, upper):
+            return _read_views(
+                self._assignments,
+                self._sources,
+                self._store,
+                public_id,
+                modes,
+                lower,
+                upper,
+                io_cache=cache,
+                dated_interval=self._dated_intervals.get(public_id),
+                minimum_session=lower.isoformat(),
+                maximum_session=upper.isoformat(),
+            )
+
+        opening = date.fromisoformat(cut)
+        end = date.fromisoformat(labels[0]["last_session"])
+        if opening <= first:
+            raise UnsupportedInterval("selected rename lacks an earlier published session")
+        end_prior = opening - timedelta(days=1)
+        if carried:
+            from libs.alpaca_pricing_download.carried_rename import preceding_scope
+
+            raw = preceding_scope(first, end_prior, lambda lo, hi: read(("raw",), lo, hi)["raw"]["bars"])
+            first = date.fromisoformat(raw[0]["session"])
+        else:
+            raw = read(("raw",), first, end_prior)["raw"]["bars"]
+        witness_days = []
+        lower = opening
+        while lower <= end and len(witness_days) < 3:
+            upper = min(end, lower + timedelta(days=6))
+            for bar in read(("raw",), lower, upper)["raw"]["bars"]:
+                raw.append(bar)
+                if (
+                    bar["tickers"] == [labels[0]["ticker"]]
+                    and min(Decimal(bar["volume"]), Decimal(bar["trade_count"])) > 0
+                ):
+                    witness_days.append(bar["session"])
+                    if len(witness_days) == 3:
+                        break
+            lower = upper + timedelta(days=1)
+        if len(witness_days) < 2:
+            raise UnsupportedInterval("insufficient traded successor sessions")
+        views = read(
+            tuple(mode for mode in ADJUSTMENTS if mode != "raw"), first, date.fromisoformat(witness_days[-1])
+        )
+        views["raw"] = {"bars": raw, "bar_count": len(raw)}
+        return views
+
+    def _iter_export_histories(
+        self, public_ids, *, start=None, end=None, online_starts=None, online_windows=None
+    ):
         """Consume selected online IDs with one I/O memo under the group lock.
 
         Membership and row ownership come from completed selectors. The memo
@@ -626,17 +754,41 @@ class ExportGroup:
         io_cache = {}
         try:
             for position, public_id in enumerate(public_ids):
+                lower = (online_starts or {}).get(public_id, start)
+                physical_scope = (
+                    {"minimum_session": lower.isoformat()}
+                    if online_starts and public_id in online_starts
+                    else {}
+                )
                 try:
-                    views = _read_views(
-                        self._assignments,
-                        self._sources,
-                        self._store,
-                        public_id,
-                        ADJUSTMENTS,
-                        start,
-                        end,
-                        io_cache=io_cache,
-                    )
+
+                    def read(first, last):
+                        scope = physical_scope
+                        if online_windows and public_id in online_windows:
+                            scope = {"minimum_session": first.isoformat(), "maximum_session": last.isoformat()}
+                        return _read_views(
+                            self._assignments,
+                            self._sources,
+                            self._store,
+                            public_id,
+                            ADJUSTMENTS,
+                            first,
+                            last,
+                            io_cache=io_cache,
+                            **scope,
+                            **(
+                                {"dated_interval": self._dated_intervals[public_id]}
+                                if public_id in self._dated_intervals
+                                else {}
+                            ),
+                        )
+
+                    if online_windows and public_id in online_windows:
+                        from ._online_price_spans import assemble
+
+                        views = assemble(ADJUSTMENTS, online_windows[public_id], read)
+                    else:
+                        views = read(lower, end)
                 except StandaloneReaderError:
                     raise
                 except (OSError, RuntimeError, ValueError, KeyError, TypeError, StopIteration) as error:

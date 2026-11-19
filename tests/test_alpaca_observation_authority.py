@@ -146,6 +146,51 @@ class ObservationSelectionTests(TestCase):
         inputs["NEW"].source["latest_request"]["asof"] = "2026-10-09"
         self.assertEqual(select_observations(inputs, reports)[1], {})
 
+    def test_decimal_spelling_and_sub_float_differences_at_a_source_contest(self):
+        from libs.alpaca_lineage_build import observations
+
+        for tied in (False, True):
+            for volume, differs in (("7.00E+2", False), ("700.0000000000000000001", True)):
+                with self.subTest(tied=tied, volume=volume):
+                    inputs, reports = self.fixture(retired=True, old_count=7, new_count=7)
+                    if tied:
+                        for report in reports.values():
+                            for segment in report["correlated"]["segments"]:
+                                segment["historical_symbol"] = "BORROWED"
+                    bars = inputs["OLD"].views["raw"]
+                    old = bars[1]
+                    changed = (*old[:5], volume, *old[6:])
+                    inputs["OLD"].views = dict.fromkeys(ADJUSTMENTS, (bars[0], changed, *bars[2:]))
+                    equality = {}
+                    with patch.object(observations, "_same_values", wraps=observations._same_values) as compare:
+                        selected, corrections = select_observations(inputs, reports, equality_outcomes=equality)
+                    # The eight aliases share one numerical comparison, including
+                    # the tie breaker. The exact stored representations survive.
+                    self.assertEqual(compare.call_count, 1)
+                    self.assertEqual(inputs["OLD"].views["all"][1][5], volume)
+                    self.assertEqual(bool(corrections), differs and not tied)
+                    if corrections:
+                        self.assertEqual(corrections["NEW"]["mapping_asof"], "2026-10-09")
+                    self.assertEqual(("id", timestamp(old[0])) in equality, not differs)
+                    expected = "conflict" if tied and differs else "selected"
+                    states = [
+                        segment["observation_selection"]
+                        for segment in selected["NEW"]["correlated"]["segments"]
+                        if segment["row_start"] <= 2 <= segment["row_end"]
+                    ]
+                    self.assertEqual(states, [expected] * len(ADJUSTMENTS))
+
+    def test_explicit_v91_replay_preserves_its_original_numerical_choice(self):
+        inputs, reports = self.fixture(retired=True, old_count=7, new_count=7)
+        bars = inputs["OLD"].views["raw"]
+        changed = (*bars[1][:5], "7.00E+2", *bars[1][6:])
+        inputs["OLD"].views = dict.fromkeys(ADJUSTMENTS, (bars[0], changed, *bars[2:]))
+        with patch(
+            "libs.alpaca_lineage_build.observations._same_values", side_effect=AssertionError("v92 comparator")
+        ):
+            _, corrections = select_observations(inputs, reports, correlation_version=91)
+        self.assertEqual(corrections["NEW"]["mapping_asof"], "2026-10-09")
+
     def test_equal_raw_cannot_certify_an_out_of_occupancy_adjustment_route(self):
         inputs, reports = self.fixture(retired=True, old_count=7, new_count=7)
         self.assertEqual(select_observations(inputs, reports)[1], {})

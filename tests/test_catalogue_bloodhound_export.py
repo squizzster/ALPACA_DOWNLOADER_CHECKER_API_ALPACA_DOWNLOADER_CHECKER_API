@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import skipUnless
 from unittest.mock import patch
 
-from test_alpaca_end_of_day_api import NativeCase
+from test_alpaca_end_of_day_api import NativeCase, valid_bars
 
 from alpaca_end_of_day import (
     CatalogChangedError,
@@ -32,6 +32,41 @@ if HAS_CONVERTER:
 
 @skipUnless(HAS_CONVERTER, "install requirements-bloodhound.txt")
 class CatalogueBloodhoundTests(NativeCase):
+    def test_basis_limited_history_reaches_public_views_and_parquet(self):
+        from alpaca_end_of_day import standalone
+        from libs.alpaca_lineage_build.adjustment_basis import INCOMPATIBLE_SPLIT_BASIS
+
+        self.add_symbol("BRIDGE", valid_bars("2026-09-28", "2026-10-14"))
+
+        def completed_choice(receipt, boundaries):
+            for view in boundaries["current_year"]["adjustments"]:
+                for segment in view["segments"]:
+                    segment["observation_selection"] = "superseded"
+                    segment["warnings"] = [INCOMPATIBLE_SPLIT_BASIS]
+
+        self.publish_change(completed_choice, symbol="BRIDGE")
+        read = standalone._rows
+
+        def selected_rows(root, source, kind, *args, **kwargs):
+            self.assertFalse(root.name == "BRIDGE" and kind == "current_year", "obsolete price partition opened")
+            return read(root, source, kind, *args, **kwargs)
+
+        with patch.object(standalone, "_rows", selected_rows):
+            data = self.bootstrap()
+            (security,) = data.resolve_ticker("BRIDGE")
+            expected = [row["t"][:10] for row in self.bars]
+            views = data.get_histories(security.public_id)
+            self.assertEqual(len(views), 8)
+            for history in views.values():
+                self.assertEqual(expected, [str(bar.session) for bar in history.bars])
+            output = self.directory / "selected.parquet"
+            report = converter.convert(self.arguments(output))
+
+        self.assertEqual(report["histories_rejected"], 0)
+        table = pq.read_table(output, filters=[("symbol", "=", "BRIDGE")])
+        self.assertEqual(table.num_rows, len(expected))
+        self.assertEqual(expected, [str(day)[:10] for day in table["date"].to_pylist()])
+
     def arguments(self, output, *extra, source=None):
         return converter.parser().parse_args(
             [

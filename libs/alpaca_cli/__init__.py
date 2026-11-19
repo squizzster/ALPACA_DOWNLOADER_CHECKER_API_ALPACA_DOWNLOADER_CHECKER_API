@@ -25,10 +25,92 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 47
+VERSION = 49
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
+_PRICING_REPAIRS = {
+    "project-displaced-label": (
+        "displaced_label",
+        "project a former ticker from an indexed earlier trading occupation",
+        "first selected successor trading session",
+    ),
+    "project-historical-label": (
+        "historical_label",
+        "project a former trading ticker over its observed literal price history",
+        "session of the accepted historical price-basis review",
+    ),
+    "review-historical-split-basis": (
+        "review_historical_split_basis",
+        "assess a dated price basis using independently identifiable historical ticker observations",
+        "session with the observed adjustment step",
+    ),
+    "repair-former-label-basis": (
+        "former_label_basis",
+        "recover a historical price basis from its original ticker across a later rename",
+        "first session under the successor ticker",
+    ),
+    "review-untraded-split": (
+        "review_untraded_split",
+        "assess a carried price interval across a change of share units",
+        "session with the observed split",
+    ),
+    "review-product-quote": (
+        "product_quote",
+        "review whether the selected product supplies dollar prices or NAV-relative quotes",
+        "session with the observed adjustment step",
+    ),
+    "review-split-basis": (
+        "review_split_basis",
+        "assess eligibility of a published price history across a reported split",
+        "session with the observed adjustment step",
+    ),
+    "repair-rename": (
+        None,
+        "acquire and publish dated prices for a rename",
+        "first session under the successor ticker",
+    ),
+    "repair-carried-rename": (
+        "carried_rename",
+        "assess and publish active successor prices across a carried ticker interval",
+        "first session of the selected successor range",
+    ),
+    "repair-same-label-basis": (
+        "same_label_basis",
+        "acquire a dated price basis for the opening ticker of a published series",
+        "session with the observed adjustment step",
+    ),
+    "repair-rename-split-basis": (
+        "rename_split_basis",
+        "assess and publish an action-derived split basis across a dated rename",
+        "first session under the successor ticker",
+    ),
+    "repair-split-timing": (
+        "split_timing",
+        "assess and publish a bounded split timing correction",
+        "session with the observed adjustment step",
+    ),
+    "repair-duplicate-split": (
+        "duplicate_split",
+        "assess a repeated split against the recorded changes of traded share units",
+        "session with a suspected duplicate split adjustment",
+    ),
+    "repair-retired-unit": (
+        "retired_unit",
+        "restore a closed unit price basis affected by a split after its terminal separation",
+        "session with the post-retirement share factor",
+    ),
+    "repair-conversion-timing": (
+        "conversion_timing",
+        "assess early split adjustment against a later same-label security conversion",
+        "session with the observed adjustment step",
+    ),
+    "repair-split-carry": (
+        "split_carry",
+        "assess carried split-adjusted marks between two traded sessions",
+        "session with the observed adjustment step",
+    ),
+}
 
 
 class Parser(argparse.ArgumentParser):
@@ -182,6 +264,27 @@ def build_parser():
             p.add_argument("--include-all-passed", action="store_true")
         p.add_argument("--replace", action="store_true")
     pricing = commands.add_parser("pricing").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    for operation, (_, help_text, session_help) in _PRICING_REPAIRS.items():
+        repair = pricing.add_parser(operation, help=help_text)
+        _store(repair)
+        repair.add_argument(
+            "--public-id",
+            required=True,
+            action="append",
+            help="online public ID; repeat with a corresponding session",
+        )
+        repair.add_argument("--session", required=True, action="append", help=session_help + ", YYYY-MM-DD")
+        if operation in ("repair-split-carry", "review-untraded-split"):
+            repair.add_argument(
+                "--from", dest="carry_first", required=True, action="append", help="preceding traded session"
+            )
+            repair.add_argument(
+                "--through",
+                dest="carry_last",
+                required=True,
+                action="append",
+                help="resumed traded session or last stored session for review-untraded-split",
+            )
     for name in ("acquire", "check", "refresh"):
         p = pricing.add_parser(name)
         _store(p, required=name == "acquire")
@@ -204,6 +307,8 @@ def build_parser():
         "migrate-index",
         "migrate-policy",
         "migrate-assignments",
+        "repair-overlap",
+        "repair-occupation",
     ):
         p = lineage.add_parser(name)
         _store(p)
@@ -222,6 +327,10 @@ def build_parser():
             _selection(p)
             _dates(p, start=False, pricing=True)
             p.add_argument("--no-pricing-acquisition", action="store_true")
+        elif name == "repair-occupation":
+            p.add_argument("--public-id", required=True, help="one published owner with suspected ticker reuse")
+        elif name == "repair-overlap":
+            p.add_argument("--group-key", required=True, help="one published serving group locator")
         elif name == "inspect":
             p.add_argument("--symbol", required=True)
         elif name == "migrate-index":
@@ -331,7 +440,7 @@ def _store_operation_mode(args):
         return "shared"
     writes = (
         (command == "update" and not args.plan)
-        or (command == "pricing" and operation in {"acquire", "refresh"})
+        or (command == "pricing" and (operation in {"acquire", "refresh"} or operation in _PRICING_REPAIRS))
         or (
             command == "lineage"
             and operation
@@ -343,6 +452,8 @@ def _store_operation_mode(args):
                 "migrate-index",
                 "migrate-policy",
                 "migrate-assignments",
+                "repair-overlap",
+                "repair-occupation",
             }
             and not getattr(args, "plan", False)
         )
@@ -463,6 +574,14 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "repair-occupation":
+            from libs.alpaca_lineage_build.occupation_repair import reconcile
+
+            return reconcile(args.store, args.public_id, clients)
+        if operation == "repair-overlap":
+            from libs.alpaca_lineage_build.duplicate_repair import reconcile
+
+            return reconcile(args.store, args.group_key)
         if operation == "recover":
             from libs.alpaca_lineage_build.retained_recovery import recover
 
@@ -567,6 +686,51 @@ def dispatch(args):
             else {"enabled": False},
         )
     if command == "pricing":
+        if operation in ("review-product-quote", "review-untraded-split"):
+            from libs.alpaca_lineage_build.price_coverage_review import review
+
+            if not args.public_id or len(args.public_id) != len(args.session):
+                raise ValueError("each selected public ID requires one review session")
+            pricing = clients()[0]
+            bounds = (
+                list(zip(args.carry_first, args.carry_last, strict=True))
+                if operation == "review-untraded-split"
+                else [None] * len(args.session)
+            )
+            selected = dict.fromkeys(zip(args.public_id, args.session, bounds, strict=True))
+            results = [review(args.store, pid, day, pricing, bounds=bounds_) for pid, day, bounds_ in selected]
+            return {"complete": True, "outcomes": results, "http_requests": pricing.request_count}
+        if operation == "project-displaced-label":
+            from libs.alpaca_lineage_build.displaced_labels import review_many
+
+            return review_many(args.store, args.public_id, args.session, clients()[0])
+        if operation == "project-historical-label":
+            from libs.alpaca_lineage_build.historical_labels import review_many
+
+            return review_many(args.store, args.public_id, args.session, clients()[0])
+        if operation in ("review-split-basis", "review-historical-split-basis"):
+            from libs.alpaca_lineage_build.price_basis_review import review_many
+
+            pricing, identity = clients()
+            if operation == "review-historical-split-basis":
+                return review_many(
+                    args.store, args.public_id, args.session, pricing, historical_identity=identity
+                )
+            return review_many(args.store, args.public_id, args.session, pricing)
+        if operation in _PRICING_REPAIRS:
+            from libs.alpaca_lineage_build.dated_price_repair import repair_many
+
+            kind = _PRICING_REPAIRS[operation][0]
+            pricing = (
+                None
+                if kind
+                in ("split_timing", "split_carry", "duplicate_split", "conversion_timing", "retired_unit")
+                else clients()[0]
+            )
+            kwargs = {"repair_kind": kind} if kind else {}
+            if kind == "split_carry":
+                kwargs["carry_windows"] = list(zip(args.carry_first, args.carry_last, strict=True))
+            return repair_many(args.store, args.public_id, args.session, pricing, **kwargs)
         if operation == "acquire":
             from libs.alpaca_lineage_build.registration import standalone_registration
             from libs.alpaca_pricing_download.command_line import run_arguments

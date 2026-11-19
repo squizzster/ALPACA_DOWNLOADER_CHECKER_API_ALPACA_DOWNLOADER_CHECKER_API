@@ -4,9 +4,10 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+from libs.alpaca_lineage_build import correlation_policy_contract as policies
 from libs.alpaca_lineage_build.contract import CorrelationPolicyError as PolicyLabError
 
-LAB_VERSION = 24
+LAB_VERSION = 26
 LAB_SCHEMA_VERSION = 8
 SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset((1, 2, 3, 4))
 LAB_REPORT_BOUNDARY = "alpaca_lineage_policy_lab_comparison"
@@ -14,6 +15,24 @@ LAB_AUDIT_BOUNDARY = "alpaca_lineage_policy_lab_audit"
 LAB_CHANGE_LOG_PATH = (
     Path(__file__).resolve().parents[2] / "resources" / "alpaca_lineage_policy_lab_change_log.json"
 )
+
+FROZEN_BASELINE_POLICIES = {
+    (33, 59): None,  # Published before policy provenance.
+    (34, 76): policies.RETAINED_V76_SEMANTIC_SHA256,
+    (34, 77): policies.RETAINED_V76_SEMANTIC_SHA256,
+    (34, 79): policies.RETAINED_V79_SEMANTIC_SHA256,
+    (37, 82): policies.RETAINED_V82_SEMANTIC_SHA256,
+    (37, 83): policies.RETAINED_V83_SEMANTIC_SHA256,
+    (37, 84): policies.RETAINED_V84_SEMANTIC_SHA256,
+    (37, 85): policies.RETAINED_V85_SEMANTIC_SHA256,
+    (37, 86): policies.RETAINED_V86_SEMANTIC_SHA256,
+    (37, 87): policies.RETAINED_V87_SEMANTIC_SHA256,
+    (37, 88): policies.RETAINED_V88_SEMANTIC_SHA256,
+    (37, 89): policies.RETAINED_V89_SEMANTIC_SHA256,
+    (37, 90): policies.RETAINED_V90_SEMANTIC_SHA256,
+    (37, 91): policies.RETAINED_V91_SEMANTIC_SHA256,
+    (37, 92): policies.RETAINED_V92_SEMANTIC_SHA256,
+}
 
 
 def replayable_lineage_versions(published):
@@ -23,18 +42,22 @@ def replayable_lineage_versions(published):
     from libs.alpaca_lineage_build.contract import versions
 
     current = versions()
-    legacy = {**current, "lineage": 33, "correlation": 59}
-    legacy.pop("correlation_policy_sha256", None)
-    from libs.alpaca_lineage_build.correlation_policy_contract import RETAINED_V76_SEMANTIC_SHA256
-
-    retained = {
-        **current,
-        "lineage": 34,
-        "correlation": 76,
-        "correlation_policy_sha256": RETAINED_V76_SEMANTIC_SHA256,
-    }
-    retained_v77 = {**retained, "correlation": 77}
-    return published in (current, legacy, retained, retained_v77)
+    if not isinstance(published, dict) or any(
+        type(published.get(key)) is not int for key in ("lineage", "correlation", "identity_report")
+    ):
+        return False
+    if published == current:
+        return True
+    pair = published["lineage"], published["correlation"]
+    if current["identity_report"] != 4 or pair not in FROZEN_BASELINE_POLICIES:
+        return False
+    expected = {**current, "lineage": pair[0], "correlation": pair[1]}
+    digest = FROZEN_BASELINE_POLICIES[pair]
+    if digest is None:
+        del expected["correlation_policy_sha256"]
+    else:
+        expected["correlation_policy_sha256"] = digest
+    return published == expected
 
 
 @lru_cache(maxsize=1)

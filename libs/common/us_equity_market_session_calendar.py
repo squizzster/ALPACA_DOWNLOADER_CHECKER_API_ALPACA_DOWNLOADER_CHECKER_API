@@ -49,7 +49,7 @@ def market_session_dates_sha256(session_dates: Iterable[str]) -> str:
 
 
 @lru_cache(maxsize=1)
-def _load_us_market_session_dates_and_sha256() -> tuple[tuple[str, ...], str]:
+def _calendar():
     # This owner validates and hashes the immutable calendar once per process.
     # Consumers use its cached dates/digest; per-group file rechecks add no facts.
     try:
@@ -74,11 +74,31 @@ def _load_us_market_session_dates_and_sha256() -> tuple[tuple[str, ...], str]:
     if session_dates != sorted(set(session_dates)):
         raise MarketCalendarError("calendar dates are not strictly increasing and unique")
 
-    return tuple(session_dates), hashlib.sha256(calendar_file_bytes).hexdigest()
+    regular_hours = {
+        day: (row.get("open"), row.get("close")) for day, row in zip(session_dates, market_session_records)
+    }
+    return tuple(session_dates), hashlib.sha256(calendar_file_bytes).hexdigest(), regular_hours
 
 
 def us_market_hours_sha256() -> str:
-    return _load_us_market_session_dates_and_sha256()[1]
+    return _calendar()[1]
+
+
+def regular_market_hours(session_date):
+    """The selected exchange session's actual local open and close, including early closes."""
+    hours = _calendar()[2].get(session_date)
+    if not hours or not all(hours):
+        raise MarketCalendarError(f"missing regular session hours for {session_date}")
+    return hours
+
+
+def surrounding_market_sessions(session_date: str) -> tuple[str, ...]:
+    """Return the selected session and its two immediate neighbours, when available."""
+    dates, _, _ = _calendar()
+    position = bisect_left(dates, session_date)
+    if not 0 < position < len(dates) - 1 or dates[position] != session_date:
+        return ()
+    return dates[position - 1 : position + 2]
 
 
 @lru_cache(maxsize=256)
@@ -91,7 +111,7 @@ def expected_market_session_coverage(
     if start_date >= end_date:
         raise MarketCalendarError("session range start must be before end")
 
-    session_dates, _ = _load_us_market_session_dates_and_sha256()
+    session_dates, _, _ = _calendar()
     first_supported = date.fromisoformat(session_dates[0])
     last_supported = date.fromisoformat(session_dates[-1])
     parsed_start = date.fromisoformat(start_date)
