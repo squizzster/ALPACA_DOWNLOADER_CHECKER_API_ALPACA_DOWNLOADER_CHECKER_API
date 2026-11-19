@@ -299,7 +299,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         invalidate = symbol in mapping_groups or (unfinished and prior.get("invalidate_pricing", False))
         required_end = end_date if symbol in maintained or covered is None else covered
         if unfinished:
-            required_end = max(required_end, pricing_target(prior))
+            required_end = max(required_end, pricing_target(prior, lineage_coverage=covered))
         if invalidate and covered and covered > end_date:
             deferred.append({"symbol": symbol, "reason": "required_replacement_exceeds_requested_cutoff"})
         if extend_history and covered > end_date:
@@ -328,6 +328,11 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             if unfinished or retain_completion
             else None,
             "required_group": sorted(required_group),
+            **(
+                {"required_pricing_acquisition": True}
+                if unfinished and prior.get("required_pricing_acquisition")
+                else {}
+            ),
             **(
                 {"required_numerical_completion": prior["required_numerical_completion"]}
                 if unfinished and prior.get("required_numerical_completion") is not None

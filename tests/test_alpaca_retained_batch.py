@@ -476,6 +476,44 @@ class RetainedBatchTests(unittest.TestCase):
             self.assertEqual(item["status"], "published")
             self.assertEqual(len(read_pricing_views(self.store, item["symbol"])["all"]), 3)
 
+    def test_empty_peer_handoff_precedes_next_adaptive_request(self):
+        for offset, name in enumerate(ADJUSTMENTS):
+            self.live["AAA"][name] = self.old
+            self.live["BBB"][name] = [*self.old, bar("2026-10-16", str(70 + offset))]
+        accepted = []
+
+        class Interrupted(BaseException):
+            pass
+
+        def page(params):
+            if params["adjustment"] not in {"raw", "all"}:
+                self.assertEqual(["AAA"], [row["symbol"] for row in accepted])
+                raise Interrupted
+            return self.page(params)
+
+        with (
+            patch.object(self.client, "_get", side_effect=page),
+            patch.object(acquire, "read_validator", side_effect=AssertionError("historical check")),
+            self.assertRaises(Interrupted),
+        ):
+            acquire.acquire_selected(
+                self.store,
+                ["AAA", "BBB"],
+                "2026-10-17",
+                client=self.client,
+                select_append_work=True,
+                on_empty_suffixes=accepted.extend,
+            )
+        self.assertEqual(["raw", "all"], [params["adjustment"] for _, params in self.pages])
+        self.assertEqual(
+            {
+                "start": "2026-10-15T00:00:00+00:00",
+                "end_exclusive": "2026-10-17T00:00:00+00:00",
+                "asof": "2026-10-17",
+            },
+            accepted[0]["append_work_selection"],
+        )
+
     def test_retained_failures_do_not_keep_completed_responses_across_cohorts(self):
         selected = {}
         for symbol in ("AAA", "BBB"):

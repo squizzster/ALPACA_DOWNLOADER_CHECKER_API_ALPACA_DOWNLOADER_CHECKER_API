@@ -497,6 +497,48 @@ class LineageBuildTests(unittest.TestCase):
         self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
         self.assertEqual(result["results"][0]["processed"], ["GOOG", "OLD"])
 
+    def test_newly_discovered_lagging_source_checks_only_its_suffix(self):
+        self.download("CURRENT", end="2026-10-17", bars=self.bars + [bar("2026-10-16")])
+        self.download("FORMER", end="2026-10-15", bars=self.bars)
+        former = self.store / "end_of_day/pricing/FORMER"
+        before = storage.load_source(former, "FORMER")
+        action = {
+            "action_type": "name_change",
+            "id": "rename",
+            "process_date": "2026-09-01",
+            "old_symbol": "FORMER",
+            "new_symbol": "CURRENT",
+            "old_cusip": "111111111",
+            "new_cusip": "111111111",
+        }
+        identity = IdentityClient(
+            {name: asset("CURRENT") for name in ("FORMER", "CURRENT", "111111111")}, [action]
+        )
+        pricing = BarsClient("test", "test")
+        with (
+            patch.object(pricing, "_get", return_value={"bars": {}}) as pages,
+            patch(
+                "libs.alpaca_pricing_download.acquire.read_validator",
+                side_effect=AssertionError("checked history"),
+            ),
+            patch(
+                "libs.alpaca_lineage_build.pipeline.download_pricing",
+                side_effect=AssertionError("unselected acquisition"),
+            ),
+        ):
+            result = self.run_build(["CURRENT"], client=identity, pricing_client=pricing)
+        self.assertEqual(0, result["failed"], result)
+        self.assertEqual(["CURRENT", "FORMER"], result["results"][0]["processed"])
+        self.assertEqual(1, result["dependency_pricing"]["skipped"])
+        self.assertEqual(
+            [("FORMER", "raw", "2026-10-15"), ("FORMER", "all", "2026-10-15")],
+            [
+                (call.args[0]["symbols"], call.args[0]["adjustment"], call.args[0]["start"][:10])
+                for call in pages.call_args_list
+            ],
+        )
+        self.assertEqual(before, storage.load_source(former, "FORMER"))
+
     def test_missing_pricing_without_downloader_retains_notice(self):
         self.download()
         client = IdentityClient({"GOOG": asset("NEW")})

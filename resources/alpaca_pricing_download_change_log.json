@@ -371,5 +371,10 @@
       "Identify a prior trading label from selected raw observations of a displaced occupation and corroborated successor trades.",
       "Restore the original unit denominations of a wholly retired unit when every retained split, cash and spin view matches the exact reported post-retirement share factor."
     ]
+  },
+  {
+    "modifications": [
+      "Hand off completed empty dependency selections before later adaptive work and return an accepted correction from its first bound source selection."
+    ]
   }
 ]

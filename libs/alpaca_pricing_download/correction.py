@@ -5,6 +5,7 @@ only newly acquired output is compared with them. A conflicting broad response
 cannot erase a narrow observation or silently complete the correction.
 """
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from libs.common.debug_trace import event
@@ -36,6 +37,22 @@ def validate_durable_observations(contract):
         return
     if not isinstance(contract, dict) or contract.get("schema_version") not in (1, 2, 3):
         raise DownloadError("invalid durable correction contract; owning recovery required")
+    if "advance_end_exclusive" in contract:
+        target = contract["advance_end_exclusive"]
+        end = contract.get("end_exclusive")
+        try:
+            valid_target = (
+                date.fromisoformat(target).isoformat() == target
+                and isinstance(end, str)
+                and target > end[:10]
+                and contract["schema_version"] == 3
+                and contract.get("scope") == "full_history"
+                and contract.get("cause") == "selected_all_rows_changed"
+            )
+        except (TypeError, ValueError):
+            valid_target = False
+        if not valid_target:
+            raise DownloadError("invalid completed-comparison advance target; owning recovery required")
     if contract["schema_version"] == 1 and "observations" not in contract:
         return
     selected = contract.get("observations")

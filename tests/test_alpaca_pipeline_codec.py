@@ -159,6 +159,24 @@ class PipelineStateCapabilityTests(unittest.TestCase):
             setattr(result, name, {})
         return result
 
+    def test_selected_empty_dependency_survives_stage_transport(self):
+        from libs.alpaca_lineage_build.contract import LineageError
+        from libs.alpaca_lineage_build.work_contract import WorkPolicy
+        from libs.alpaca_pipeline.state import export_state, import_state
+
+        context = self.context()
+        policy = WorkPolicy(context.store, {"symbols": {}}, {}, [], "2026-10-20", context=context)
+        policy.empty_suffixes.add(("PEER", "a" * 64, "2026-10-20"))
+        encoder = Encoder()
+        document = export_state(context, policy, encoder.encode)
+        objects, document = json.loads(json.dumps([encoder.objects, document]))
+        with patch.object(WorkPolicy, "__init__", side_effect=AssertionError("reselected workflow")):
+            _, restored = import_state(context.store, document, Decoder(objects).decode)
+            self.assertEqual(policy.empty_suffixes, restored.empty_suffixes)
+            del document["policy"]["empty_suffixes"]
+            with self.assertRaisesRegex(LineageError, "incomplete work policy"):
+                import_state(context.store, document, Decoder(objects).decode)
+
     def test_generation_bound_recovery_caches_cross_without_calculation(self):
         from libs.alpaca_pipeline.state import export_state, import_state
 

@@ -120,7 +120,7 @@ def _cohorts(needs):
         yield cohort
 
 
-def select_append_sources(store, entries, end_date, *, required_symbols=(), selections=None):
+def select_append_sources(store, entries, end_date, *, required_symbols=(), selections=None, on_selected=None):
     """Select generations for the append subset before its history check begins."""
     needs, _ = append_needs(entries, request_end(end_date))
     result = {}
@@ -136,6 +136,8 @@ def select_append_sources(store, entries, end_date, *, required_symbols=(), sele
             result[symbol] = digest(json_bytes(source))
             if selections is not None:
                 selections[symbol] = source
+            if on_selected is not None:
+                on_selected(root, source, result[symbol])
             trace_source_selection(source, result[symbol], symbol=symbol, reason="append_selection")
     return result
 

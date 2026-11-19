@@ -762,6 +762,30 @@ def publish_selected_session_correction(
         }
 
 
+def completed_correction_result(source, generation, *, completion, pending_update, recovered=False):
+    """Carry the already selected pricing publication through correction recovery."""
+    return {
+        "symbol": source["symbol"],
+        "anchor_month": source["anchor_month"],
+        "request": source["latest_request"],
+        "mode": "unchanged",
+        "consistency_check": "completed_correction",
+        "completed_scope": "full_history"
+        if completion
+        else source.get("history_correction_scope", "full_history"),
+        "updated_boundaries": [],
+        "files_written": 0,
+        "source_sha256": generation,
+        "recovered": recovered,
+        "requests": 0,
+        "changed": False,
+        "correction_completion": completion,
+        "history_start": source.get("history_start", HISTORY_START),
+        "pending_update": pending_update,
+        **{key: source[key] for key in ("latest_session_correction", "history_changes") if key in source},
+    }
+
+
 @traced("pricing_download")
 def download_pricing(
     store: Path | str,
@@ -835,30 +859,13 @@ def download_pricing(
             # The publication journal already completed this exact durable
             # obligation. Recovery cannot turn lost acknowledgement into new
             # comparison/acquisition work against the superseded generation.
-            return {
-                "symbol": symbol,
-                "anchor_month": previous["anchor_month"],
-                "request": previous["latest_request"],
-                "mode": "unchanged",
-                "consistency_check": "completed_correction",
-                "completed_scope": previous.get("history_correction_scope", "full_history")
-                if not correction_completion
-                else "full_history",
-                "updated_boundaries": [],
-                "files_written": 0,
-                "source_sha256": current_sha256,
-                "recovered": recovered,
-                "requests": 0,
-                "changed": False,
-                "correction_completion": correction_completion,
-                "history_start": previous.get("history_start", HISTORY_START),
-                "pending_update": read_update(root, published=True),
-                **{
-                    key: previous[key]
-                    for key in ("latest_session_correction", "history_changes")
-                    if key in previous
-                },
-            }
+            return completed_correction_result(
+                previous,
+                current_sha256,
+                completion=correction_completion,
+                pending_update=read_update(root, published=True),
+                recovered=recovered,
+            )
         # DO NOT REMOVE WITHOUT USER AUTH!#
         # Preserve an explicitly established entity mapping across retries and
         # cutoff extensions. Advancing time must not silently turn a retired

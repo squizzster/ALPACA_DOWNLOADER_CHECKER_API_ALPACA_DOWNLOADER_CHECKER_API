@@ -1,5 +1,6 @@
 """Discovery, registration and selective reconciliation around pricing/lineage owners."""
 
+from collections import ChainMap
 from pathlib import Path
 
 from libs.alpaca_pricing_download import storage as pricing_storage
@@ -460,7 +461,9 @@ def _prepare_locked(
     if progress:
         progress("registration", {"state": "completed", **result["stages"]["registration"]})
     registered.update(selection["registration_additions"])
-    with universe_state.outcome_batch(store) as batch:
+    with universe_state.outcome_batch(
+        store, work=ChainMap(selection["work"], accepted["state"]["work"])
+    ) as batch:
         for symbol in selection["already_published"]:
             universe_state.record_outcome(
                 store,
@@ -714,6 +717,7 @@ def histories_locked(
             progress=callback,
             on_pricing=callback,
             pricing_handoff={item["symbol"]: item for item in publications if "source_sha256" in item},
+            acknowledge_published_dependencies=name == "discovery_lineage",
         )
         if progress:
             progress(name, {"state": "completed", "failed": value["failed"]})
@@ -801,7 +805,7 @@ def histories_locked(
         index, pending = boundary
         completed = {s: policy.satisfying_entry(s, index["symbols"], pending) for s in policy.work}
     unfinished = []
-    with universe_state.outcome_batch(store) as batch:
+    with universe_state.outcome_batch(store, work=policy.work) as batch:
         for symbol, item in policy.work.items():
             if symbol in policy.blocked:
                 continue

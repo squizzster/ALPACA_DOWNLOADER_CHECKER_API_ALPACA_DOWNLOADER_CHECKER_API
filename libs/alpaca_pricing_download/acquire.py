@@ -89,6 +89,7 @@ def acquire_selected(
     context=None,
     select_append_work=False,
     on_append_work_selected=None,
+    on_empty_suffixes=None,
     missing_route=None,
     lineage_generations=None,
 ):
@@ -284,26 +285,77 @@ def acquire_selected(
             }
             for symbol, source in append_sources.items()
         ]
-        try:
+        empty_results = {}
+
+        def accept_selections(completed):
+            newly_empty = []
+            for value in completed:
+                if any(view.rows for view in value.bars):
+                    continue
+                symbol = value.symbol
+                source = append_sources[symbol]
+                result = {
+                    "symbol": symbol,
+                    "status": "not_selected",
+                    "mode": "unchanged",
+                    "changed": False,
+                    "source_sha256": selected_generations[symbol],
+                    "history_start": source.get("history_start", HISTORY_START),
+                    "request": source["latest_request"],
+                    "append_work_selection": {
+                        "start": value.start.isoformat(),
+                        "end_exclusive": value.end.isoformat(),
+                        "asof": value.asof,
+                    },
+                }
+                empty_results[symbol] = result
+                newly_empty.append(result)
+            if newly_empty and on_empty_suffixes is not None:
+                on_empty_suffixes(newly_empty)
+
+        def select_suffixes(needs):
             states, _ = acquire_adjustments(
-                selection_needs,
+                needs,
                 client,
                 metrics=metrics,
                 progress=progress,
                 merge_ranges=False,
                 acquired=acquired,
                 retain_states=True,
+                on_completed=accept_selections,
             )
+            return states
+
+        try:
+            states = select_suffixes(selection_needs)
+            # The bounded acquisition retry owns only unfinished suffix views.
+            # Resolve it before opening validators or selecting historical work.
+            retry = []
+            for need, state in zip(selection_needs, states, strict=True):
+                if state.exact_fallback:
+                    select_suffixes([need])
+                elif state.failure is not None and state.failure.outcome == "request_failed":
+                    retry.append(need)
+            if retry:
+                select_suffixes(retry)
         finally:
             for (symbol, start, stop, asof), state in acquired.items():
                 context.suffix_acquisitions[(symbol, selected_generations[symbol], start, stop, asof)] = state
-        not_selected = set()
-        selected_work = 0
+        selected_work = set()
         for state in states:
             if state.completed is None:
-                continue  # The owning path receives this partial acquisition too.
-            if any(value.rows for value in state.completed.bars):
-                selected_work += 1
+                outcome = state.failure.to_outcome()
+                results.append(
+                    {
+                        "symbol": state.symbol,
+                        "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                        "stage": "dependency_suffix_selection",
+                        "outcome": outcome,
+                    }
+                )
+                continue
+            if state.symbol not in empty_results:
+                selected_work.add(state.symbol)
                 event(
                     "pricing_append_work_selection",
                     symbol=state.symbol,
@@ -312,24 +364,7 @@ def acquire_selected(
                     end_exclusive=state.end.isoformat(),
                 )
                 continue
-            not_selected.add(state.symbol)
-            source = append_sources[state.symbol]
-            results.append(
-                {
-                    "symbol": state.symbol,
-                    "status": "not_selected",
-                    "mode": "unchanged",
-                    "changed": False,
-                    "source_sha256": selected_generations[state.symbol],
-                    "history_start": source.get("history_start", HISTORY_START),
-                    "request": source["latest_request"],
-                    "append_work_selection": {
-                        "start": state.start.isoformat(),
-                        "end_exclusive": state.end.isoformat(),
-                        "asof": state.asof,
-                    },
-                }
-            )
+            results.append(empty_results[state.symbol])
             event(
                 "pricing_append_work_selection",
                 symbol=state.symbol,
@@ -337,16 +372,13 @@ def acquire_selected(
                 start=state.start.isoformat(),
                 end_exclusive=state.end.isoformat(),
             )
-        if not_selected:
-            retained = {symbol: value for symbol, value in retained.items() if symbol not in not_selected}
-            empty = [item for item in empty if item["symbol"] not in not_selected]
         metrics["append_work_candidates"] = len(append_sources)
-        metrics["append_work_selected"] = selected_work
-        metrics["append_work_skipped"] = len(not_selected)
+        metrics["append_work_selected"] = len(selected_work)
+        metrics["append_work_skipped"] = len(empty_results)
         if on_append_work_selected is not None:
-            on_append_work_selected(set(append_sources) - not_selected)
+            on_append_work_selected(selected_work)
         for symbol, source in append_sources.items():
-            if symbol in not_selected:
+            if symbol not in selected_work:
                 continue
             root = regular_path(store, f"end_of_day/pricing/{symbol}")
             with ticker_lock(root, exclusive=True):

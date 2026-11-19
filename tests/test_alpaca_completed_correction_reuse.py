@@ -1,4 +1,4 @@
-"""Completed unchanged corrections survive workflow renewal and real JSON boundaries."""
+"""Published and unchanged-price corrections retain their original recovery scope."""
 
 import copy
 import unittest
@@ -6,19 +6,198 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from test_alpaca_durable_maintenance import fixture
+from test_alpaca_durable_maintenance import ProcessInterrupted, fixture
 from test_alpaca_lineage_build import asset
-from test_alpaca_pricing_download import bar
+from test_alpaca_pricing_download import FakeClient, bar
 from test_alpaca_universe_update import CatalogueClient
+from test_alpaca_update_obligation_recovery import catalogue, source
 
-from libs.alpaca_lineage_build import universe_state
+from libs.alpaca_lineage_build import storage, universe_state
 from libs.alpaca_lineage_build.completed_corrections import applicable
+from libs.alpaca_lineage_build.context import OperationContext
+from libs.alpaca_lineage_build.registration import command_policy
 from libs.alpaca_pricing_download import correction, refresh
 from libs.alpaca_pricing_download.contract import VALIDATOR_FILE, timestamp
-from libs.alpaca_pricing_download.download import read_pricing_views
+from libs.alpaca_pricing_download.download import download_pricing, read_pricing_views
+from libs.alpaca_serving_catalogue.producer import maintain
 
 
 class CompletedCorrectionReuseTests(unittest.TestCase):
+    def interrupt_changed_correction(self, case, *, before_lineage=False):
+        catalogue(case, asset("AAA"))
+        case.live["AAA"] = [bar("2016-01-04", "50"), bar("2026-10-16", "50")]
+        boundary = (
+            "libs.alpaca_lineage_build.refresh.run_lineage"
+            if before_lineage
+            else "libs.alpaca_lineage_build.universe_state.record_outcome"
+        )
+        with patch(boundary, side_effect=ProcessInterrupted), self.assertRaises(ProcessInterrupted):
+            case.update()
+        work = universe_state.read_state(case.store)["work"]["AAA"]
+        self.assertIsNone(work["correction_completion"])
+        self.assertEqual(work["correction_id"], source(case)["history_correction_id"])
+        case.pages.clear()
+        return work["correction_id"]
+
+    def test_same_cutoff_uses_published_correction_once_without_pricing_or_lineage_replay(self):
+        with fixture() as case:
+            correction_id = self.interrupt_changed_correction(case)
+            self.assertTrue(maintain(case.store)["complete"])
+            reads = []
+            read = Path.read_bytes
+
+            def record_read(path):
+                if path.name == "source.manifest.json":
+                    reads.append(path)
+                if path.suffix == ".gz" or path.name == VALIDATOR_FILE:
+                    self.fail(f"accepted price history reopened: {path}")
+                return read(path)
+
+            with (
+                patch.object(Path, "read_bytes", record_read),
+                patch.object(storage, "publish", side_effect=AssertionError("repeated lineage publication")),
+                patch.object(case.pricing, "_get", side_effect=AssertionError("repeated provider request")),
+            ):
+                retry = case.update(retry_blocked=True)
+            self.assertTrue(retry["complete"], retry)
+            self.assertEqual(reads, [case.store / "end_of_day/pricing/AAA/source.manifest.json"])
+            self.assertEqual(source(case)["history_correction_id"], correction_id)
+
+    def test_later_cutoff_checks_published_correction_then_advances_selected_history(self):
+        for changed in (True, False):
+            for before_lineage in (True, False):
+                with self.subTest(changed=changed, before_lineage=before_lineage), fixture() as case:
+                    correction_id = self.interrupt_changed_correction(case, before_lineage=before_lineage)
+                    first_close = "55" if changed else "50"
+                    case.live["AAA"][0] = bar("2016-01-04", first_close)
+                    case.live["AAA"].append(bar("2026-10-19", "60"))
+                    result = case.update("2026-10-20", retry_blocked=True)
+                    self.assertTrue(result["complete"], result)
+                    expected = [
+                        ("all", "2016-01-04", "2016-01-05"),
+                        ("all", "2026-10-16", "2026-10-16"),
+                        ("raw", "2026-10-17", "2026-10-19"),
+                        ("all", "2026-10-17", "2026-10-19"),
+                    ]
+                    if changed:
+                        expected.extend(
+                            [
+                                ("raw", "2016-01-01", "2026-10-16"),
+                                ("all", "2016-01-01", "2026-10-16"),
+                                ("raw", "2016-01-04", "2016-01-05"),
+                            ]
+                        )
+                    self.assertCountEqual(
+                        [(p["adjustment"], p["start"][:10], p["end"][:10]) for p in case.pages], expected
+                    )
+                    self.assertEqual(source(case)["history_correction_id"] != correction_id, changed)
+                    for rows in read_pricing_views(case.store, "AAA").values():
+                        self.assertEqual([row[4] for row in rows], [first_close, "50", "60"])
+
+    def test_interrupted_new_difference_keeps_its_own_correction_id_and_comparison(self):
+        with fixture() as case:
+            old_id = self.interrupt_changed_correction(case)
+            case.live["AAA"][0] = bar("2016-01-04", "55")
+            case.live["AAA"].append(bar("2026-10-19", "60"))
+            with (
+                patch("libs.alpaca_lineage_build.refresh.replace_prepared", side_effect=ProcessInterrupted),
+                self.assertRaises(ProcessInterrupted),
+            ):
+                case.update("2026-10-20", retry_blocked=True)
+            pending = universe_state.read_state(case.store)["work"]["AAA"]
+            self.assertNotEqual(pending["correction_id"], old_id)
+            self.assertEqual(source(case)["history_correction_id"], old_id)
+            case.pages.clear()
+            result = case.update("2026-10-20", retry_blocked=True)
+            self.assertTrue(result["complete"], result)
+            self.assertFalse(
+                any(
+                    p["adjustment"] == "all" and p["start"][:10] in ("2016-01-04", "2026-10-16")
+                    for p in case.pages
+                ),
+                case.pages,
+            )
+            self.assertEqual(source(case)["history_correction_id"], pending["correction_id"])
+            self.assertEqual(
+                [row[4] for row in read_pricing_views(case.store, "AAA")["all"]], ["55", "50", "60"]
+            )
+
+    def test_replacement_published_before_append_only_approves_its_selected_advance(self):
+        for change in ("none", "later_cutoff", "different_generation", "different_mapping"):
+            with self.subTest(change=change), fixture() as case:
+                self.interrupt_changed_correction(case)
+                case.live["AAA"][0] = bar("2016-01-04", "55")
+                case.live["AAA"].append(bar("2026-10-19", "60"))
+                with (
+                    patch("libs.alpaca_lineage_build.refresh.run_lineage", side_effect=ProcessInterrupted),
+                    self.assertRaises(ProcessInterrupted),
+                ):
+                    case.update("2026-10-20", retry_blocked=True)
+                pending = universe_state.read_state(case.store)["work"]["AAA"]
+                contract = pending["pricing_correction"]
+                self.assertEqual(contract["advance_end_exclusive"], "2026-10-20")
+                self.assertEqual(contract["comparison_end_exclusive"][:10], "2026-10-17")
+                self.assertEqual(pending["correction_id"], source(case)["history_correction_id"])
+                cutoff = "2026-10-20"
+                if change == "later_cutoff":
+                    cutoff = "2026-10-21"
+                elif change in ("different_generation", "different_mapping"):
+                    download_pricing(
+                        case.store,
+                        "AAA",
+                        "2026-10-17",
+                        client=FakeClient([bar("2016-01-04", "56"), case.live["AAA"][1]]),
+                        refresh_all=True,
+                        mapping_asof="2026-10-15" if change == "different_mapping" else None,
+                    )
+                    self.assertEqual(pending["correction_id"], source(case)["history_correction_id"])
+                if change != "none":
+                    case.live["AAA"][0] = bar("2016-01-04", "57")
+                case.pages.clear()
+                resumed = case.update(cutoff, retry_blocked=True)
+                self.assertTrue(resumed["complete"], resumed)
+                if change == "none":
+                    self.assertCountEqual(
+                        [(p["adjustment"], p["start"][:10], p["end"][:10]) for p in case.pages],
+                        [("raw", "2026-10-17", "2026-10-19"), ("all", "2026-10-17", "2026-10-19")],
+                    )
+                else:
+                    self.assertEqual(
+                        sum(p["adjustment"] == "all" and p["start"][:10] == "2016-01-04" for p in case.pages),
+                        1,
+                        case.pages,
+                    )
+                self.assertEqual(
+                    [row[4] for row in read_pricing_views(case.store, "AAA")["all"]],
+                    ["55" if change == "none" else "57", "50", "60"],
+                )
+
+    def test_inactive_retry_compares_history_only_for_independently_required_advance(self):
+        for advance in (False, True):
+            with self.subTest(advance=advance), fixture() as case:
+                self.interrupt_changed_correction(case)
+                catalogue(case, {**asset("AAA"), "status": "inactive"})
+                if advance:
+                    policy = command_policy(
+                        case.store, "2026-10-20", retry_blocked=True, context=OperationContext(case.store)
+                    )
+                    policy.require(
+                        "AAA", "2026-10-20", reason="advance_retained_coverage", acquire=True, history_check=True
+                    )
+                case.live["AAA"][0] = bar("2016-01-04", "55")
+                case.live["AAA"].append(bar("2026-10-19", "60"))
+                result = case.update("2026-10-20", retry_blocked=True)
+                self.assertTrue(result["complete"], result)
+                rows = read_pricing_views(case.store, "AAA")["all"]
+                if advance:
+                    self.assertEqual([row[4] for row in rows], ["55", "50", "60"])
+                    self.assertEqual(
+                        sum(p["adjustment"] == "all" and p["start"][:10] == "2016-01-04" for p in case.pages), 1
+                    )
+                else:
+                    self.assertEqual([row[4] for row in rows], ["50", "50"])
+                    self.assertEqual(case.pages, [])
+
     def test_completed_old_correction_does_not_hide_a_change_when_advancing(self):
         with fixture() as case:
             case.records[:] = [asset("AAA")]
@@ -56,6 +235,31 @@ class CompletedCorrectionReuseTests(unittest.TestCase):
             for rows in read_pricing_views(case.store, "AAA").values():
                 self.assertEqual(rows[-2][5], "98765", "old correction hid a new selected-row change")
                 self.assertEqual(rows[-1][0][:10], "2026-10-19")
+
+    def test_later_cutoff_compares_after_equal_price_receipt_preceded_workflow_acknowledgement(self):
+        with fixture() as case:
+            catalogue(case, asset("AAA"))
+            policy = command_policy(case.store, "2026-10-17", context=OperationContext(case.store))
+            policy.require_correction(refresh.prepare_refresh(case.store, ["AAA"]))
+            old_id = policy.work["AAA"]["correction_id"]
+            with (
+                patch.object(universe_state, "accept_correction_completion", side_effect=ProcessInterrupted),
+                self.assertRaises(ProcessInterrupted),
+            ):
+                case.update()
+            pending = universe_state.read_state(case.store)["work"]["AAA"]
+            self.assertIsNone(pending["correction_completion"])
+            self.assertTrue((case.store / "end_of_day/pricing/AAA/correction.complete.json").is_file())
+            case.live["AAA"] = [bar("2016-01-04", "55"), case.old[-1], bar("2026-10-19", "60")]
+            case.pages.clear()
+            result = case.update("2026-10-20", retry_blocked=True)
+            self.assertTrue(result["complete"], result)
+            self.assertNotEqual(source(case)["history_correction_id"], old_id)
+            self.assertEqual(
+                sum(p["adjustment"] == "all" and p["start"][:10] == "2016-01-04" for p in case.pages), 1
+            )
+            rows = read_pricing_views(case.store, "AAA")["all"]
+            self.assertEqual((rows[0][4], rows[-1][4]), ("55", "60"))
 
     def test_same_witness_reuses_completed_disposition_after_json_without_history_io(self):
         with fixture() as case:

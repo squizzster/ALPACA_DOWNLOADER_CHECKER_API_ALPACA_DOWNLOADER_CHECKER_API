@@ -153,6 +153,39 @@ class RebuiltSplitTimingTests(TestCase):
         with self.assertRaises(RecoveryRequired):
             self.rebuild()
 
+    def test_replaced_peer_keeps_correction_when_witness_choices_exclude_it(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                self.setUp()
+                self.item["members"].append("PEER")
+                self.new["input_sources"]["PEER"] = "peer"
+                self.run.update(owner="peer-id", tickers=["PEER"])
+                self.source["history_changes"][0]["changed_from"] = DAYS[0]
+                old = deepcopy(self.new["assignment_handoffs"])
+                if legacy:
+                    old["current_year"] = {
+                        "ownership": {
+                            mode: {"ownership": [{"rows": 3, "owner": ["peer-id", ["PEER"]]}]}
+                            for mode in ADJUSTMENTS
+                        }
+                    }
+                self.old["assignment_handoffs"] = old
+                self.rebuild()
+                self.assertIs(self.new[lineage.FIELD].pop(self.pid), self.item)
+
+                # A fresh dated choice that makes this peer a contributor
+                # cannot inherit the previous correction under changed prices.
+                self.run.update(owner=self.pid, tickers=["NEWSEC"])
+                with self.assertRaises(RecoveryRequired):
+                    self.rebuild()
+
+    def test_new_assignment_partition_cannot_introduce_a_witness(self):
+        self.old["anchor_month"] = "2026-02"
+        self.item["members"].append("PEER")
+        self.new["input_sources"]["PEER"] = "peer"
+        with self.assertRaisesRegex(RecoveryRequired, "ownership or numerical selection changed"):
+            self.rebuild()
+
     def test_changed_or_missing_witness_fails_before_publication(self):
         for case in (
             "price",
@@ -210,21 +243,13 @@ class RebuiltSplitTimingTests(TestCase):
 
 
 class NativeTimingRebuildTests(TestCase):
-    def test_later_append_and_full_refresh_preserve_corrected_public_price(self):
-        from datetime import date
+    @staticmethod
+    def timing_prices(name):
         from decimal import Decimal
 
         from test_alpaca_lineage_build import IdentityClient, asset
-        from test_alpaca_pricing_download import FakeClient, direct_adjustment_observations
+        from test_alpaca_pricing_download import FakeClient
 
-        from alpaca_end_of_day import DataLibrary
-        from libs.alpaca_lineage_build.dated_price_repair import repair_many
-        from libs.alpaca_lineage_build.pipeline import run_lineage
-        from libs.alpaca_pricing_download.download import download_pricing
-        from libs.alpaca_serving_catalogue.producer import maintain
-        from libs.common.store_lock import operation_lock
-
-        name = "EXAMPLE"
         views, actions = fixture(name)
         identity = IdentityClient({name: asset(name)}, [{**actions[0], "id": "example-action"}])
         fields = {
@@ -251,9 +276,25 @@ class NativeTimingRebuildTests(TestCase):
             def fetch(self, symbol, adjustment, start, end, *, asof=None):
                 return clients[adjustment].fetch(symbol, adjustment, start, end, asof=asof)
 
+        return Bars(), clients, identity
+
+    def test_later_append_and_full_refresh_preserve_corrected_public_price(self):
+        from datetime import date
+        from decimal import Decimal
+
+        from test_alpaca_pricing_download import direct_adjustment_observations
+
+        from alpaca_end_of_day import DataLibrary
+        from libs.alpaca_lineage_build.dated_price_repair import repair_many
+        from libs.alpaca_lineage_build.pipeline import run_lineage
+        from libs.alpaca_pricing_download.download import download_pricing
+        from libs.alpaca_serving_catalogue.producer import maintain
+        from libs.common.store_lock import operation_lock
+
+        name = "EXAMPLE"
+        bars, clients, identity = self.timing_prices(name)
         with TemporaryDirectory() as folder, direct_adjustment_observations():
             store = Path(folder) / "store"
-            bars = Bars()
             download_pricing(store, name, "2026-03-20", client=bars)
             self.assertFalse(run_lineage(store, [name], identity_client=identity)["failed"])
             self.assertTrue(maintain(store, bootstrap=True)["complete"])
@@ -280,3 +321,79 @@ class NativeTimingRebuildTests(TestCase):
             self.assertEqual(
                 (price["raw"].bars[0].close, price["all"].bars[0].close), (Decimal("9.05"), Decimal("27.15"))
             )
+
+    def test_recover_replaced_peer_then_export_corrected_group(self):
+        from decimal import Decimal
+
+        from test_alpaca_end_of_day_api import NativeCase, valid_bars
+        from test_alpaca_lineage_build import asset
+        from test_alpaca_pricing_download import FakeClient, direct_adjustment_observations
+        from test_catalogue_bloodhound_export import HAS_CONVERTER, CatalogueBloodhoundTests
+
+        from libs.alpaca_lineage_build.dated_price_repair import repair_many
+        from libs.alpaca_lineage_build.pipeline import run_lineage
+        from libs.alpaca_pricing_download.download import download_pricing
+        from libs.alpaca_serving_catalogue.producer import maintain
+        from libs.common.store_lock import operation_lock
+
+        if not HAS_CONVERTER:
+            self.skipTest("install requirements-bloodhound.txt")
+        from test_catalogue_bloodhound_export import converter, pq
+
+        name, peer = "EXAMPLE", "PEER"
+        bars, _, identity = self.timing_prices(name)
+        identity.assets[peer] = asset(peer)
+        identity.actions.append(
+            {
+                "id": "example-peer",
+                "action_type": "spin_off",
+                "source_symbol": name,
+                "new_symbol": peer,
+                "process_date": "2026-03-16",
+            }
+        )
+        case = NativeCase()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        store = case.store
+        with direct_adjustment_observations():
+            download_pricing(store, name, "2026-03-20", client=bars)
+            peer_rows = valid_bars(DAYS[0], "2026-03-20")
+            download_pricing(store, peer, "2026-03-20", client=FakeClient(peer_rows))
+            built = run_lineage(store, [name], identity_client=identity)
+            self.assertFalse(built["failed"], built)
+            public_id = case.bootstrap().resolve_ticker(name)[0].public_id
+            with operation_lock(store, exclusive=True):
+                before = repair_many(store, [public_id], [DAYS[1]], None, repair_kind="split_timing")
+                self.assertEqual(before["outcomes"][0]["status"], "published", before)
+                group = lineage.storage.read_index(case.root, name)["symbols"][name]["group_members"]
+                self.assertEqual(set(group), {name, peer})
+                changed = [
+                    {**row, **dict.fromkeys(("o", "h", "l", "c", "vw"), Decimal("500"))} for row in peer_rows
+                ]
+                replaced = download_pricing(
+                    store, peer, "2026-03-20", client=FakeClient(changed), refresh_all=True
+                )
+                self.assertTrue(replaced["changed"])
+
+            # Recovery begins after replacement with a new operation and no
+            # pricing client or in-memory publication handoff.
+            with patch(
+                "libs.alpaca_pricing_download.shifted_split.assess",
+                side_effect=AssertionError("replayed completed split timing"),
+            ):
+                result = run_lineage(store, [peer], identity_client=identity)
+                self.assertFalse(result["failed"], result)
+                serving = maintain(store)
+                self.assertTrue(serving["complete"], serving)
+                self.assertEqual(serving["pending_export_inputs"], {"pricing": 0, "lineage": 0})
+            output = case.directory / "all.parquet"
+            report = converter.convert(CatalogueBloodhoundTests.arguments(case, output))
+            self.assertEqual(report["histories_exported"], 3)
+            selected = pq.read_table(
+                output,
+                columns=["adjusted_close", "raw_close", "date"],
+                filters=[("ohlcv_series_id", "=", converter.series_id(public_id))],
+            ).to_pylist()
+            corrected = next(row for row in selected if row["date"].date().isoformat() == DAYS[1])
+            self.assertEqual((corrected["raw_close"], corrected["adjusted_close"]), (9.05, 27.15))

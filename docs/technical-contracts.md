@@ -467,7 +467,14 @@ under their exact selected generations, using the same handoff as publication re
 A correction completion carried from an earlier operation does not by itself complete a newly requested advance
 beyond retained coverage. That advance receives its required selected comparison, consuming the earlier disposition
 only when the new witnesses support it; a changed selected row takes its newly selected correction scope.
-Producer completion obtained in the current operation remains authoritative for its accepted retained span.
+This applies both to a changed-price publication carrying its correction ID and to the separate equal-price
+completion receipt. At the original cutoff, the pricing owner returns the completed outcome from its selected
+source. A full replacement selected during a fresh comparison for an advance records the intended
+`advance_end_exclusive` on that correction requirement. If execution stops after publishing the replacement,
+the same advance can acquire its suffix directly. This requires the original correction ID, source ancestry,
+retained interval, mapping and exact advance target. A different target or source takes the normal comparison
+path. Older correction contracts continue to authorize only their recorded scope. Producer completion obtained
+in the current operation remains authoritative for its accepted retained span.
 
 New-range acquisition uses the `alpaca_adjustment_equivalence_v2` empirical policy in
 [adjustment_policy.py](../libs/alpaca_pricing_download/adjustment_policy.py). It requests `raw`, then `all`.
@@ -535,8 +542,7 @@ A lagging retained dependency first runs that adaptive producer on only its miss
 suffix selects no acquisition: retained endpoints, payloads and coverage stay untouched, and no historical
 comparison is performed. A completed nonempty suffix selects ordinary dependency acquisition and crosses that
 boundary in memory; after the mandatory generation-bound first/tail `all` comparison, acquisition consumes the
-same adjustment responses, hashes and decision without requesting or calculating them again. Selection failure
-proves no absence and therefore follows the ordinary fail-closed acquisition path. Successful partial responses
+same adjustment responses, hashes and decision without requesting or calculating them again. Failed or incompletely paginated selections leave the dependency pending. Successful partial responses
 and completed suffix acquisitions remain bound to source generation, mapping and exact request scope in the
 operation context across subsequent boundary failures; retries request only unfinished observations. Metadata activity or inactivity
 does not substitute for this pricing-owned selection.
@@ -778,9 +784,16 @@ Recovery reselects acquisition from accepted requirements/completed summary; a s
 a summarized maintained source from live check → approved append.
 
 Known dependency membership is registered before its missing-suffix selector request. That completed selector is
-the authority for whether acquisition work exists: empty results create no acquisition obligation; positive or
-unproved results persist the selected member with its complete group before any retained-history check or pricing
-publication. Thus durable state precedes owned work without turning a negative selector into false acquisition.
+the authority for whether acquisition work exists. A positive selection records the acquisition requirement
+before retained-history comparison or publication. An empty selection for unfinished group work is checkpointed
+against its workflow obligation, peer source generation, mapping and exact suffix bounds. Restart can consume
+the same completed observation while that work remains applicable. A later independent operation selects its
+own observations. Older workflow records without a producer result must obtain the missing selection.
+
+A lineage retry uses the published group’s required span. The workflow cutoff alone cannot request new
+pricing coverage for a lagging peer. An applicable empty suffix can satisfy the peer’s dependency check
+while its stored pricing coverage stays at its original endpoint. Independent coverage, mapping, correction
+and numerical requirements retain their own completion conditions.
 
 Ordinary eligible summary members complete that sequence before discovery advances their dependencies.
 Selection's changed-identity and lost-eligibility facts reconcile before those members enter maintenance.

@@ -25,6 +25,10 @@ def _read_work(value):
     from libs.alpaca_pricing_download.correction import validate_durable_observations
 
     item = json.loads(value)
+    if "dependency_suffixes" in item:
+        from .dependency_suffixes import validate_dependency_suffixes
+
+        validate_dependency_suffixes(item)
     # Completed requirements are a producer handoff, not new correction input.
     # Selecting their receipt bindings later must not replay numeric validation.
     contract = item.get("pricing_correction")
@@ -326,6 +330,23 @@ def put_work_group(store, work):
     return accepted
 
 
+def accept_dependency_suffixes(store, updates, *, batch=None):
+    """Checkpoint the pricing owner's empty observations against existing unfinished work."""
+    if batch is None:
+        with outcome_batch(store) as batch:
+            return accept_dependency_suffixes(store, updates, batch=batch)
+    connection = batch.require_active(store)
+    for owner, receipts in updates.items():
+        obligation_id = next(iter(receipts.values()))["obligation_id"]
+        changed = connection.execute(
+            "UPDATE work SET body=json_patch(body, ?) WHERE symbol=? "
+            "AND json_extract(body, '$.obligation_id')=? AND json_extract(body, '$.status')!='complete'",
+            (json.dumps({"dependency_suffixes": receipts}), owner, obligation_id),
+        ).rowcount
+        if changed != 1:
+            raise LineageError(f"{owner}: dependency suffix selection belongs to superseded work")
+
+
 @traced("correction_completion_accept")
 def accept_correction_completion(store, symbol, expected, completed):
     """A producer outcome cannot acknowledge a concurrently renewed requirement."""
@@ -360,11 +381,14 @@ def register(store, labels=(), *, registry=DEFAULT_REGISTRY, handoff=False):
 
 
 class _OutcomeBatch:
-    def __init__(self, store, connection):
+    def __init__(self, store, connection, work):
         self.store = Path(store).absolute()
         self.connection = connection
         self.owner = (os.getpid(), threading.get_ident())
         self.active = True
+        self.work = work
+        self.completed = set()
+        self.released_suffixes = []
 
     def require_active(self, store):
         if (
@@ -377,19 +401,46 @@ class _OutcomeBatch:
 
 
 @contextmanager
-def outcome_batch(store, *, handoff=False):
+def outcome_batch(store, *, handoff=False, work=None):
     """Commit accepted outcomes together; interruption rolls back the whole batch."""
+    transferred = {}
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
         _check(connection)
-        batch = _OutcomeBatch(store, connection)
+        batch = _OutcomeBatch(store, connection, work)
         before = connection.total_changes
         try:
             yield batch
+            if batch.released_suffixes:
+                from .dependency_suffixes import transfer_unfinished_suffixes
+
+                if batch.work is None:
+                    # Direct acknowledgements without the controller's held view
+                    # select only the recorded group members of released receipts.
+                    members = sorted(
+                        {
+                            member
+                            for suffixes in batch.released_suffixes
+                            for receipt in suffixes.values()
+                            for member in receipt["group"]
+                        }
+                        - batch.completed
+                    )
+                    batch.work = {
+                        member: _read_work(body)
+                        for member, body in connection.execute(
+                            "SELECT symbol, body FROM work WHERE symbol IN (SELECT value FROM json_each(?))",
+                            (json.dumps(members),),
+                        )
+                    }
+                transferred = transfer_unfinished_suffixes(store, batch)
             if connection.total_changes != before:
                 batch.revision = _advance(connection, required=handoff)
         finally:
             batch.active = False
+    for member, suffixes in transferred.items():
+        item = batch.work[member]
+        item["dependency_suffixes"] = {**item.get("dependency_suffixes", {}), **suffixes}
 
 
 @traced("work_acknowledgement")
@@ -421,6 +472,11 @@ def record_outcome(store, symbol, *, status, outcome, attempts=0, batch=None, ex
         attempts=value.get("attempts", 0) + attempts,
         finished_at_utc=now_utc(),
     )
+    if status == "complete":
+        released = value.pop("dependency_suffixes", {})
+        batch.completed.add(symbol)
+        if released:
+            batch.released_suffixes.append(released)
     value["retry_after_utc"] = (
         (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat() if status == "retry" else None
     )

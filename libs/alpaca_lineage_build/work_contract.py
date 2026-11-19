@@ -22,6 +22,7 @@ def obligation(item, previous=None):
         "pricing_start",
         "pricing_end_exclusive",
         "acquire",
+        "required_pricing_acquisition",
         "invalidate_pricing",
         "refresh_metadata",
         "required_history_check",
@@ -31,9 +32,35 @@ def obligation(item, previous=None):
         "required_numerical_completion",
         "required_numerical_mapping",
     )
-    if previous.get("obligation_id") and all(item.get(k) == previous.get(k) for k in keys):
-        return {**item, "obligation_id": previous["obligation_id"]}
-    return {**item, "obligation_id": uuid4().hex}
+    prior_id = previous.get("obligation_id")
+    same = prior_id and all(item.get(k) == previous.get(k) for k in keys)
+    result = {**item, "obligation_id": prior_id if same else uuid4().hex}
+    if previous.get("dependency_suffixes"):
+        # A metadata refinement can renew the workflow ID while the same
+        # dependency request remains unfinished. Transfer its exact pricing
+        # result. The consuming pricing owner still binds the peer, source,
+        # dates and mapping; completing the work releases its receipts.
+        if previous.get("status") == "complete":
+            result["dependency_suffixes"] = {}
+        elif same:
+            result["dependency_suffixes"] = previous["dependency_suffixes"]
+        else:
+            own_request_continues = (
+                (
+                    pricing_target(item) == pricing_target(previous)
+                    or conditional_dependency(item)
+                    and conditional_dependency(previous)
+                )
+                and item.get("correction_id") == previous.get("correction_id")
+                and not item.get("invalidate_pricing")
+            )
+            result["dependency_suffixes"] = {
+                name: {**receipt, "obligation_id": result["obligation_id"]}
+                for name, receipt in previous["dependency_suffixes"].items()
+                if receipt.get("obligation_id") == prior_id
+                and (name != receipt["owner"] or own_request_continues)
+            }
+    return result
 
 
 def acquisition_fingerprint(item):
@@ -112,7 +139,48 @@ def evidence_requirement(item):
     return item.get("evidence_fingerprint") or item["obligation_id"]
 
 
-def pricing_target(item):
+def conditional_dependency(item):
+    """A lineage retry may need a suffix probe before pricing selects acquisition.
+
+    Older rows recorded an attempted delegation as acquire=True even with no
+    pricing client. Only recognize that legacy route for lineage-only causes.
+    Independent, unknown and explicitly selected pricing work keep their scope.
+    """
+    reasons = set(item.get("reasons", ()))
+    return (
+        bool(
+            reasons
+            & {"unfinished_lineage", "dependency_reconciliation", "unfinished_dependency_suffix_selection"}
+        )
+        and reasons
+        <= {
+            "unfinished_lineage",
+            "dependency_reconciliation",
+            "unfinished_work",
+            "pending_lineage",
+            "lineage_evidence",
+            "changed_metadata",
+            "changed_rules",
+            "explicit_lineage_refresh",
+            "unfinished_dependency_suffix_selection",
+        }
+        and not any(
+            item.get(key)
+            for key in (
+                "required_pricing_acquisition",
+                "invalidate_pricing",
+                "required_history_check",
+                "correction_id",
+                "required_numerical_mapping",
+                "required_numerical_completion",
+            )
+        )
+    )
+
+
+def pricing_target(item, *, lineage_coverage=None):
+    if lineage_coverage is not None and conditional_dependency(item):
+        return lineage_coverage
     return item.get("pricing_end_exclusive", item["end_exclusive"])
 
 
@@ -161,12 +229,17 @@ def satisfied(item, entry, pending, *, approved=False):
     if not entry or not item.get("obligation_id"):
         return False
     projection = entry.get("projection") or {}
+    stamped = projection.get("update_obligation_id") == item["obligation_id"]
     return (
         not pending
         and numerical_satisfied(item, projection)
         and covers_pricing_start(item, projection.get("pricing_request"))
-        and projection.get("processed_through", "")[:10] >= pricing_target(item)
-        and (approved or projection.get("update_obligation_id") == item["obligation_id"])
+        and (
+            projection.get("processed_through", "")[:10] >= pricing_target(item)
+            or stamped
+            and conditional_dependency(item)
+        )
+        and (approved or stamped)
         and (
             not item.get("invalidate_pricing")
             or projection.get("acquisition_evidence_sha256") == acquisition_fingerprint(item)
@@ -257,6 +330,7 @@ class WorkPolicy:
         self.command_failures = []
         self.history_approved = {}
         self.completed_decisions = {}
+        self.empty_suffixes = set()
         self.numerical_selections = {}
         self.restricted_identifiers = {
             identifier
@@ -358,7 +432,7 @@ class WorkPolicy:
 
         request_start(start, timestamp(target + "T00:00:00Z"))
         prior = self.work.get(symbol, {})
-        required = max(target, pricing_target(prior)) if prior else target
+        required = max(target, pricing_target(prior, lineage_coverage=target)) if prior else target
         item = obligation(
             {
                 **prior,
@@ -369,6 +443,7 @@ class WorkPolicy:
                 "status": prior.get("status", "pending"),
                 "attempts": prior.get("attempts", 0),
                 "acquire": prior.get("acquire", False) or acquire,
+                **({"required_pricing_acquisition": True} if acquire else {}),
                 "invalidate_pricing": prior.get("invalidate_pricing", False),
                 "refresh_metadata": prior.get("refresh_metadata", False) or refresh,
                 "required_history_check": prior.get("required_history_check", False) or history_check,
@@ -400,11 +475,11 @@ class WorkPolicy:
                 self.blocked.update(linked)
         self.graph.update(self._group_entries(changed))
 
-    def require_dependencies(self, group, target, required=(), *, start=None):
+    def require_dependencies(self, group, target, required=(), *, start=None, discovered=()):
         """Persist only selected acquisition while retaining its complete group."""
         group = self.graph.closure(set(group))
         required = set(required)
-        selected = required or group
+        selected = required | set(discovered) or group
         pending = {}
         for symbol in sorted(selected):
             self.require(
@@ -506,7 +581,7 @@ class WorkPolicy:
             )
             pending = read_checks(self.store)["checks"]
         acknowledged = set()
-        with universe_state.outcome_batch(self.store) as batch:
+        with universe_state.outcome_batch(self.store, work=self.work) as batch:
             for symbol, item in self.work.items():
                 entry = self.satisfying_entry(symbol, index["symbols"], pending)
                 if symbol not in self.blocked and entry:
@@ -587,14 +662,63 @@ class WorkPolicy:
                     return True
         return False
 
-    def decision_inputs_satisfied(self, sources, selected=None):
+    def _covers_group_input(self, symbol, item, source, generation, group_end):
+        covered = source["latest_request"]["end_exclusive"][:10]
+        if group_end is not None and conditional_dependency(item):
+            return covered >= group_end or (symbol, generation, group_end) in self.empty_suffixes
+        return covered >= pricing_target(item)
+
+    def accept_indexed_dependencies(self, group, end, entries, pending, publications):
+        """Finish scheduling from an unchanged group and its accepted empty suffixes."""
+        if group & pending.keys() or not self.allowed(group):
+            return False
+        completed = []
+        for name in group:
+            entry = entries.get(name)
+            if not entry or set(entry["group_members"]) != group or not reusable_decision(entry):
+                return False
+            empty = (name, entry["source_sha256"], end) in self.empty_suffixes
+            if entry["projection"]["processed_through"][:10] < end and not empty:
+                return False
+            if name in publications and publications[name]["source_sha256"] != entry["source_sha256"]:
+                return False
+            item = self.work.get(name)
+            if item is None:
+                continue
+            if not conditional_dependency(item):
+                if not self.satisfying_entry(name, entries, pending):
+                    return False
+                continue
+            if (
+                not empty
+                or item.get("refresh_metadata")
+                or not set(item.get("required_group", ())) <= group
+                or not satisfied(item, entry, False, approved=True)
+            ):
+                return False
+            required = item.get("required_lookups", {})
+            published = {lookup["lookup"]: lookup for lookup in entry["projection"]["symbol_lookups"]}
+            if any(
+                label not in published or lookup_fact(published[label]) != lookup_fact(expected)
+                for label, expected in required.items()
+            ):
+                return False
+            completed.append(name)
+        if not completed:
+            return False
+        references = {name: entries[name]["sha256"] for name in group}
+        for name in completed:
+            self.completed_decisions[name] = self.work[name]["obligation_id"], name, references
+        return True
+
+    def decision_inputs_satisfied(self, sources, selected=None, group_end=None):
         """Outstanding approval does not invalidate an otherwise completed decision."""
         for symbol, source in sources.items():
             item = self.work.get(symbol)
             if item is not None and not (
                 numerical_satisfied(item, self.index["symbols"].get(symbol, {}).get("projection"))
                 and covers_pricing_start(item, source)
-                and source["latest_request"]["end_exclusive"][:10] >= pricing_target(item)
+                and self._covers_group_input(symbol, item, source, (selected or {}).get(symbol), group_end)
                 and (
                     not item.get("invalidate_pricing")
                     or source.get("acquisition_evidence_sha256") == acquisition_fingerprint(item)
@@ -689,7 +813,9 @@ class WorkPolicy:
                         | {"changed_identity_mapping" if mapping else "lineage_evidence"}
                     ),
                     "end_exclusive": max(prior.get("end_exclusive", covered), covered),
-                    "pricing_end_exclusive": max(pricing_target(prior), covered) if prior else covered,
+                    "pricing_end_exclusive": max(pricing_target(prior, lineage_coverage=covered), covered)
+                    if prior
+                    else covered,
                     "status": prior.get("status", "pending"),
                     "attempts": prior.get("attempts", 0),
                     "required_lookups": lookups[symbol],
@@ -720,7 +846,7 @@ class WorkPolicy:
             and source.get("acquisition_evidence_sha256") != acquisition_fingerprint(self.work[symbol])
         }
 
-    def stamp(self, receipts, sources):
+    def stamp(self, receipts, sources, group_end=None):
         """Check new completion once under group locks; return its owning receipts."""
         self.check(receipts)
         unavailable = next(iter(receipts.values())).get("unavailable_pricing", {}) if receipts else {}
@@ -750,9 +876,9 @@ class WorkPolicy:
                 "acquisition_evidence_sha256"
             ) != acquisition_fingerprint(item):
                 raise WorkDeferred(f"{symbol}: required identity-related pricing replacement is incomplete")
-            if not covers_pricing_start(item, source) or source["latest_request"]["end_exclusive"][
-                :10
-            ] < pricing_target(item):
+            if not covers_pricing_start(item, source) or not self._covers_group_input(
+                symbol, item, source, receipt["source_sha256"], group_end
+            ):
                 continue  # Maintenance still owes the remaining interval.
             if not correction_satisfied(item, receipt["source_sha256"], source.get("history_correction_id")):
                 continue
@@ -845,6 +971,8 @@ class WorkPolicy:
                 "comparison_asof": request.get("comparison_asof", request["asof"]),
                 "observations": merge_observations(observations(request)),
             }
+            if "advance_end_exclusive" in request:
+                contract["advance_end_exclusive"] = request["advance_end_exclusive"]
             previous_contract = prior.get("pricing_correction") or {}
             binding = (
                 "store",
@@ -871,9 +999,19 @@ class WorkPolicy:
                         # A missing-session witness adds evidence; it cannot
                         # replace an already-selected historical correction.
                         contract["cause"] = previous_contract["cause"]
+                if (
+                    "advance_end_exclusive" not in contract
+                    and "advance_end_exclusive" in previous_contract
+                    and all(
+                        contract[key] == previous_contract.get(key) for key in ("cause", "scope", "observations")
+                    )
+                ):
+                    # Retrying the identical pending selection through another
+                    # pricing entry point preserves its original append target.
+                    contract["advance_end_exclusive"] = previous_contract["advance_end_exclusive"]
             # A correction ID names one exact requirement. Renewing evidence or
             # binding must invalidate both source stamps and equal-price receipts.
-            requirement = (*binding, "scope", "observations")
+            requirement = (*binding, "scope", "observations", "advance_end_exclusive")
             if correction == prior.get("correction_id") and any(
                 contract.get(key) != previous_contract.get(key) for key in requirement
             ):
@@ -926,6 +1064,8 @@ class WorkPolicy:
                 result["source_sha256"],
             ):
                 raise LineageError("correction completion does not match its obligation")
+            if item.get("correction_completion") == completed:
+                continue
             # Completion is workflow bookkeeping, not a new obligation or a data generation.
             self.work[result["symbol"]] = universe_state.accept_correction_completion(
                 self.store, result["symbol"], item, completed
@@ -1009,13 +1149,20 @@ class WorkPolicy:
                 continue
             item = self.work.get(symbol)
             if item is None:
+                covered = self.index["symbols"].get(symbol, {}).get("projection", {}).get("processed_through")
                 item = obligation(
                     {
                         "reasons": ["unfinished_" + stage],
                         "end_exclusive": self.end,
+                        **(
+                            {"pricing_end_exclusive": covered[:10]}
+                            if stage in {"lineage", "dependency_suffix_selection"} and covered
+                            else {}
+                        ),
                         "status": "pending",
                         "attempts": 0,
-                        "acquire": stage not in {"lineage", "selection", "late_bar_check"},
+                        "acquire": stage
+                        not in {"lineage", "selection", "late_bar_check", "dependency_suffix_selection"},
                         "invalidate_pricing": False,
                         "refresh_metadata": stage in {"lineage", "selection"},
                         "evidence_fingerprint": None,
@@ -1048,4 +1195,9 @@ class WorkPolicy:
     def record_results(self, value, *, stage):
         for item in value.get("results", []):
             if item["status"] in {"failed", "blocked", "waiting_for_pricing"}:
-                self.fail(item.get("affected", [item["symbol"]]), item, stage=stage)
+                owner = (
+                    "dependency_suffix_selection"
+                    if stage == "dependency_acquisition" and item.get("stage") == "dependency_suffix_selection"
+                    else stage
+                )
+                self.fail(item.get("affected", [item["symbol"]]), item, stage=owner)

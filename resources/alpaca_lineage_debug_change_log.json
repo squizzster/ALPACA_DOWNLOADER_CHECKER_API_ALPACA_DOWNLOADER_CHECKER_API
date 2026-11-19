@@ -107,5 +107,15 @@
     "modifications": [
       "Keep completed generic diagnostic reports reusable across the split-timing publication change under their original bindings."
     ]
+  },
+  {
+    "modifications": [
+      "Retain completed generic diagnostic reports under their recorded bindings across the witness-scoped split-timing publication repair."
+    ]
+  },
+  {
+    "modifications": [
+      "Preserve completed diagnostic report bindings across the workflow recovery change."
+    ]
   }
 ]

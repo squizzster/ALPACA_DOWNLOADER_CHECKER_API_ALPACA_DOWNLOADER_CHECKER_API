@@ -186,8 +186,8 @@ class ApprovalHandoffTests(unittest.TestCase):
             batch = universe_state.outcome_batch
 
             @contextmanager
-            def interrupted(store):
-                with batch(store) as connection:
+            def interrupted(store, **options):
+                with batch(store, **options) as connection:
                     yield connection
                 if universe_state.read_state(store)["work"]["AAA"]["status"] == "complete":
                     raise ProcessInterrupted("after workflow acknowledgement")

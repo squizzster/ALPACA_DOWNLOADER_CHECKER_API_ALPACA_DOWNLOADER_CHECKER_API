@@ -699,5 +699,16 @@
     "modifications": [
       "Keep an accepted one-session split-timing correction through full lineage materialization under its original witnessed prices, contributor choices, trading label and action terms."
     ]
+  },
+  {
+    "modifications": [
+      "Scope split-timing price ancestry to actual witness contributors while preserving recovery for changed or unknown choices and action bindings."
+    ]
+  },
+  {
+    "modifications": [
+      "Keep pricing coverage requirements distinct from incomplete lineage. Resume a group's exact empty dependency selection and acknowledge completed lineage against its actual coverage.",
+      "Reuse a published correction for its selected obligation and compare retained prices for a separately requested later advance."
+    ]
   }
 ]

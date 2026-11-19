@@ -269,10 +269,12 @@ session when the observed price and volume precision determines the corrected va
 with zero trading activity can carry each adjusted view’s own previous close when the raw tape and corporate
 action establish a change of units on the next session. The receipt selects this bounded fragment. A completed
 assessment with insufficient support records the reason. Changed relevant actions or a changed price
-window invalidate the affected selection. A full rebuild carries the accepted one-session correction when
-each member's pricing ancestry covers all three witnesses and their owner, trading label, selected
-sources and action terms still agree. An incompatible or missing binding selects pricing recovery
-before publication.
+window invalidate the affected selection. A full rebuild carries the accepted one-session correction
+when witness contributors retain their prices, owner, trading label, selection and action terms.
+A changed peer source can still carry the correction when the completed choices exclude it on every
+affected witness before and after the change. A legacy partition's complete ownership handoff can
+establish absence of the identity throughout that partition. Incompatible or unknown witness bindings
+select pricing recovery before publication.
 
 Use `pricing review-historical-split-basis` for a flagged day before the published ticker traded
 under its own name. A single-session market action request selects candidate terms. Literal raw

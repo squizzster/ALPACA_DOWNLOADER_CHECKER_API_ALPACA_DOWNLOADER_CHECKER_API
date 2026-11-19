@@ -136,6 +136,7 @@ def acquire_adjustments(
     acquired=None,
     observations=None,
     retain_states=False,
+    on_completed=None,
 ):
     """Batch each adaptive stage, then select the next from completed observations.
 
@@ -181,6 +182,8 @@ def acquire_adjustments(
         states.append(state)
     metrics = {} if metrics is None else metrics
     plans = []
+    if on_completed is not None:
+        on_completed([state.completed for state in states if state.completed is not None])
     while True:
         pending = [i for i, state in enumerate(states) if state.completed is None and state.failure is None]
         if not pending:
@@ -246,6 +249,9 @@ def acquire_adjustments(
                     raise DownloadError("adaptive action did not complete its selected delivery")
             if state.failure is None:
                 state.advance()
+        if on_completed is not None:
+            # Hand off completed peers before another adaptive request or progress callback.
+            on_completed([states[i].completed for i in pending if states[i].completed is not None])
         if progress:
             progress(
                 stage,

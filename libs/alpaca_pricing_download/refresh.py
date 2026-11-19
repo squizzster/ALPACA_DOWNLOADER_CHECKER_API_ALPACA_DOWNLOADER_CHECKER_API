@@ -29,6 +29,7 @@ from .correction import observations as correction_observations
 from .download import (
     _endpoint_window,
     acquisition_asof,
+    completed_correction_result,
     download_pricing,
     established_pricing_rejection,
     publish_acquired,
@@ -40,11 +41,35 @@ from .failures import AcquisitionFailure
 from .history_tail import publish_legacy_tail
 from .late_bars import session_ranges
 from .responses import CompletedBars, completed_bars
-from .storage import load_source, read_validator, regular_path, ticker_lock, trace_source_selection
+from .storage import load_source, read_update, read_validator, regular_path, ticker_lock, trace_source_selection
+
+
+def recover_selected_correction(root, source, generation, correction_id, *, completion, needs_notice):
+    """Resolve the selected obligation while the selector's read lock is held."""
+    if not correction_id:
+        return None
+    if source.get("history_correction_id") == correction_id:
+        completion = None
+    elif not completion or (completion["correction_id"], completion["source_sha256"]) != (
+        correction_id,
+        generation,
+    ):
+        completion = completed_correction(root, correction_id, generation)
+        if completion is None:
+            return None
+    return {
+        **completed_correction_result(
+            source,
+            generation,
+            completion=completion,
+            pending_update=read_update(root, published=True) if needs_notice else None,
+        ),
+        "status": "replaced",
+    }
 
 
 @traced("retained_history_check")
-def check_retained_source(store, symbol, end_date, *, client, pending=None):
+def check_retained_source(store, symbol, end_date, *, client, pending=None, indexed_generation=None):
     """Check a selected source independently of active-summary eligibility."""
     store = Path(store).absolute()
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
@@ -60,29 +85,28 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None):
             raise DownloadError(f"{symbol}: required history check exceeds requested cutoff")
         correction_id = pending.get("correction_id")
         contract = pending.get("pricing_correction")
-        if correction_id is not None and source.get("history_correction_id") == correction_id:
-            if source.get("history_correction_scope") != "selected_sessions":
-                return {**request, "matched": True, "completed_scope": "full_history"}
-            # Only the missing-session insertion is complete. It established no
-            # retained-history comparison and cannot lend that broader approval.
-            # The completed insertion itself must not be acquired or recovered again.
-            correction_id = None
-        completion = pending.get("correction_completion")
-        if completion is not None and (completion.get("correction_id"), completion.get("source_sha256")) != (
-            correction_id,
+        publication = recover_selected_correction(
+            root,
+            source,
             request["source_sha256"],
-        ):
-            completion = None
-        if completion is None:
-            completion = completed_correction(root, correction_id, request["source_sha256"])
-        if completion is not None:
-            return {
-                **request,
-                "matched": True,
-                "completed_correction": True,
-                "required_correction_id": correction_id,
-                "correction_completion": completion,
-            }
+            correction_id,
+            completion=pending.get("correction_completion"),
+            needs_notice=indexed_generation != request["source_sha256"],
+        )
+        if publication:
+            if publication["completed_scope"] != "selected_sessions":
+                return {
+                    **request,
+                    "matched": True,
+                    "completed_scope": publication["completed_scope"],
+                    "completed_correction": True,
+                    "required_correction_id": correction_id,
+                    "correction_completion": publication["correction_completion"],
+                    "publication": publication,
+                }
+            # The inserted sessions need no recovery. They supplied no comparison
+            # of the retained history, which still runs below.
+            correction_id = None
         if correction_id is not None:
             if contract is not None and (
                 contract.get("schema_version") not in (1, 2, 3)
@@ -167,6 +191,16 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None):
                 "completed_correction": True,
                 "required_correction_id": correction_id,
                 "correction_completion": publication.get("correction_completion"),
+                "publication": {
+                    **completed_correction_result(
+                        publication["source"],
+                        publication["source_sha256"],
+                        completion=publication.get("correction_completion"),
+                        pending_update=publication["pending_update"],
+                    ),
+                    "status": "replaced",
+                    "files_written": publication["files_written"],
+                },
             }
         result = {
             **request,

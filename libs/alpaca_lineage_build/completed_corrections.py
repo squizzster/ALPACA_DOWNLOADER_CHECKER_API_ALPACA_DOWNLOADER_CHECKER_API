@@ -1,4 +1,4 @@
-"""Consume completed, unchanged-source corrections from the accepted work boundary."""
+"""Consume completed correction decisions within their accepted request scope."""
 
 
 def applicable(
@@ -42,3 +42,29 @@ def applicable(
         return False
     current = {row[0]: tuple(row) for row in live_all}
     return all(session < old_end and old.get(session) == current.get(session) for session in changed_sessions)
+
+
+def covers_selected_advance(contract, *, store, entry, publication, target, invalidated):
+    """The completed replacement can finish the exact advance that selected it."""
+    if (
+        invalidated
+        or not contract
+        or contract.get("advance_end_exclusive") != target
+        or contract.get("scope") != "full_history"
+        or contract.get("cause") != "selected_all_rows_changed"
+        or (contract.get("store"), contract.get("symbol")) != (str(store), entry["symbol"])
+        or contract.get("start") != publication["history_start"]
+        or contract.get("end_exclusive") != publication["request"]["end_exclusive"]
+        or contract.get("asof") != publication["request"]["asof"]
+        or contract.get("comparison_end_exclusive") != contract["end_exclusive"]
+        or contract.get("comparison_asof") != contract["asof"]
+        or (entry["end_exclusive"], entry["asof"]) != (contract["end_exclusive"], contract["asof"])
+        or entry.get("source_sha256") != publication["source_sha256"]
+    ):
+        return False
+    # The pricing selector already established the exact correction ID. An
+    # inherited ID on a descendant does not approve that descendant's prices.
+    if publication.get("correction_completion"):
+        return publication["source_sha256"] == contract["source_sha256"]
+    ancestry = publication.get("history_changes")
+    return bool(ancestry) and ancestry[0]["source_sha256"] == contract["source_sha256"]

@@ -5,7 +5,6 @@ from libs.alpaca_pricing_download.append import select_append_sources
 from libs.alpaca_pricing_download.check_summary import assert_current, describe
 from libs.alpaca_pricing_download.contract import DownloadError
 from libs.alpaca_pricing_download.correction import applicable_contract
-from libs.alpaca_pricing_download.correction import completed as completed_correction
 from libs.alpaca_pricing_download.endpoints import EndpointSelection, HistoryComparison
 from libs.alpaca_pricing_download.history_tail import upgrade_legacy_entries
 from libs.alpaca_pricing_download.live_check import verify
@@ -13,12 +12,14 @@ from libs.alpaca_pricing_download.refresh import (
     check_retained_source,
     prepare_refresh,
     probe_late_bar_repairs,
+    recover_selected_correction,
     replace_prepared,
 )
 from libs.alpaca_pricing_download.storage import regular_path
 from libs.common.debug_trace import event, span, traced
 
 from . import storage
+from .completed_corrections import covers_selected_advance
 from .context import HistoryScope, accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
 from .work_contract import acquisition_fingerprint
@@ -39,18 +40,27 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
     if callable(getattr(pricing_client, "execute_plan", None)):
         pricing_client = MeasuredRequests(pricing_client, metrics)
     summarized = {entry["symbol"] for entry in context.select_summary()["entries"]}
-    prepared, checked = [], {}
+    prepared, recovered, checked = [], [], {}
     for symbol, item in list(work_policy.work.items()):
         if symbol in summarized or not item.get("required_history_check") or not work_policy.allowed({symbol}):
             continue
         try:
             if progress:
                 progress("required_history", {"symbol": symbol, "state": "checking"})
-            selected = check_retained_source(store, symbol, end_date, client=pricing_client, pending=item)
+            selected = check_retained_source(
+                store,
+                symbol,
+                end_date,
+                client=pricing_client,
+                pending=item,
+                indexed_generation=work_policy.index["symbols"].get(symbol, {}).get("source_sha256"),
+            )
         except (RuntimeError, OSError, ValueError) as error:
             work_policy.fail({symbol}, error, stage="history_check")
             continue
-        if not selected["matched"] or (
+        if selected.get("publication"):
+            recovered.append(selected["publication"])
+        elif not selected["matched"] or (
             item.get("correction_id") and item["correction_id"] != selected["history_correction_id"]
         ):
             prepared.append(selected)
@@ -69,6 +79,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
         if prepared
         else empty
     )
+    replaced["results"].extend(recovered)
     work_policy.record_results(replaced, stage="history_correction")
     work_policy.accept_correction_completions(replaced["results"])
     checked.update(
@@ -255,7 +266,7 @@ def refresh_existing(
             for symbol, generation in item.get("pricing_replacements", {}).items()
         }
 
-    def replace_and_reconcile(prepared, baseline_token, *, serving_generation=None):
+    def replace_and_reconcile(prepared, baseline_token, *, recovered=(), serving_generation=None):
         def before_publish():
             assert_current(store, baseline_token)
             if serving_generation is not None:
@@ -264,7 +275,9 @@ def refresh_existing(
                 if selector_state(store)["generation"] != serving_generation:
                     raise DownloadError("selected serving catalogue changed before late-bar repair")
 
-        selected_scopes = {request["symbol"]: requested_scope(request["symbol"]) for request in prepared}
+        selected_scopes = {
+            request["symbol"]: requested_scope(request["symbol"]) for request in (*prepared, *recovered)
+        }
         replaced = replace_prepared(
             store,
             prepared,
@@ -274,6 +287,7 @@ def refresh_existing(
             before_publish=before_publish,
             context=pricing_context,
         )
+        replaced["results"].extend(recovered)
         pricing["results"].extend(replaced["results"])
         pricing["failed"] += replaced["failed"]
         for key, value in replaced["requests"].items():
@@ -476,20 +490,50 @@ def refresh_existing(
             work_policy.require_maintenance(candidates, end_date)
         if register_discoveries is not None:
             register_discoveries(entry["symbol"] for entry in candidates)
+        pending = work_policy.work if work_policy else {}
         required = {
-            e["symbol"]
-            for e in candidates
-            if work_policy is not None and work_policy.work.get(e["symbol"], {}).get("required_history_check")
+            entry["symbol"]
+            for entry in candidates
+            if (item := pending.get(entry["symbol"]))
+            and (
+                item.get("required_history_check")
+                or item.get("correction_id")
+                and not item.get("correction_completion")
+            )
         }
-        source_selections = {}
+        source_selections, recovered = {}, {}
+
+        def accept_selected(root, source, generation):
+            symbol = source["symbol"]
+            item = pending.get(symbol, {})
+            correction_id = item.get("correction_id")
+            if correction_id and symbol in required:
+                if regular_path(root, ".pending.json").exists():
+                    raise DownloadError(f"{symbol}: finish interrupted pricing publication before checking")
+                result = recover_selected_correction(
+                    root,
+                    source,
+                    generation,
+                    correction_id,
+                    completion=work_policy.correction_completion_for(symbol, generation, source),
+                    needs_notice=selected_index["symbols"].get(symbol, {}).get("source_sha256") != generation,
+                )
+                if result is not None:
+                    recovered[symbol] = result
+
         selected_sources = (
             select_append_sources(
-                store, candidates, end_date, required_symbols=required, selections=source_selections
+                store,
+                candidates,
+                end_date,
+                required_symbols=required,
+                selections=source_selections,
+                on_selected=accept_selected,
             )
             if on_ready or required
             else {}
         )
-        durable_selections, durable_full, completion_handoffs = {}, {}, {}
+        durable_selections, durable_full = {}, {}
         full_obligations, completed_corrections, session_completed = set(), set(), set()
         carried_completions = set()
         for entry in candidates:
@@ -497,51 +541,66 @@ def refresh_existing(
             work = work_policy.work.get(symbol, {}) if work_policy else {}
             contract = work.get("pricing_correction")
             correction_id = work.get("correction_id")
-            # A prior-operation correction cannot suppress the fresh selected
-            # comparison for a new advance. Its recorded disposition remains
-            # available below for identical witnesses. A producer completion
-            # obtained in this operation still owns its accepted retained span.
-            advancing = (
-                end_date is not None
-                and entry["end_exclusive"][:10] < end_date
-                and work_policy is not None
-                and symbol in work_policy.completed_corrections
-            )
-            if work.get("correction_completion") and (
-                not work.get("required_history_check") or advancing and not work.get("invalidate_pricing")
-            ):
+            publication = recovered.get(symbol)
+            if work.get("correction_completion") and not work.get("required_history_check"):
                 carried_completions.add(symbol)
-                contract, correction_id = None, None
+                continue
             if contract is not None and (
                 contract.get("schema_version") not in (1, 2, 3)
                 or contract.get("scope") not in ("latest_session", "full_history")
             ):
                 raise DownloadError("unsupported durable correction; owning recovery required")
-            if correction_id and source_selections.get(symbol, {}).get("history_correction_id") == correction_id:
+            if publication:
+                if (
+                    end_date
+                    and entry["end_exclusive"][:10] < end_date
+                    and not covers_selected_advance(
+                        contract,
+                        store=context.store,
+                        entry=entry,
+                        publication=publication,
+                        target=end_date,
+                        invalidated=work.get("invalidate_pricing", False),
+                    )
+                ):
+                    # An old completion closes its own correction. A new advance
+                    # needs a fresh comparison unless its producer is still held.
+                    receipt = publication["correction_completion"]
+                    if receipt:
+                        same_operation = (
+                            work.get("correction_completion") == receipt
+                            and contract is not None
+                            and work_policy.end == end_date
+                            and work_policy.completed_corrections.get(symbol, {}).get("correction_id")
+                            != correction_id
+                            and not work.get("invalidate_pricing")
+                        )
+                    else:
+                        accepted = pricing_context.full_publications.get(symbol)
+                        same_operation = (
+                            work_policy.end == end_date
+                            and accepted is not None
+                            and accepted.applies(
+                                context.store,
+                                entry,
+                                selected_index["symbols"].get(symbol),
+                                entry["end_exclusive"],
+                                correction_id=correction_id,
+                                invalidate_mapping=work.get("invalidate_pricing", False),
+                                acquisition_fingerprint=acquisition_fingerprint(work),
+                            )
+                        )
+                    if not same_operation:
+                        if receipt and work.get("correction_completion") != receipt:
+                            work_policy.accept_correction_completions([publication])
+                            work_policy.completed_corrections[symbol] = work_policy.work[symbol]
+                        carried_completions.add(symbol)
+                        continue
                 completed_corrections.add(symbol)
-                if source_selections[symbol].get("history_correction_scope") == "selected_sessions":
+                if publication["completed_scope"] == "selected_sessions":
                     session_completed.add(symbol)
                 continue
             generation = selected_sources.get(symbol, accepted_generations.get(symbol))
-            if correction_id:
-                completion = work_policy.correction_completion_for(
-                    symbol, generation, source_selections.get(symbol, {})
-                )
-                if not completion or (completion.get("correction_id"), completion.get("source_sha256")) != (
-                    correction_id,
-                    generation,
-                ):
-                    completion = completed_correction(
-                        regular_path(context.store, f"end_of_day/pricing/{symbol}", published=True),
-                        correction_id,
-                        generation,
-                    )
-                if completion:
-                    completion_handoffs[symbol] = completion
-                    completed_corrections.add(symbol)
-                    if completion.get("completed_scope") == "selected_sessions":
-                        session_completed.add(symbol)
-                    continue
             source = source_selections.get(symbol, {})
             applicable = (
                 applicable_contract(
@@ -771,7 +830,7 @@ def refresh_existing(
             for entry in candidates
             if work_policy is not None
             and work_policy.work.get(entry["symbol"], {}).get("correction_id")
-            and entry["symbol"] not in session_completed - differing
+            and entry["symbol"] not in completed_corrections - differing
             and entry["symbol"] not in carried_completions
         }
         prepared = prepare_refresh(
@@ -786,9 +845,6 @@ def refresh_existing(
             approved_generations={symbol: context.history_comparisons[symbol][1] for symbol in compared},
             selections=durable_selections,
             end_date=end_date if on_ready is not None else None,
-            correction_ids={
-                symbol: work_policy.work[symbol]["correction_id"] for symbol in completed_corrections - differing
-            },
             lineage_generations={
                 symbol: comparison[3]
                 for symbol, comparison in context.history_comparisons.items()
@@ -796,16 +852,26 @@ def refresh_existing(
             },
         )
         for item in prepared:
-            if item["symbol"] in completion_handoffs:
-                item["correction_completion"] = completion_handoffs[item["symbol"]]
-                item["completed_correction"] = True
-                item["required_correction_id"] = completion_handoffs[item["symbol"]]["correction_id"]
             contract = durable_full.get(item["symbol"])
             if contract is not None:
                 if item["source_sha256"] != contract["source_sha256"]:
                     raise DownloadError("pricing changed after durable correction selection")
                 item["correction_observations"] = contract.get("observations", {})
                 item["correction_cause"] = contract["cause"]
+                if "advance_end_exclusive" in contract:
+                    item["advance_end_exclusive"] = contract["advance_end_exclusive"]
+            elif (
+                on_ready is not None
+                and end_date
+                and item["correction_scope"] == "full_history"
+                and item["correction_cause"] == "selected_all_rows_changed"
+                and item["end_exclusive"][:10] < end_date
+                and item["symbol"] in compared_scopes
+                and compared_scopes[item["symbol"]].target == end_date
+            ):
+                # A full correction replaces only retained sessions. Keep the
+                # separately selected append target across a stop between them.
+                item["advance_end_exclusive"] = end_date
         if work_policy is not None:
             prepared = [
                 item
@@ -816,7 +882,10 @@ def refresh_existing(
             ]
             work_policy.require_correction([item for item in prepared if not item.get("completed_correction")])
         assert_current(store, snapshot["token"])
-        selected = replace_and_reconcile(prepared, snapshot["token"])
+        recovered_results = [
+            recovered[symbol] for symbol in sorted(completed_corrections - session_completed - differing)
+        ]
+        selected = replace_and_reconcile(prepared, snapshot["token"], recovered=recovered_results)
         if pricing["failed"] or lineage["failed"]:
             break
         ready = context.select_summary()
@@ -837,7 +906,7 @@ def refresh_existing(
                     verified_scopes[symbol] = scope
                     if symbol in selected_sources and symbol not in selected:
                         generations[symbol] = selected_sources[symbol]
-        if prepared:
+        if prepared or recovered_results:
             with storage.publication_lock(context.accept_store().root):
                 accept_publication_snapshot(ready, context.select_index(context.accept_store().root))
         snapshot = ready

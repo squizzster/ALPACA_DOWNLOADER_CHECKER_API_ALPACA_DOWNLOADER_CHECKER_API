@@ -4,12 +4,152 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from libs.alpaca_lineage_build.contract import versions
+from libs.alpaca_lineage_build import universe_state
+from libs.alpaca_lineage_build.contract import LineageError, versions
+from libs.alpaca_lineage_build.dependency_suffixes import accept_empty_suffixes
 from libs.alpaca_lineage_build.pipeline import _catch_up_published_dependencies, _prefetch_metadata
 from libs.alpaca_lineage_build.selection import DependencyGraph
 
 
 class CompletedPricingHandoffTests(unittest.TestCase):
+    def test_offline_dependency_receipt_applies_only_to_the_original_work_and_exact_provider_scope(self):
+        group = ["CURRENT", "PEER"]
+        receipt = {
+            "version": 1,
+            "obligation_id": "work",
+            "owner": "CURRENT",
+            "group": group,
+            "source_sha256": "b" * 64,
+            "start": "2026-10-20T00:00:00+00:00",
+            "end_exclusive": "2026-10-22T00:00:00+00:00",
+            "asof": "2026-09-10",
+        }
+        for field in (None, "source_sha256", "start", "end_exclusive", "asof", "obligation_id"):
+            with self.subTest(changed=field), tempfile.TemporaryDirectory() as directory:
+                selected = dict(receipt)
+                if field:
+                    selected[field] = "superseded"
+                index = {
+                    "symbols": {
+                        symbol: {
+                            "dependencies": [s for s in group if s != symbol],
+                            "asset_ids": [],
+                            "source_sha256": ("a" if symbol == "CURRENT" else "b") * 64,
+                            "projection": {
+                                "pricing_request": {
+                                    "history_start": "2016-01-01",
+                                    "asof": "2026-09-10",
+                                    "end_exclusive": (
+                                        "2026-10-22T00:00:00Z" if symbol == "CURRENT" else "2026-10-20T00:00:00Z"
+                                    ),
+                                }
+                            },
+                        }
+                        for symbol in group
+                    }
+                }
+                policy = SimpleNamespace(
+                    allowed=lambda _: True,
+                    work={"CURRENT": {"obligation_id": "work", "dependency_suffixes": {"PEER": selected}}},
+                )
+                empty = set()
+                with (
+                    patch("libs.alpaca_lineage_build.pipeline.acquire_selected", side_effect=AssertionError),
+                    patch("libs.alpaca_lineage_build.storage.pricing_locks", side_effect=AssertionError),
+                ):
+                    _catch_up_published_dependencies(
+                        Path(directory),
+                        ["CURRENT"],
+                        index,
+                        DependencyGraph(index["symbols"]),
+                        None,
+                        work_policy=policy,
+                        pricing_handoff={},
+                        empty_suffixes=empty,
+                    )
+                    if field is None:
+                        # The same operation keeps its selection after workflow
+                        # acknowledgement releases the durable copy.
+                        policy.work.clear()
+                        resumed = _catch_up_published_dependencies(
+                            Path(directory),
+                            ["CURRENT"],
+                            index,
+                            DependencyGraph(index["symbols"]),
+                            SimpleNamespace(execute_plan=lambda *_: None),
+                            work_policy=policy,
+                            pricing_handoff={},
+                            empty_suffixes=empty,
+                        )
+                        self.assertEqual((0, 1), (resumed["requested"], resumed["skipped"]))
+                self.assertEqual(set() if field else {("PEER", "b" * 64, "2026-10-22")}, empty)
+
+    def test_finishing_owner_transfers_only_to_still_unfinished_group_work(self):
+        for held in (False, True):
+            with self.subTest(held=held), tempfile.TemporaryDirectory() as directory:
+                store = Path(directory)
+                universe_state.initialize(store)
+                group = {"SEED", "PEER"}
+                work = universe_state.put_work_group(
+                    store, {"SEED": {"obligation_id": "seed", "status": "pending"}}
+                )
+                policy = SimpleNamespace(store=store, work=work)
+                result = {
+                    "symbol": "PEER",
+                    "source_sha256": "a" * 64,
+                    "append_work_selection": {
+                        "start": "2026-10-09T00:00:00+00:00",
+                        "end_exclusive": "2026-10-14T00:00:00+00:00",
+                        "asof": "2026-10-14",
+                    },
+                }
+                accept_empty_suffixes(policy, {"PEER": group}, [result])
+                original = work["SEED"]["dependency_suffixes"]["PEER"]
+                work["PEER"] = universe_state.put_work(
+                    store, "PEER", {"obligation_id": "next", "status": "pending"}
+                )
+
+                def acknowledge():
+                    with universe_state.outcome_batch(store, work=work if held else None) as batch:
+                        universe_state.record_outcome(store, "SEED", batch=batch, status="complete", outcome={})
+
+                with patch.object(universe_state, "_advance", side_effect=RuntimeError("before commit")):
+                    with self.assertRaisesRegex(RuntimeError, "before commit"):
+                        acknowledge()
+                self.assertNotIn("dependency_suffixes", work["PEER"])
+                self.assertEqual(work, universe_state.read_state(store)["work"])
+                acknowledge()
+                state = universe_state.read_state(store)["work"]
+                self.assertNotIn("dependency_suffixes", state["SEED"])
+                self.assertEqual(
+                    {**original, "obligation_id": "next", "owner": "PEER"},
+                    state["PEER"]["dependency_suffixes"]["PEER"],
+                )
+                if held:
+                    self.assertEqual(state["PEER"], work["PEER"])
+                with self.assertRaisesRegex(LineageError, "superseded work"):
+                    universe_state.accept_dependency_suffixes(store, {"SEED": {"PEER": original}})
+                universe_state.record_outcome(store, "PEER", status="complete", outcome={})
+                self.assertNotIn("dependency_suffixes", universe_state.read_state(store)["work"]["PEER"])
+
+    def test_incompatible_durable_suffix_receipt_selects_owning_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Path(directory)
+            universe_state.initialize(store)
+            for receipt in ({"version": 5}, {"version": 1}, None):
+                with self.subTest(receipt=receipt):
+                    universe_state.put_work(
+                        store,
+                        "PEER",
+                        {
+                            "obligation_id": "pending",
+                            "status": "pending",
+                            "dependency_suffixes": {"PEER": receipt},
+                        },
+                    )
+                    with self.assertRaisesRegex(LineageError, "owning recovery"):
+                        universe_state.read_state(store)
+
     def test_metadata_plan_consumes_the_handoff_without_reopening_sources_notices_or_locks(self):
         previous = {
             "source_sha256": "a" * 64,

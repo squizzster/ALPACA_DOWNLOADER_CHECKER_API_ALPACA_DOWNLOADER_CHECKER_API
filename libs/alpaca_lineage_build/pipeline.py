@@ -29,6 +29,7 @@ from .contract import (
     reusable_metadata_versions,
 )
 from .correction_prefix import correction_from
+from .dependency_suffixes import accept_empty_suffixes, applicable_empty_suffix, group_empty_suffixes
 from .metadata import (
     EvidenceClient,
     acquire,
@@ -66,6 +67,7 @@ def _group_services():
         read_update=read_update,
         scoped_identity_memberships=scoped_identity_memberships,
         select_observations=select_observations,
+        select_dependency_suffixes=_select_dependency_suffixes,
     )
 
 
@@ -285,6 +287,57 @@ def _prefetch_metadata(
     client.prefetch_symbols(lookup_symbols)
 
 
+def _select_dependency_suffixes(
+    store, groups, end, *, index, client, context, progress, work_policy, empty_suffixes
+):
+    """Apply the pricing owner's suffix selection to indexed or newly discovered group members."""
+
+    def persist_selected(selected_work):
+        if work_policy is not None:
+            for symbol in sorted(selected_work):
+                work_policy.require_dependencies(groups[symbol], end, {symbol})
+
+    value = acquire_selected(
+        store,
+        list(groups),
+        end,
+        client=client,
+        progress=progress,
+        context=context.pricing() if context is not None else None,
+        select_append_work=True,
+        on_append_work_selected=persist_selected,
+        on_empty_suffixes=(
+            (lambda results: accept_empty_suffixes(work_policy, groups, results))
+            if work_policy is not None
+            else None
+        ),
+        missing_route=route_selector(Path(store) / "end_of_day/lineage", index),
+        lineage_generations={
+            symbol: index["symbols"][symbol]["sha256"]
+            for symbol in groups
+            if index["symbols"].get(symbol, {}).get("sha256")
+        },
+    )
+    if empty_suffixes is not None:
+        empty_suffixes.update(
+            (
+                item["symbol"],
+                item["source_sha256"],
+                item["append_work_selection"]["end_exclusive"][:10],
+            )
+            for item in value["results"]
+            if item.get("status") == "not_selected"
+        )
+    if work_policy is not None:
+        work_policy.record_results(value, stage="dependency_acquisition")
+    return {
+        **value,
+        "requested": len(groups),
+        "succeeded": len(groups) - value["failed"],
+        "skipped": sum(item.get("status") == "not_selected" for item in value["results"]),
+    }
+
+
 @traced("dependency_catchup")
 def _catch_up_published_dependencies(
     store,
@@ -299,6 +352,7 @@ def _catch_up_published_dependencies(
     context=None,
     pricing_handoff=None,
     empty_suffixes=None,
+    dependency_groups=None,
 ):
     """The pricing owner validates retained history before advancing dependencies."""
     result = {
@@ -310,7 +364,8 @@ def _catch_up_published_dependencies(
         "deferred_full_range": 0,
         "skipped": 0,
     }
-    if client is None or not callable(getattr(client, "execute_plan", None)):
+    can_request = callable(getattr(client, "execute_plan", None))
+    if not can_request and work_policy is None:
         return result
     visited, targets = set(), {}
     for label in selected:
@@ -318,8 +373,12 @@ def _catch_up_published_dependencies(
         if group <= visited or (work_policy is not None and not work_policy.allowed(group)):
             continue
         visited.update(group)
+        receipts = group_empty_suffixes(group, work_policy.work) if work_policy is not None else {}
+        if not can_request and not receipts:
+            continue
         sources = _published_pricing_ranges(index, group, pricing_handoff)
-        if sources is None:
+        read_sources = sources is None
+        if read_sources:
             with storage.pricing_locks(store, group, known=index["symbols"]) as locked:
                 sources = _current_sources(store, locked, known=index["symbols"])
         if not sources:
@@ -328,17 +387,36 @@ def _catch_up_published_dependencies(
         end = max(source["latest_request"]["end_exclusive"][:10] for source in sources.values())
         if end_date and end > end_date:
             continue
+        suffix_selected = False
+        prefix_required = False
         for symbol, source in sources.items():
             if source.get("history_start", HISTORY_START)[:10] > start:
                 result["deferred_full_range"] += 1
+                prefix_required = True
             elif source["latest_request"]["end_exclusive"][:10] < end:
-                targets.setdefault(end, []).append(symbol)
-    select_route = route_selector(Path(store) / "end_of_day/lineage", index)
-    lineage_generations = {
-        symbol: entry["sha256"]
-        for symbol, entry in index["symbols"].items()
-        if isinstance(entry.get("sha256"), str) and entry["sha256"]
-    }
+                suffix_selected = True
+                if symbol in receipts or empty_suffixes:
+                    generation = (
+                        storage.document_digest(source)
+                        if read_sources
+                        else pricing_handoff.get(symbol, {}).get("source_sha256")
+                        or index["symbols"][symbol]["source_sha256"]
+                    )
+                    # The source generation fixes the suffix start and its accepted
+                    # mapping. The selected end also fixes acquisition_asof for moving labels.
+                    key = (symbol, generation, end)
+                    if empty_suffixes and key in empty_suffixes:
+                        result["skipped"] += 1
+                        continue
+                    if symbol in receipts and applicable_empty_suffix(receipts[symbol], generation, source, end):
+                        if empty_suffixes is not None:
+                            empty_suffixes.add(key)
+                        result["skipped"] += 1
+                        continue
+                if can_request:
+                    targets.setdefault(end, []).append(symbol)
+        if dependency_groups is not None and suffix_selected and not prefix_required:
+            dependency_groups[frozenset(group)] = end
     for end, symbols in targets.items():
         allowed = [s for s in symbols if work_policy is None or work_policy.allowed({s})]
         if not allowed:
@@ -349,36 +427,19 @@ def _catch_up_published_dependencies(
             # acquisition work, but it cannot erase the known dependency label.
             register_discoveries({member for symbol in allowed for member in graph.closure({symbol})})
 
-        def persist_selected(selected_work):
-            if work_policy is not None:
-                for symbol in sorted(selected_work):
-                    work_policy.require_dependencies(graph.closure({symbol}), end, {symbol})
-
-        value = acquire_selected(
+        value = _select_dependency_suffixes(
             store,
-            allowed,
+            {symbol: graph.closure({symbol}) for symbol in allowed},
             end,
+            index=index,
             client=client,
+            context=context,
             progress=progress,
-            context=context.pricing() if context is not None else None,
-            select_append_work=True,
-            on_append_work_selected=persist_selected,
-            missing_route=select_route,
-            lineage_generations=lineage_generations,
+            work_policy=work_policy,
+            empty_suffixes=empty_suffixes,
         )
         result["results"].extend(value["results"])
-        not_selected = {item["symbol"] for item in value["results"] if item.get("status") == "not_selected"}
-        if empty_suffixes is not None:
-            empty_suffixes.update(
-                (
-                    item["symbol"],
-                    item["source_sha256"],
-                    item["append_work_selection"]["end_exclusive"][:10],
-                )
-                for item in value["results"]
-                if item.get("status") == "not_selected"
-            )
-        result["skipped"] += len(not_selected)
+        result["skipped"] += value["skipped"]
         if pricing_handoff is not None:
             pricing_handoff.update(
                 (item["symbol"], item)
@@ -393,8 +454,6 @@ def _catch_up_published_dependencies(
                 result["requests"][key] = result["requests"].get(key, 0) + count
         result["requested"] += len(allowed)
         result["failed"] += value["failed"]
-        if work_policy is not None:
-            work_policy.record_results(value, stage="dependency_acquisition")
     result["succeeded"] = result["requested"] - result["failed"]
     return result
 
@@ -494,7 +553,8 @@ def process_group(
     work_policy=None,
     context=None,
     progress=None,
-    empty_suffixes=(),
+    empty_suffixes=None,
+    on_dependency_suffixes=None,
     retained_rebuild=False,
     retained_recovery=None,
     pending_checks=None,
@@ -518,6 +578,7 @@ def process_group(
         context=context,
         progress=progress,
         empty_suffixes=empty_suffixes,
+        on_dependency_suffixes=on_dependency_suffixes,
         retained_rebuild=retained_rebuild,
         retained_recovery=retained_recovery,
         pending_checks=pending_checks,
@@ -609,6 +670,7 @@ def run_lineage(
     event_supplements=(),
     retained_rebuild=False,
     retained_recovery=None,
+    acknowledge_published_dependencies=False,
 ):
     if retained_recovery is not None and (
         not retained_rebuild
@@ -730,9 +792,9 @@ def run_lineage(
         stop = False
 
         catchups = []
-        empty_suffixes = set()
+        empty_suffixes = work_policy.empty_suffixes if work_policy is not None else set()
 
-        def catch_up(labels, handoff):
+        def catch_up(labels, handoff, dependency_groups):
             nonlocal stop
             if retained_rebuild:
                 return
@@ -749,6 +811,7 @@ def run_lineage(
                 context=context,
                 pricing_handoff=handoff,
                 empty_suffixes=empty_suffixes,
+                dependency_groups=dependency_groups,
             )
             catchups.append(value)
             if value["failed"]:
@@ -835,9 +898,26 @@ def run_lineage(
                     _select_pending_pricing(
                         store, members, index, members if full_scan else checks["checks"], handoff
                     )
-                catch_up(cohort, handoff)
+                dependency_groups = (
+                    {} if acknowledge_published_dependencies and work_policy is not None else None
+                )
+                catch_up(cohort, handoff, dependency_groups)
                 if stop:
                     break
+                for group, end in (dependency_groups or {}).items():
+                    if tuple(sorted(group)) in context.completed_membership_plans:
+                        continue
+                    if work_policy.accept_indexed_dependencies(
+                        group, end, index["symbols"], checks["checks"], handoff
+                    ):
+                        members = sorted(group)
+                        results.append({"symbol": members[0], "status": "unchanged", "processed": members})
+                        processed.update(group)
+                        if on_processed is not None:
+                            on_processed(members)
+                cohort = [label for label in cohort if label not in processed]
+                if not cohort:
+                    continue
                 receipt_cache = storage.ReceiptCache(root, index, capacity=PREFETCH_MEMBERS)
                 requests = [
                     label
@@ -890,6 +970,7 @@ def run_lineage(
                             context=context,
                             progress=progress,
                             empty_suffixes=empty_suffixes,
+                            on_dependency_suffixes=catchups.append,
                             retained_rebuild=retained_rebuild,
                             retained_recovery=recovery_groups.get(symbol),
                             pending_checks=checks["checks"],

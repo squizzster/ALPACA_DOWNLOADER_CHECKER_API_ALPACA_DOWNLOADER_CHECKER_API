@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 21
+VERSION = 23
 SCHEMA_VERSION = 1
 
 
@@ -23,6 +23,15 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (23, 26, 99, 120):
+        # Workflow retry scope does not change completed diagnostic calculations.
+        bindings.append({**binding, "debug": 22, "lineage_runtime": 119})
+        current = (22, 26, 99, 119)
+    if allow_previous and current == (22, 26, 99, 119):
+        # Witness carry changes publication only. Completed comparisons keep
+        # their original diagnostic and policy bindings.
+        bindings.append({**binding, "debug": 21, "lineage_runtime": 118})
+        current = (21, 26, 99, 118)
     if allow_previous and current == (21, 26, 99, 118):
         bindings.append({**binding, "debug": 20, "lineage_runtime": 117})
         current = (20, 26, 99, 117)

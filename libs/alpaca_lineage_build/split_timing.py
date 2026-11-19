@@ -1,7 +1,11 @@
 """Carry the split-timing producer's three witnessed sessions across full lineage builds."""
 
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+
 from .contract import RecoveryRequired
 from .resume import continuing_request
+
+_NO_CONTRIBUTION = dict.fromkeys(ADJUSTMENTS, ())
 
 
 def _partition(receipt, day):
@@ -31,49 +35,78 @@ def _choices(handoff, day, pid):
     return {view: labels[slot] for view, slot in choices["views"].items()}
 
 
-def _same_witness(previous, receipt, pid, interval, day):
+def _contribution(receipt, kind, day, pid, legacy):
+    if kind is None:
+        return _NO_CONTRIBUTION
+    handoff = receipt.get("assignment_handoffs", {}).get(kind, {})
+    if "observation_choices" in handoff:
+        return _choices(handoff, day, pid)
+    # Legacy ownership can prove absence across a complete partition. It
+    # cannot resolve a dated choice when that identity owns any rows there.
+    ownership = handoff.get("ownership")
+    if ownership is None:
+        return None
+    key = id(ownership), pid
+    if key not in legacy:
+        legacy[key] = (
+            _NO_CONTRIBUTION
+            if ownership.keys() == _NO_CONTRIBUTION.keys()
+            and all(run["owner"][0] != pid for view in ownership.values() for run in view["ownership"])
+            else None
+        )
+    return legacy[key]
+
+
+def _same_witness(previous, receipt, pid, interval, day, legacy, *, require_absence):
     old_kind, new_kind = _partition(previous, day), _partition(receipt, day)
-    if old_kind is None or new_kind is None:
-        # Pricing ancestry already established that no row changed on the witness.
-        # A partition beyond either member's last month cannot contribute a row.
-        return True
-    if old_kind == new_kind and previous["boundaries"][old_kind] == receipt["boundaries"][new_kind]:
+    if old_kind is None and new_kind is None:
         return True
     old = previous.get("assignment_handoffs", {}).get(old_kind, {})
     new = receipt.get("assignment_handoffs", {}).get(new_kind, {})
-    if old_kind == new_kind and old.get("comparison") and old["comparison"] == new.get("comparison"):
+    same_assignment = old_kind == new_kind and (
+        previous["boundaries"][old_kind] == receipt["boundaries"][new_kind]
+        or old.get("comparison")
+        and old["comparison"] == new.get("comparison")
+    )
+    if same_assignment and not require_absence:
         return True
-    after = _choices(new, day, pid)
-    if after is None:
+    after = _contribution(receipt, new_kind, day, pid, legacy)
+    if after is None or (require_absence and any(after.values())):
         return False
-    if "observation_choices" not in old and len(interval["members"]) == 1:
+    if same_assignment:
+        return True
+    before = _contribution(previous, old_kind, day, pid, legacy)
+    if before is None and not require_absence and len(interval["members"]) == 1:
         # A completed single-source correction already established this owner
         # and its sole trading label on all three sessions in every view.
         return all(labels == (interval["symbol"],) for labels in after.values())
-    return _choices(old, day, pid) == after
+    return before == after
 
 
 def require_rebuilt_timing(previous, receipt, source, intervals):
     generation = previous["source_sha256"]
+    change_from = None
     if receipt["source_sha256"] != generation:
-        through = max(item["witness_end"] for item in intervals.values())
-        if not (
-            source is not None
-            and continuing_request(source, previous)
-            and any(
-                change["source_sha256"] == generation
-                and (change["changed_from"] is None or change["changed_from"] > through)
-                for change in source.get("history_changes", ())
+        # With no applicable ancestry, every witness requires a completed
+        # exclusion of this member from its numerical inputs.
+        change_from = ""
+        if source is not None and continuing_request(source, previous):
+            change_from = next(
+                (
+                    item["changed_from"]
+                    for item in source.get("history_changes", ())
+                    if item["source_sha256"] == generation
+                ),
+                change_from,
             )
-        ):
-            raise RecoveryRequired(
-                "split timing price history or mapping changed; selected pricing recovery required"
-            )
+    legacy = {}
     for pid, item in intervals.items():
-        if not all(
-            _same_witness(previous, receipt, pid, item, item[key])
-            for key in ("witness_start", "first", "witness_end")
-        ):
-            raise RecoveryRequired(
-                "split timing ownership or numerical selection changed; selected pricing recovery required"
-            )
+        for day in (item["witness_start"], item["first"], item["witness_end"]):
+            require_absence = change_from is not None and change_from <= day
+            if not _same_witness(previous, receipt, pid, item, day, legacy, require_absence=require_absence):
+                reason = (
+                    "price history or mapping changed"
+                    if require_absence
+                    else "ownership or numerical selection changed"
+                )
+                raise RecoveryRequired(f"split timing {reason}; selected pricing recovery required")

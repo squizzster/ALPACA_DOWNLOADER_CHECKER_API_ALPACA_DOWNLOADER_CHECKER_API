@@ -50,6 +50,7 @@ from .contract import (
     versions,
 )
 from .correction_prefix import complete_prefix_boundaries
+from .dependency_suffixes import applicable_empty_suffix, group_empty_suffixes
 from .metadata import (
     EvidenceClient,
     RetainedReportClient,
@@ -92,6 +93,7 @@ class GroupServices:
     read_update: Callable
     scoped_identity_memberships: Callable
     select_observations: Callable
+    select_dependency_suffixes: Callable
 
 
 @dataclass(frozen=True)
@@ -166,7 +168,7 @@ def publish_completed_group(
     receipts, boundaries = publication.receipts, publication.boundaries
     effects = {} if completion is None else completion.setdefault("effects", {})
     if work_policy is not None and "stamp" not in effects:
-        effects["stamp"] = work_policy.stamp(receipts, sources)
+        effects["stamp"] = work_policy.stamp(receipts, sources, (completion or {}).get("group_end"))
     if progress and not effects.get("progress"):
         progress(
             "lineage_publication",
@@ -588,7 +590,8 @@ def process_group(
     work_policy=None,
     context=None,
     progress=None,
-    empty_suffixes=(),
+    empty_suffixes=None,
+    on_dependency_suffixes=None,
     retained_rebuild=False,
     retained_recovery=None,
     pending_checks=None,
@@ -600,6 +603,8 @@ def process_group(
     receipt_cache = receipt_cache or storage.ReceiptCache(root, index)
     graph = work_policy.graph if work_policy is not None else graph or DependencyGraph(index["symbols"])
     group = services.closure(index, {seed}, graph=graph)
+    if empty_suffixes is None:
+        empty_suffixes = work_policy.empty_suffixes if work_policy is not None else set()
     if (
         seed not in index["symbols"]
         and work_policy is not None
@@ -731,6 +736,12 @@ def process_group(
             end = max(
                 (source["latest_request"]["end_exclusive"][:10] for source in sources.values()), default=end_date
             )
+            if work_policy is not None and end:
+                for peer, receipts in group_empty_suffixes(group, work_policy.work).items():
+                    if peer not in sources or (peer, selected[peer], end) in empty_suffixes:
+                        continue
+                    if applicable_empty_suffix(receipts, selected[peer], sources[peer], end):
+                        empty_suffixes.add((peer, selected[peer], end))
             # Reload after delegation: concurrent publication outranks a remembered
             # rejection. Never turn a held source into an unavailable auxiliary.
             unavailable = {
@@ -918,7 +929,7 @@ def process_group(
                         for name, prior in previous.items()
                     )
                 )
-                and (work_policy is None or work_policy.decision_inputs_satisfied(sources, selected))
+                and (work_policy is None or work_policy.decision_inputs_satisfied(sources, selected, end))
             ):
                 services.event(
                     "lineage_required", symbol=seed, required=False, reason="accepted_unchanged_inputs"
@@ -982,7 +993,7 @@ def process_group(
                     for symbol, prior in label_previous.items()
                 }
                 if work_policy is not None:
-                    completed = work_policy.stamp(receipts, sources)
+                    completed = work_policy.stamp(receipts, sources, end)
                 # DO NOT restore publication for workflow acknowledgement alone.
                 # stamp() has checked the selected inputs under their owning locks;
                 # its approval belongs in durable work state, not a new data
@@ -1069,6 +1080,7 @@ def process_group(
                 for symbol in sorted(group)
                 if symbol not in sources and symbol not in unavailable
             }
+            unassessed_suffixes = set()
             if work_policy is not None:
                 required.update(
                     work_policy.pending_mappings(
@@ -1275,7 +1287,7 @@ def process_group(
                             )
                         if work_policy is not None:
                             work_policy.require_dependencies(
-                                expanded, end, expanded - sources.keys() - unavailable.keys(), start=start
+                                expanded, end, discovered=expanded - group, start=start
                             )
                             work_policy.reconcile_evidence(
                                 evidence, sources, previous, group=expanded, target=end, partial=True
@@ -1315,8 +1327,9 @@ def process_group(
                                 reason="completed_empty_suffix" if accepted_empty else "selection_unavailable",
                                 end_exclusive=end,
                             )
-                            if not accepted_empty:
-                                required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                            if not accepted_empty and symbol not in required:
+                                required[symbol] = {"from": start, "end_exclusive": end}
+                                unassessed_suffixes.add(symbol)
                     if required:
                         # Metadata closure selected acquisition, never historical
                         # payload assembly, before releasing the owning locks.
@@ -1412,6 +1425,7 @@ def process_group(
                                 )
                             ):
                                 completion = {
+                                    "group_end": end,
                                     "store": str(store),
                                     "group": tuple(sorted(group)),
                                     "pricing": dict(selected),
@@ -1730,7 +1744,7 @@ def process_group(
                             )
                         if work_policy is not None:
                             work_policy.require_dependencies(
-                                expanded, end, expanded - sources.keys() - unavailable.keys(), start=start
+                                expanded, end, discovered=expanded - group, start=start
                             )
                             work_policy.reconcile_evidence(
                                 evidence, sources, previous, group=expanded, target=end, partial=True
@@ -1770,8 +1784,9 @@ def process_group(
                                 reason="completed_empty_suffix" if accepted_empty else "selection_unavailable",
                                 end_exclusive=end,
                             )
-                            if not accepted_empty:
-                                required.setdefault(symbol, {"from": start, "end_exclusive": end})
+                            if not accepted_empty and symbol not in required:
+                                required[symbol] = {"from": start, "end_exclusive": end}
+                                unassessed_suffixes.add(symbol)
                     if not required:
                         check_unavailable_pricing(store, unavailable, locked, sources=sources)
                         membership_deltas = (
@@ -1988,6 +2003,7 @@ def process_group(
                             and all(completion["evidence"][name] is facts for name, facts in evidence.items())
                         ):
                             completion = {
+                                "group_end": end,
                                 "store": str(store),
                                 "group": tuple(sorted(group)),
                                 "pricing": dict(selected),
@@ -2120,8 +2136,33 @@ def process_group(
         # Deliberately outside ALL pricing locks: the downloader owns acquisition,
         # endpoint checks, replacement, and the resulting pending notice.
         if required:
+            if unassessed_suffixes and callable(getattr(pricing_client, "execute_plan", None)):
+                if acquisition_waves >= MAX_ACQUISITION_WAVES:
+                    raise LineageError("pricing dependencies did not settle within three acquisition waves")
+                acquisition_waves += 1
+                value = services.select_dependency_suffixes(
+                    store,
+                    {symbol: group for symbol in sorted(unassessed_suffixes)},
+                    end,
+                    index=index,
+                    client=pricing_client,
+                    context=context,
+                    progress=progress,
+                    work_policy=work_policy,
+                    empty_suffixes=empty_suffixes,
+                )
+                if on_dependency_suffixes is not None:
+                    on_dependency_suffixes(value)
+                if value["failed"]:
+                    failed = next(item for item in value["results"] if item["status"] in {"failed", "blocked"})
+                    return {**failed, "status": "failed", "processed": []}
+                continue  # Rebind selected sources and remaining group requirements under their locks.
             if work_policy is not None:
-                work_policy.require_dependencies(group, end, required, start=start)
+                # Retained suffix selection belongs to pricing. Being offline
+                # supplies no observation that could select acquisition work.
+                selected_work = required.keys() - unassessed_suffixes if pricing_client is None else required
+                if selected_work:
+                    work_policy.require_dependencies(group, end, selected_work, start=start)
                 work_policy.require_mappings(required)
                 work_policy.check(group)
             if pricing_client is None:
