@@ -52,5 +52,10 @@
     "modifications": [
       "Make the canonical Bloodhound export consume online catalogue histories directly using the compatible converter and shared CSV history assembly; preserve dated labels and precision checks without intermediate CSV files."
     ]
+  },
+  {
+    "modifications": [
+      "Audit native Parquet and conversion-report pairs against the pinned calendar, reconcile structural checks and publish diagnostic CSVs and split-basis candidates."
+    ]
   }
 ]

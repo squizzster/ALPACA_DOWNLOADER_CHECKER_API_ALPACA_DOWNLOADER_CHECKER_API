@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 49
+VERSION = 50
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -222,6 +222,18 @@ def build_parser():
             g.add_argument("--all-adjustments", dest="all_types", action="store_true")
             _dates(p)
             p.add_argument("--format", choices=("json", "csv"), default="json")
+    audit = commands.add_parser("audit", help="check a published export offline").add_subparsers(
+        dest="operation", required=True, parser_class=Parser
+    )
+    p = audit.add_parser("bloodhound", help="check a Bloodhound Parquet file against its conversion report")
+    p.add_argument(
+        "--parquet", type=Path, required=True, help="native Parquet export with adjacent .report.json"
+    )
+    p.add_argument("--output", type=Path, help="new audit directory (default: <parquet>.audit)")
+    p.add_argument("--threads", type=bounded_integer(1, 64), default=4, help="DuckDB workers (default: 4)")
+    p.add_argument(
+        "--series-id", type=bounded_integer(1, 2**63 - 1), help="include ticker-change details for this series"
+    )
     export = commands.add_parser("export").add_subparsers(dest="operation", required=True, parser_class=Parser)
     p = export.add_parser("csv", help="export online public identities with distinct adjustment columns")
     _store(p)
@@ -506,6 +518,18 @@ def dispatch(args):
         from alpaca_end_of_day.standalone_cli import run_arguments
 
         return run_arguments(args)
+    if command == "audit":
+        try:
+            from libs.alpaca_bloodhound_export.audit import audit
+        except ImportError as error:
+            raise ValueError(f"install requirements-bloodhound-audit.txt with Python 3.11: {error}") from error
+        return audit(
+            args.parquet,
+            args.output or args.parquet.with_name(args.parquet.name + ".audit"),
+            threads=args.threads,
+            series_id=args.series_id,
+            progress=lambda message: diagnostic(reporter, message),
+        )
     if command == "export":
         if operation == "csv":
             from alpaca_end_of_day import DataLibrary

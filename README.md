@@ -21,6 +21,7 @@ See [setup and credentials](docs/operations.md#prerequisites). Runtime stores st
 - [Operations](docs/operations.md): setup, `./alpaca-cli-eod update`, cutoffs, recovery and focused commands.
 - [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
 - [Exports](docs/exports.md): CSV, Parquet, and EOD event selection, formats, and publication guarantees.
+- [Bloodhound integrity audit](docs/exports.md#bloodhound-integrity-audit) checks a completed Parquet export offline.
 - [Standalone Bloodhound converter](bloodhound_app/README.md): convert online catalogue histories, completed CSV exports or legacy histories
   with the imported app, its own dependencies, tests and documented limitations.
 - [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.

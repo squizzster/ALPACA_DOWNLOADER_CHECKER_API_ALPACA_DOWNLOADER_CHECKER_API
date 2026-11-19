@@ -255,5 +255,10 @@
       "Select dated occupation repairs by an existing online public ID under the exclusive store operation.",
       "Expose pricing repair-retired-unit for a published prior unit occupation and a later dated share action."
     ]
+  },
+  {
+    "modifications": [
+      "Expose the offline Bloodhound integrity checker as audit bloodhound."
+    ]
   }
 ]

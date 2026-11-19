@@ -1,0 +1,4 @@
+# Optional offline integrity audit of a native Bloodhound export.
+-r requirements.txt
+-r requirements-bloodhound.txt
+duckdb==2.0.0

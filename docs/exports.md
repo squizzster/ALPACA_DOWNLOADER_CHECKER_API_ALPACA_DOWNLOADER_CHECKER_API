@@ -12,6 +12,7 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 | `catalogue export --output PATH` | Flat online CSV ordered date → public ID. | [DataLibrary](../alpaca_end_of_day/__init__.py): `write_flat_online_csv` |
 | `export csv` | Online identities; one timestamped run with CSV/digest pairs and final manifest. | [_csv_export.py](../alpaca_end_of_day/_csv_export.py): `plan_export`, `write_export` |
 | `export bloodhound --output PATH` | Online identities; one Bloodhound Parquet file and conversion report. | [command_line.py](../libs/alpaca_bloodhound_export/command_line.py): `export` |
+| `audit bloodhound --parquet FILE` | A completed online-catalogue Parquet export and its adjacent conversion report. | [Bloodhound integrity audit](#bloodhound-integrity-audit) |
 | `export eod_stream` | Full online histories or an inclusive date window, written as daily Bloodhound event batches in one gzip JSON Lines file per run. | [eod_stream.py](../bloodhound_app/eod_stream.py) |
 
 ## Shared catalogue input
@@ -179,6 +180,30 @@ The [standalone publication limits](../bloodhound_app/README.md#8-known-limitati
 converter's Parquet/report pair. A failed conversion preserves an existing pair; an interrupted two-file
 publication needs inspection before consumption. The shared source gate does not supply a destination
 journal or change those existing limits. No provider requests, pricing writes or Bloodhound registration occur.
+
+## Bloodhound integrity audit
+
+With the repository's Python 3.11 environment active, install the optional audit dependencies and run the command on a completed export.
+
+```bash
+python -m pip install -r requirements-bloodhound-audit.txt
+./alpaca-cli-eod audit bloodhound --parquet exports/bloodhound.parquet
+```
+
+Keep `FILE.parquet.report.json` beside `FILE.parquet`. The audit runs offline using those files and the
+repository's pinned trading calendar. Run it explicitly when you want to inspect a publication. It opens
+no source store and runs independently of daily updates and exports. The downstream import-registration
+check is marked skipped because the native exporter publishes a conversion report.
+
+Results go into a new `FILE.parquet.audit/` directory. Use `--output DIR` to choose another new directory,
+`--threads N` to set the number of DuckDB workers (1–64, default 4), and `--series-id ID` to include
+dated ticker changes for one series alongside the whole-file results.
+
+Read `report.md` for the summary, `audit.json` for individual checks and screening thresholds, and
+`basis_shift_candidates.csv` for the price transitions selected for review. A successful check exits zero
+even when a price transition merits investigation. Failed integrity checks and execution errors exit nonzero.
+The calendar coverage checks expect at least one observation somewhere in the file on each trading session
+within its reported coverage. A sparse security selection can therefore fail coverage.
 
 ## EOD streaming protocol
 

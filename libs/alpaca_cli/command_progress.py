@@ -106,6 +106,7 @@ PHASES = {
         "STATUS": "Inspecting published status boundaries.",
         "READ": "Reading selected published histories.",
         "RESOLVE": "Resolving dated security identities.",
+        "AUDIT": "Checking the published Bloodhound export.",
         "EXPORT": "Converting and publishing selected histories.",
         "COMMIT": "Committing the completed update's recovery registry changes.",
         "PUSH": "Pushing the recovery registry commit to its upstream branch.",
