@@ -132,5 +132,10 @@
     "modifications": [
       "Keep completed comparisons applicable across the selected-session pricing handoff and partial serving publication under the original lineage and policy bindings."
     ]
+  },
+  {
+    "modifications": [
+      "Reuse completed lineage comparisons under their recorded bindings after workflow catalogue retention changed."
+    ]
   }
 ]

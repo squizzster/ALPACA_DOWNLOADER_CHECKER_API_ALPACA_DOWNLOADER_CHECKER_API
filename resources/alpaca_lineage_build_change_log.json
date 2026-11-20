@@ -725,5 +725,10 @@
     "modifications": [
       "Carry the applicable daily price approval across a selected-session insertion at its original mapping and target, binding the resulting generation to the completed correction."
     ]
+  },
+  {
+    "modifications": [
+      "Keep the latest catalogue observation ID and time with current workflow controls. Explicitly migrate and compact former catalogue archives while preserving all work and registration records. Carry the live provider rows to selected stages without hashing them for archival."
+    ]
   }
 ]

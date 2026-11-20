@@ -1,8 +1,6 @@
 """Retained observations and closed memberships keep their producer scopes."""
 
 import copy
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
@@ -25,7 +23,6 @@ from libs.alpaca_lineage_build import (
     source_work_contract,
     storage,
     transform,
-    universe_state,
 )
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
@@ -440,31 +437,25 @@ class AcceptedEmptyCoverageTests(TestCase):
             self.assertFalse(resume.complete_append(self.view(None)))
 
 
-class CompletedCatalogueRecoveryTests(TestCase):
-    def test_selected_observation_survives_restart_without_catalogue_reacceptance(self):
-        from test_alpaca_lineage_build import asset
+class CatalogueEvidenceLifetimeTests(TestCase):
+    def test_metadata_uses_the_held_observation_and_a_new_operation_observes_again(self):
+        from test_alpaca_universe_update import CatalogueClient
 
-        with tempfile.TemporaryDirectory() as directory:
-            store = Path(directory)
-            universe_state.initialize(store)
-            first = catalogue.completed_catalogue([asset("FIRST")], {"steps": []})
-            universe_state.accept(store, first, [], {})
-            reference = universe_state.read_state(store)["last_catalogue_observation"]
-            universe_state.accept(store, catalogue.completed_catalogue([asset("LATER")], {"steps": []}), [], {})
-            with (
-                patch.object(catalogue, "completed_catalogue", side_effect=AssertionError("catalogue replay")),
-                patch.object(catalogue, "document_digest", side_effect=AssertionError("digest replay")),
-            ):
-                restored = universe_state.read_observation(store, reference)
-                client = metadata.EvidenceClient(None, observation=restored)
-            self.assertEqual(first, restored)
-            self.assertTrue(client.catalogue_attempted)
-            self.assertIn("FIRST", client.catalogue)
-            self.assertNotIn("LATER", client.catalogue)
-            with self.assertRaisesRegex(LineageError, "changed or is missing"):
-                universe_state.read_observation(store, {**reference, "observed_at_utc": "changed"})
-            with self.assertRaisesRegex(LineageError, "changed or is missing"):
-                universe_state.read_observation(store, {**reference, "id": 999})
+        provider = CatalogueClient([fixture.asset("FIRST")])
+        first = catalogue.observe_catalogue(provider)
+        provider.records[:] = [fixture.asset("LATER")]
+        with (
+            patch.object(catalogue, "completed_catalogue", side_effect=AssertionError("catalogue replay")),
+            patch.object(provider, "execute_plan", side_effect=AssertionError("catalogue requested again")),
+        ):
+            current = metadata.EvidenceClient(provider, observation=first)
+            self.assertIs(current.observe_catalogue(), first)
+            self.assertEqual(set(current.catalogue), {"FIRST"})
+        later = metadata.EvidenceClient(provider)
+        latest = later.observe_catalogue()
+        self.assertIs(later.observe_catalogue(), latest)
+        self.assertEqual(set(later.catalogue), {"LATER"})
+        self.assertEqual(provider.catalogue_calls, 2)
 
 
 class RetainedMetadataScopeTests(TestCase):

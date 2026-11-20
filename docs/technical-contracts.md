@@ -190,7 +190,7 @@ Paths are relative to the standalone store:
 | `end_of_day/lineage/<TICKER>/lineage.manifest.json` | Evidence, input generations, chronological assignments. |
 | `end_of_day/lineage/index.sqlite3` | Group/generation selection, complete membership, lookup projection, serving obligations. |
 | `end_of_day/catalogue/serving_catalogue.sqlite3` | Serving selector, public fields, decisions, previous contributions. |
-| `universe_updates.sqlite3` | Accepted observations, registration, targets, attempts, outcomes. |
+| `universe_updates.sqlite3` | Latest catalogue observation ID and time, registration, work obligations and outcomes. |
 | `pricing_check_summary.sqlite3` | Live-check baseline. |
 | `lineage_update_check.sqlite3`, `download_completion.json` | Disposable scheduling hints, not data authority. |
 
@@ -748,7 +748,7 @@ Authority: [work scope](../libs/common/work_scope.py).
 
 ## Universe observation and work state
 
-Observations retain duplicate labels. Unique symbol records may supply metadata; missing/duplicate records need
+The operation's provider catalogue retains duplicate labels. Unique symbol records may supply metadata; missing/duplicate records need
 exact fallback. CUSIPs always stay exact. Absence proves neither inactivity nor unavailable prices.
 [catalogue.py](../libs/alpaca_lineage_build/catalogue.py) and [projection.py](../libs/alpaca_lineage_build/projection.py)
 separate current evidence from last-positive own-label facts; absent historical times remain unknown.
@@ -761,6 +761,17 @@ lineage/summary coverage; interrupted registration is local recovery, not a dela
 [WorkPolicy](../libs/alpaca_lineage_build/work_contract.py) and [durable state](../libs/alpaca_lineage_build/universe_state.py)
 retain stable obligation IDs, accepted endpoints, evidence fingerprints, complete groups, refresh/replacement
 requirements and retry state. Persist dependency/correction requirements before requests.
+
+The same transaction that accepts work records the latest catalogue observation ID and its UTC time.
+Each selected symbol carries the ID of that acceptance. An existing obligation keeps its originating
+observation ID across later acceptances. These IDs identify which acceptance selected the work.
+Only the latest ID has a timestamp in the catalogue selector. The complete provider response travels with
+the operation's evidence client or its standalone Prepare handoff. Workflow stores only the evidence
+selected for individual obligations. A new operation that needs current catalogue evidence obtains its own observation.
+
+Explicit migration of version 1 takes the latest ID and observation time from the old catalogue table
+and removes the table in a single transaction. Registration rows, work bodies and their revision keep
+their accepted values. The workflow owner compacts the database to reclaim the discarded catalogue space.
 
 An explicit scoped work-state read selects symbol keys in SQL before decoding bodies and may exclude completed
 work. Its partial view is suitable only for a caller's already bounded complete groups; it is not a global

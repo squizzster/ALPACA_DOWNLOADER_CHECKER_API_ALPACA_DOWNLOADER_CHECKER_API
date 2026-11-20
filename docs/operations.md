@@ -108,7 +108,7 @@ named by status; these commands have distinct scopes:
 
 | Command | Scope |
 |---|---|
-| `universe rebuild` | Initialize/preserve compatible registration/work state, including an empty store; does not finish work or establish lineage/summary. Examine incompatible state; do not erase it. |
+| `universe rebuild` | Initialize an empty workflow database or migrate version 1 offline. Migration retains registration and work, then compacts the database. If interrupted, rerun the same command. Unknown formats require examination. |
 | `lineage migrate-index` | Project used lookup evidence and complete membership from indexed receipts in resumable batches; no price reads/recalculation. Schema upgrade alone does not establish coverage. |
 | `lineage migrate-policy` | Exact offline policy promotion; [conditions and serving follow-up](lineage.md#policy-migration). |
 | `lineage migrate-assignments --symbol TICKER` | Assemble missing compact assignment projections for the selected complete group; no price reads or rule replay. Use `--symbols-file FILE` or explicitly `--all-published` for a larger scope. `--limit` bounds each invocation to 1–10,000 groups (default 128); repeat until `remaining_groups` is zero. Journal recovery skips completed groups. Follow with `catalogue update` to consume the preserved-decision handoff. |

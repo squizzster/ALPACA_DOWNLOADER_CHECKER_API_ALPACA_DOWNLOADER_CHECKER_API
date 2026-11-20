@@ -17,7 +17,9 @@ from libs.common.sqlite_connections import connect_sqlite
 
 from .contract import LineageError
 
-STATE_VERSION = 1
+STATE_VERSION = 2
+_COMPACTION_PENDING = -2
+_CREATE_HEAD = "CREATE TABLE observation_head (id INTEGER PRIMARY KEY, observed_at TEXT NOT NULL)"
 STATE_FILE = "universe_updates.sqlite3"
 
 
@@ -75,6 +77,10 @@ def update_lock(store):
 def _check(connection):
     if connection.execute("PRAGMA user_version").fetchone()[0] != STATE_VERSION:
         raise LineageError("incompatible universe work state; explicit universe rebuild is required")
+    _require_complete(connection)
+
+
+def _require_complete(connection):
     row = connection.execute("SELECT complete FROM state WHERE id=1").fetchone()
     if row != (1,):
         raise LineageError("incomplete universe work state; explicit universe rebuild is required")
@@ -95,9 +101,29 @@ def count_pending(store):
     """Read current workflow status only, without revalidating correction evidence."""
     with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
         _check(connection)
-        return connection.execute(
-            "SELECT count(*) FROM work WHERE json_extract(body, '$.status') IS NOT 'complete'"
-        ).fetchone()[0]
+        return _count_pending(connection)
+
+
+def _count_pending(connection):
+    return connection.execute(
+        "SELECT count(*) FROM work WHERE json_extract(body, '$.status') IS NOT 'complete'"
+    ).fetchone()[0]
+
+
+def rebuild_summary(store):
+    """Initialize or migrate the workflow and report outstanding counts under the caller's lock."""
+    _initialize_schema(store)
+    with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
+        connection.execute("BEGIN")
+        # The caller retains its lock across schema acceptance and these counts.
+        return {
+            "initialized": True,
+            "schema_version": STATE_VERSION,
+            "pending_work": _count_pending(connection),
+            "registration_pending": connection.execute(
+                "SELECT count(*) FROM registration WHERE complete=0"
+            ).fetchone()[0],
+        }
 
 
 def pending_status(store):
@@ -167,9 +193,7 @@ def read_state(store, *, symbols=None, pending_only=False):
                     "SELECT symbol FROM registration WHERE complete=0 ORDER BY symbol"
                 )
             ]
-            last = connection.execute(
-                "SELECT id, observed_at FROM observations ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+            last = connection.execute("SELECT id, observed_at FROM observation_head").fetchone()
             revision = connection.execute("SELECT revision FROM state WHERE id=1").fetchone()[0]
     except (sqlite3.Error, ValueError) as error:
         raise LineageError(
@@ -182,30 +206,6 @@ def read_state(store, *, symbols=None, pending_only=False):
         "registration_pending": registration,
         "last_catalogue_observation": None if last is None else {"id": last[0], "observed_at_utc": last[1]},
     }
-
-
-def read_observation(store, reference):
-    """Consume one selected completed catalogue without repeating its acceptance."""
-    if (
-        not isinstance(reference, dict)
-        or type(reference.get("id")) is not int
-        or reference["id"] < 1
-        or not isinstance(reference.get("observed_at_utc"), str)
-    ):
-        raise LineageError("a selected catalogue observation is required")
-    try:
-        with closing(connect_sqlite(Path(store) / STATE_FILE, readonly=True)) as connection, connection:
-            _check(connection)
-            row = connection.execute(
-                "SELECT observed_at, body FROM observations WHERE id=?", (reference["id"],)
-            ).fetchone()
-    except sqlite3.Error as error:
-        raise LineageError("selected catalogue observation unavailable") from error
-    if row is None or row[0] != reference["observed_at_utc"]:
-        raise LineageError("selected catalogue observation changed or is missing")
-    # accept() stored this producer output only after catalogue acceptance. Its
-    # rows and digest are authoritative; recovery must not calculate them again.
-    return json.loads(row[1])
 
 
 @traced("numerical_work_read")
@@ -255,19 +255,52 @@ def read_mapping_work(store):
         raise LineageError("cannot select pending numerical mapping requirements") from error
 
 
+def _migrate(path):
+    with closing(connect_sqlite(path)) as connection:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (1, _COMPACTION_PENDING, STATE_VERSION):
+                raise LineageError("incompatible universe work state; existing state requires owning recovery")
+            _require_complete(connection)
+            if version == STATE_VERSION:
+                return
+            if version == 1:
+                connection.execute(_CREATE_HEAD)
+                connection.execute(
+                    "INSERT INTO observation_head SELECT id, observed_at FROM observations "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                # Freed pages are removed by VACUUM; avoid overwriting retired payloads first.
+                connection.execute("PRAGMA secure_delete=OFF")
+                connection.execute("DROP TABLE observations")
+                connection.execute(f"PRAGMA user_version={_COMPACTION_PENDING}")
+        # VACUUM owns its transaction. An interruption here leaves the migration
+        # resumable without replaying the head selection or discarding any work.
+        if connection.execute("PRAGMA freelist_count").fetchone()[0]:
+            connection.execute("VACUUM")
+        connection.execute(f"PRAGMA user_version={STATE_VERSION}")
+
+
 def initialize(store):
-    """Explicit reconstruction preserves existing intentions and retry outcomes."""
+    """Explicitly initialize or migrate, returning the caller's full workflow view."""
+    _initialize_schema(store)
+    return read_state(store)
+
+
+def _initialize_schema(store):
+    """Create an empty workflow or migrate its existing controls under the update lock."""
     path = Path(store) / STATE_FILE
     if path.exists():
-        # Incompatible durable work must be examined, never silently discarded.
-        return read_state(store)
+        _migrate(path)
+        return
     descriptor, temporary = tempfile.mkstemp(prefix=".universe-state-", dir=path.parent)
     os.close(descriptor)
     try:
         with closing(connect_sqlite(temporary)) as connection, connection:
             connection.execute("BEGIN")
             connection.execute("CREATE TABLE state (id INTEGER PRIMARY KEY, complete INTEGER, revision INTEGER)")
-            connection.execute("CREATE TABLE observations (id INTEGER PRIMARY KEY, observed_at TEXT, body TEXT)")
+            connection.execute(_CREATE_HEAD)
             connection.execute("CREATE TABLE registration (symbol TEXT PRIMARY KEY, complete INTEGER NOT NULL)")
             connection.execute("CREATE TABLE work (symbol TEXT PRIMARY KEY, body TEXT NOT NULL)")
             connection.execute(f"PRAGMA user_version={STATE_VERSION}")
@@ -275,7 +308,6 @@ def initialize(store):
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
-    return read_state(store)
 
 
 @traced("work_accept")
@@ -287,9 +319,11 @@ def accept(store, observation, additions, work, *, handoff=False):
     with closing(connect_sqlite(Path(store) / STATE_FILE)) as connection, connection:
         _check(connection)
         cursor = connection.execute(
-            "INSERT INTO observations(observed_at, body) VALUES (?, ?)",
-            (observation["catalogue_observed_at_utc"], json.dumps(observation)),
+            "INSERT INTO observation_head(observed_at) VALUES (?)", (observation["catalogue_observed_at_utc"],)
         )
+        # Allocate the next rowid before retiring the previous head. Work keeps
+        # its original observation IDs even when no work was selected on this run.
+        connection.execute("DELETE FROM observation_head WHERE id < ?", (cursor.lastrowid,))
         connection.executemany("INSERT OR IGNORE INTO registration VALUES (?, 0)", [(s,) for s in additions])
         for symbol, item in work.items():
             value = {**item, "observation_id": cursor.lastrowid}

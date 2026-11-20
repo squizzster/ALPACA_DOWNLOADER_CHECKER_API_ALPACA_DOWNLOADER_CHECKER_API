@@ -26,6 +26,13 @@ def historical_bindings():
     producer = "accepted_same_security_containing_component_v1"
     return [
         {
+            "debug": 26,
+            "policy_lab": 27,
+            "correlation_runtime": 100,
+            "lineage_runtime": 123,
+            "membership_refinement": producer,
+        },
+        {
             "debug": 25,
             "policy_lab": 27,
             "correlation_runtime": 100,

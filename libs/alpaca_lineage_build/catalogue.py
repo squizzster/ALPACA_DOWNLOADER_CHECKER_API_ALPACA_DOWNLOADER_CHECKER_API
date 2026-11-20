@@ -7,7 +7,7 @@ from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download.contract import symbol_label
 from libs.common.debug_trace import traced
 
-from .contract import LineageError, document_digest
+from .contract import LineageError
 
 DISCOVERY_EXCHANGES = ("OTC", "NYSE", "NASDAQ", "AMEX", "TXSE")
 
@@ -40,11 +40,10 @@ def completed_catalogue(records, plan):
         # Inactive records may have no name. Retain them verbatim; the evidence
         # client already requires exact lookup for incomplete identity fields.
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "catalogue_observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "request_plan": plan,
         "records": records,
-        "records_sha256": document_digest({"records": records}),
     }
 
 

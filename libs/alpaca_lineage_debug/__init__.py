@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 26
+VERSION = 27
 SCHEMA_VERSION = 1
 
 
@@ -23,6 +23,12 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (27, 27, 100, 124):
+        # Workflow catalogue retention leaves the recorded policy, generations
+        # and completed lineage comparisons applicable under their original bindings.
+        binding = {**binding, "debug": 26, "lineage_runtime": 123}
+        bindings.append(binding)
+        current = (26, 27, 100, 123)
     if allow_previous and current == (26, 27, 100, 123):
         # Pricing insertions and the public range change neither recorded
         # lineage comparisons nor their input-generation and policy bindings.

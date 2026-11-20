@@ -907,13 +907,7 @@ def rebuild_universe(store):
     store = Path(store).absolute()
     pricing_storage.initialize_store(store)
     with universe_state.update_lock(store):
-        state = universe_state.initialize(store)
-        return {
-            "initialized": True,
-            "schema_version": state["schema_version"],
-            "pending_work": universe_state.pending_count(state),
-            "registration_pending": len(state["registration_pending"]),
-        }
+        return universe_state.rebuild_summary(store)
 
 
 def reconcile_universe(store, end_date, *, identity_client, registry=DEFAULT_REGISTRY):

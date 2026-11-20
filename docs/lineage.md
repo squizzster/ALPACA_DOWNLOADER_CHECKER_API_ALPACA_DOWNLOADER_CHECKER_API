@@ -817,8 +817,9 @@ template or new allocation; fresh unresolved rows and conflicting memberships st
 
 Retained legacy envelopes and publication bodies remain readable as completed provenance. Their known
 transport spellings do not authorize fresh fact applications or repeat their old proofs. Unknown or conflicting
-required handoffs fail into owning recovery. A selected catalogue observation is read by its persisted ID and
-timestamp; recovery consumes its accepted records and digest without requesting or calculating them again.
+required handoffs fail into owning recovery. Within an operation, recovery consumes the accepted
+catalogue records held by the evidence client. The [workflow database](technical-contracts.md#universe-observation-and-work-state)
+records the acceptance reference.
 The owning post-correlation consumer can finish from held source inputs, reports and retained-choice scope
 under normal writer/pricing locks. Applicability checks do not repeat acquisition, materialization or correlation.
 
