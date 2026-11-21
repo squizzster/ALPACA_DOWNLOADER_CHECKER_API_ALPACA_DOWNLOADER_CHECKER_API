@@ -3,6 +3,63 @@
 from bisect import bisect_right
 
 from alpaca_end_of_day._history_coverage import coverage_sources
+from libs.alpaca_end_of_day_security_correlation.action_identity import exact_symbol_lookup_asset
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.common.us_equity_market_session_calendar import market_sessions_between
+
+SUPPORTED_SUFFIX_VERSION = 1
+
+
+def supported_current_source(sources, inputs, members, public_id, last_session, *, symbols=None):
+    """Require a selected all-view own-label endpoint for the current security."""
+    for symbol, source in inputs.items():
+        if symbol not in sources or (symbols is not None and symbol not in symbols):
+            continue
+        views = source["views"]
+        if set(views) != set(ADJUSTMENTS) or any(
+            view["last_session"] != last_session
+            or not view["ownership"]
+            or view["ownership"][-1]["owner"][0] != public_id
+            or symbol not in view["ownership"][-1]["owner"][1]
+            for view in views.values()
+        ):
+            continue
+        asset = exact_symbol_lookup_asset(sources[symbol]["evidence"], symbol)
+        if (
+            asset
+            and asset["id"] in members
+            and asset.get("status") == "active"
+            and asset.get("tradable") is True
+        ):
+            return True
+    return False
+
+
+def clip_history(history, dates, cutoff):
+    """Project the first supported range from accepted session dates and labels."""
+    start = bisect_right(dates, cutoff)
+    first = dates[start]
+    return {
+        **history,
+        "first_session": first,
+        "ticker_ranges": [
+            {**run, "first_session": max(first, run["first_session"])}
+            for run in history["ticker_ranges"]
+            if run["last_session"] >= first
+        ],
+        "coverage": {
+            **history["coverage"],
+            "session_count": len(dates) - start,
+            "explained_missing_sessions": [
+                day for day in history["coverage"]["explained_missing_sessions"] if day > first
+            ],
+        },
+    }
+
+
+def legacy_session_dates(first, last, missing):
+    """Assemble dates from an accepted clean calendar outcome's exact missing list."""
+    return [day for day in market_sessions_between(first, last) if day not in missing]
 
 
 def legacy_start(record, decision, *, absent_sessions):

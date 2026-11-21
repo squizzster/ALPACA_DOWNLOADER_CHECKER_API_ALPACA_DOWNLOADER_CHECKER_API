@@ -24,6 +24,7 @@ class NumericalCompletion:
     selected_sources: dict
     equality_outcomes: dict
     selected_bundles: dict
+    exact_competing_sessions: dict
 
 
 def complete(inputs, reports, *, positions, dates):
@@ -75,7 +76,7 @@ def complete(inputs, reports, *, positions, dates):
             f"numerical completion requires owning pricing mapping correction for {sorted(corrections)}"
         )
 
-    changes, scopes, sources, bundles, days = {}, {}, {}, {}, {}
+    changes, scopes, sources, bundles, days, donors = {}, {}, {}, {}, {}, {}
     for name, report in selected.items():
         changes[name] = {adjustment: {} for adjustment in ADJUSTMENTS}
         for segment in report["correlated"]["segments"]:
@@ -96,6 +97,7 @@ def complete(inputs, reports, *, positions, dates):
                     "day": day,
                 }
                 if state != "selected":
+                    donors.setdefault((identity, day), {}).setdefault(name, set()).add(adjustment)
                     continue
                 selected_sources = sources.setdefault(identity, {})
                 if selected_sources.setdefault(day, name) != name:
@@ -111,10 +113,19 @@ def complete(inputs, reports, *, positions, dates):
     instant_days = {instant: days[stamp] for stamp, instant in instants.items() if stamp in days}
     for (identity, instant), equal in equality.items():
         outcomes[identity][instant_days[instant]] = equal
+    exact_competing_sessions = {}
+    expected_views = set(ADJUSTMENTS)
     for identity, selected_days in scopes.items():
         for day in selected_days:
-            if set(bundles.get(identity, {}).get(day, ())) != set(ADJUSTMENTS):
+            if set(bundles.get(identity, {}).get(day, ())) != expected_views:
                 raise LineageError("numerical completion requires one complete selected source bundle")
+            competing = donors.get((identity, day), {})
+            if (
+                competing
+                and outcomes[identity][day]
+                and all(views == expected_views for views in competing.values())
+            ):
+                exact_competing_sessions.setdefault(identity, set()).add(day)
     return NumericalCompletion(
         selected,
         changes,
@@ -122,4 +133,5 @@ def complete(inputs, reports, *, positions, dates):
         sources,
         outcomes,
         bundles,
+        exact_competing_sessions,
     )

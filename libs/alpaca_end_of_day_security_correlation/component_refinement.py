@@ -321,7 +321,7 @@ def membership_scope(selected, reports):
         "selected_group": selected["selected_group"],
         "pricing_generations": selected["pricing_generations"],
     }
-    version = selected.get("membership_version", 94)
+    version = membership_policy_version(selected)
     if version >= 94:
         # An additional group member can introduce a competing owner without a price change.
         scope.update(
@@ -334,6 +334,13 @@ def membership_scope(selected, reports):
             },
         )
     return scope
+
+
+def membership_policy_version(selected):
+    version = selected.get("membership_version", 94)
+    # Distribution can supply new completed ownership, but the membership
+    # producer still consumes the same exact receipt and evidence bindings.
+    return 94 if version in (95, 96, 97, 98, 99, 100, 101, 102) else version
 
 
 def refine(reports, evidence, selected):

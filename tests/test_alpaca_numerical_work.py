@@ -13,8 +13,9 @@ from test_alpaca_universe_update import CatalogueClient
 from alpaca_end_of_day import DataLibrary
 from libs.alpaca_lineage_build import numerical_completion, numerical_recovery, storage, universe_state
 from libs.alpaca_lineage_build.check_summary import rebuild
+from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.universe_update import run_update
-from libs.alpaca_lineage_build.work_contract import WorkDeferred, WorkPolicy, obligation, satisfied
+from libs.alpaca_lineage_build.work_contract import WorkPolicy, obligation, satisfied
 from libs.alpaca_pipeline.codec import Decoder, Encoder
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, timestamp
 from libs.alpaca_pricing_download.http import BarsClient
@@ -91,14 +92,16 @@ class NumericalWorkTests(unittest.TestCase):
         source = {"latest_request": {"end_exclusive": "2026-10-14"}}
         self.assertFalse(policy.decision_inputs_satisfied({"TEST": source}))
         receipt = {"source_sha256": "a" * 64, "evidence": {"asset_lookups": []}}
-        with self.assertRaisesRegex(WorkDeferred, "numerical completion"):
+        with self.assertRaisesRegex(LineageError, "numerical completion") as caught:
             policy.stamp({"TEST": receipt}, {"TEST": source})
+        self.assertIs(type(caught.exception), LineageError)
         self.entry["projection"]["retained_recovery"] = self.marker
         receipt["retained_recovery"] = self.marker
         self.assertTrue(policy.decision_inputs_satisfied({"TEST": source}))
         self.assertEqual(policy.stamp({"TEST": receipt}, {"TEST": source}), {"TEST": "TEST"})
 
     def test_scope_is_accepted_once_and_completed_marker_keeps_it_closed(self):
+        universe_state.put_work(self.store, "TEST", self.item)
         policy = WorkPolicy(self.store, {"symbols": {"TEST": self.entry}}, {"TEST": self.item}, [], "2026-10-14")
         with patch.object(
             numerical_recovery, "accept_selection", wraps=numerical_recovery.accept_selection
@@ -111,6 +114,10 @@ class NumericalWorkTests(unittest.TestCase):
             numerical_recovery, "accept_selection", side_effect=AssertionError("scope accepted again")
         ):
             self.assertIsNone(policy.numerical_selection("TEST"))
+        durable = universe_state.read_state(self.store, symbols=["TEST"])["work"]["TEST"]
+        self.assertEqual(durable, policy.work["TEST"])
+        self.assertNotIn("required_numerical_completion", durable)
+        self.assertEqual(durable["obligation_id"], self.item["obligation_id"])
 
     def test_accepted_numerical_scope_crosses_value_codec_without_ingress(self):
         encoder = Encoder()

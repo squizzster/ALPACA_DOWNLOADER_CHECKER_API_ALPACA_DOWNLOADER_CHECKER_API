@@ -66,6 +66,30 @@ class WorkBatchTests(unittest.TestCase):
                 self.finish(batch, "S1")
         self.assertEqual(state.read_state(self.store), before)
 
+    def test_numerical_acknowledgement_rejects_a_superseded_operation_atomically(self):
+        expected = {
+            symbol: {
+                **self.work[symbol],
+                "reasons": ["advance_summary_coverage", "numerical_selection_incomplete"],
+                "required_numerical_completion": {"version": 1, "operation_id": "prior"},
+            }
+            for symbol in ("S0", "S1")
+        }
+        state.put_work_group(self.store, expected)
+        state.put_work(
+            self.store, "S1", {"required_numerical_completion": {"version": 1, "operation_id": "new"}}
+        )
+        before = state.read_state(self.store, symbols=expected)
+        with self.assertRaisesRegex(LineageError, "S1: numerical completion belongs to superseded work"):
+            state.acknowledge_numerical_completions(self.store, expected)
+        self.assertEqual(before, state.read_state(self.store, symbols=expected))
+
+        state.acknowledge_numerical_completions(self.store, {"S0": expected["S0"]})
+        after = state.read_state(self.store, symbols=expected)
+        self.assertEqual(before["revision"] + 1, after["revision"])
+        self.assertEqual(before["work"]["S1"], after["work"]["S1"])
+        self.assertEqual({**self.work["S0"], "reasons": ["advance_summary_coverage"]}, after["work"]["S0"])
+
     def test_expired_batch_cannot_record_an_outcome(self):
         with state.outcome_batch(self.store) as batch:
             self.finish(batch, "S0")

@@ -2,7 +2,7 @@
 
 from bisect import bisect_right
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 
@@ -259,51 +259,7 @@ def validate_handoff(previous):
     if previous and previous.get("schema_version", 0) >= 36 and (not _valid_rename_handoffs(previous)):
         raise LineageError("incomplete sourced-rename ownership handoff; finish owning lineage recovery")
     if previous and previous.get("schema_version", 0) >= 35:
-        certificate = previous.get("current_source_ownership")
-        dates_valid = certificate is None
-        if isinstance(certificate, dict):
-            try:
-                dates_valid = all(
-                    date.fromisoformat(certificate[key]).isoformat() == certificate[key]
-                    for key in ("first", "last", "departure_date")
-                )
-            except (KeyError, TypeError, ValueError):
-                dates_valid = False
-        if (
-            "current_source_ownership" not in previous
-            or certificate is not None
-            and not (
-                isinstance(certificate, dict)
-                and set(certificate)
-                == {
-                    "version",
-                    "symbol",
-                    "asset_id",
-                    "first",
-                    "last",
-                    "departed_asset_id",
-                    "departure_action_id",
-                    "departure_date",
-                }
-                and type(certificate.get("version")) is int
-                and certificate.get("version") == 1
-                and certificate.get("symbol") == previous.get("symbol")
-                and all(
-                    isinstance(certificate.get(key), str) and certificate[key]
-                    for key in (
-                        "asset_id",
-                        "first",
-                        "last",
-                        "departed_asset_id",
-                        "departure_action_id",
-                        "departure_date",
-                    )
-                )
-                and dates_valid
-                and certificate["asset_id"] != certificate["departed_asset_id"]
-                and certificate["departure_date"] < certificate["first"] <= certificate["last"]
-            )
-        ):
+        if not _valid_current_source_handoff(previous):
             raise LineageError("incomplete current-source ownership handoff; finish owning lineage recovery")
     if not previous or "continuation_handoff_version" not in previous:
         return
@@ -463,6 +419,70 @@ def _valid_day(value):
         return isinstance(value, str) and date.fromisoformat(value).isoformat() == value
     except ValueError:
         return False
+
+
+def _valid_current_source_handoff(previous):
+    if "current_source_ownership" not in previous:
+        return False
+    proof = previous["current_source_ownership"]
+    if proof is None:
+        return True
+    if not isinstance(proof, dict) or type(proof.get("version")) is not int:
+        return False
+    fields = {"version", "symbol", "asset_id", "first", "last"}
+    if proof["version"] == 1:
+        rival, evidence_date = "departed_asset_id", "departure_date"
+        fields.add("departure_action_id")
+        if not _valid_text(proof.get("departure_action_id")):
+            return False
+    elif proof["version"] == 2:
+        rival, evidence_date = "prior_asset_id", "latest_prior_activity_date"
+    elif proof["version"] in (3, 6):
+        if proof["version"] == 6:
+            fields.add("split_date")
+            if not all(_valid_day(proof.get(key)) for key in ("first", "split_date", "last")) or not (
+                proof["first"] < proof["split_date"] <= proof["last"]
+            ):
+                return False
+        return (
+            set(proof) == fields | {"prior_asset_id", "split_action_id"}
+            and proof["symbol"] == previous.get("symbol")
+            and all(_valid_text(proof[key]) for key in ("asset_id", "prior_asset_id", "split_action_id"))
+            and proof["asset_id"] != proof["prior_asset_id"]
+            and all(_valid_day(proof[key]) for key in ("first", "last"))
+            and proof["first"] <= proof["last"]
+        )
+    elif proof["version"] == 5:
+        try:
+            observed = datetime.fromisoformat(proof.get("observed_at"))
+        except (TypeError, ValueError):
+            return False
+        return (
+            set(proof) == fields | {"observed_at"}
+            and observed.tzinfo is not None
+            and proof["symbol"] == previous.get("symbol")
+            and _valid_text(proof["asset_id"])
+            and all(_valid_day(proof[key]) for key in ("first", "last"))
+            and proof["first"] <= proof["last"]
+        )
+    elif proof["version"] == 4:
+        return (
+            set(proof) == fields | {"cusip", "anchor_action_id"}
+            and proof["symbol"] == previous.get("symbol")
+            and all(_valid_text(proof[key]) for key in ("asset_id", "cusip", "anchor_action_id"))
+            and all(_valid_day(proof[key]) for key in ("first", "last"))
+            and proof["first"] <= proof["last"]
+        )
+    else:
+        return False
+    return (
+        set(proof) == fields | {rival, evidence_date}
+        and proof["symbol"] == previous.get("symbol")
+        and all(_valid_text(proof[key]) for key in ("asset_id", rival))
+        and proof["asset_id"] != proof[rival]
+        and all(_valid_day(proof[key]) for key in ("first", "last", evidence_date))
+        and proof[evidence_date] < proof["first"] <= proof["last"]
+    )
 
 
 def _valid_endpoint(value, *, projected=False):

@@ -431,6 +431,18 @@ Provider evidence is retained; equal prices, returned-bar timing and external re
 Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
 [ownership rules](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py).
 
+- **Same-ticker distribution:** An isolated one-for-one `unit_split` can join a continuing listed
+  security's old and new UUIDs when exact provider lookups identify both CUSIPs, agree with the active
+  ticker lookup and identify the distribution recipient separately. The trading boundary uses the ex-date,
+  or a processing date corroborated by the effective or payment date. Rows before the boundary carry the
+  old UUID and rows from the boundary carry the new UUID. Both use the same public identity. Established
+  owners, competing actions and conflicting lookup evidence retain their precedence. The recipient retains
+  its own identity. The [distribution rule](../libs/alpaca_end_of_day_security_correlation/same_ticker_distribution.py)
+  consumes provider evidence once per source in fresh correlation. An applicable retained prefix carries the
+  completed cutover into append and correction. Existing completed receipts remain applicable on unchanged
+  inputs. Applying the rule to a previously completed unresolved group at the same
+  cutoff uses [targeted retained recovery](technical-contracts.md#targeted-retained-lineage-recovery).
+
 - **Cash terminal:** a terminal date alone cannot establish unbounded prior ownership across a distinct occupant
   with positive dated evidence on both sides, or across an established closed earlier owner of that label.
   The latter veto applies only to a newly inferred unbounded interval. A separate positive own-CUSIP dividend
@@ -439,6 +451,12 @@ Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
   a prior departure or the terminal payment never invents the start.
   Existing dated intervals/accepted split continuity remain
   authoritative; provider actions/candidate relations remain evidence.
+- **Stock merger with distinct securities:** a dated merger can close a former issue's interval on the requested
+  ticker and start the current issue's interval. The inactive acquiree must match the former interval, and the
+  active acquirer must match both the exact symbol and exact CUSIP observations. Agreed event dates establish the
+  boundary. Transfers into the same acquirer can preserve that boundary. Competing dated ownership retains its
+  own assessment. The [occupation rule](../libs/alpaca_end_of_day_security_correlation/stock_merger_occupation.py)
+  keeps the two provider UUID memberships separate.
 - **Ticker-reuse gap:** request cutoff is not ownership evidence. A complete current active suffix remains bounded
   to its last observed session when a later request adds no contradictory owner. Requires one exact active-symbol
   lookup, complete agreeing view grids, no interior missing session, no current UUID in the earlier episode and
@@ -462,6 +480,37 @@ Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
   Only actual observed rows gain ownership; the certificate
   creates no global interval, IPO date or UUID edge. Existing prepared source and chronology facts produce it once;
   the lineage receipt carries applicable completion through continuation and unresolved-peer reconciliation.
+  A separately identified current occupant can also own a complete later source when retained actions
+  identify each competing occupant and establish that it ended before the source begins. A terminal exit
+  needs a dated cash merger or worthless removal supported by the former occupant's own endpoint. The
+  existing exact current lookup and complete-source requirements still apply, and any competing claim
+  on the source's dates leaves the history unresolved. This allocates the observed source without a UUID link.
+  A complete current-mapped tape can also support its exact own-label identity when the group's sole inactive
+  rival is independently resolved by CUSIP, every retained action is a dividend, and all of that activity predates
+  the observed tape. The decision keeps the owners separate and records the limits of the observed dates. A
+  rival claim inside the tape, a structural action or incomplete source scope requires the ordinary assessment.
+  When an all-view inert interval separates earlier dividend claims from resumed trading, the separately
+  observed current episode can supply its own lower bound. The earlier episode and the inert observations
+  retain their own disposition.
+  For a single-label source with an exact active ticker lookup and one inactive competing UUID, a recorded
+  same-ticker split can establish a lower bound for current observations. The raw and split-adjusted rows
+  must corroborate the reported change in units, and the later source must cover its session grid in all views.
+  If several split actions identify the same inactive CUSIP, the latest corroborated date bounds the public
+  range. With one corroborated split and matching equity endpoints, the rule also connects the preceding
+  continuous trading episode to the active security. Missing sessions, prolonged flat carry-forward and
+  competing ownership evidence bound that extension. The completed split comparison and post-split
+  assignments carry into this assessment. Public identity membership is preserved, and the exact vendor
+  UUID cutover remains unknown.
+  A contemporaneous active catalogue observation can support the single latest traded session when its ordinary
+  pricing mapping agrees, the eight views align, and corporate-action coverage through the observation finds no
+  competing claim. The observation must fall on that session date or before the following regular market open.
+  Compatible continuation can extend the accepted scope without reevaluating its earlier observations.
+  A completed same-symbol split into the exact active UUID or two dated dividends for its exact CUSIP can
+  also support a current-mapped span beginning at the first dated witness. The decision requires agreeing
+  views and a complete traded span. Earlier ambiguity stays in its own date scope. A competing owner or
+  overlapping peer blocks the assignment when the evidence leaves its claim open. A dated unit separation
+  may establish that a separately identified unit or warrant trading alongside the current security is independent.
+  The selected span inherits existing UUID links and supplies no new ones.
   [closed_departure.py](../libs/alpaca_end_of_day_security_correlation/closed_departure.py) owns the certificate.
 - **Vacant reused ticker:** a complete prolonged source bridge may be certified as non-observation only between
   accepted direct same-identity renames belonging to two distinct UUID/CUSIP occupants. The label must have no
@@ -665,6 +714,18 @@ be complete and session-aligned, and the early raw span must be informative and 
 The certificate moves no endpoint, extends no unseen history and joins no UUIDs. Missing or ambiguous current
 owners, related structural actions, ticker recurrence, gaps, overlaps, incomplete sources and divergent raw rows
 retain their existing vetoes.
+
+For a processing-date-only rename, a complete predecessor request can establish an earlier handoff when
+the retained source ends on the market session immediately before the successor source begins. One direct
+unchanged-UUID/CUSIP route and agreeing active CUSIP and successor lookups must identify the same security.
+All eight views must cover the early successor sessions, and their raw rows must show trades. The producer
+dates only these observed sessions and retains the provider processing date. A competing occupant, structural
+action or explicit earlier boundary retains the ordinary ownership assessment.
+
+When a dated unit separation identifies an exact one-for-one main component, its own traded observations can
+establish a bounded arrival before a later processing-only rename. The provider dates and other component
+assignments remain part of the original chronology. A second applicable rename conflict or an intervening route
+does not authorize ownership from this observation alone.
 
 A provider component-separation action may independently date that same bounded early-successor shape when it is
 the unique positive unit split naming the predecessor as an exact output component on the adjacent source-handoff

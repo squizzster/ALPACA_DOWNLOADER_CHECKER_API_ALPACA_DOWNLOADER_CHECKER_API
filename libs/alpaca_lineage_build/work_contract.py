@@ -85,6 +85,10 @@ def correction_satisfied(item, generation, recorded_id=None):
 
 def numerical_satisfied(item, projection):
     """A pricing approval cannot stand in for a completed numerical repair."""
+    return numerical_mapping_satisfied(item, projection) and numerical_completion_satisfied(item, projection)
+
+
+def numerical_mapping_satisfied(item, projection):
     mapping = item.get("required_numerical_mapping")
     if mapping is not None:
         if (
@@ -110,6 +114,11 @@ def numerical_satisfied(item, projection):
             ]
         if not identifier or identifier not in completed:
             return False
+    return True
+
+
+def numerical_completion_satisfied(item, projection):
+    """Recognize the completed numerical operation independently of mapping work."""
     required = item.get("required_numerical_completion")
     if required is None:
         return True
@@ -120,6 +129,28 @@ def numerical_satisfied(item, projection):
         and (projection or {}).get("retained_recovery")
         == {"version": 1, "operation_id": required["operation_id"]}
     )
+
+
+def acknowledge_numerical_completions(store, work, entries, symbols):
+    from . import universe_state
+
+    # The published lineage selector owns the completed operation. Consume
+    # that proof while it is still current, without extending its marker to
+    # a later receipt or discarding the rest of the workflow obligation.
+    completed = {
+        symbol: work[symbol]
+        for symbol in sorted(symbols)
+        if work.get(symbol, {}).get("required_numerical_completion") is not None
+        and numerical_completion_satisfied(work[symbol], entries.get(symbol, {}).get("projection"))
+    }
+    universe_state.acknowledge_numerical_completions(store, completed)
+    for symbol, item in completed.items():
+        current = dict(item)
+        current.pop("required_numerical_completion")
+        current["reasons"] = [
+            reason for reason in current.get("reasons", ()) if reason != "numerical_selection_incomplete"
+        ]
+        work[symbol] = current
 
 
 def replacement_fingerprint(lookups):
@@ -736,13 +767,19 @@ class WorkPolicy:
                 return False
         return True
 
+    def acknowledge_numerical_completions(self, symbols):
+        acknowledge_numerical_completions(self.store, self.work, self.index["symbols"], symbols)
+
     def numerical_selection(self, symbol):
         """Accept a selected repair once, then lend that exact scope to its owner."""
         item = self.work.get(symbol, {})
         required = item.get("required_numerical_completion")
-        if required is None or numerical_satisfied(
-            item, self.index["symbols"].get(symbol, {}).get("projection")
-        ):
+        if required is None:
+            return None
+        entry = self.index["symbols"].get(symbol) or {}
+        self.acknowledge_numerical_completions(entry.get("group_members", (symbol,)))
+        required = self.work[symbol].get("required_numerical_completion")
+        if required is None:
             return None
         if not isinstance(required, dict) or required.get("version") != 1:
             raise LineageError("invalid required numerical completion")
@@ -886,7 +923,9 @@ class WorkPolicy:
             item = self.work.get(symbol)
             if item is None:
                 continue
-            if not numerical_satisfied(item, receipt):
+            if not numerical_completion_satisfied(item, receipt):
+                raise LineageError(f"{symbol}: required numerical completion is incomplete")
+            if not numerical_mapping_satisfied(item, receipt):
                 raise WorkDeferred(f"{symbol}: required numerical completion is incomplete")
             if set(item.get("required_group", [])) - group:
                 continue

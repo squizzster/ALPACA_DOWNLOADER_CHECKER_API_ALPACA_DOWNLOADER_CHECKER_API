@@ -18,6 +18,7 @@ from .recovery_handoffs import operation
 
 RECOVERY_VERSION = 1
 RECOVERY_BOUNDARY = "alpaca_retained_lineage_recovery"
+RESTORE_ACCEPTED_OWNER = "restore_accepted_owner"
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class RecoverySelection:
     policy_sha256: str
     groups: tuple
     prepared: object = None
+    mode: str | None = None
 
     @property
     def symbols(self):
@@ -110,6 +112,7 @@ def accept_selection(value, store):
         or not valid_sha256(value.get("correlation_policy_sha256"))
         or not isinstance(value.get("groups"), list)
         or not value["groups"]
+        or value.get("mode") not in (None, RESTORE_ACCEPTED_OWNER)
     ):
         raise LineageError("invalid retained recovery selection or store binding")
     groups, seen = [], set()
@@ -144,10 +147,14 @@ def accept_selection(value, store):
                 "members": members,
                 "pricing": pricing,
                 "receipts": receipts,
+                **({"mode": value["mode"]} if value.get("mode") is not None else {}),
             }
         )
         groups.append(RecoveryGroup(tuple(members), pricing, receipts, operation_id))
-    return RecoverySelection(store, value["correlation_policy_sha256"], tuple(groups))
+    mode = value.get("mode")
+    if mode == RESTORE_ACCEPTED_OWNER and (len(groups) != 1 or len(groups[0].members) != 1):
+        raise LineageError("accepted-owner restoration requires one single-source group")
+    return RecoverySelection(store, value["correlation_policy_sha256"], tuple(groups), mode=mode)
 
 
 def recover(store, selection_path, *, plan=False, progress=None, selection=None):
@@ -224,6 +231,10 @@ def recover(store, selection_path, *, plan=False, progress=None, selection=None)
             from .prepared_recovery import publish_prepared
 
             result = publish_prepared(selection, context, progress=progress)
+        elif selection.mode == RESTORE_ACCEPTED_OWNER:
+            from .accepted_owner_recovery import restore
+
+            result = restore(selection, context, progress=progress)
         else:
             from .pipeline import run_lineage
 

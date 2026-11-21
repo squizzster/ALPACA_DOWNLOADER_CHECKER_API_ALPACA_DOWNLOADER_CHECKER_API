@@ -6,11 +6,12 @@ from pathlib import Path
 
 from libs.alpaca_lineage_build import storage as lineage
 from libs.common.debug_trace import span, traced
+from libs.common.store_lock import operation_lock
 from libs.common.work_scope import accept_expansion
 
 from . import export_inputs, gap_adoption, storage, work
 from .contract import CatalogueError, policy, validate_version
-from .policy import evaluate
+from .policy import adopt_validated_gap_suffix, adoptable_gap_records, evaluate
 
 
 def _index(store):
@@ -119,6 +120,69 @@ def _project_group_members(root, index):
             index["projection_state"] = lineage._update_index(root, updates)
         index["symbols"].update(updates)
     return len(missing)
+
+
+@traced("serving_supported_gap_recovery")
+def adopt_supported_gap_suffixes(store, symbols):
+    """Review only the selected exact existing gap decisions at their serving owner."""
+    from alpaca_end_of_day import StandaloneReader
+
+    store = Path(store).absolute()
+    symbols = set(symbols)
+    if not symbols:
+        raise CatalogueError("supported gap recovery requires explicit symbols")
+    report = {"changes": [], "skipped": [], "published_components": 0, "numerical_bars_checked": 0}
+    with operation_lock(store, exclusive=True, wait=True), lineage.writer_snapshot(store) as writer:
+        if (writer.root / ".pending.json").exists():
+            raise CatalogueError("lineage publication pending; resume its owner first")
+        controls = storage.controls(store)
+        state = controls["state"]
+        entries = writer.index()["symbols"]
+        selected = {}
+        for name in symbols:
+            key = controls["members"].get(name)
+            if key is None or not controls["groups"][key]["ineligible_identities"]:
+                continue
+            if name in controls["groups"][key].get("supported_gap_symbols", ()):
+                continue
+            selected.setdefault(key, set()).add(name)
+        accepted = storage.read_groups(store, selected, generation=state["generation"]) if selected else {}
+        reader = StandaloneReader(store, wait=True, cache_bytes=0)
+        for key, names in sorted(selected.items()):
+            old = accepted[key]
+            if not _matches(old, entries):
+                report["skipped"].append({"symbols": sorted(names), "reason": "input_generation_changed"})
+                continue
+            records = adoptable_gap_records(old)
+            if not records:
+                report["skipped"].append({"symbols": sorted(names), "reason": "no_accepted_gap_checkpoint"})
+                continue
+            references = old["references"]
+            accept_expansion(store, references["lineage"], anchors=names, authority="serving_recovery")
+            with reader._open_group(
+                key,
+                expected=references,
+                include_unresolved=True,
+                writer_view=writer,
+            ) as group:
+                adopted = adopt_validated_gap_suffix(group, old, names, records)
+                if adopted is None:
+                    report["skipped"].append({"symbols": sorted(names), "reason": "no_supported_gap_suffix"})
+                    continue
+                updated, records = adopted
+                state = storage.publish_supported_gap_ranges(
+                    store, controls["groups"][key], updated, records, state, names
+                )
+                report["published_components"] += 1
+                report["changes"].append(
+                    {
+                        "symbols": sorted(names),
+                        "references": references,
+                        "previous_decision_generation": old["decision_generation"],
+                        "securities": records,
+                    }
+                )
+    return {**report, "catalogue_generation": state["generation"]}
 
 
 @traced("serving")

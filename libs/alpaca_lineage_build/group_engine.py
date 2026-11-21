@@ -9,6 +9,11 @@ selected inputs and completed reports.
 from dataclasses import dataclass
 from typing import Callable
 
+from libs.alpaca_end_of_day_security_correlation.closed_departure import (
+    SplitContinuityOwnership,
+    SplitSuffixOwnership,
+)
+from libs.alpaca_end_of_day_security_correlation.same_ticker_distribution import retained_edge
 from libs.alpaca_pricing_download.contract import (
     HISTORY_START,
     InitialPricingUnavailable,
@@ -52,7 +57,7 @@ from .resume import (
     source_reuse,
 )
 from .selection import DependencyGraph
-from .source_work import execute_source_work, retained_ownership_report
+from .source_work import execute_source_work, retain_split_suffix, retained_ownership_report
 from .transform import make_publication, retained_decision_report
 from .work_contract import acquisition_fingerprint, auxiliary_work, pricing_target
 
@@ -1891,7 +1896,11 @@ def process_group(
                             and resume
                             and prior is not None
                             and prior.get("row_partition_complete") is True
-                            and prior.get("unresolved_rows") == 0
+                            and (
+                                prior.get("unresolved_rows") == 0
+                                or (prior.get("current_source_ownership") or {}).get("version")
+                                in (SplitSuffixOwnership.version, SplitContinuityOwnership.version)
+                            )
                             and membership_deltas.get(name, {}).get("scope") in {"none", "added_sessions"}
                         }
                         choice_prefix_sources = {
@@ -1982,6 +1991,23 @@ def process_group(
                             inputs[name].accepted_current_source_ownership = certificate.get(
                                 "current_source_ownership"
                             )
+                            if not no_new_rows:
+                                inputs[name].accepted_same_ticker_distribution = retained_edge(certificate)
+                        if retained_rebuild and group == {seed}:
+                            prior = previous[seed]
+                            suffix = (prior or {}).get("current_source_ownership")
+                            if (
+                                suffix is not None
+                                and suffix["version"] == SplitSuffixOwnership.version
+                                and prior["source_sha256"] == inputs[seed].source_sha256
+                                and reusable_decision(prior)
+                            ):
+                                # The explicit recovery already selected the same
+                                # pricing and approved provider evidence. Assess
+                                # only the earlier episode under the new rule.
+                                inputs[seed].retained_split = retain_split_suffix(
+                                    inputs[seed], prior, root, assignment_boundaries
+                                )
                         scoped_memberships = (
                             services.scoped_identity_memberships(choice_prefix_sources, old_boundaries)
                             if historical_lineage

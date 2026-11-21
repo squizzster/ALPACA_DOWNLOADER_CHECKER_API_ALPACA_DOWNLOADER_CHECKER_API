@@ -22,6 +22,14 @@ from libs.alpaca_lineage_build.correlation_policy_contract import (
     RETAINED_V90_SEMANTIC_SHA256,
     RETAINED_V91_SEMANTIC_SHA256,
     RETAINED_V93_SEMANTIC_SHA256,
+    RETAINED_V94_SEMANTIC_SHA256,
+    RETAINED_V95_SEMANTIC_SHA256,
+    RETAINED_V96_SEMANTIC_SHA256,
+    RETAINED_V97_SEMANTIC_SHA256,
+    RETAINED_V98_SEMANTIC_SHA256,
+    RETAINED_V99_SEMANTIC_SHA256,
+    RETAINED_V100_SEMANTIC_SHA256,
+    RETAINED_V101_SEMANTIC_SHA256,
 )
 
 
@@ -58,6 +66,30 @@ class MarketPolicyCompatibilityTests(TestCase):
 
     def test_unchanged_v93_publication_keeps_provenance_without_upstream_replay(self):
         self.unchanged(93, RETAINED_V93_SEMANTIC_SHA256)
+
+    def test_unchanged_v94_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(94, RETAINED_V94_SEMANTIC_SHA256)
+
+    def test_unchanged_v95_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(95, RETAINED_V95_SEMANTIC_SHA256)
+
+    def test_unchanged_v96_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(96, RETAINED_V96_SEMANTIC_SHA256)
+
+    def test_unchanged_v97_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(97, RETAINED_V97_SEMANTIC_SHA256)
+
+    def test_unchanged_v98_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(98, RETAINED_V98_SEMANTIC_SHA256)
+
+    def test_unchanged_v99_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(99, RETAINED_V99_SEMANTIC_SHA256)
+
+    def test_unchanged_v100_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(100, RETAINED_V100_SEMANTIC_SHA256)
+
+    def test_unchanged_v101_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(101, RETAINED_V101_SEMANTIC_SHA256)
 
     def unchanged(self, version, semantic):
         with fixture() as case:

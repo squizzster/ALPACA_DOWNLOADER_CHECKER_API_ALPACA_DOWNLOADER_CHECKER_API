@@ -28,6 +28,14 @@ from .correlation_policy_contract import (
     RETAINED_V91_SEMANTIC_SHA256,
     RETAINED_V92_SEMANTIC_SHA256,
     RETAINED_V93_SEMANTIC_SHA256,
+    RETAINED_V94_SEMANTIC_SHA256,
+    RETAINED_V95_SEMANTIC_SHA256,
+    RETAINED_V96_SEMANTIC_SHA256,
+    RETAINED_V97_SEMANTIC_SHA256,
+    RETAINED_V98_SEMANTIC_SHA256,
+    RETAINED_V99_SEMANTIC_SHA256,
+    RETAINED_V100_SEMANTIC_SHA256,
+    RETAINED_V101_SEMANTIC_SHA256,
     retained_v78_policy,
     retained_v79_policy,
     retained_v80_policy,
@@ -44,6 +52,14 @@ from .correlation_policy_contract import (
     retained_v91_policy,
     retained_v92_policy,
     retained_v93_policy,
+    retained_v94_policy,
+    retained_v95_policy,
+    retained_v96_policy,
+    retained_v97_policy,
+    retained_v98_policy,
+    retained_v99_policy,
+    retained_v100_policy,
+    retained_v101_policy,
     reusable_policy,
     valid_sha256,
 )
@@ -51,7 +67,7 @@ from .correlation_policy_contract import (
     SUPPORTED_POLICY_SCHEMA_VERSIONS as SUPPORTED_POLICY_SCHEMA_VERSIONS,
 )
 
-RUNTIME_VERSION = 124
+RUNTIME_VERSION = 126
 COMPUTATION_REVISION = 2
 # A runtime repair is not a new data policy. DO NOT force completed stores through
 # reconstruction merely to align runtime and persisted publication version numbers.
@@ -192,6 +208,14 @@ def retained_v79_decision(document: dict) -> bool:
             (37, 92),
             (37, 93),
             (37, 94),
+            (37, 95),
+            (37, 96),
+            (37, 97),
+            (37, 98),
+            (37, 99),
+            (37, 100),
+            (37, 101),
+            (37, 102),
         }
         and COMPUTATION_REVISION == 2
         and reusable_computation(document)
@@ -399,13 +423,152 @@ def retained_v93_decision(document):
 def reusable_decision(document: dict) -> bool:
     """Accept current outputs and exactly applicable retained-policy handoffs."""
     if isinstance(document, dict) and isinstance(document.get("versions"), dict):
-        if document["versions"].get("correlation") == 93 and PRODUCTION_CORRELATION_VERSION == 94:
+        if document["versions"].get("correlation") == 101 and PRODUCTION_CORRELATION_VERSION == 102:
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 101, "correlation_policy_sha256": RETAINED_V101_SEMANTIC_SHA256}
+                and retained_v101_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 100 and PRODUCTION_CORRELATION_VERSION in (101, 102):
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 100, "correlation_policy_sha256": RETAINED_V100_SEMANTIC_SHA256}
+                and retained_v100_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 99 and PRODUCTION_CORRELATION_VERSION in (100, 101, 102):
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 99, "correlation_policy_sha256": RETAINED_V99_SEMANTIC_SHA256}
+                and retained_v99_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 98 and PRODUCTION_CORRELATION_VERSION in (
+            99,
+            100,
+            101,
+            102,
+        ):
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 98, "correlation_policy_sha256": RETAINED_V98_SEMANTIC_SHA256}
+                and retained_v98_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 97 and PRODUCTION_CORRELATION_VERSION in (
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 97, "correlation_policy_sha256": RETAINED_V97_SEMANTIC_SHA256}
+                and retained_v97_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 96 and PRODUCTION_CORRELATION_VERSION in (
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 96, "correlation_policy_sha256": RETAINED_V96_SEMANTIC_SHA256}
+                and retained_v96_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 95 and PRODUCTION_CORRELATION_VERSION in (
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 95, "correlation_policy_sha256": RETAINED_V95_SEMANTIC_SHA256}
+                and retained_v95_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 94 and PRODUCTION_CORRELATION_VERSION in (
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
+            # Completed decisions retain their scope. An explicit selected recovery
+            # or ordinary changed inputs can take the current evaluator.
+            return (
+                reusable_computation(document)
+                and document["versions"]
+                == {**versions(), "correlation": 94, "correlation_policy_sha256": RETAINED_V94_SEMANTIC_SHA256}
+                and retained_v94_policy(document.get("correlation_policy"))
+            )
+        if document["versions"].get("correlation") == 93 and PRODUCTION_CORRELATION_VERSION in (
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
             return retained_v93_decision(document)
-        if document["versions"].get("correlation") == 92 and PRODUCTION_CORRELATION_VERSION in (93, 94):
+        if document["versions"].get("correlation") == 92 and PRODUCTION_CORRELATION_VERSION in (
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
             return retained_v92_decision(document)
-        if document["versions"].get("correlation") == 91 and PRODUCTION_CORRELATION_VERSION in (92, 93, 94):
+        if document["versions"].get("correlation") == 91 and PRODUCTION_CORRELATION_VERSION in (
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
             return retained_v91_decision(document)
-        if document["versions"].get("correlation") == 90 and PRODUCTION_CORRELATION_VERSION in (91, 92, 93, 94):
+        if document["versions"].get("correlation") == 90 and PRODUCTION_CORRELATION_VERSION in (
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+        ):
             return retained_v90_decision(document)
         if document["versions"].get("correlation") == 89 and PRODUCTION_CORRELATION_VERSION in (
             90,
@@ -413,6 +576,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v89_decision(document)
         if document["versions"].get("correlation") == 88 and PRODUCTION_CORRELATION_VERSION in (
@@ -422,6 +593,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v88_decision(document)
         if document["versions"].get("correlation") == 87 and PRODUCTION_CORRELATION_VERSION in (
@@ -432,6 +611,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v87_decision(document)
         if document["versions"].get("correlation") == 86 and PRODUCTION_CORRELATION_VERSION in (
@@ -443,6 +630,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v86_decision(document)
         if document["versions"].get("correlation") == 85 and PRODUCTION_CORRELATION_VERSION in (
@@ -455,6 +650,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v85_decision(document)
         if document["versions"].get("correlation") == 84 and PRODUCTION_CORRELATION_VERSION in (
@@ -468,6 +671,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v84_decision(document)
         if document["versions"].get("correlation") == 83 and PRODUCTION_CORRELATION_VERSION in (
@@ -482,6 +693,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v83_decision(document)
         if document["versions"].get("correlation") == 82 and PRODUCTION_CORRELATION_VERSION in (
@@ -497,6 +716,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v82_decision(document)
         if document["versions"].get("correlation") == 81 and PRODUCTION_CORRELATION_VERSION in (
@@ -513,6 +740,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v81_decision(document)
         if document["versions"].get("correlation") == 78:
@@ -532,6 +767,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v80_decision(document)
         if document["versions"].get("correlation") == 79 and PRODUCTION_CORRELATION_VERSION in (
@@ -550,6 +793,14 @@ def reusable_decision(document: dict) -> bool:
             92,
             93,
             94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
         ):
             return retained_v79_decision(document)
     return current_decision(document)

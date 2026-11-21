@@ -125,6 +125,7 @@ class NumericalCompletionTests(TestCase):
         self.assertEqual(result.scopes[IDENTITY], tuple(f"2016-01-{day:02d}" for day in range(4, 9)))
         self.assertEqual(set(result.selected_sources[IDENTITY].values()), {"NEW"})
         self.assertTrue(all(result.equality_outcomes[IDENTITY].values()))
+        self.assertEqual(result.exact_competing_sessions[IDENTITY], set(result.scopes[IDENTITY]))
         for adjustment in ADJUSTMENTS:
             self.assertEqual(
                 {value["observation_selection"] for value in result.changes["OLD"][adjustment].values()},
@@ -158,6 +159,15 @@ class NumericalCompletionTests(TestCase):
         result = complete(inputs, reports, positions=positions, dates=dates)
         self.assertEqual(set(result.selected_sources[IDENTITY].values()), {"NEW"})
         self.assertFalse(any(result.equality_outcomes[IDENTITY].values()))
+        self.assertFalse(result.exact_competing_sessions)
+
+    def test_equal_partial_donor_cannot_support_first_validation(self):
+        inputs, reports, positions, dates = fixture()
+        reports["OLD"]["correlated"]["segments"].pop()
+        result = complete(inputs, reports, positions=positions, dates=dates)
+        self.assertEqual(set(result.selected_sources[IDENTITY].values()), {"NEW"})
+        self.assertTrue(all(result.equality_outcomes[IDENTITY].values()))
+        self.assertFalse(result.exact_competing_sessions)
 
     def test_researched_authority_cannot_enter_a_reopened_contest(self):
         inputs, reports, positions, dates = fixture()

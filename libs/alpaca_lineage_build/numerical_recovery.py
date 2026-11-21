@@ -284,6 +284,33 @@ def _require_uncompleted_scope(group, previous, sources, documents):
                     )
 
 
+def _serving_checkpoints(group, priors, completion):
+    """Distinguish checkpoint reuse from a first resolution of an exact conflict."""
+    records, protected, conflicts = {}, set(), set()
+    for prior in priors.values():
+        prefixes = {item["public_id"]: item for item in prior["history_validation"]["prefix_records"]}
+        protected.update(prefixes)
+        protected.update(item["public_id"] for item in prior["decisions"] if item["eligible"] is True)
+        offline = prior.get("offline_ownership", {})
+        protected.update(offline.get("public_ids", ()))
+        for checkpoint in offline.get("checkpoints", ()):
+            protected.update(item["public_id"] for item in checkpoint["history_validation"]["prefix_records"])
+        if prior["references"] == {"lineage": group.receipts, "pricing": group.pricing}:
+            records.update(prefixes)
+            conflicts.update(
+                item["public_id"]
+                for item in prior["decisions"]
+                if item["eligible"] is False and item["reasons"] == ["conflicting_daily_history"]
+            )
+    first_validation = {
+        pid
+        for pid in conflicts - protected
+        if pid in completion.scopes
+        and completion.exact_competing_sessions.get(pid, set()).issuperset(completion.scopes[pid])
+    }
+    return records, first_validation
+
+
 def prepare_group(selection, group, previous, sources, *, root, cache, context):
     """Construct a complete output once from retained owners and scoped prices."""
     from libs.alpaca_serving_catalogue import storage as serving_storage
@@ -414,27 +441,20 @@ def prepare_group(selection, group, previous, sources, *, root, cache, context):
             if new != documents[name][kind]:
                 changed[name][kind] = accepted[name][kind] = new
             patched.add((name, kind))
-    if "serving_records" not in cache:
+    if "serving_checkpoints" not in cache:
         serving = context.select_serving()
         keys = {serving["members"][name] for name in group.members if name in serving["members"]}
         priors = serving_storage.read_groups(selection.store, keys, generation=serving["state"]["generation"])
-        records = {}
-        for prior in priors.values():
-            if (
-                prior["references"]["lineage"] == group.receipts
-                and prior["references"]["pricing"] == group.pricing
-            ):
-                records.update(
-                    (item["public_id"], item) for item in prior["history_validation"]["prefix_records"]
-                )
-        cache["serving_records"] = records
+        cache["serving_checkpoints"] = _serving_checkpoints(group, priors, completion)
     if "revision" not in cache:
+        records, first_validation = cache["serving_checkpoints"]
         cache["revision"] = build(
             previous,
             group.receipts,
             completion,
-            records=cache["serving_records"],
+            records=records,
             positions=positions,
+            first_validation=first_validation,
         )
     revision = cache["revision"]
     if "remaining_equivalence" not in cache:
@@ -447,8 +467,9 @@ def prepare_group(selection, group, previous, sources, *, root, cache, context):
             receipt = receipts[name] = deepcopy(old)
             if name in accepted_reports:
                 receipt["observation_routes"] = accepted_reports[name].get("retained_observation_routes", {})
-            receipt["numerical_source_revision_version"] = revision["version"]
-            receipt["numerical_source_revision"] = revision
+            if revision is not None:
+                receipt["numerical_source_revision_version"] = revision["version"]
+                receipt["numerical_source_revision"] = revision
             receipt.pop("numerical_source_equivalence_version", None)
             receipt.pop("numerical_source_equivalence", None)
             if cache["remaining_equivalence"] is not None:
@@ -478,8 +499,12 @@ def prepare_group(selection, group, previous, sources, *, root, cache, context):
             finished.add(name)
     if "bundle_handoff" not in cache:
         cache["bundle_handoff"] = (
-            produce_bundles(completion.selected_bundles, revision)
-            if any(not value for days in completion.equality_outcomes.values() for value in days.values())
+            produce_bundles({pid: completion.selected_bundles[pid] for pid in revision["sessions"]}, revision)
+            if revision is not None
+            and any(
+                len(revision["numeric_reuse_sessions"][pid]) != len(days)
+                for pid, days in revision["sessions"].items()
+            )
             else None
         )
     if "prepared" not in cache:
@@ -557,6 +582,9 @@ def resume(selection, *, context=None, work_policy=None, progress=None, enroll=F
                                 (name, kind, receipt["boundaries"][kind]["sha256"]),
                                 document,
                             )
+                if work_policy is not None:
+                    work_policy.update_index({name: index["symbols"][name] for name in group.receipts})
+                    work_policy.acknowledge_numerical_completions(group.receipts)
                 continue
             key = (MODE, group.operation_id)
             cache = holder.setdefault(key, {})
@@ -583,6 +611,8 @@ def resume(selection, *, context=None, work_policy=None, progress=None, enroll=F
                 )
                 result["published_prepared_groups"] += published["published_prepared_groups"]
                 result["processed"].extend(group.receipts)
+                if work_policy is not None:
+                    work_policy.acknowledge_numerical_completions(group.receipts)
                 holder.pop(key, None)
     if enroll and work_policy is not None:
         work_policy.acknowledge()

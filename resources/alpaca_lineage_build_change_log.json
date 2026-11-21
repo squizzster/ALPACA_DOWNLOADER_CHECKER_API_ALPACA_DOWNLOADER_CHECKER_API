@@ -730,5 +730,16 @@
     "modifications": [
       "Keep the latest catalogue observation ID and time with current workflow controls. Explicitly migrate and compact former catalogue archives while preserving all work and registration records. Carry the live provider rows to selected stages without hashing them for archival."
     ]
+  },
+  {
+    "modifications": [
+      "Allow first serving validation after a bounded numerical completion resolves a current conflict between complete, exactly equal eight-view source bundles. Continue to reuse applicable accepted checkpoints for previously served identities.",
+      "Restore a selected sole-source prefix from the applicable accepted serving ownership checkpoint, retaining its old pricing ancestry, labels and numerical approval."
+    ]
+  },
+  {
+    "modifications": [
+      "Acknowledge published numerical repairs independently of pending session work, resume interrupted acknowledgements from the lineage selector, and expose a missing numerical prerequisite as a lineage publication failure."
+    ]
   }
 ]

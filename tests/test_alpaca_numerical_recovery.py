@@ -409,9 +409,9 @@ class NumericalRecoveryMilestoneTests(NativeCase):
             result = recover(self.store, None, selection=selected)
         self.assertTrue(result["complete"], result)
         state = universe_state.read_state(self.store, symbols=selected.symbols)
+        published = storage.read_index(self.root)["symbols"]
         for name, item in state["work"].items():
             self.assertEqual(item["status"], "complete", (name, item))
-            self.assertEqual(
-                item["required_numerical_completion"]["operation_id"], selected.groups[0].operation_id
-            )
+            self.assertNotIn("required_numerical_completion", item)
+            self.assertEqual(published[name]["projection"]["retained_recovery"], selected.groups[0].completion())
         self.assertEqual(universe_state.count_pending(self.store), 0)

@@ -14,10 +14,11 @@ from libs.alpaca_security_lineage.inference_evidence import provider_evidence, r
 
 from . import source_observations, storage
 from .assignment_handoff import produce, selected
+from .continuation import identity_memberships
 from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_digest, versions
 from .numerical_mapping import PendingNumericalWork
 from .observation_carry import membership_choices
-from .pricing import ClosedAcceptedSource
+from .pricing import ClosedAcceptedSource, RetainedSplit
 from .resume import _evidence_facts, continuing_request, preserves_retired_prefix, unchanged_rows
 from .source_work_contract import SourceWorkPlan, require_generic_plan
 from .source_work_contract import binding_applies as _binding_applies
@@ -645,6 +646,16 @@ def retained_ownership_report(prior, local, memberships, root, cache, *, kinds=N
             }.values()
         ),
     }
+
+
+def retain_split_suffix(view, prior, root, assignment_cache):
+    """Carry the accepted later rows and membership into a selected prefix review."""
+    memberships = identity_memberships({view.symbol: prior}, {})
+    return RetainedSplit(
+        prior["current_source_ownership"],
+        retained_ownership_report(prior, view.local, memberships, root, assignment_cache),
+        memberships,
+    )
 
 
 def selected_common_source_prerequisites(root, controls, plan, cache):

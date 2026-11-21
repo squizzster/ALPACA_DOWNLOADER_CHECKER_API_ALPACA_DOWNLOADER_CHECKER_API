@@ -226,6 +226,44 @@ def publish_projection(store, key, selection, group, accepted_state, *, retain_b
     return published
 
 
+def publish_supported_gap_ranges(store, selection, group, records, state, symbols):
+    """Install only newly derived public ranges while carrying their accepted history."""
+    from . import export_inputs
+
+    key = group["locator"]
+    token = group["decision_generation"]
+    for record in records:
+        _validate_public_record(record)
+    revised = {
+        **selection,
+        "decision_generation": token,
+        "online_identities": selection["online_identities"] + len(records),
+        "ineligible_identities": selection["ineligible_identities"] - len(records),
+        "partial_gap": True,
+        "supported_gap_symbols": sorted(set(selection.get("supported_gap_symbols", ())) | symbols),
+    }
+    with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
+        if _state(connection)["generation"] != state["generation"]:
+            raise CatalogueError("catalogue changed before supported range publication")
+        changed = connection.execute(
+            "UPDATE groups SET decision_generation=?, selection=?, body=? WHERE group_key=? AND decision_generation=?",
+            (token, encoded(revised), encoded(group), key, selection["decision_generation"]),
+        )
+        if changed.rowcount != 1:
+            raise CatalogueError("serving decision changed before supported range publication")
+        connection.executemany(
+            "INSERT INTO securities VALUES(?, ?, ?)",
+            [(record["public_id"], key, encoded(record)) for record in records],
+        )
+        export_inputs.accept(connection, group["references"])
+        export_inputs.bind(connection, key, token)
+        published = _write_state(connection, complete=True, previous=state)
+    from libs.alpaca_lineage_build.recovery_handoffs import serving_published
+
+    serving_published(store, state["generation"], published["generation"], {key})
+    return published
+
+
 def retarget_decision(store, key, handoff, accepted_state):
     """Trust one producer handoff; preserve every completed serving outcome."""
     with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
@@ -451,10 +489,54 @@ def commit(store, previous, groups, *, held_lineage=None):
     return published
 
 
-def validate_group(group):
-    """Validate only new producer projections, never selected upstream payloads."""
+def _validate_public_record(record):
     from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 
+    if (
+        record["adjustments"] != list(ADJUSTMENTS)
+        or not record["tickers"]
+        or record["first_session"] > record["last_session"]
+        or record["coverage"]["session_count"] < 1
+    ):
+        raise ValueError("invalid public coverage")
+    first, last = date.fromisoformat(record["first_session"]), date.fromisoformat(record["last_session"])
+    if record["coverage"]["meaning"] != "approved_stored_history":
+        raise ValueError("unknown coverage meaning")
+    if any(
+        not first < date.fromisoformat(day) < last for day in record["coverage"]["explained_missing_sessions"]
+    ):
+        raise ValueError("explained session outside coverage")
+    for interval in record["ticker_ranges"]:
+        if (
+            interval["ticker"] not in record["tickers"]
+            or not record["first_session"]
+            <= interval["first_session"]
+            <= interval["last_session"]
+            <= record["last_session"]
+        ):
+            raise ValueError("invalid dated ticker projection")
+    for interval in record["ticker_ownership_intervals"]:
+        start = date.fromisoformat(interval["start_inclusive"]) if interval["start_inclusive"] else None
+        end = date.fromisoformat(interval["end_exclusive"]) if interval["end_exclusive"] else None
+        if not interval["ticker"] or (start is not None and end is not None and start >= end):
+            raise ValueError("invalid published ownership interval projection")
+    for observation in record["observations"]:
+        if observation["field"] not in {"name", "cusip", "exchange", "asset_class"} or not observation["value"]:
+            raise ValueError("invalid metadata projection")
+        if (
+            observation["observed_at"] is not None
+            and datetime.fromisoformat(observation["observed_at"]).tzinfo is None
+        ):
+            raise ValueError("undated observation timestamp")
+        start, end = observation["effective_from"], observation["effective_through"]
+        if (start is None) != (end is None) or (
+            start is not None and not first <= date.fromisoformat(start) <= date.fromisoformat(end) <= last
+        ):
+            raise ValueError("invalid historical metadata interval")
+
+
+def validate_group(group):
+    """Validate only new producer projections, never selected upstream payloads."""
     from .reuse import validate_history_validation
 
     try:
@@ -492,52 +574,7 @@ def validate_group(group):
             ):
                 raise ValueError("invalid eligibility decision")
         for record in securities.values():
-            if (
-                record["adjustments"] != list(ADJUSTMENTS)
-                or not record["tickers"]
-                or record["first_session"] > record["last_session"]
-                or record["coverage"]["session_count"] < 1
-            ):
-                raise ValueError("invalid public coverage")
-            first, last = date.fromisoformat(record["first_session"]), date.fromisoformat(record["last_session"])
-            if record["coverage"]["meaning"] != "approved_stored_history":
-                raise ValueError("unknown coverage meaning")
-            if any(
-                not first < date.fromisoformat(day) < last
-                for day in record["coverage"]["explained_missing_sessions"]
-            ):
-                raise ValueError("explained session outside coverage")
-            for interval in record["ticker_ranges"]:
-                if (
-                    interval["ticker"] not in record["tickers"]
-                    or not record["first_session"]
-                    <= interval["first_session"]
-                    <= interval["last_session"]
-                    <= record["last_session"]
-                ):
-                    raise ValueError("invalid dated ticker projection")
-            for interval in record["ticker_ownership_intervals"]:
-                start = date.fromisoformat(interval["start_inclusive"]) if interval["start_inclusive"] else None
-                end = date.fromisoformat(interval["end_exclusive"]) if interval["end_exclusive"] else None
-                if not interval["ticker"] or (start is not None and end is not None and start >= end):
-                    raise ValueError("invalid published ownership interval projection")
-            for observation in record["observations"]:
-                if (
-                    observation["field"] not in {"name", "cusip", "exchange", "asset_class"}
-                    or not observation["value"]
-                ):
-                    raise ValueError("invalid metadata projection")
-                if (
-                    observation["observed_at"] is not None
-                    and datetime.fromisoformat(observation["observed_at"]).tzinfo is None
-                ):
-                    raise ValueError("undated observation timestamp")
-                start, end = observation["effective_from"], observation["effective_through"]
-                if (start is None) != (end is None) or (
-                    start is not None
-                    and not first <= date.fromisoformat(start) <= date.fromisoformat(end) <= last
-                ):
-                    raise ValueError("invalid historical metadata interval")
+            _validate_public_record(record)
         validate_history_validation(group)
         from .offline import validate as validate_offline
 

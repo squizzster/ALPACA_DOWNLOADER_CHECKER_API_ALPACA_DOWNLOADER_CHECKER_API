@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from libs.alpaca_end_of_day_security_correlation import same_ticker_distribution
 from libs.alpaca_end_of_day_security_correlation.correlation_version import (
     CORRELATION_VERSION,
     validate_correlation_change_log,
@@ -505,6 +506,14 @@ def _compile_schema_four(
         (91, 37),
         (92, 37),
         (93, 37),
+        (94, 37),
+        (95, 37),
+        (96, 37),
+        (97, 37),
+        (98, 37),
+        (99, 37),
+        (100, 37),
+        (101, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -642,6 +651,14 @@ def _compile_schema_four(
                 (91, 37),
                 (92, 37),
                 (93, 37),
+                (94, 37),
+                (95, 37),
+                (96, 37),
+                (97, 37),
+                (98, 37),
+                (99, 37),
+                (100, 37),
+                (101, 37),
                 (CORRELATION_VERSION, LINEAGE_VERSION),
             }
             else "published_reference"
@@ -789,6 +806,41 @@ def _compile_schema_four(
     if correlation_version >= 94:
         semantic["execution"]["established_fixed_point"]["retired_label_observation"] = (
             "retained_own_label_and_current_uuid_v1"
+        )
+    if correlation_version >= same_ticker_distribution.CORRELATION_VERSION:
+        semantic["execution"]["established_fixed_point"]["same_ticker_distribution"] = (
+            same_ticker_distribution.NAME
+        )
+    if correlation_version >= 96:
+        semantic["execution"]["established_fixed_point"].update(
+            processing_date_successor_seam="bounded_same_issue_successor_after_literal_predecessor_v1",
+            terminal_departure="extinct_former_occupant_before_current_tape_v1",
+        )
+    if correlation_version >= 97:
+        semantic["execution"]["established_fixed_point"].update(
+            main_component_arrival="observed_main_component_before_rename_processing_v1",
+            current_tape_after_historical_claimant="bounded_current_tape_after_dividend_only_claimant_v1",
+        )
+    if correlation_version >= 98:
+        semantic["execution"]["established_fixed_point"]["split_suffix"] = (
+            "bounded_current_source_after_observed_split_v1"
+        )
+    if correlation_version >= 99:
+        semantic["execution"]["established_fixed_point"].update(
+            resumed_current_tape="current_traded_episode_after_inactive_dividend_claim_v1",
+            dated_current_anchor="bounded_current_source_after_dated_own_action_v1",
+        )
+    if correlation_version >= 100:
+        semantic["execution"]["established_fixed_point"]["observed_current_session"] = (
+            "current_source_session_at_exact_catalogue_observation_v1"
+        )
+    if correlation_version >= 101:
+        semantic["execution"]["established_fixed_point"]["cross_label_stock_merger_occupation"] = (
+            "distinct_stock_merger_ticker_occupation_v1"
+        )
+    if correlation_version >= 102:
+        semantic["execution"]["established_fixed_point"]["split_continuity"] = (
+            "continuous_pre_split_common_stock_history_v1"
         )
     if fallback_profile == CORRECTED_PROFILE:
         semantic.update(

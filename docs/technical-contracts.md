@@ -52,6 +52,13 @@ Independent completed groups survive peer failure, and journal interruption reta
 Selected serving maintenance follows successful lineage completion; its ownership and numerical gates remain
 unchanged. A successful lineage calculation alone does not establish online availability.
 
+The optional `restore_accepted_owner` mode selects one single-source group whose current serving result retains
+an accepted ownership checkpoint. The checkpoint must approve the same identity and label for all eight views,
+and the selected pricing ancestry must preserve its positions. The lineage owner restores only the candidate-free
+contiguous cold prefix named in the ownership-loss decision. A different owner, competing source or changed
+ancestry leaves the selection unresolved. The journal installs the changed assignment boundary without replaying
+the accepted pricing or ownership. Serving carries the approved prefix and checks the newly added sessions.
+
 The same recovery entrypoint also accepts a version-1 `alpaca_retained_candidate_handoff` after its semantic
 review completes. It binds the absolute store, complete members, original receipt/pricing generations,
 production policy and computation revision, and carries baseline receipts, completed candidate receipts,
@@ -158,9 +165,12 @@ accepted dated-label projection. Serving then retains that checkpoint's session 
 it does not reconstruct the same label projection. Version-1 revisions retain their existing relabelling
 semantics. The stored pricing, lineage-format and serving-eligibility policy versions are unchanged.
 
-Each selected identity requires its applicable accepted serving checkpoint and dated-label projection.
-Their absence selects owning preparation; this mode cannot manufacture a prior numerical outcome or use
-ownership alone as numerical approval. Completion is bound to the exact selection and published through
+Previously served identities require their applicable accepted serving checkpoint and dated-label projection.
+When the current serving decision records only a conflicting daily history and the identity has no accepted
+checkpoint, first serving validation can consume a completed choice for a contest between complete,
+exactly equal eight-view bundles. The ordinary serving producer then evaluates the resulting history.
+Competing partial bundles and any different values require the existing owning preparation.
+Completion is bound to the exact selection and published through
 the owning journal. An unchanged retry
 consumes its completion before receipt or payload reads; interrupted installation consumes frozen outputs
 without repeating numerical selection or output construction. Actual receipt, pricing, mapping, membership,
@@ -795,6 +805,12 @@ outcomes survive. Complete dependency groups and maintenance requirements also p
 Recovery reselects acquisition from accepted requirements/completed summary; a saved `acquire` flag cannot divert
 a summarized maintained source from live check → approved append.
 
+A published numerical repair retires its matching workflow prerequisite in one transaction. The workflow
+compares the obligation and numerical operation IDs and retains the other requirements and their target.
+After interruption, the completed lineage projection supplies the acknowledgement before ordinary pricing or
+lineage advances. This consumes the earlier operation within its recorded scope. A later change to the
+selected numerical inputs follows the numerical owner's recovery contract.
+
 Known dependency membership is registered before its missing-suffix selector request. That completed selector is
 the authority for whether acquisition work exists. A positive selection records the acquisition requirement
 before retained-history comparison or publication. An empty selection for unfinished group work is checkpointed
@@ -1077,6 +1093,14 @@ When earlier assigned history exposes a gap before an already published recent r
 serving retains the range while its ownership, numerical approval and other eligibility checks still apply.
 The public range starts at the first supported session after the latest unresolved gap or applicable ownership
 or price restriction. The full private checkpoint keeps its earlier assignments and exact gaps.
+An active security can receive its first public range when the exact own-label lookup agrees with the final
+selected session in all eight views and the complete selected run after the earlier unresolved gap passes
+the ownership and numerical checks. The successful projection keeps the exact unresolved dates and their
+source-presence facts. Explicit recovery for selected gap-only decisions consumes the completed date and
+numerical checkpoint under identical lineage and pricing generations. It projects the new range and its
+public metadata without reading price rows, repeating numerical checks or changing peer decisions.
+A clean unmarked gap-only checkpoint supplies the exact market bounds and missing sessions. Its owner
+assembles and publishes the date projection once from those accepted facts.
 The compact late-bar selector schedules the contributing raw-absent source dates even when the identity is
 online. When a missing bar returns, pricing publishes its complete selected bundle. Serving uses the
 generation-bound insertion positions and current dated ownership to retain unchanged rows. As gaps close,

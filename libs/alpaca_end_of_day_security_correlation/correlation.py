@@ -400,7 +400,11 @@ def build_security_correlation_report(
         if complete_source
         else None
     )
-    if complete_source and authenticated_work_items.closed_history_evidence is None:
+    if (
+        complete_source
+        and not accepted_current_source
+        and authenticated_work_items.closed_history_evidence is None
+    ):
         authenticated_work_items.closed_history_evidence = any(
             source["adjustment"] == "raw" and has_informative_trading(download.rows)
             for download, source, _ in authenticated_work_items

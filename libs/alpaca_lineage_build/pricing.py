@@ -10,6 +10,7 @@ from libs.alpaca_end_of_day_security_correlation.settings import (
     VERIFIED_SESSION_EXCLUSIONS_MANIFEST_TYPE,
     VERIFIED_SESSION_EXCLUSIONS_VERSION,
 )
+from libs.alpaca_end_of_day_security_correlation.uuid_lineage import UuidLineageEdge
 from libs.alpaca_pricing_download.contract import (
     ADJUSTMENTS,
     FIELDS,
@@ -29,6 +30,13 @@ from .correction_prefix import correction_from, prefix_assignments
 from .resume import assignment_summary, unchanged_rows
 
 
+@dataclass(frozen=True)
+class RetainedSplit:
+    ownership: dict
+    assignments: dict
+    memberships: dict
+
+
 @dataclass
 class PricingInput:
     symbol: str
@@ -46,9 +54,11 @@ class PricingInput:
     accepted_report: dict | None = None
     reprojected_sessions: dict | None = None
     accepted_current_source_ownership: dict | None = None
+    retained_split: RetainedSplit | None = None
     accepted_sourced_rename_ownership: dict | None = None
     accepted_sourced_rename_membership: dict | None = None
     accepted_documented_membership: dict | None = None
+    accepted_same_ticker_distribution: UuidLineageEdge | None = None
 
     def reader(self, _repository_root, _directory, descriptor):
         # Ignored paths satisfy the injected interface; they must not trigger filesystem access.

@@ -10,6 +10,10 @@ from libs.alpaca_serving_catalogue import export_inputs, gap_suffix, policy, pro
 from libs.common.sqlite_connections import connect_sqlite
 
 
+def old_gap_policy(group, *args, **kwargs):
+    return policy.evaluate(group, *args, **kwargs, supported_gap_suffix=False)
+
+
 class LegacyGapSuffixTests(NativeCase):
     def legacy_groups(self):
         day = self.bars[2]["t"][:10]
@@ -43,7 +47,8 @@ class LegacyGapSuffixTests(NativeCase):
                     view["segments"] = [early, late]
 
         self.publish_change(relabel, "RECENT")
-        self.bootstrap()
+        with patch.object(producer, "evaluate", side_effect=old_gap_policy):
+            self.bootstrap()
         with closing(connect_sqlite(storage.path(self.store))) as db, db:
             db.execute("UPDATE state SET body=json_remove(body, '$.gap_suffix_reviews')")
             db.execute(
@@ -108,6 +113,7 @@ class LegacyGapSuffixTests(NativeCase):
             db.execute("DROP TABLE export_input_bindings")
             db.execute("DROP TABLE export_inputs")
         with (
+            patch.object(producer, "evaluate", side_effect=old_gap_policy),
             patch.object(policy, "_bar_reasons", side_effect=AssertionError("legacy price checked again")),
             patch(
                 "libs.alpaca_pricing_download.storage.load_source",
@@ -135,6 +141,7 @@ class LegacyGapSuffixTests(NativeCase):
     def test_policy_rebuild_can_apply_an_identical_pre_projection_gap_checkpoint(self):
         day, later = self.policy_eight_groups()
         with (
+            patch.object(producer, "evaluate", side_effect=old_gap_policy),
             patch.object(standalone, "_rows", side_effect=AssertionError("historical prices reread")),
             patch.object(policy, "_bar_reasons", side_effect=AssertionError("historical prices checked")),
             patch(
@@ -156,7 +163,7 @@ class LegacyGapSuffixTests(NativeCase):
         )
 
     def test_policy_rebuild_rejects_a_changed_assignment_binding(self):
-        self.policy_eight_groups()
+        _, later = self.policy_eight_groups()
 
         def change_earlier_label(_, boundaries):
             for boundary in boundaries.values():
@@ -168,7 +175,8 @@ class LegacyGapSuffixTests(NativeCase):
         rebuilt = producer.maintain(self.store, rebuild=True)
         self.assertTrue(rebuilt["complete"], rebuilt)
         self.assertEqual(rebuilt["full_history_evaluations"], 1)
-        self.assertFalse(DataLibrary(store=self.store).resolve_ticker("RECENT"))
+        (recent,) = DataLibrary(store=self.store).resolve_ticker("RECENT")
+        self.assertEqual(recent.first_session.isoformat(), later)
 
     def test_lost_selector_reuses_negative_raw_presence(self):
         day, _ = self.legacy_groups()

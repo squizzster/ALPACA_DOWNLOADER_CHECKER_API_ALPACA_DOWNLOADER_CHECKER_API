@@ -6,9 +6,15 @@ from zoneinfo import ZoneInfo
 
 from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY
 
-from . import public_common_continuation, security_relations, sourced_rename
-from .closed_departure import METHOD as CURRENT_SOURCE_METHOD
-from .closed_departure import CurrentSourceOwnership, assess_current_source, continue_current_source
+from . import public_common_continuation, same_ticker_distribution, security_relations, sourced_rename
+from .closed_departure import (
+    BoundedSourceOwnership,
+    DatedCurrentAnchorOwnership,
+    ObservedCurrentSessionOwnership,
+    assess_current_source,
+    continue_current_source,
+    extend_split_ownership,
+)
 from .current_symbol_reuse import (
     CURRENT_SYMBOL_REUSE_RULE_NAME,
     CurrentSymbolReuseAssessment,
@@ -25,6 +31,7 @@ from .mapped_rename_chain import SPLIT_ADJUSTED_RENAME_TAPE
 from .name_change import (
     PRE_ENTRY_CARRY_FORWARD_REASON,
     NameChangeAssessment,
+    NameChangeHistory,
     action_labels,
     assess_name_change_history,
     name_change_dates,
@@ -164,11 +171,12 @@ class _RowRuleContext:
     retired_continuation: RetiredContinuation | None = None
     retired_label_observation: tuple[str, date] | None = None
     bounded_aliases: frozenset[tuple] = frozenset()
-    name_change_date_conflicts: tuple[tuple[date, date], ...] = ()
+    name_change_date_conflicts: tuple[tuple[str | None, date, date], ...] = ()
+    main_component_arrivals: tuple[NameChangeHistory, ...] = ()
     terminal_carry_forward_exclusions: tuple = ()
     pre_entry_carry_forward_exclusions: tuple = ()
     closed_prior_action_anchored_suffixes: bool = False
-    current_source_ownership: CurrentSourceOwnership | None = None
+    current_source_ownership: BoundedSourceOwnership | None = None
     sourced_rename_mapping: sourced_rename.RenameCertificate | sourced_rename.DisputedMapping | None = None
 
 
@@ -272,6 +280,17 @@ class CorrelationCache:
         new_public_parent_continuations=False,
         closed_departure_current_sources=True,
         retired_label_observations=True,
+        same_ticker_distributions=True,
+        processing_date_successor_seams=False,
+        closed_terminal_departures=False,
+        prior_claim_current_sources=False,
+        split_suffix_current_sources=False,
+        split_continuity=False,
+        dated_current_anchor_sources=False,
+        resumed_current_sources=False,
+        observed_current_sessions=False,
+        cross_label_stock_merger_occupation=False,
+        main_component_arrivals=False,
     ):
         if any(
             (
@@ -288,6 +307,17 @@ class CorrelationCache:
             )
         self.ownership_interval_rules = ownership_interval_rules
         self.retired_label_observations = retired_label_observations
+        self.same_ticker_distributions = same_ticker_distributions
+        self.processing_date_successor_seams = processing_date_successor_seams
+        self.closed_terminal_departures = closed_terminal_departures
+        self.prior_claim_current_sources = prior_claim_current_sources
+        self.split_suffix_current_sources = split_suffix_current_sources
+        self.split_continuity = split_continuity
+        self.dated_current_anchor_sources = dated_current_anchor_sources
+        self.resumed_current_sources = resumed_current_sources
+        self.observed_current_sessions = observed_current_sessions
+        self.cross_label_stock_merger_occupation = cross_label_stock_merger_occupation
+        self.main_component_arrivals = main_component_arrivals
         self._retired_labels = {}
         self.row_correlation_rules = row_correlation_rules
         self.exact_same_symbol_handoffs = exact_same_symbol_handoffs
@@ -349,6 +379,8 @@ class CorrelationCache:
         self._source_work = {}
         self.accepted_identity_memberships = {}
         self.accepted_current_source_ownership = {}
+        self.retained_split_suffixes = set()
+        self.accepted_same_ticker_distributions = {}
         self._current_source_ownership = {}
         self._session_consensus = {}
 
@@ -482,25 +514,39 @@ class CorrelationCache:
             )
         return self._session_consensus[key]
 
-    def current_source_ownership(self, symbol, lineage, *args, **kwargs):
+    def current_source_ownership(self, symbol, lineage, intervals, edges, work_items, consensus, **kwargs):
         if not self.closed_departure_current_sources:
             return None
         # The selected group and its source/evidence bindings are immutable.
         # Preserve even a completed negative assessment across views and phases.
         if symbol not in self._current_source_ownership:
             accepted = self.accepted_current_source_ownership.get(symbol)
-            self._current_source_ownership[symbol] = (
+            ownership = (
                 continue_current_source(accepted[0], lineage, accepted[1])
                 if accepted is not None
                 else assess_current_source(
                     symbol,
                     lineage,
-                    *args,
+                    intervals,
+                    edges,
+                    work_items,
+                    consensus,
                     complete_sources=self._name_change_sources,
                     source_consensus=self.source_session_consensus,
+                    allow_terminal_departure=self.closed_terminal_departures,
+                    allow_prior_claim=self.prior_claim_current_sources,
+                    allow_split_suffix=self.split_suffix_current_sources,
+                    allow_split_continuity=self.split_continuity,
+                    allow_dated_current_anchor=self.dated_current_anchor_sources,
+                    allow_resumed_current_source=self.resumed_current_sources,
+                    allow_observed_current_session=self.observed_current_sessions,
+                    selected_sources=self.selected_evidence if self.rename_scope_complete else None,
                     **kwargs,
                 )
             )
+            if self.split_continuity and symbol in self.retained_split_suffixes:
+                ownership = extend_split_ownership(ownership, lineage, work_items)
+            self._current_source_ownership[symbol] = ownership
         return self._current_source_ownership[symbol]
 
     def prepared_source(self, items):
@@ -611,6 +657,7 @@ class CorrelationCache:
                         include_action_anchored_current_suffix=True,
                         allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
                         closed_prior_terminal_conflicts=self.completed_event_scope,
+                        allow_cross_label_stock_merger_occupation=self.cross_label_stock_merger_occupation,
                         sourced_successions=successions,
                     )
                 )
@@ -621,10 +668,6 @@ class CorrelationCache:
                         complete=sourced_rename.apply_chronology(prepared.complete, renames),
                     )
                 intervals = list(prepared.complete)
-                phase_intervals = {
-                    False: (prepared.established, prepared.established_issues),
-                    True: (prepared.complete, prepared.complete_issues),
-                }
             else:
                 intervals, interval_issues = build_ticker_ownership_intervals(
                     lineage,
@@ -633,6 +676,7 @@ class CorrelationCache:
                     include_action_anchored_current_suffix=include_action_anchored_current_suffix,
                     allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
                     closed_prior_terminal_conflicts=self.completed_event_scope,
+                    allow_cross_label_stock_merger_occupation=self.cross_label_stock_merger_occupation,
                     sourced_successions=successions,
                 )
                 phase_intervals = {include_action_anchored_current_suffix: (intervals, interval_issues)}
@@ -658,6 +702,8 @@ class CorrelationCache:
                     component_anchored_early_successors=(self.component_anchored_early_successors),
                     extended_component_handoffs=self.extended_component_handoffs,
                     internal_component_handoffs=self.internal_component_handoffs,
+                    processing_date_successor_seams=self.processing_date_successor_seams,
+                    main_component_arrivals=self.main_component_arrivals,
                 )
             )
             if shared is None:
@@ -668,6 +714,8 @@ class CorrelationCache:
                 edges, continuity_issues = certify_name_change_edges(candidates, assessment.accepted)
                 edge_issues.extend(continuity_issues)
                 if self.stable_phase_handoffs:
+                    if self.same_ticker_distributions and prepared.context is not None:
+                        prepared = self._install_distribution(lineage, prepared, candidates, edges, edge_issues)
                     self._continuity[id(lineage)] = (
                         lineage,
                         candidates,
@@ -676,6 +724,11 @@ class CorrelationCache:
                         assessment,
                         prepared,
                     )
+            if self.stable_phase_handoffs:
+                phase_intervals = {
+                    False: (prepared.established, prepared.established_issues),
+                    True: (prepared.complete, prepared.complete_issues),
+                }
             independent = {
                 edge.action_id: edge
                 for edge in candidates
@@ -708,6 +761,28 @@ class CorrelationCache:
             cached = self._lineage[key]
         _, intervals, interval_issues, edges, edge_issues = cached
         return intervals, list(interval_issues), edges, list(edge_issues)
+
+    def _install_distribution(self, lineage, prepared, candidates, edges, issues):
+        query = lineage.get("query")
+        symbol = query.get("input_symbol") if isinstance(query, dict) else None
+        edge = self.accepted_same_ticker_distributions.get(symbol)
+        if edge is None:
+            edge, issue = same_ticker_distribution.assess(lineage, prepared.context.corporate_actions)
+            if issue is not None:
+                issues.append(issue)
+            if edge is None:
+                return prepared
+            if prepared.conflicts_with_distribution(edge, candidates):
+                issues.append(
+                    {
+                        "reason_code": "existing_distribution_ownership_or_membership",
+                        "symbol": edge.predecessor_symbol,
+                        "action_id": edge.action_id,
+                    }
+                )
+                return prepared
+        edges.append(edge)
+        return prepared.with_same_ticker_distribution(edge)
 
     def _prepare(self, rows):
         key = id(rows)
@@ -822,12 +897,34 @@ def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | N
 
 
 def _apply_name_change_boundary_conflict_rule(context: _RowRuleContext) -> _RowDecision | None:
-    if any(first <= context.session_date < last for first, last in context.name_change_date_conflicts):
-        return _RowDecision(
-            branch=UNCORRELATED_BRANCH,
-            reason_codes=("conflicting_name_change_boundary_dates",),
-        )
-    return None
+    conflicts = [
+        action_id
+        for action_id, first, last in context.name_change_date_conflicts
+        if first <= context.session_date < last
+    ]
+    if not conflicts:
+        return None
+    if len(conflicts) == 1:
+        arrivals = [
+            item
+            for item in context.main_component_arrivals
+            if item.action_id == conflicts[0] and item.first <= context.session_date <= item.last
+        ]
+        if len(arrivals) == 1:
+            interval = arrivals[0].interval
+            return _RowDecision(
+                branch=CORRELATED_BRANCH,
+                asset_id=interval.asset_id,
+                cusip=interval.cusip,
+                interval=interval,
+                historical_symbol=interval.historical_symbol,
+                identity_confidence="action_supported",
+                warning_codes=("same_issue_main_component_observation",),
+            )
+    return _RowDecision(
+        branch=UNCORRELATED_BRANCH,
+        reason_codes=("conflicting_name_change_boundary_dates",),
+    )
 
 
 def _apply_asof_selected_identity_rule(context: _RowRuleContext) -> _RowDecision | None:
@@ -1212,16 +1309,9 @@ def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision 
             candidates=tuple(sorted(excluded_candidates)),
         )
     own_intervals = [item for item in context.intervals if item.historical_symbol == context.requested_symbol]
-    current_source = context.current_source_ownership
-    if current_source is not None and current_source.contains(context.session_date):
-        return _RowDecision(
-            branch=CORRELATED_BRANCH,
-            asset_id=current_source.asset_id,
-            identity_confidence="source_bound_current_candidate",
-            warning_codes=("missing_dated_ticker_ownership_interval",),
-            historical_symbol=current_source.symbol,
-            correlation_method=CURRENT_SOURCE_METHOD,
-        )
+    current = _bounded_current_candidate(context.current_source_ownership, context.session_date)
+    if current is not None:
+        return current
     if any(
         rule.name == "name_change_ticker_transition" for item in own_intervals for rule in item.applied_rules
     ) and not any(item.contains(context.session_date) for item in own_intervals):
@@ -1645,6 +1735,20 @@ def row_correlation_rule_order(*, rules: tuple[RowCorrelationRule, ...] | None =
     ]
 
 
+def _bounded_current_candidate(source, session):
+    if source is not None and source.contains(session):
+        return _RowDecision(
+            branch=CORRELATED_BRANCH,
+            asset_id=source.asset_id,
+            cusip=source.cusip if isinstance(source, DatedCurrentAnchorOwnership) else None,
+            identity_confidence="source_bound_current_candidate",
+            warning_codes=("missing_dated_ticker_ownership_interval",),
+            historical_symbol=source.symbol,
+            correlation_method=source.method_for_session(session),
+        )
+    return None
+
+
 def _decide_row(
     context: _RowRuleContext,
     *,
@@ -1654,6 +1758,21 @@ def _decide_row(
     for rule_order, rule in enumerate(rules, start=1):
         decision = rule.apply(context)
         if decision is not None:
+            if isinstance(
+                context.current_source_ownership, (DatedCurrentAnchorOwnership, ObservedCurrentSessionOwnership)
+            ) and decision.reason_codes in {
+                ("undated_requested_ticker_reuse_boundary",),
+                ("overlapping_ownership_intervals_without_unique_latest_start",),
+                ("overlapping_ownership_intervals_without_source_scope",),
+                ("conflicting_requested_ticker_intervals",),
+            }:
+                # Resolve only the ambiguous row inside its independently
+                # observed source bound. Established rows and positive rival
+                # decisions keep their own rules and precedence.
+                decision = (
+                    _bounded_current_candidate(context.current_source_ownership, context.session_date)
+                    or decision
+                )
             return replace(
                 decision,
                 rule_order=rule_order,
@@ -1756,7 +1875,7 @@ def correlate_download_rows(
     name_change_assessment: NameChangeAssessment = NameChangeAssessment(),
     row_rules: tuple[RowCorrelationRule, ...] | None = None,
     established_segments: tuple[dict[str, Any], ...] = (),
-    current_source_ownership: CurrentSourceOwnership | None = None,
+    current_source_ownership: BoundedSourceOwnership | None = None,
     sourced_rename_histories=(),
     sourced_rename_mapping=None,
 ) -> dict[str, list[dict[str, Any]]]:
@@ -1855,9 +1974,12 @@ def correlate_download_rows(
         )
     )
 
+    suppress_unscoped_reuse = current_source_ownership is not None and not isinstance(
+        current_source_ownership, DatedCurrentAnchorOwnership
+    )
     ticker_reuse_gap = (
         None
-        if current_source_ownership is not None
+        if suppress_unscoped_reuse
         else assess_ticker_reuse_gap(
             tuple(session_date for _, _, session_date in parsed_rows),
             source,
@@ -1869,7 +1991,7 @@ def correlate_download_rows(
     )
     current_symbol_reuse = (
         None
-        if current_source_ownership is not None
+        if suppress_unscoped_reuse
         else assess_current_symbol_reuse(
             tuple(session_date for _, _, session_date in parsed_rows),
             source,
@@ -1918,12 +2040,15 @@ def correlate_download_rows(
             cache.closed_prior_action_anchored_suffixes if cache is not None else True
         ),
         name_change_date_conflicts=tuple(
-            (dates[0], dates[-1]) if dates else (date.min, date.max)
+            (action.get("id"), dates[0], dates[-1]) if dates else (action.get("id"), date.min, date.max)
             for action in lineage.get("corporate_actions", [])
             if action.get("action_type") == "name_change"
             and requested_symbol in (action.get("old_symbol"), action.get("new_symbol"))
             for dates, issue in (name_change_dates(action, lineage.get("corporate_actions", [])),)
             if issue
+        ),
+        main_component_arrivals=tuple(
+            item for item in name_change_assessment.component_arrivals if item.symbol == requested_symbol
         ),
     )
     decisions = cache.decisions_for(context) if cache is not None else {}

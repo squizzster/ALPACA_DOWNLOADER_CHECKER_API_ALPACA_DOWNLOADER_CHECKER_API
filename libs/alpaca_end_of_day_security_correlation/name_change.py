@@ -5,6 +5,7 @@ the action's UUID component must never be used to authenticate those observation
 All inputs are the selected group's in-memory pricing handoffs.
 """
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -34,6 +35,8 @@ EXTENDED_COMPONENT_HANDOFF_CORRELATION_VERSION = 71
 INTERNAL_COMPONENT_HANDOFF_CORRELATION_VERSION = 74
 COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION = 77
 COMPLETED_EVENT_SCOPE_CORRELATION_VERSION = 78
+PROCESSING_DATE_SUCCESSOR_SEAM_CORRELATION_VERSION = 96
+MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION = 97
 
 PRE_ENTRY_CARRY_FORWARD_REASON = "certified_pre_entry_carry_forward_non_observation"
 
@@ -110,6 +113,7 @@ class NameChangeAssessment:
     independent_successors: frozenset[str] = frozenset()
     terminal_carry_forward_exclusions: tuple[TerminalCarryForwardExclusion, ...] = ()
     pre_entry_carry_forward_exclusions: tuple[PreEntryCarryForwardExclusion, ...] = ()
+    component_arrivals: tuple[NameChangeHistory, ...] = ()
 
 
 def _grid(work):
@@ -206,7 +210,7 @@ def _unknown_occupancy_conflict(lineage, symbols, first=None, last=None, *, allo
     return False
 
 
-def _bridge_structural_conflict(lineage, symbols, first, last, action_id):
+def _bridge_structural_conflict(lineage, symbols, first, last, action_id, *, other_allowed=()):
     structural = {
         "cash_merger",
         "forward_split",
@@ -219,7 +223,11 @@ def _bridge_structural_conflict(lineage, symbols, first, last, action_id):
         "unit_split",
     }
     for action in lineage.get("corporate_actions", ()):
-        if action.get("id") == action_id or action.get("action_type") not in structural:
+        if (
+            action.get("id") == action_id
+            or action.get("id") in other_allowed
+            or action.get("action_type") not in structural
+        ):
             continue
         if not action_labels(action).intersection(symbols):
             continue
@@ -1356,6 +1364,249 @@ def _early_successor_source_bridge_history(
     )
 
 
+def _processing_date_successor_seam(lineage, intervals, candidates, edge, old, new, last, missing_sessions):
+    """Bound the sole continuing label's observed trades ahead of a processing date."""
+    _, old_source, old_sessions = old
+    new_rows, _, new_sessions = new
+    if (
+        not missing_sessions
+        or edge.predecessor_asset_id != edge.successor_asset_id
+        or edge.predecessor_cusip != edge.successor_cusip
+        or last != old_sessions[-1]
+        or not _is_unique_direct_edge(candidates, edge)
+    ):
+        return None
+    try:
+        predecessor_request_end = date.fromisoformat(old_source["request_to"][:10])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if predecessor_request_end < edge.effective_date:
+        return None
+    action = next(
+        (item for item in lineage.get("corporate_actions", ()) if item.get("id") == edge.action_id), {}
+    )
+    if (
+        action.get("process_date") != edge.effective_date.isoformat()
+        or action.get("effective_date") is not None
+        or action.get("ex_date") is not None
+    ):
+        return None
+
+    labels = {edge.predecessor_symbol, edge.successor_symbol}
+    if not all(_complete_action_query_covers(lineage, symbol, edge.effective_date) for symbol in labels):
+        return None
+    current = exact_symbol_lookup_asset(lineage, edge.successor_symbol)
+    cusip_asset = exact_cusip_lookup_asset(lineage, edge.successor_cusip)
+    if (
+        current is None
+        or cusip_asset is None
+        or current.get("exchange") in (None, "", "OTC")
+        or any(
+            (
+                asset.get("id"),
+                asset.get("symbol"),
+                asset.get("exchange"),
+                asset.get("status"),
+                asset.get("tradable"),
+            )
+            != (edge.successor_asset_id, edge.successor_symbol, current["exchange"], "active", True)
+            for asset in (current, cusip_asset)
+        )
+        or _known_owners(lineage, edge.successor_symbol) != {edge.successor_asset_id}
+        or _dated_owners(lineage, edge.predecessor_symbol) - {edge.predecessor_asset_id}
+    ):
+        return None
+
+    # An undated inactive lookup of the retired spelling does not date a rival
+    # security to this tape. Any positively dated rival needs its own allocation.
+    old_rivals = _known_owners(lineage, edge.predecessor_symbol) - {edge.predecessor_asset_id}
+    if old_rivals:
+        old = exact_symbol_lookup_asset(lineage, edge.predecessor_symbol)
+        if (
+            old is None
+            or old_rivals != {old["id"]}
+            or old.get("status") != "inactive"
+            or old.get("tradable") is not False
+            or old.get("exchange") != current["exchange"]
+        ):
+            return None
+
+    successors = [item for item in intervals if item.historical_symbol == edge.successor_symbol]
+    if len(successors) != 1:
+        return None
+    successor = successors[0]
+    if (
+        successor.identity_key() != (edge.successor_symbol, edge.successor_cusip, edge.successor_asset_id)
+        or successor.start_date_inclusive != edge.effective_date
+        or _unknown_occupancy_conflict(lineage, labels, last, edge.effective_date)
+        or _bridge_structural_conflict(lineage, labels, last, edge.effective_date, edge.action_id)
+    ):
+        return None
+
+    start = bisect_right(new_sessions, last)
+    end = bisect_left(new_sessions, edge.effective_date, lo=start)
+    seam = new_sessions[start:end]
+    if (
+        end == len(new_sessions)
+        or new_sessions[end] != edge.effective_date
+        or tuple(day.isoformat() for day in seam) != missing_sessions
+        or any(_traded_price(row) is None for row in new_rows[start : end + 1])
+    ):
+        return None
+    # Bound this certificate to the observed rows. The earlier label and the
+    # nominal successor interval retain their existing decisions.
+    observed = replace(successor, start_date_inclusive=seam[0], end_date_exclusive=edge.effective_date)
+    return NameChangeHistory(edge.successor_symbol, seam[0], seam[-1], observed, edge.action_id)
+
+
+def _main_component_arrival_actions(lineage):
+    """Select a unique earlier unit separation of a rename's arriving common component."""
+    query = lineage.get("query")
+    if not isinstance(query, dict):
+        return ()
+    requested_symbol = query.get("input_symbol")
+    actions = lineage.get("corporate_actions", ())
+    renames = [action for action in actions if action.get("action_type") == "name_change"]
+    components = [action for action in actions if action.get("action_type") == "unit_split"]
+    arrivals = []
+    for rename in renames:
+        symbol, cusip = rename.get("new_symbol"), rename.get("new_cusip")
+        predecessor = rename.get("old_symbol")
+        if (
+            symbol != requested_symbol
+            or not all(
+                isinstance(value, str) and value for value in (symbol, cusip, predecessor, rename.get("id"))
+            )
+            or predecessor == symbol
+            or rename.get("old_cusip") != cusip
+            or rename.get("effective_date") is not None
+            or rename.get("ex_date") is not None
+        ):
+            continue
+        matching_components = []
+        for component in components:
+            try:
+                bound = positive_occupancy_action_date(component, symbol, cusip)
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                continue
+            if bound is not None:
+                matching_components.append((bound, component))
+        if len(matching_components) != 1:
+            continue
+        first, component = matching_components[0]
+        if (component.get("new_symbol"), component.get("new_cusip")) != (symbol, cusip):
+            continue
+        try:
+            process = date.fromisoformat(rename.get("process_date"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            first >= process
+            or component.get("process_date") != first.isoformat()
+            or _positive_decimal(component.get("new_rate")) != _positive_decimal(component.get("old_rate"))
+            or any(
+                other is not rename and (other.get("new_symbol"), other.get("new_cusip")) == (symbol, cusip)
+                for other in renames
+            )
+            or not all(_complete_action_query_covers(lineage, symbol, when) for when in (first, process))
+        ):
+            continue
+        arrivals.append((rename, component, first, process))
+    return arrivals
+
+
+def _main_component_arrival_history(lineage, intervals, candidates, grids, rename, component, first, process):
+    symbol, cusip = rename["new_symbol"], rename["new_cusip"]
+    if symbol not in grids or grids[symbol] is None:
+        return None
+    current = exact_symbol_lookup_asset(lineage, symbol)
+    asset = exact_cusip_lookup_asset(lineage, cusip)
+    unit = exact_cusip_lookup_asset(lineage, component["old_cusip"])
+    alternate = exact_cusip_lookup_asset(lineage, component["alternate_cusip"])
+    if (
+        current is None
+        or asset is None
+        or unit is None
+        or asset["id"] != current["id"]
+        or asset["symbol"] != symbol
+        or asset.get("exchange") in (None, "", "OTC")
+        or unit.get("symbol") != component["old_symbol"]
+        or unit["id"] == asset["id"]
+        or (
+            alternate is not None
+            and (
+                alternate["id"] in {asset["id"], unit["id"]}
+                or alternate.get("symbol") != component["alternate_symbol"]
+            )
+        )
+    ):
+        return None
+    supporting = {rename["id"], component["id"]}
+    owners = {(asset["id"], cusip)}
+    if _non_observation_conflict(
+        lineage, symbol, first, process, owners, supporting
+    ) or _bridge_structural_conflict(
+        lineage, {rename["old_symbol"], symbol}, first, process, rename["id"], other_allowed=(component["id"],)
+    ):
+        return None
+    successors = [
+        item
+        for item in intervals
+        if item.identity_key() == (symbol, cusip, asset["id"])
+        and item.start_date_inclusive == process
+        and any(rename["id"] in rule.supporting_action_ids for rule in item.applied_rules)
+    ]
+    if len(successors) != 1:
+        return None
+    # A later split can leave its successor's global interval without a lower
+    # bound. Its completed same-label edge still dates the distinct issue for
+    # this evidence check. Do not change either published interval.
+    from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+
+    later_splits = [
+        edge
+        for edge in candidates
+        if edge.edge_type in IDENTITY_PRESERVING_SPLIT_EDGE_TYPES
+        and edge.predecessor_symbol == edge.successor_symbol == symbol
+        and edge.predecessor_cusip == cusip
+        and edge.predecessor_asset_id == asset["id"]
+        and edge.effective_date > process
+    ]
+    later_split = later_splits[0] if len(later_splits) == 1 else None
+    later_issue = (symbol, later_split.successor_cusip, later_split.successor_asset_id) if later_split else None
+    if any(
+        item.historical_symbol == symbol
+        and item.asset_id != asset["id"]
+        and (item.start_date_inclusive is None or item.start_date_inclusive <= process)
+        and (item.end_date_exclusive is None or item.end_date_exclusive > first)
+        and not (item.start_date_inclusive is None and item.identity_key() == later_issue)
+        for item in intervals
+    ):
+        return None
+
+    rows, _, sessions = grids[symbol]
+    start, end = bisect_left(sessions, first), bisect_left(sessions, process)
+    if end == len(sessions) or sessions[end] != process or start >= end:
+        return None
+    try:
+        expected = expected_market_session_coverage(first.isoformat(), process.isoformat())
+    except MarketCalendarError:
+        return None
+    if tuple(day.isoformat() for day in sessions[start:end]) != expected.session_dates or any(
+        _traded_price(row) is None for row in rows[start : end + 1]
+    ):
+        return None
+    successor = successors[0]
+    rules = tuple(
+        replace(rule, supporting_action_ids=(*rule.supporting_action_ids, component["id"]))
+        if rename["id"] in rule.supporting_action_ids
+        else rule
+        for rule in successor.applied_rules
+    )
+    interval = replace(successor, start_date_inclusive=first, end_date_exclusive=process, applied_rules=rules)
+    return NameChangeHistory(symbol, first, sessions[end - 1], interval, rename["id"])
+
+
 def _post_padding_shared_uuid_suffix_history(
     lineage,
     intervals,
@@ -1732,11 +1983,14 @@ def assess_name_change_history(
     internal_component_handoffs=True,
     complete_certificate_conflicts=True,
     completed_event_scope=True,
+    processing_date_successor_seams=False,
+    main_component_arrivals=False,
 ):
     """Certify source bounds without reading reports produced by these edges."""
-    if not any(edge.edge_type == "name_change" for edge in candidates):
-        # A completed sourced substitution needs no numerical rename proof.
-        # Do not prepare price grids when this group has no rename candidate.
+    component_actions = _main_component_arrival_actions(lineage) if main_component_arrivals else ()
+    has_rename_candidates = any(edge.edge_type == "name_change" for edge in candidates)
+    if not component_actions and not has_rename_candidates:
+        # Do not prepare price grids for groups without a source-based rename assessment.
         return NameChangeAssessment()
     # This is the independent continuity producer. Its complete selected source
     # inputs may prove a bounded rename; assignments derived from that same
@@ -1756,7 +2010,14 @@ def assess_name_change_history(
         # set; this projection preserves historical replay without changing facts.
         lineage = {**lineage, "queried_symbols": ()}
     fields = ("t", "o", "h", "l", "c", "v", "n", "vw")
-    grids = {symbol: _grid(work) for symbol, work in sources.items()}
+    needed = None if has_rename_candidates else {rename["new_symbol"] for rename, _, _, _ in component_actions}
+    grids = {symbol: _grid(work) for symbol, work in sources.items() if needed is None or symbol in needed}
+    component_histories = tuple(
+        history
+        for action in component_actions
+        if (history := _main_component_arrival_history(lineage, intervals, candidates, grids, *action))
+        is not None
+    )
     accepted, histories, independent, excluded, pre_entry_excluded = set(), [], set(), [], []
     for edge in candidates:
         if edge.edge_type != "name_change":
@@ -1998,6 +2259,12 @@ def assess_name_change_history(
         if proven:
             accepted.add(edge.action_id)
             spans = [(compared[0][0], compared[-1][0])]
+            if processing_date_successor_seams:
+                seam = _processing_date_successor_seam(
+                    lineage, intervals, candidates, edge, old, new, last, tail.session_dates[1:]
+                )
+                if seam is not None:
+                    histories.append(seam)
         else:
             # Exact observed spans can establish row provenance even when the
             # full handoff cannot certify a UUID join. Keep gaps unresolved.
@@ -2027,4 +2294,5 @@ def assess_name_change_history(
         frozenset(independent),
         tuple(excluded),
         tuple(pre_entry_excluded),
+        component_histories,
     )

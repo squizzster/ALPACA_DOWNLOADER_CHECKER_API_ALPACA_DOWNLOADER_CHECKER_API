@@ -102,7 +102,9 @@ class RawGapProvenanceTests(unittest.TestCase):
         controls = storage.controls(case.store)
         self.assertEqual(storage.select_late_bar_repairs(case.store, controls)["sources"], {})
         group = case.catalogue_groups("OTHER")["OTHER"]
-        self.assertTrue(any("unexplained_missing_sessions" in d["reasons"] for d in group["decisions"]))
+        (limited,) = [d for d in group["decisions"] if d.get("publication_start_after_missing_session") == day]
+        self.assertTrue(limited["eligible"])
+        self.assertEqual(limited["explained_missing_sessions"], [])
         self.assertEqual(group["history_validation"]["raw_gap_presence"]["TEST"]["present_sessions"], [day])
 
     def legacy_projection(self):

@@ -5,7 +5,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from libs.alpaca_end_of_day_security_correlation import name_change
 from libs.alpaca_end_of_day_security_correlation.uuid_lineage import build_uuid_lineage_edges
 from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy, load_policy
 from libs.alpaca_lineage_build.observations import select_observations
@@ -145,6 +147,74 @@ def early_successor_bridge_evidence(*, same_uuid=True, same_cusip=True):
         "corporate_actions_data_quality": "complete",
     }
     return evidence
+
+
+def processing_date_successor_seam_case():
+    evidence = early_successor_bridge_evidence()
+    current = evidence["identities"][0]
+    current.update(symbol="NEW", lookup_symbols=["NEW"])
+    retired = dict(current, id="retired-lookup-id", symbol="OLD", status="inactive", tradable=False)
+    evidence["asset_lookups"].extend(
+        dict(evidence["asset_lookups"][0], lookup_kind="symbol", lookup=label, asset=asset)
+        for label, asset in (("OLD", retired), ("NEW", current))
+    )
+    evidence["queried_symbols"] = ["NEW", "OLD"]
+    complete = bars(
+        ("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09", "2024-01-10")
+    )
+    return evidence, {"OLD": complete[:3], "NEW": complete}
+
+
+def main_component_arrival_case():
+    evidence = rename(same_uuid=True, same_cusip=True, old="FORMER", new="ARRIVAL", when="2024-01-08")
+    evidence["query"] = {
+        "input_symbol": "ARRIVAL",
+        "corporate_actions_start": "2024-01-01",
+        "corporate_actions_end": "2024-02-01",
+        "corporate_actions_data_quality": "complete",
+    }
+    arrival = dict(evidence["identities"][0], symbol="ARRIVAL", exchange="NASDAQ")
+    unit = dict(arrival, id="unit-id", symbol="BUNDLE")
+    evidence["identities"] = [arrival, unit]
+    evidence["asset_lookups"] = [
+        {
+            "lookup_kind": kind,
+            "lookup": value,
+            "asset": asset,
+            "found": True,
+            "outcome": "found",
+            "http_status": 200,
+        }
+        for kind, value, asset in (
+            ("symbol", "ARRIVAL", arrival),
+            ("cusip", "old-cusip", arrival),
+            ("cusip", "unit-cusip", unit),
+        )
+    ]
+    evidence["corporate_actions"].append(
+        {
+            "action_type": "unit_split",
+            "id": "unit-separation",
+            "old_symbol": "BUNDLE",
+            "old_cusip": "unit-cusip",
+            "old_rate": 1,
+            "new_symbol": "ARRIVAL",
+            "new_cusip": "old-cusip",
+            "new_rate": 1,
+            "alternate_symbol": "ARRIVAL.WS",
+            "alternate_cusip": "warrant-cusip",
+            "alternate_rate": 0.5,
+            "effective_date": "2024-01-04",
+            "process_date": "2024-01-04",
+        }
+    )
+    complete = bars(("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"))
+    return evidence, {
+        "FORMER": complete[:4],
+        "ARRIVAL": complete,
+        "BUNDLE": bars(("2024-01-03", "2024-01-04", "2024-01-05"), base=20),
+        "ARRIVAL.WS": bars(("2024-01-04", "2024-01-05", "2024-01-08"), base=2),
+    }
 
 
 def terminal_carry_forward_evidence():
@@ -2473,6 +2543,240 @@ class NameChangeEvidenceTests(unittest.TestCase):
         self.assertEqual(
             2,
             sum(item["row_count"] for item in raw_segments(incomplete, "uncorrelated")),
+        )
+
+    def test_processing_date_seam_assigns_only_observed_successor_sessions(self):
+        evidence, histories = processing_date_successor_seam_case()
+        with (
+            patch.object(
+                name_change, "_processing_date_successor_seam", wraps=name_change._processing_date_successor_seam
+            ) as assess_seam,
+            patch.object(
+                name_change,
+                "expected_market_session_coverage",
+                wraps=name_change.expected_market_session_coverage,
+            ) as coverage,
+        ):
+            current = run(evidence, histories)
+        assess_seam.assert_called_once()
+        self.assertEqual(1, coverage.call_args_list.count((("2024-01-04", "2024-01-09"), {})))
+        frozen = correlate(
+            Path("."),
+            inputs_for(histories),
+            dict.fromkeys(histories, evidence),
+            policy=replace(PRODUCTION_POLICY, implementation_correlation_version=95),
+        )
+        self.assertEqual(current["OLD"]["correlated"], frozen["OLD"]["correlated"])
+        self.assertEqual(current["OLD"]["uncorrelated"], frozen["OLD"]["uncorrelated"])
+        self.assertEqual([], raw_segments(current["NEW"], "uncorrelated"))
+        self.assertEqual(
+            [
+                ("2024-01-02", "2024-01-04", "OLD"),
+                ("2024-01-05", "2024-01-08", "NEW"),
+                ("2024-01-09", "2024-01-10", "NEW"),
+            ],
+            [
+                (item["first_session_date"], item["last_session_date"], item["historical_symbol"])
+                for item in raw_segments(current["NEW"])
+            ],
+        )
+        self.assertEqual(
+            ["2024-01-05"],
+            [item["first_session_date"] for item in raw_segments(frozen["NEW"], "uncorrelated")],
+        )
+        for adjustment in ADJUSTMENTS:
+            segments = [
+                item for item in current["NEW"]["correlated"]["segments"] if item["adjustment"] == adjustment
+            ]
+            self.assertEqual(
+                {("old-id",)}, {tuple(item["security_identity"]["member_alpaca_asset_ids"]) for item in segments}
+            )
+
+    def test_processing_date_seam_preserves_explicit_dates_and_unresolved_competition(self):
+        for case in (
+            "effective_date",
+            "ex_date",
+            "active rival",
+            "dated rival",
+            "missing session",
+            "no trades",
+            "incomplete actions",
+            "unmatched overlap",
+            "predecessor request stopped early",
+        ):
+            with self.subTest(case=case):
+                evidence, histories = processing_date_successor_seam_case()
+                if case in {"effective_date", "ex_date"}:
+                    evidence["corporate_actions"][0][case] = "2024-01-09"
+                elif case == "active rival":
+                    evidence["asset_lookups"][1]["asset"].update(status="active", tradable=True)
+                elif case == "dated rival":
+                    evidence["symbol_occupancy_evidence"].append(
+                        occupancy(
+                            "OLD",
+                            "rival-cusip",
+                            "retired-lookup-id",
+                            action_type="name_change",
+                            action_id="rival",
+                            process_date="2024-01-08",
+                            role="new",
+                        )
+                    )
+                elif case == "missing session":
+                    del histories["NEW"][4]
+                elif case == "no trades":
+                    histories["NEW"][4].update(v="0", n="0")
+                elif case == "incomplete actions":
+                    evidence["queried_symbols"] = ["NEW"]
+                elif case == "unmatched overlap":
+                    histories["NEW"][2] = dict(histories["NEW"][2], v="200")
+                if case == "predecessor request stopped early":
+                    inputs = inputs_for(histories)
+                    for download in inputs["OLD"].downloads.values():
+                        download.manifest["request_to"] = "2024-01-05"
+                    current = correlate(
+                        Path("."), inputs, dict.fromkeys(histories, evidence), policy=PRODUCTION_POLICY
+                    )
+                else:
+                    current = run(evidence, histories)
+                self.assertTrue(
+                    any(
+                        item["first_session_date"] <= "2024-01-05" <= item["last_session_date"]
+                        for item in raw_segments(current["NEW"], "uncorrelated")
+                    )
+                )
+
+    def test_earlier_main_component_dates_only_its_literal_source(self):
+        evidence, histories = main_component_arrival_case()
+        peers = {
+            label: {
+                **evidence,
+                "query": {**evidence["query"], "input_symbol": label},
+                "queried_symbols": list(histories),
+            }
+            for label in histories
+        }
+        with patch.object(
+            name_change, "_main_component_arrival_history", wraps=name_change._main_component_arrival_history
+        ) as assess:
+            current = correlate(Path("."), inputs_for(histories), peers, policy=PRODUCTION_POLICY)
+        assess.assert_called_once()
+        frozen = correlate(
+            Path("."),
+            inputs_for(histories),
+            peers,
+            policy=replace(PRODUCTION_POLICY, implementation_correlation_version=96),
+        )
+        self.assertEqual(
+            [("2024-01-04", "2024-01-05", "ARRIVAL"), ("2024-01-08", "2024-01-08", "ARRIVAL")],
+            [
+                (s["first_session_date"], s["last_session_date"], s["historical_symbol"])
+                for s in raw_segments(current["ARRIVAL"])
+            ],
+        )
+        self.assertEqual(["2024-01-08"], [s["first_session_date"] for s in raw_segments(frozen["ARRIVAL"])])
+        for label in ("FORMER", "BUNDLE", "ARRIVAL.WS"):
+            for branch in ("correlated", "uncorrelated"):
+                self.assertEqual(frozen[label][branch], current[label][branch])
+        self.assertEqual(frozen["ARRIVAL"]["uuid_lineage_edges"], current["ARRIVAL"]["uuid_lineage_edges"])
+        self.assertEqual(
+            frozen["ARRIVAL"]["ticker_ownership_intervals"], current["ARRIVAL"]["ticker_ownership_intervals"]
+        )
+        for adjustment in ADJUSTMENTS:
+            proof = next(
+                s
+                for s in current["ARRIVAL"]["correlated"]["segments"]
+                if s["adjustment"] == adjustment and s["first_session_date"] == "2024-01-04"
+            )
+            self.assertEqual(
+                {"transition", "unit-separation"},
+                set(proof["ticker_ownership_interval"]["supporting_corporate_action_ids"]),
+            )
+
+    def test_main_component_does_not_resolve_recurrent_or_competing_arrivals(self):
+        for case in (
+            "recurring arrival",
+            "later component",
+            "distinct explicit date",
+            "owner collision",
+            "untraded row",
+        ):
+            with self.subTest(case=case):
+                evidence, histories = main_component_arrival_case()
+                rename_action, unit_split = evidence["corporate_actions"]
+                if case == "recurring arrival":
+                    evidence["corporate_actions"].append(
+                        dict(rename_action, id="second-arrival", old_symbol="OTHER", process_date="2024-01-10")
+                    )
+                elif case == "later component":
+                    unit_split.update(effective_date="2024-01-09", process_date="2024-01-09")
+                elif case == "distinct explicit date":
+                    rename_action["effective_date"] = "2024-01-05"
+                elif case == "owner collision":
+                    evidence["symbol_occupancy_evidence"].append(
+                        occupancy(
+                            "ARRIVAL",
+                            "rival-cusip",
+                            "rival",
+                            action_type="name_change",
+                            action_id="rival-entry",
+                            process_date="2024-01-05",
+                            role="new",
+                        )
+                    )
+                else:
+                    histories["ARRIVAL"][2] = dict(histories["ARRIVAL"][2], n="0", v="0")
+                current = run(evidence, histories)
+                frozen = correlate(
+                    Path("."),
+                    inputs_for(histories),
+                    dict.fromkeys(histories, evidence),
+                    policy=replace(PRODUCTION_POLICY, implementation_correlation_version=96),
+                )
+                for label in histories:
+                    for branch in ("correlated", "uncorrelated"):
+                        self.assertEqual(frozen[label][branch], current[label][branch])
+
+    def test_later_same_label_split_dates_only_its_later_issue(self):
+        evidence, histories = main_component_arrival_case()
+        current = evidence["identities"][0]
+        current.update(status="inactive", tradable=False)
+        add_name_change_edge(
+            evidence,
+            action_id="later-rename",
+            process_date="2024-01-19",
+            predecessor=("after-split", "ARRIVAL", "after-split-cusip", "Same class after split"),
+            successor=("after-split", "DESTINATION", "after-split-cusip", "Same class after split"),
+        )
+        later = dict(current, id="after-split", symbol="DESTINATION", status="active", tradable=True)
+        evidence["asset_lookups"].append(
+            dict(evidence["asset_lookups"][1], lookup="after-split-cusip", asset=later)
+        )
+        split = {
+            "action_type": "reverse_split",
+            "id": "later-split",
+            "symbol": "ARRIVAL",
+            "old_cusip": "old-cusip",
+            "new_cusip": "after-split-cusip",
+            "old_rate": 8,
+            "new_rate": 1,
+            "ex_date": "2024-01-12",
+            "process_date": "2024-01-12",
+        }
+        evidence["corporate_actions"].append(split)
+        restored = run(evidence, histories)["ARRIVAL"]
+        self.assertEqual(
+            [("2024-01-04", "2024-01-05")],
+            [
+                (s["first_session_date"], s["last_session_date"])
+                for s in raw_segments(restored)
+                if "same_issue_main_component_observation" in s.get("warnings", [])
+            ],
+        )
+        evidence["corporate_actions"].remove(split)
+        unresolved = run(evidence, histories)["ARRIVAL"]
+        self.assertTrue(
+            any(s["first_session_date"] == "2024-01-04" for s in raw_segments(unresolved, "uncorrelated"))
         )
 
     def test_pre_entry_carry_forward_is_only_a_non_observation_certificate(self):

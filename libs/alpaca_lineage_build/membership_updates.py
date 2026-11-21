@@ -12,6 +12,7 @@ from libs.alpaca_end_of_day_security_correlation.component_refinement import (
     DatedRoutes,
     ExtensionDecisions,
     membership_pairs,
+    membership_policy_version,
     membership_scope,
     refine,
 )
@@ -52,7 +53,7 @@ def apply_completed(reports, selected, completed, *, load_report=None):
     if not isinstance(changes, list):
         raise LineageError("incomplete completed membership plan")
     binding = completed["scope_binding"]
-    version = selected.get("membership_version", 94)
+    version = membership_policy_version(selected)
     if (version >= 94 or "membership_version" in binding) and binding.get("membership_version") != version:
         raise LineageError("stale completed membership plan: membership policy changed")
     if version >= 94 and binding.get("receipt_generations") != selected["receipt_generations"]:

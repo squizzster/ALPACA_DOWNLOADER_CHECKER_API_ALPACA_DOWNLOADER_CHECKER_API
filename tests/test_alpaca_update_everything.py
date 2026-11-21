@@ -188,8 +188,11 @@ class UpdateEverythingTests(unittest.TestCase):
         ):
             serving_storage.select_late_bar_repairs(store, legacy)
         before_group = serving_storage.read_groups(store, [key], generation=controls["state"]["generation"])[key]
-        public_id = before_group["decisions"][0]["public_id"]
-        self.assertFalse(before_group["decisions"][0]["eligible"])
+        before_decision = before_group["decisions"][0]
+        public_id = before_decision["public_id"]
+        self.assertTrue(before_decision["eligible"], before_decision)
+        self.assertEqual(before_decision["publication_start_after_missing_session"], "2026-01-06")
+        self.assertEqual(before_group["securities"][0]["first_session"], "2026-01-07")
 
         from libs.alpaca_pricing_download.refresh import probe_late_bar_repairs
 
@@ -271,6 +274,7 @@ class UpdateEverythingTests(unittest.TestCase):
         )[controls["members"]["AAA"]]
         decision = next(item for item in group["decisions"] if item["public_id"] == public_id)
         self.assertTrue(decision["eligible"], decision)
+        self.assertEqual(group["securities"][0]["first_session"], "2026-01-05")
         self.assertEqual(
             [row[0][:10] for row in read_pricing_views(store, "AAA")["raw"]],
             ["2026-01-05", "2026-01-06", "2026-01-07"],

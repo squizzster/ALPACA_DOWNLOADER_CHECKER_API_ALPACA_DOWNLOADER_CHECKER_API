@@ -23,6 +23,7 @@ from .registration import command_policy
 from .update import update_everything
 from .work_contract import (
     WorkPolicy,
+    acknowledge_numerical_completions,
     acquisition_fingerprint,
     auxiliary_work,
     numerical_satisfied,
@@ -231,16 +232,19 @@ def _prepare_locked(
     if numerical["work"]:
         from .numerical_recovery import resume as resume_numerical
 
+        acknowledge_numerical_completions(store, numerical["work"], context.index["symbols"], numerical["work"])
         deferred = [
             {"symbol": name, "reason": reason}
             for name, item in numerical["work"].items()
-            if not numerical_satisfied(item, context.index["symbols"].get(name, {}).get("projection"))
+            if item.get("required_numerical_completion") is not None
             and (reason := restriction(item, end, retry_blocked=retry_blocked))
         ]
         numerical_policy = WorkPolicy(store, context.index, numerical["work"], deferred, end, context=context)
         finished, failed, visited = [], [], set()
         for name in sorted(numerical["work"]):
-            required = numerical["work"][name]["required_numerical_completion"]
+            required = numerical["work"][name].get("required_numerical_completion")
+            if required is None:
+                continue
             operation_id = required.get("operation_id") if isinstance(required, dict) else None
             visit_key = operation_id or ("invalid", name)
             if visit_key in visited:

@@ -21,6 +21,143 @@ from libs.alpaca_serving_catalogue.producer import maintain
 
 
 class NumericalCompletionIntegrationTests(NativeCase):
+    def test_daily_append_consumes_a_published_repair_before_advancing_prices(self):
+        from test_alpaca_universe_update import CatalogueClient
+
+        from libs.alpaca_lineage_build import numerical_recovery, universe_state
+        from libs.alpaca_lineage_build.check_summary import rebuild
+        from libs.alpaca_lineage_build.universe_update import rebuild_universe, run_update
+        from libs.alpaca_pricing_download.check_summary import pending_symbols
+        from libs.alpaca_pricing_download.contract import timestamp
+        from libs.alpaca_pricing_download.http import BarsClient
+        from libs.alpaca_pricing_download.update_checks import read_checks
+
+        marker = {"version": 1, "operation_id": "completed-test-repair"}
+
+        def completed_receipt(receipt, boundaries):
+            receipt["retained_recovery"] = marker
+            boundaries.clear()
+
+        result = pipeline.run_lineage(self.store, identity_client=IdentityClient({"TEST": asset("TEST")}))
+        self.assertEqual(result["failed"], 0, result)
+        self.publish_change(completed_receipt)
+        library = self.bootstrap()
+        security = library.resolve_ticker("TEST")[0]
+        baseline = library.get_histories(security.public_id)
+        rebuild(self.store)
+        rebuild_universe(self.store)
+        target = "2026-10-15"
+        universe_state.put_work(
+            self.store,
+            "TEST",
+            {
+                "obligation_id": "pending-append",
+                "status": "pending",
+                "end_exclusive": target,
+                "pricing_end_exclusive": target,
+                "reasons": ["advance_summary_coverage", "numerical_selection_incomplete"],
+                "required_group": ["TEST"],
+                "required_numerical_completion": marker,
+                "refresh_metadata": False,
+                "invalidate_pricing": False,
+                "acquire": False,
+                "required_history_check": True,
+            },
+        )
+        rows = [*self.bars, *valid_bars("2026-10-14", target)]
+        registry = self.directory / "ticker.csv"
+        registry.write_text("TEST\n")
+        pricing = BarsClient("fake", "fake")
+
+        def response(params):
+            start, end = timestamp(params["start"]), timestamp(params["end"])
+            self.assertEqual(params["symbols"], "TEST")
+            if params["adjustment"] != "all":
+                self.assertGreaterEqual(params["start"][:10], "2026-10-14")
+            return {"bars": {"TEST": [row for row in rows if start <= timestamp(row["t"]) <= end]}}
+
+        with (
+            patch.object(pricing, "_get", side_effect=response),
+            patch.object(
+                numerical_recovery, "accept_selection", side_effect=AssertionError("repair scope replayed")
+            ),
+            patch.object(numerical_recovery, "prepare_group", side_effect=AssertionError("repair repeated")),
+        ):
+            result = run_update(
+                self.store,
+                target,
+                pricing_client=pricing,
+                identity_client=CatalogueClient([asset("TEST")]),
+                registry=registry,
+            )
+        self.assertTrue(result["complete"], result["failures"])
+        self.assertEqual(result["pending_work"], 0)
+        self.assertFalse(pending_symbols(self.store))
+        self.assertFalse(read_checks(self.store, readonly=True)["checks"])
+        work = universe_state.read_state(self.store, symbols=["TEST"])["work"]["TEST"]
+        self.assertNotIn("required_numerical_completion", work)
+        self.assertEqual(work["status"], "complete")
+        published = storage.read_index(self.root)["symbols"]["TEST"]["projection"]
+        self.assertNotIn("retained_recovery", published)
+        self.assertEqual(
+            result["stages"]["serving_catalogue"]["pending_export_inputs"], {"pricing": 0, "lineage": 0}
+        )
+        final = DataLibrary(store=self.store).get_histories(security.public_id)
+        for view in ADJUSTMENTS:
+            self.assertEqual(final[view].bars[:-1], baseline[view].bars)
+            self.assertEqual(final[view].bars[-1].session.isoformat(), "2026-10-14")
+
+    def test_numerical_publication_survives_interrupted_work_acknowledgement(self):
+        from libs.alpaca_lineage_build import numerical_recovery, universe_state
+        from libs.alpaca_lineage_build.work_contract import obligation
+
+        self.legacy_group()
+        universe_state.initialize(self.store)
+        selection = self.selection()
+        with (
+            patch.object(
+                universe_state,
+                "acknowledge_numerical_completions",
+                side_effect=RuntimeError("after publication"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "after publication"),
+        ):
+            numerical_recovery.resume(selection, enroll=True)
+        selected = storage.read_index(self.root)
+        for name in self.members:
+            self.assertEqual(
+                selected["symbols"][name]["projection"]["retained_recovery"], selection.groups[0].completion()
+            )
+        pending = universe_state.read_numerical_work(self.store)["work"]
+        self.assertEqual(set(pending), set(self.members))
+        prior = pending["MAIN"]
+        later = obligation(
+            {
+                **prior,
+                "end_exclusive": "2026-10-15",
+                "pricing_end_exclusive": "2026-10-15",
+                "reasons": [*prior["reasons"], "advance_summary_coverage"],
+            },
+            prior,
+        )
+        universe_state.put_work(self.store, "MAIN", later)
+        with (
+            patch.object(numerical_recovery, "prepare_group", side_effect=AssertionError("repair repeated")),
+            patch.object(pipeline, "_current_sources", side_effect=AssertionError("pricing reopened")),
+            patch.object(storage, "read_receipt", side_effect=AssertionError("lineage reread")),
+            patch.object(storage, "publish", side_effect=AssertionError("lineage republished")),
+        ):
+            result = numerical_recovery.resume(selection, enroll=True)
+        self.assertEqual(result["previously_completed_groups"], 1)
+        self.assertEqual(universe_state.read_numerical_work(self.store)["work"], {})
+        current = universe_state.read_state(self.store, symbols=self.members)["work"]
+        self.assertEqual(current["MAIN"]["obligation_id"], later["obligation_id"])
+        self.assertEqual(current["MAIN"]["status"], "pending")
+        self.assertEqual(current["MAIN"]["reasons"], ["advance_summary_coverage"])
+        self.assertEqual(current["MAIN"]["pricing_end_exclusive"], "2026-10-15")
+        self.assertTrue(all(current[name]["status"] == "complete" for name in set(self.members) - {"MAIN"}))
+        self.assertEqual(storage.read_index(self.root), selected)
+
     def legacy_group(self, *, changed_labels=False, continuous_main=False):
         """Retain a real earlier eligible result with its old duplicate choices.
 
@@ -283,6 +420,160 @@ class NumericalCompletionIntegrationTests(NativeCase):
         ):
             numerical_recovery.resume(self.selection())
         self.assertEqual(storage.read_index(self.root), before)
+
+    def test_exact_unapproved_conflict_reaches_first_serving_validation(self):
+        from libs.alpaca_lineage_build import numerical_completion, universe_state
+        from libs.alpaca_lineage_build.retained_recovery import recover
+
+        self.legacy_group()
+        controls = serving_storage.controls(self.store)
+        key = self.group_key
+        prior = serving_storage.read_groups(self.store, [key], generation=controls["state"]["generation"])[key]
+        offline = deepcopy(prior)
+        offline["decision_generation"] = uuid4().hex
+        offline["securities"] = []
+        offline["decisions"] = [
+            {"public_id": self.public_id, "eligible": False, "reasons": ["conflicting_daily_history"]}
+        ]
+        offline["history_validation"]["prefix_records"] = []
+        offline["history_validation"]["identities"] = {}
+        serving_storage.commit(self.store, {key: prior}, [offline])
+        self.assertEqual(DataLibrary(store=self.store).resolve_ticker("MAIN"), ())
+        universe_state.initialize(self.store)
+        payloads = Counter()
+        read = pricing_storage.read_artifact
+
+        def read_payload(path, *, purpose, **kwargs):
+            if purpose == "selected_payload":
+                payloads[path] += 1
+                self.assertEqual(payloads[path], 1, "accepted numerical payload reread during serving")
+            return read(path, purpose=purpose, **kwargs)
+
+        selection = self.selection()
+        with (
+            self.no_ownership_or_pricing_work(),
+            patch.object(numerical_completion, "complete", wraps=numerical_completion.complete) as checked,
+            patch("libs.alpaca_pricing_download.handoff.read_artifact", side_effect=read_payload),
+            patch("alpaca_end_of_day.standalone.read_artifact", side_effect=read_payload),
+        ):
+            result = recover(self.store, None, selection=selection)
+
+        self.assertEqual(result["published_prepared_groups"], 1, result)
+        self.assertEqual(checked.call_count, 1)
+        self.assertTrue(payloads)
+        index = storage.read_index(self.root)
+        for name in self.members:
+            receipt = storage.read_receipt(self.root, name, index)
+            self.assertNotIn("numerical_source_revision", receipt)
+        served = result["serving_catalogue"]
+
+        self.assertTrue(served["complete"], served)
+        self.assertEqual(served["full_history_evaluations"], 1)
+        self.assertEqual(served["reused_history_prefixes"], 0)
+        self.assertGreater(served["checked_bars"], 0)
+        actual = DataLibrary(store=self.store).get_histories(self.public_id)
+        self.assertEqual(
+            {view: history.bars for view, history in actual.items()},
+            {view: history.bars for view, history in self.expected.items()},
+        )
+        for name in ("TEST", "UNKNOWN"):
+            self.assertEqual(index["symbols"][name], self.baseline_index["symbols"][name])
+
+    def test_first_validation_requires_matching_conflict_equality_and_no_retained_checkpoint(self):
+        from types import SimpleNamespace
+
+        from libs.alpaca_lineage_build.numerical_recovery import _serving_checkpoints
+
+        group = SimpleNamespace(receipts={"MAIN": "receipt"}, pricing={"MAIN": "prices"})
+        day = "2025-01-02"
+        prior = {
+            "references": {"lineage": group.receipts, "pricing": group.pricing},
+            "history_validation": {"prefix_records": [{"public_id": "approved"}]},
+            "decisions": [
+                {"public_id": pid, "eligible": False, "reasons": ["conflicting_daily_history"]}
+                for pid in ("first", "different", "former")
+            ],
+        }
+        retained = {
+            "references": {"lineage": {"MAIN": "old receipt"}, "pricing": group.pricing},
+            "history_validation": {"prefix_records": []},
+            "offline_ownership": {
+                "checkpoints": [{"history_validation": {"prefix_records": [{"public_id": "former"}]}}]
+            },
+            "decisions": [{"public_id": "stale", "eligible": False, "reasons": ["conflicting_daily_history"]}],
+        }
+        completion = SimpleNamespace(
+            scopes={pid: (day,) for pid in ("approved", "first", "different", "former", "stale")},
+            exact_competing_sessions={pid: {day} for pid in ("first", "former", "stale")},
+        )
+        records, first_validation = _serving_checkpoints(
+            group, {"current": prior, "older": retained}, completion
+        )
+        self.assertEqual(records, {"approved": {"public_id": "approved"}})
+        self.assertEqual(first_validation, {"first"})
+
+    def test_mixed_completion_carries_only_the_checkpointed_identity_in_its_revision(self):
+        from types import SimpleNamespace
+
+        from libs.alpaca_lineage_build.numerical_revision import build
+
+        day, source = "2025-01-02", "MAIN"
+        identities = ("approved", "first")
+        accepted_label = {"ticker": source, "first_session": day, "last_session": day}
+        completion = SimpleNamespace(
+            scopes={pid: (day,) for pid in identities},
+            selected_sources={pid: {day: source} for pid in identities},
+            equality_outcomes={pid: {day: True} for pid in identities},
+            reports={
+                source: {
+                    "correlated": {
+                        "segments": [
+                            {
+                                "observation_selection": "selected",
+                                "security_identity": {"security_id": pid},
+                                "adjustment": "raw",
+                                "row_start": position,
+                                "row_end": position,
+                            }
+                            for position, pid in enumerate(identities, 1)
+                        ]
+                    }
+                }
+            },
+            changes={
+                source: {
+                    "raw": {
+                        1: {"day": day, "observation_tickers": [source], "observation_selection": "selected"},
+                        2: {"day": day, "observation_tickers": ["FUTURE"], "observation_selection": "selected"},
+                    }
+                }
+            },
+        )
+        prior = {
+            source: {
+                "source_sha256": "prices",
+                "serving_ownership": {
+                    "views": {
+                        view: {
+                            "ownership": [{"rows": 1, "owner": [pid, source]} for pid in identities],
+                        }
+                        for view in ADJUSTMENTS
+                    }
+                },
+            }
+        }
+        revision = build(
+            prior,
+            {source: "receipt"},
+            completion,
+            records={"approved": {"ticker_ranges": [accepted_label]}},
+            positions={source: {"raw": [1, 2]}},
+            first_validation={"first"},
+        )
+        for field in ("sessions", "selected_sources", "source_membership", "numeric_reuse_sessions"):
+            self.assertEqual(set(revision[field]), {"approved"})
+        self.assertEqual(revision["numeric_reuse_sessions"]["approved"], [day])
+        self.assertTrue(revision["labels_unchanged"])
 
     def test_competing_prefix_inside_longer_accepted_segment_preserves_its_suffix(self):
         from libs.alpaca_lineage_build import numerical_completion, numerical_recovery

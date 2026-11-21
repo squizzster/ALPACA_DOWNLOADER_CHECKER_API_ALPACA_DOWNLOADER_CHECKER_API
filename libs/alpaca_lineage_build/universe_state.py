@@ -394,6 +394,26 @@ def accept_retired_uuid(store, symbol, obligation_id, observation):
             raise LineageError(f"{symbol}: retired UUID observation belongs to superseded work")
 
 
+def acknowledge_numerical_completions(store, work):
+    """Retire published prerequisites without acknowledging the remaining work."""
+    if not work:
+        return
+    with outcome_batch(store) as batch:
+        connection = batch.require_active(store)
+        for symbol, item in work.items():
+            changed = connection.execute(
+                "UPDATE work SET body=json_set(json_remove(body, '$.required_numerical_completion'), "
+                "'$.reasons', json((SELECT json_group_array(value) FROM json_each(work.body, '$.reasons') "
+                "WHERE value!='numerical_selection_incomplete'))) WHERE symbol=? "
+                "AND json_extract(body, '$.obligation_id')=? AND json_extract(body, '$.status')!='complete' "
+                "AND json_extract(body, '$.required_numerical_completion.version')=1 "
+                "AND json_extract(body, '$.required_numerical_completion.operation_id')=?",
+                (symbol, item["obligation_id"], item["required_numerical_completion"]["operation_id"]),
+            ).rowcount
+            if changed != 1:
+                raise LineageError(f"{symbol}: numerical completion belongs to superseded work")
+
+
 @traced("correction_completion_accept")
 def accept_correction_completion(store, symbol, expected, completed):
     """A producer outcome cannot acknowledge a concurrently renewed requirement."""

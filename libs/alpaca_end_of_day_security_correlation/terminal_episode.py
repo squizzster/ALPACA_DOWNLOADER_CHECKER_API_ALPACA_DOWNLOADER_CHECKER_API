@@ -165,6 +165,17 @@ def has_prolonged_carry_forward(rows):
     return any(value is not None and sum(1 for _ in group) >= 100 for value, group in groupby(rows, _inert))
 
 
+def last_prolonged_carry_forward_end(rows):
+    """Position just after the last flat carry interval of at least 100 sessions."""
+    end = offset = 0
+    for value, group in groupby(rows, _inert):
+        length = sum(1 for _ in group)
+        offset += length
+        if value is not None and length >= 100:
+            end = offset
+    return end
+
+
 def has_traded_observation(rows):
     return bool(_traded_prices(rows))
 

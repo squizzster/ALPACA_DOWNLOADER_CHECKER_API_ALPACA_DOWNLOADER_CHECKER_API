@@ -416,7 +416,7 @@ class ServingCatalogueTests(NativeCase):
         self.assertFalse(decisions[0]["eligible"])
         self.assertIn("price_bounds", decisions[0]["reasons"])
 
-    def test_policy_rejects_numeric_timestamp_gap_and_view_failures_without_trimming(self):
+    def test_policy_rejects_numeric_and_timestamp_failures_and_publishes_the_supported_gap_range(self):
         cases = {
             "NEGATIVE": [{**b, "v": Decimal("-0.0000000000001")} for b in self.bars],
             "FRACTIONCOUNT": [{**b, "n": Decimal("7.1")} for b in self.bars],
@@ -428,8 +428,10 @@ class ServingCatalogueTests(NativeCase):
         for name, rows in cases.items():
             self.add_symbol(name, rows)
         data = self.bootstrap()
-        self.assertEqual([s.tickers for s in data.list_securities()], [("TEST",)])
-        self.assertEqual(status(self.store)["ineligible_identities"], len(cases))
+        self.assertEqual({s.tickers for s in data.list_securities()}, {("TEST",), ("GAP",)})
+        self.assertEqual(status(self.store)["ineligible_identities"], len(cases) - 1)
+        (recent,) = data.resolve_ticker("GAP")
+        self.assertEqual(recent.first_session.isoformat(), self.bars[3]["t"][:10])
         for name in cases:
             self.assertEqual(len(StandaloneReader(self.store).get_history(name)["bars"]), len(cases[name]))
 
@@ -550,9 +552,12 @@ class ServingCatalogueTests(NativeCase):
                 result = maintain(self.store)
             self.assertTrue(result["complete"], result)
             self.assertEqual(result["checked_bars"], 0)
-            self.assertEqual(DataLibrary(store=self.store).search_securities("NEW"), ())
+            (recent,) = DataLibrary(store=self.store).resolve_ticker("NEW")
+            self.assertEqual(recent.first_session.isoformat(), "2023-12-18")
             decisions = self.catalogue_groups("NEW")["NEW"]["decisions"]
-            self.assertIn("unexplained_missing_sessions", decisions[0]["reasons"])
+            self.assertTrue(decisions[0]["eligible"])
+            self.assertEqual(decisions[0]["publication_start_after_missing_session"], "2023-12-15")
+            self.assertEqual(decisions[0]["explained_missing_sessions"], [])
             self.assertTrue(StandaloneReader(self.store).get_history("NEW")["bars"])
 
     def test_empty_and_entirely_unresolved_groups_have_no_public_identity(self):

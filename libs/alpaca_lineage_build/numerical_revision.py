@@ -5,9 +5,11 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from .contract import LineageError, document_digest
 
 
-def build(previous, receipt_generations, completion, *, records, positions):
+def build(previous, receipt_generations, completion, *, records, positions, first_validation=()):
     """Carry accepted owners/labels and equality into serving; never read prices."""
-    scopes = completion.scopes
+    scopes = {pid: days for pid, days in completion.scopes.items() if pid not in first_validation}
+    if not scopes:
+        return None
     membership = {pid: {view: set() for view in ADJUSTMENTS} for pid in scopes}
     labels = {pid: {} for pid in scopes}
     for name, report in completion.reports.items():
@@ -15,6 +17,8 @@ def build(previous, receipt_generations, completion, *, records, positions):
             if segment.get("observation_selection") != "selected":
                 continue
             pid = segment["security_identity"]["security_id"]
+            if pid not in scopes:
+                continue
             view = segment["adjustment"]
             for index in range(segment["row_start"] - 1, segment["row_end"]):
                 original = positions[name][view][index]
@@ -72,7 +76,7 @@ def build(previous, receipt_generations, completion, *, records, positions):
         "source_membership": {
             pid: {view: sorted(names) for view, names in views.items()} for pid, views in membership.items()
         },
-        "selected_sources": completion.selected_sources,
+        "selected_sources": {pid: completion.selected_sources[pid] for pid in scopes},
     }
     revision["id"] = document_digest(revision)
     return revision

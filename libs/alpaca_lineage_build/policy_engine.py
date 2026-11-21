@@ -6,6 +6,15 @@ from dataclasses import replace
 from os.path import abspath
 from typing import Any
 
+from libs.alpaca_end_of_day_security_correlation.closed_departure import (
+    DATED_CURRENT_ANCHOR_VERSION,
+    OBSERVED_CURRENT_SESSION_VERSION,
+    PRIOR_CLAIM_VERSION,
+    RESUMED_CURRENT_SOURCE_VERSION,
+    SPLIT_CONTINUITY_VERSION,
+    SPLIT_SUFFIX_VERSION,
+    TERMINAL_DEPARTURE_VERSION,
+)
 from libs.alpaca_end_of_day_security_correlation.correlation import (
     build_security_correlation_report,
 )
@@ -21,9 +30,11 @@ from libs.alpaca_end_of_day_security_correlation.name_change import (
     EXACT_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
     EXTENDED_COMPONENT_HANDOFF_CORRELATION_VERSION,
     INTERNAL_COMPONENT_HANDOFF_CORRELATION_VERSION,
+    MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION,
     PARTIAL_SHARED_UUID_SUFFIX_CORRELATION_VERSION,
     POST_PADDING_SHARED_UUID_SUFFIX_CORRELATION_VERSION,
     PRE_ENTRY_AND_COMPONENT_HANDOFF_CORRELATION_VERSION,
+    PROCESSING_DATE_SUCCESSOR_SEAM_CORRELATION_VERSION,
     SINGLE_SESSION_SHARED_UUID_HISTORY_CORRELATION_VERSION,
     SPLIT_ADJUSTED_POST_PADDING_ALIAS_CORRELATION_VERSION,
     TERMINAL_CARRY_FORWARD_EXCLUSION_CORRELATION_VERSION,
@@ -43,6 +54,12 @@ from libs.alpaca_end_of_day_security_correlation.predecessor_prefix import (
     SUCCESSOR_PREFIX_SPLIT_CHAIN_CORRELATION_VERSION,
 )
 from libs.alpaca_end_of_day_security_correlation.row_correlation import CorrelationCache
+from libs.alpaca_end_of_day_security_correlation.same_ticker_distribution import (
+    CORRELATION_VERSION as SAME_TICKER_DISTRIBUTION_VERSION,
+)
+from libs.alpaca_end_of_day_security_correlation.stock_merger_occupation import (
+    CORRELATION_VERSION as CROSS_LABEL_STOCK_MERGER_VERSION,
+)
 from libs.alpaca_end_of_day_security_correlation.terminal_episode import (
     ACTION_ANCHORED_VACANT_TICKER_BRIDGE_CORRELATION_VERSION,
     VACANT_TICKER_BRIDGE_CORRELATION_VERSION,
@@ -130,6 +147,9 @@ def _correlate_until_stable(
         reports = {}
         for symbol, view in sorted(inputs.items()):
             accepted = getattr(view, "accepted_report", None)
+            retained_split = getattr(view, "retained_split", None)
+            if accepted is None and retained_split is not None and cache.split_suffix_current_sources:
+                accepted = retained_split.assignments
             if accepted is not None and accepted["source_row_count"] == accepted["correlated"]["row_count"]:
                 reports[symbol] = accepted
                 dependencies[symbol] = {}
@@ -200,6 +220,9 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
             cache._uuid_candidates[id(graph[0])] = graph
         if getattr(view, "materialized", True) is False:
             continue
+        distribution = getattr(view, "accepted_same_ticker_distribution", None)
+        if distribution is not None:
+            cache.accepted_same_ticker_distributions[symbol] = distribution
         cache.register_name_change_source(
             symbol,
             view.downloads.values(),
@@ -209,6 +232,12 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
                 for descriptor in view.local["downloads"]
             ),
         )
+        retained_split = getattr(view, "retained_split", None)
+        if retained_split is not None and cache.split_suffix_current_sources:
+            accepted[symbol] = retained_split.memberships
+            cache.accepted_current_source_ownership[symbol] = (retained_split.ownership, None)
+            cache.retained_split_suffixes.add(symbol)
+            continue
         certificate = getattr(view, "accepted_current_source_ownership", None)
         if certificate is not None:
             descriptor = next(item for item in view.local["downloads"] if item["adjustment"] == "raw")
@@ -227,6 +256,25 @@ def _correlation_cache(policy) -> CorrelationCache:
         new_public_parent_continuations=False,
         closed_departure_current_sources=policy.implementation_correlation_version >= 80,
         retired_label_observations=policy.implementation_correlation_version >= 94,
+        same_ticker_distributions=(
+            policy.implementation_correlation_version >= SAME_TICKER_DISTRIBUTION_VERSION
+        ),
+        processing_date_successor_seams=(
+            policy.implementation_correlation_version >= PROCESSING_DATE_SUCCESSOR_SEAM_CORRELATION_VERSION
+        ),
+        closed_terminal_departures=policy.implementation_correlation_version >= TERMINAL_DEPARTURE_VERSION,
+        prior_claim_current_sources=policy.implementation_correlation_version >= PRIOR_CLAIM_VERSION,
+        split_suffix_current_sources=policy.implementation_correlation_version >= SPLIT_SUFFIX_VERSION,
+        split_continuity=policy.implementation_correlation_version >= SPLIT_CONTINUITY_VERSION,
+        resumed_current_sources=policy.implementation_correlation_version >= RESUMED_CURRENT_SOURCE_VERSION,
+        dated_current_anchor_sources=policy.implementation_correlation_version >= DATED_CURRENT_ANCHOR_VERSION,
+        observed_current_sessions=policy.implementation_correlation_version >= OBSERVED_CURRENT_SESSION_VERSION,
+        cross_label_stock_merger_occupation=(
+            policy.implementation_correlation_version >= CROSS_LABEL_STOCK_MERGER_VERSION
+        ),
+        main_component_arrivals=(
+            policy.implementation_correlation_version >= MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION
+        ),
         sourced_succession_certificates=False,
         completed_event_scope=(
             policy.implementation_correlation_version >= COMPLETED_EVENT_SCOPE_CORRELATION_VERSION

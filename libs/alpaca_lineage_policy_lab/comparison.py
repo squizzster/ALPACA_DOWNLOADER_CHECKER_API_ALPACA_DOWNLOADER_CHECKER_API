@@ -25,6 +25,7 @@ from libs.alpaca_lineage_build.contract import document_digest, reusable_decisio
 from libs.alpaca_lineage_build.correlation_policy import authorize_production_policy
 from libs.alpaca_lineage_build.observations import select_observations
 from libs.alpaca_lineage_build.pricing import load_pricing
+from libs.alpaca_lineage_build.source_work import retain_split_suffix
 from libs.alpaca_lineage_build.storage import reader_snapshot, select_inputs
 from libs.alpaca_lineage_build.transform import correlate, make_publication
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, symbol_label, timestamp
@@ -458,6 +459,25 @@ def _load_group(
                 raise PolicyLabError(f"{symbol}: selected pricing generation changed")
             sources[symbol] = source
             inputs[symbol] = load_pricing(store, symbol, source=source, source_sha256=expected_generation)
+            # An on-store completed suffix already owns the split observation
+            # and later grid. The candidate can assess the earlier positions
+            # using that handoff. Supplied research receipts cannot seed it.
+            suffix = receipts[symbol].get("current_source_ownership")
+            if (
+                held_receipts is None
+                and selected_group == {symbol}
+                and isinstance(suffix, dict)
+                and suffix.get("version") == 3
+                and reusable_decision(receipts[symbol])
+            ):
+                receipt = receipts[symbol]
+                accepted_boundaries = {
+                    (symbol, kind, receipt["boundaries"][kind]["sha256"]): document
+                    for kind, document in snapshot["boundaries"][symbol].items()
+                }
+                inputs[symbol].retained_split = retain_split_suffix(
+                    inputs[symbol], receipt, store / "end_of_day/lineage", accepted_boundaries
+                )
 
         boundaries = {symbol: snapshot["boundaries"][symbol] for symbol in sorted(expected_sources)}
         # These are report provenance tokens, not instructions for a consumer to

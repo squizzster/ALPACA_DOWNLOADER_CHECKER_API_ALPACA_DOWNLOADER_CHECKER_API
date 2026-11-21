@@ -6,10 +6,7 @@ from uuid import uuid4
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 from libs.common.debug_trace import traced
-from libs.common.us_equity_market_session_calendar import (
-    expected_market_session_coverage,
-    market_sessions_between,
-)
+from libs.common.us_equity_market_session_calendar import expected_market_session_coverage
 
 from . import cusip_dates, gap_suffix
 from .contract import CatalogueError, policy
@@ -408,8 +405,213 @@ def _rename_exclusions(group, members, observations, bars, missing, *, source_se
     return accepted
 
 
+def _security_record(
+    group,
+    security,
+    history_summary,
+    members,
+    observations,
+    sources,
+    split_dates,
+    *,
+    interval=None,
+    coverage_limits=None,
+    historical_interval=None,
+    label_changes=(),
+):
+    public_id = security["public_id"]
+    ticker_ranges = history_summary["ticker_ranges"]
+    last_session = history_summary["last_session"]
+    if historical_interval:
+        from .carried_labels import project_ranges
+
+        ticker_ranges = project_ranges(ticker_ranges, [historical_interval["change"]])
+        history_summary = {**history_summary, "ticker_ranges": ticker_ranges}
+
+    # Metadata can come from a superseded contributing source whose dated
+    # assignments extend beyond the selected numerical history. Project its
+    # known dates onto every publication range, including full histories.
+    observations = [
+        {
+            **item,
+            "effective_from": max(item["effective_from"], history_summary["first_session"]),
+            "effective_through": min(item["effective_through"], last_session),
+        }
+        if item["effective_from"] is not None
+        else item
+        for item in observations
+        if item["effective_from"] is None
+        or (
+            item["effective_through"] >= history_summary["first_session"]
+            and item["effective_from"] <= last_session
+        )
+    ]
+
+    ownership = _ownership_intervals(group, public_id)
+    if any(interval["cusip"] for interval in ownership):
+        if split_dates is None:
+            split_dates = cusip_dates.split_evidence(sources)
+        periods = cusip_dates.supported_periods(split_dates, members, security["tickers"])
+        ownership, observations = cusip_dates.constrain(ownership, observations, periods)
+
+    if label_changes:
+        from .carried_labels import project_ownership
+
+        ownership = project_ownership(ownership, label_changes)
+
+    if historical_interval:
+        from .carried_labels import project_ownership
+
+        ownership = project_ownership(ownership, [historical_interval["change"]], carry_cusip=False)
+        if historical_interval.get("occupation"):
+            from .carried_labels import add_witnessed_occupation
+
+            ownership = add_witnessed_occupation(ownership, historical_interval["change"])
+
+    def values(field):
+        return sorted({o["value"] for o in observations if o["field"] == field})
+
+    return (
+        {
+            **history_summary,
+            **({"dated_price_interval": interval} if interval else {}),
+            **({"price_basis_limits": coverage_limits} if coverage_limits else {}),
+            **({"historical_label_interval": historical_interval} if historical_interval else {}),
+            "tickers": sorted({item["ticker"] for item in ticker_ranges}),
+            "names": values("name"),
+            "cusips": values("cusip"),
+            "exchanges": values("exchange"),
+            "asset_classes": values("asset_class"),
+            "external_identifiers": [],
+            "adjustments": list(ADJUSTMENTS),
+            "observations": observations,
+            "ticker_ownership_intervals": ownership,
+        },
+        split_dates,
+    )
+
+
+def adoptable_gap_records(previous):
+    """Select completed clean prefixes before opening any source metadata."""
+    candidates = {
+        decision["public_id"]: decision
+        for decision in previous["decisions"]
+        if decision["reasons"] == ["unexplained_missing_sessions"] and not decision.get("price_basis_limits")
+    }
+    if not candidates:
+        return None
+    validation = previous["history_validation"]
+    if validation.get("gap_suffix_version") != 1:
+        return None
+    return {
+        record["public_id"]: (candidates[record["public_id"]], record)
+        for record in validation["prefix_records"]
+        if record["public_id"] in candidates
+        and (
+            record.get("session_projection_version") is None
+            or (record.get("session_projection_version") == 1 and record.get("session_dates") is not None)
+        )
+        and not record["price_reasons"]
+        and "dated_price_token" not in record
+    }
+
+
+def adopt_validated_gap_suffix(group, previous, symbols, records):
+    """Publish a new range from the exact completed numerical decision."""
+    if group.references != previous["references"]:
+        raise CatalogueError("supported gap recovery input generation changed")
+    validation = previous["history_validation"]
+    sources = group.evidence["sources"]
+    completed, projected = {}, []
+    dated_checkpoints = {}
+    split_dates = None
+    history = group.historical_label_intervals()
+    for security in group.summary["securities"]:
+        public_id = security["public_id"]
+        if public_id not in records or set(security["adjustments"]) != set(ADJUSTMENTS):
+            continue
+        previous_decision, record = records[public_id]
+        missing = set(record["missing_sessions"])
+        unexplained = missing - set(previous_decision["explained_missing_sessions"])
+        last = record["last_session"]
+        if not unexplained or max(unexplained) != max(missing) or max(unexplained) >= last:
+            continue
+        members, observations = _metadata(group, public_id, sources=sources)
+        if not gap_suffix.supported_current_source(
+            sources, validation["inputs"], members, public_id, last, symbols=symbols
+        ):
+            continue
+        unresolved = _unresolved_ends(group, security, members, record["first_session"], last)
+        latest_gap = max(unexplained)
+        cutoff = max([latest_gap, *unresolved])
+        if cutoff >= last:
+            continue
+        dates = record.get("session_dates")
+        if dates is None:
+            # A clean unmarked gap-only result already certifies the observed
+            # market bounds and exact missing days. Assemble the absent
+            # projection once without replaying any values or observations.
+            dates = gap_suffix.legacy_session_dates(record["first_session"], last, missing)
+            if (
+                len(dates) != record["coverage"]["session_count"]
+                or not dates
+                or dates[0] != record["first_session"]
+                or dates[-1] != last
+            ):
+                continue
+            dated_checkpoints[public_id] = {**record, "session_projection_version": 1, "session_dates": dates}
+        summary = {
+            key: record[key]
+            for key in ("public_id", "first_session", "last_session", "ticker_ranges", "coverage")
+        }
+        selected = gap_suffix.clip_history(summary, dates, cutoff)
+        public_record, split_dates = _security_record(
+            group,
+            security,
+            selected,
+            members,
+            observations,
+            sources,
+            split_dates,
+            historical_interval=history.get(public_id),
+        )
+        projected.append(public_record)
+        completed[public_id] = {
+            **previous_decision,
+            "eligible": True,
+            "reasons": [],
+            "publication_start_after_missing_session": latest_gap,
+            **({"publication_start_after_unresolved": max(unresolved)} if unresolved else {}),
+            "supported_gap_suffix_version": gap_suffix.SUPPORTED_SUFFIX_VERSION,
+        }
+    if not completed:
+        return None
+    if dated_checkpoints:
+        validation = {
+            **validation,
+            "prefix_records": [
+                dated_checkpoints.get(record["public_id"], record) for record in validation["prefix_records"]
+            ],
+        }
+    return (
+        {
+            **previous,
+            "decision_generation": uuid4().hex,
+            "decisions": [completed.get(item["public_id"], item) for item in previous["decisions"]],
+            "securities": [*previous["securities"], *projected],
+            "history_validation": validation,
+            "validation_work": {
+                "reused_history_prefixes": len(completed),
+                "full_history_evaluations": 0,
+                "checked_bars": 0,
+            },
+        },
+        projected,
+    )
+
+
 @traced("serving_evaluation")
-def evaluate(group, previous=(), *, rebuild_projection=False):
+def evaluate(group, previous=(), *, rebuild_projection=False, supported_gap_suffix=True):
     from alpaca_end_of_day.standalone import HistoryPrefixChanged, UnservableHistoryError
 
     # The locked group owns identity assignments and numerical source choices;
@@ -674,7 +876,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
         if cutoff is not None and cutoff >= last_session:
             reasons.add("unresolved_coverage")
         unresolved_gaps = missing - explained
-        gap_cutoff = protected = None
+        gap_cutoff = protected = previous_publication = None
+        adopted_gap_suffix = False
         if unresolved_gaps:
             latest_gap = max(unresolved_gaps)
             supported_start = None
@@ -706,6 +909,19 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
             ):
                 gap_cutoff = latest_gap
                 cutoff = max(cutoff or latest_gap, latest_gap)
+            elif (
+                supported_gap_suffix
+                and not reasons
+                and not coverage_limits
+                and latest_gap == max(missing)
+                and latest_gap < last_session
+                and gap_suffix.supported_current_source(sources, inputs, members, public_id, last_session)
+            ):
+                # The accepted views already show a clean later run. Publish
+                # that range while recording the earlier gap as unresolved.
+                gap_cutoff = latest_gap
+                cutoff = max(cutoff or latest_gap, latest_gap)
+                adopted_gap_suffix = True
             else:
                 reasons.add("unexplained_missing_sessions")
         decisions.append(
@@ -781,7 +997,8 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 (
                     item
                     for old in ((previous_publication,) if gap_cutoff is not None else previous)
-                    if any(
+                    if old is not None
+                    and any(
                         d["public_id"] == public_id
                         and cutoff
                         in (
@@ -809,9 +1026,7 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 if protected["first_session"] == right:
                     accepted_range = protected
             if accepted_range is None or accepted_range.get("price_exclusions"):
-                session_dates = [
-                    d for d in market_sessions_between(first_session, last_session) if d not in missing
-                ]
+                session_dates = gap_suffix.legacy_session_dates(first_session, last_session, missing)
         if session_dates is None and (
             any(v.get("pending") and v["terminal"] and last_session > v["witness_end"] for v in gaps)
             or rebuild_projection
@@ -958,6 +1173,14 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 decisions[-1]["publication_start_after_price_basis"] = max(split_limits)
             if gap_cutoff is not None:
                 decisions[-1]["publication_start_after_missing_session"] = gap_cutoff
+                if adopted_gap_suffix or (
+                    previous_publication is not None
+                    and any(
+                        decision["public_id"] == public_id and "supported_gap_suffix_version" in decision
+                        for decision in previous_publication["decisions"]
+                    )
+                ):
+                    decisions[-1]["supported_gap_suffix_version"] = gap_suffix.SUPPORTED_SUFFIX_VERSION
             ticker_ranges = history_summary["ticker_ranges"]
 
         if gaps:
@@ -966,78 +1189,26 @@ def evaluate(group, previous=(), *, rebuild_projection=False):
                 decisions[-1].update(eligible=False, reasons=["unresolved_coverage"])
                 if gap_cutoff is not None:
                     decisions[-1].pop("publication_start_after_missing_session")
+                    decisions[-1].pop("supported_gap_suffix_version", None)
                     decisions[-1]["reasons"].append("unexplained_missing_sessions")
                 continue
             ticker_ranges = history_summary["ticker_ranges"]
             last_session = history_summary["last_session"]
 
-        historical_interval = historical.get(public_id)
-        if historical_interval:
-            from .carried_labels import project_ranges
-
-            ticker_ranges = project_ranges(ticker_ranges, [historical_interval["change"]])
-            history_summary = {**history_summary, "ticker_ranges": ticker_ranges}
-
-        # Metadata can come from a superseded contributing source whose dated
-        # assignments extend beyond the selected numerical history. Project its
-        # known dates onto every publication range, including full histories.
-        observations = [
-            {
-                **item,
-                "effective_from": max(item["effective_from"], history_summary["first_session"]),
-                "effective_through": min(item["effective_through"], last_session),
-            }
-            if item["effective_from"] is not None
-            else item
-            for item in observations
-            if item["effective_from"] is None
-            or (
-                item["effective_through"] >= history_summary["first_session"]
-                and item["effective_from"] <= last_session
-            )
-        ]
-
-        ownership = _ownership_intervals(group, public_id)
-        if any(interval["cusip"] for interval in ownership):
-            if split_dates is None:
-                split_dates = cusip_dates.split_evidence(sources)
-            periods = cusip_dates.supported_periods(split_dates, members, security["tickers"])
-            ownership, observations = cusip_dates.constrain(ownership, observations, periods)
-
-        if label_changes:
-            from .carried_labels import project_ownership
-
-            ownership = project_ownership(ownership, label_changes)
-
-        if historical_interval:
-            from .carried_labels import project_ownership
-
-            ownership = project_ownership(ownership, [historical_interval["change"]], carry_cusip=False)
-            if historical_interval.get("occupation"):
-                from .carried_labels import add_witnessed_occupation
-
-                ownership = add_witnessed_occupation(ownership, historical_interval["change"])
-
-        def values(field):
-            return sorted({o["value"] for o in observations if o["field"] == field})
-
-        securities.append(
-            {
-                **history_summary,
-                **({"dated_price_interval": interval} if interval else {}),
-                **({"price_basis_limits": coverage_limits} if coverage_limits else {}),
-                **({"historical_label_interval": historical_interval} if historical_interval else {}),
-                "tickers": sorted({item["ticker"] for item in ticker_ranges}),
-                "names": values("name"),
-                "cusips": values("cusip"),
-                "exchanges": values("exchange"),
-                "asset_classes": values("asset_class"),
-                "external_identifiers": [],
-                "adjustments": list(ADJUSTMENTS),
-                "observations": observations,
-                "ticker_ownership_intervals": ownership,
-            }
+        public_record, split_dates = _security_record(
+            group,
+            security,
+            history_summary,
+            members,
+            observations,
+            sources,
+            split_dates,
+            interval=interval,
+            coverage_limits=coverage_limits,
+            historical_interval=historical.get(public_id),
+            label_changes=label_changes,
         )
+        securities.append(public_record)
     completed = {
         "locator": min(group.references["pricing"]),
         "references": group.references,

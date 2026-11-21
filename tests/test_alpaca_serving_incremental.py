@@ -189,7 +189,9 @@ class IncrementalServingTests(NativeCase):
         self.assertEqual(opened, [], "the completed adjusted segment already supplies its exact session")
         group = self.catalogue_groups("AUX")["AUX"]
         decision = next(item for item in group["decisions"] if item["public_id"] == public_id)
-        self.assertEqual(decision["reasons"], ["unexplained_missing_sessions"])
+        self.assertTrue(decision["eligible"])
+        self.assertEqual(decision["publication_start_after_missing_session"], "2023-12-15")
+        self.assertEqual(decision["explained_missing_sessions"], [])
         record = next(
             item for item in group["history_validation"]["prefix_records"] if item["public_id"] == public_id
         )
@@ -469,9 +471,9 @@ class IncrementalServingTests(NativeCase):
         self.assert_full_agreement("TEST")
 
     def test_append_checks_continuity_seam_and_new_numeric_failure(self):
-        for symbol, rows, reason in (
-            ("GAP", valid_bars("2026-10-15", "2026-10-16"), "unexplained_missing_sessions"),
-            ("BAD", [{**row, "v": -1} for row in valid_bars("2026-10-14", "2026-10-16")], "volume_domain"),
+        for symbol, rows in (
+            ("GAP", valid_bars("2026-10-15", "2026-10-16")),
+            ("BAD", [{**row, "v": -1} for row in valid_bars("2026-10-14", "2026-10-16")]),
         ):
             self.add_symbol(symbol)
             self.bootstrap()
@@ -480,7 +482,11 @@ class IncrementalServingTests(NativeCase):
             self.assertTrue(result["complete"], result)
             self.assertEqual(result["full_history_evaluations"], 0)
             decision = self.catalogue_groups(symbol)[symbol]["decisions"][0]
-            self.assertIn(reason, decision["reasons"])
+            if symbol == "GAP":
+                self.assertEqual(decision["publication_start_after_missing_session"], "2026-10-14")
+                self.assertTrue(decision["eligible"])
+            else:
+                self.assertIn("volume_domain", decision["reasons"])
             self.assert_full_agreement(symbol)
 
     def test_published_label_change_preserves_numerical_prefix(self):

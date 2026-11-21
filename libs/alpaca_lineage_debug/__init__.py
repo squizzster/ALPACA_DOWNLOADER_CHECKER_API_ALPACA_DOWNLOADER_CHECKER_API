@@ -23,6 +23,45 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (27, 27, 108, 126):
+        binding = {**binding, "lineage_runtime": 125}
+        bindings.append(binding)
+        current = (27, 27, 108, 125)
+    if allow_previous and current == (27, 27, 108, 125):
+        binding = {**binding, "correlation_runtime": 107}
+        bindings.append(binding)
+        current = (27, 27, 107, 125)
+    if allow_previous and current == (27, 27, 107, 125):
+        binding = {**binding, "correlation_runtime": 106}
+        bindings.append(binding)
+        current = (27, 27, 106, 125)
+    if allow_previous and current == (27, 27, 106, 125):
+        binding = {**binding, "correlation_runtime": 105}
+        bindings.append(binding)
+        current = (27, 27, 105, 125)
+    if allow_previous and current == (27, 27, 105, 125):
+        binding = {**binding, "correlation_runtime": 104}
+        bindings.append(binding)
+        current = (27, 27, 104, 125)
+    if allow_previous and current == (27, 27, 104, 125):
+        binding = {**binding, "correlation_runtime": 103}
+        bindings.append(binding)
+        current = (27, 27, 103, 125)
+    if allow_previous and current == (27, 27, 103, 125):
+        binding = {**binding, "correlation_runtime": 102}
+        bindings.append(binding)
+        current = (27, 27, 102, 125)
+    if allow_previous and current == (27, 27, 102, 125):
+        # Frozen comparisons retain the recorded policy and generation bindings.
+        binding = {**binding, "correlation_runtime": 101, "lineage_runtime": 124}
+        bindings.append(binding)
+        current = (27, 27, 101, 124)
+    if allow_previous and current == (27, 27, 101, 124):
+        # Distribution ownership has a distinct policy identity. Frozen
+        # comparisons retain their exact policy and generation bindings.
+        binding = {**binding, "correlation_runtime": 100}
+        bindings.append(binding)
+        current = (27, 27, 100, 124)
     if allow_previous and current == (27, 27, 100, 124):
         # Workflow catalogue retention leaves the recorded policy, generations
         # and completed lineage comparisons applicable under their original bindings.
