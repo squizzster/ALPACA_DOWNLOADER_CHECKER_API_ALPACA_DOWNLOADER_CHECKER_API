@@ -5,13 +5,21 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 from .action_identity import exact_cusip_lookup_asset, exact_symbol_lookup_asset
-from .name_change import _complete_action_query_covers, _non_observation_conflict, _positive_decimal
+from .name_change import (
+    _action_dates,
+    _complete_action_query_covers,
+    _non_observation_conflict,
+    _positive_decimal,
+    action_labels,
+)
 
 if TYPE_CHECKING:
     from .ownership_interval_rules import TickerOwnershipInterval
 
 NAME = "distinct_stock_merger_ticker_occupation"
 CORRELATION_VERSION = 101
+DEPARTURE_NAME = "stock_merger_acquiree_terminal_boundary"
+DEPARTURE_VERSION = 103
 
 
 @dataclass(frozen=True)
@@ -21,6 +29,76 @@ class StockMergerOccupation:
     cusip: str
     asset_id: str
     action_id: str
+
+
+def _same_issue_distribution(action, symbol, cusip, day):
+    return (
+        action.get("action_type") == "spin_off"
+        and (action.get("source_symbol"), action.get("new_symbol")) == (symbol, symbol)
+        and (action.get("source_cusip"), action.get("new_cusip")) == (cusip, cusip)
+        and action.get("ex_date") == day.isoformat()
+        and _positive_decimal(action.get("source_rate")) == _positive_decimal(action.get("new_rate")) == 1
+    )
+
+
+def select_departure(lineage, intervals, actions):
+    """Close established acquiree ownership using exact, corroborated provider evidence."""
+    query = lineage.get("query") or {}
+    symbol = query.get("input_symbol")
+    candidates = []
+    for action in actions:
+        acquirer = action.get("acquirer_symbol")
+        if action.get("action_type") != "stock_merger" or action.get("acquiree_symbol") != symbol:
+            continue
+        if not acquirer or acquirer == symbol or not action.get("id"):
+            continue
+        try:
+            day = date.fromisoformat(action["effective_date"])
+            through = date.fromisoformat(query["corporate_actions_end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if any(
+            action.get(field, day.isoformat()) != day.isoformat() for field in ("process_date", "payable_date")
+        ):
+            continue
+        if not all(_positive_decimal(action.get(field)) for field in ("acquiree_rate", "acquirer_rate")):
+            continue
+        if not all(_complete_action_query_covers(lineage, symbol, point) for point in (day, through)):
+            continue
+        cusip, destination = action.get("acquiree_cusip"), action.get("acquirer_cusip")
+        old = exact_cusip_lookup_asset(lineage, cusip)
+        new = exact_cusip_lookup_asset(lineage, destination)
+        if (
+            old is None
+            or new is None
+            or cusip == destination
+            or old["id"] == new["id"]
+            or old.get("symbol") != symbol
+            or new.get("symbol") != acquirer
+            or old.get("status") != "inactive"
+            or old.get("tradable") is not False
+        ):
+            continue
+        preceding = [
+            interval for interval in intervals if interval.historical_symbol == symbol and interval.contains(day)
+        ]
+        if len(preceding) != 1:
+            continue
+        (prior,) = preceding
+        if (prior.cusip, prior.asset_id) != (cusip, old["id"]) or not (
+            prior.start_date_inclusive is not None and prior.start_date_inclusive < day
+        ):
+            continue
+        if any(
+            other.get("id") != action["id"]
+            and symbol in action_labels(other)
+            and (not (dates := _action_dates(other)) or max(dates) >= day)
+            and not _same_issue_distribution(other, symbol, cusip, day)
+            for other in actions
+        ):
+            continue
+        candidates.append((prior, day, action["id"]))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _same_acquirer_events(lineage, actions, current, cusip, predecessor_id):

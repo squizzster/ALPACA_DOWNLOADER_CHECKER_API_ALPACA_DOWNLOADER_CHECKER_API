@@ -260,5 +260,10 @@
     "modifications": [
       "Expose the offline Bloodhound integrity checker as audit bloodhound."
     ]
+  },
+  {
+    "modifications": [
+      "Use the completed dated lineage scopes when checking prices for a reused ticker."
+    ]
   }
 ]

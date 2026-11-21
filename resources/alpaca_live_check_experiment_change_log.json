@@ -61,5 +61,10 @@
     "modifications": [
       "Retain explicit added-session evidence from the comparison producer alongside changed fields, allowing precise consumption of already completed unchanged-source corrections."
     ]
+  },
+  {
+    "modifications": [
+      "Plan dated fully adjusted comparison windows before live requests when accepted lineage distinguishes successive occupants of the same ticker."
+    ]
   }
 ]

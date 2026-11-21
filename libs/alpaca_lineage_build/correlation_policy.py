@@ -514,6 +514,7 @@ def _compile_schema_four(
         (99, 37),
         (100, 37),
         (101, 37),
+        (102, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -659,6 +660,7 @@ def _compile_schema_four(
                 (99, 37),
                 (100, 37),
                 (101, 37),
+                (102, 37),
                 (CORRELATION_VERSION, LINEAGE_VERSION),
             }
             else "published_reference"
@@ -841,6 +843,10 @@ def _compile_schema_four(
     if correlation_version >= 102:
         semantic["execution"]["established_fixed_point"]["split_continuity"] = (
             "continuous_pre_split_common_stock_history_v1"
+        )
+    if correlation_version >= 103:
+        semantic["execution"]["established_fixed_point"]["stock_merger_departure"] = (
+            "stock_merger_acquiree_terminal_boundary_v1"
         )
     if fallback_profile == CORRECTED_PROFILE:
         semantic.update(

@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 50
+VERSION = 51
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -772,6 +772,7 @@ def dispatch(args):
         pricing, identity = clients()
         selected = symbols(args)
         if operation == "check":
+            from libs.alpaca_lineage_build.comparison_routes import dated_routes
             from libs.alpaca_pricing_download.check_summary import assert_current, read_snapshot
             from libs.alpaca_pricing_download.live_check import verify
 
@@ -790,6 +791,7 @@ def dispatch(args):
                 pricing._get,
                 batch_size=args.batch_size,
                 progress=count_callback(reporter, "pricing_check", "symbols"),
+                dated_routes=dated_routes(policy.index, snapshot["entries"]),
             )
             assert_current(args.store, snapshot["token"])
             return result

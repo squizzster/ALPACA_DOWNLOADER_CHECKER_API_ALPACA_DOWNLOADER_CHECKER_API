@@ -25,6 +25,7 @@ from .name_change import (
 )
 from .observed_current_session import observed_session
 from .resumed_current_source import resumed_start
+from .stock_merger_occupation import DEPARTURE_NAME
 from .terminal_episode import (
     has_informative_trading,
     has_prolonged_carry_forward,
@@ -536,7 +537,7 @@ def assess_current_source(
     established terminal boundary. A complete informative current source must
     lie wholly after the departure, without another possible occupant.
     """
-    if not complete or lineage.get("unresolved_cusips") != []:
+    if lineage.get("unresolved_cusips") != []:
         return None
     if (
         not consensus.all_authenticated_adjustments_agree
@@ -566,6 +567,21 @@ def assess_current_source(
         if observed is None:
             return None
         return ObservedCurrentSessionOwnership(symbol, asset["id"], last.isoformat(), last.isoformat(), observed)
+
+    # The interval producer already established the former occupant's departure.
+    # A contemporaneous own-label observation can cover this one traded session
+    # even when the pricing owner has only materialized the writable suffix.
+    own_intervals = [interval for interval in intervals if interval.historical_symbol == symbol]
+    if any(
+        interval.asset_id != asset["id"]
+        and interval.end_date_exclusive is not None
+        and interval.end_date_exclusive < sessions[-1]
+        and any(rule.name == DEPARTURE_NAME for rule in interval.applied_rules)
+        for interval in own_intervals
+    ) and not any(interval.contains(sessions[-1]) for interval in own_intervals):
+        return latest_observed()
+    if not complete:
+        return None
 
     if allow_dated_current_anchor and selected_sources is not None:
         bounds = current_anchor_bounds(

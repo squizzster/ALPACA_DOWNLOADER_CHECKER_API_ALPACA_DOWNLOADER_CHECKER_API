@@ -40,7 +40,7 @@ from .endpoints import EndpointSelection, compare_history, comparison_rows, fetc
 from .failures import AcquisitionFailure
 from .history_tail import publish_legacy_tail
 from .late_bars import session_ranges
-from .responses import CompletedBars, completed_bars
+from .responses import CompletedBars, completed_bars, fetch_rows
 from .storage import load_source, read_update, read_validator, regular_path, ticker_lock, trace_source_selection
 
 
@@ -69,7 +69,17 @@ def recover_selected_correction(root, source, generation, correction_id, *, comp
 
 
 @traced("retained_history_check")
-def check_retained_source(store, symbol, end_date, *, client, pending=None, indexed_generation=None):
+def check_retained_source(
+    store,
+    symbol,
+    end_date,
+    *,
+    client,
+    pending=None,
+    indexed_generation=None,
+    lineage_generation=None,
+    dated_scopes=(),
+):
     """Check a selected source independently of active-summary eligibility."""
     store = Path(store).absolute()
     root = regular_path(store, f"end_of_day/pricing/{symbol}", published=True)
@@ -134,8 +144,12 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None, inde
                     "correction_observations": (contract or {}).get("observations", {}),
                 }
             selection = EndpointSelection.from_document(contract["selection"]) if applicable else None
-            if selection is not None and selection.applies(
-                store, symbol, request["source_sha256"], contract["end_exclusive"], contract["asof"]
+            if (
+                selection is not None
+                and selection.for_lineage(lineage_generation).comparison is not None
+                and selection.applies(
+                    store, symbol, request["source_sha256"], contract["end_exclusive"], contract["asof"]
+                )
             ):
                 if contract["end_exclusive"][:10] > end_date:
                     raise DownloadError("pending correction exceeds the requested cutoff")
@@ -160,13 +174,31 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None, inde
             )
             source = publication["source"]
             request = _refresh_request(symbol, source, source_sha256=publication["source_sha256"])
-        comparison = fetch_history(
-            client,
-            symbol,
-            endpoints,
-            request["asof"],
-            cutoff=timestamp(request["end_exclusive"]),
-        )
+        routes = {}
+        if dated_scopes and endpoints["all"] and indexed_generation == request["source_sha256"]:
+            from .live_check import comparison_windows, select_dated_endpoints
+
+            first, last = endpoints["all"][0], endpoints["all"][-1]
+            baseline = {**request, "first_all": first, "last_all": last, "tail_all": endpoints.tail_all}
+            routes = select_dated_endpoints(baseline, dated_scopes)
+            if routes:
+                live = tuple(
+                    row
+                    for start, stop, asof in comparison_windows(baseline, routes)
+                    for row in fetch_rows(client, symbol, "all", start, stop, asof=asof)
+                )
+                comparison = compare_history(first, endpoints.tail_all, live)
+                if not comparison.matched and (
+                    comparison.decision != "latest_session"
+                    or timestamp(comparison.correction_session).astimezone(NEW_YORK).date() in routes
+                ):
+                    raise DownloadError(
+                        f"{symbol}: mapped retained-history difference requires route-aware correction"
+                    )
+        if not routes:
+            comparison = fetch_history(
+                client, symbol, endpoints, request["asof"], cutoff=timestamp(request["end_exclusive"])
+            )
         if comparison.matched and correction_id is not None:
             # A changed generation invalidated a scoped pending decision. Its
             # fresh completed comparison now establishes unchanged current rows;
@@ -224,6 +256,7 @@ def check_retained_source(store, symbol, end_date, *, client, pending=None, inde
                     tail_all=endpoints.tail_all,
                     comparison=comparison,
                     comparison_asof=request["asof"],
+                    lineage_generation=lineage_generation if routes else None,
                 ),
             )
         return result
@@ -881,12 +914,15 @@ def acquire_retained(
     approved=None,
     acquired=None,
     missing_route=None,
+    dated_route=None,
     source_generations=None,
     lineage_generations=None,
     approved_lineage_generations=None,
 ):
     """First/latest all approval -> missing sessions, or selected full replacement."""
-    failures, probes = {}, []
+    from .live_check import comparison_windows, select_dated_endpoints
+
+    failures, probes, planned = {}, [], {}
     approved = dict(approved or {})
     source_generations = source_generations or {}
     lineage_generations = lineage_generations or {}
@@ -925,7 +961,21 @@ def acquire_retained(
             continue
         asof = acquisition_asof(source, end)
         try:
-            windows = history_windows(endpoints, cutoff=end)
+            scopes = dated_route(symbol, source_generations.get(symbol)) if dated_route else ()
+            if scopes and endpoints["all"]:
+                entry = {
+                    "symbol": symbol,
+                    "asof": asof,
+                    "first_all": endpoints["all"][0],
+                    "last_all": endpoints["all"][-1],
+                    "tail_all": endpoints.tail_all,
+                }
+                dates = select_dated_endpoints(entry, scopes)
+                if dates:
+                    planned[symbol] = dates
+                windows = tuple(comparison_windows(entry, dates, cutoff=end))
+            else:
+                windows = tuple((start, stop, asof) for start, stop in history_windows(endpoints, cutoff=end))
         except DownloadError as error:
             failures[symbol] = (AcquisitionFailure.from_error(error), False)
             continue
@@ -934,11 +984,11 @@ def acquire_retained(
                 "kind": "bars",
                 "why": "boundary_check",
                 "symbols": [symbol],
-                "asof": asof,
+                "asof": mapping,
                 "adjustments": ["all"],
                 "ranges": [{"start": start.isoformat(), "end_exclusive": stop.isoformat()}],
             }
-            for start, stop in windows
+            for start, stop, mapping in windows
         )
     cache, _ = (
         _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed)
@@ -988,9 +1038,34 @@ def acquire_retained(
         for symbol in approved
         if approved_lineage_generations.get(symbol) is not None
     }
+    planned_rows = {}
+    for key, value in cache.items():
+        if key[1] in planned:
+            planned_rows.setdefault(key[1], []).extend(value.rows)
+    for symbol, dates in planned.items():
+        if symbol in failures:
+            continue
+        endpoints = selected[symbol][1]
+        selected_generation = next(iter(dates.values()))["lineage_generation"]
+        try:
+            if selected_generation != lineage_generations.get(symbol):
+                raise DownloadError(f"{symbol}: dated comparison lineage generation changed")
+            decision = compare_history(endpoints["all"][0], endpoints.tail_all, planned_rows.get(symbol, ()))
+            if not decision.matched and (
+                decision.decision != "latest_session"
+                or timestamp(decision.correction_session).astimezone(NEW_YORK).date() in dates
+            ):
+                raise DownloadError(
+                    f"{symbol}: mapped retained-history difference requires route-aware correction"
+                )
+        except DownloadError as error:
+            failures[symbol] = (AcquisitionFailure.from_error(error), False)
+            continue
+        routed_decisions[symbol] = decision
+        routed_generations[symbol] = selected_generation
     if missing_route is not None:
         for symbol, (_source, endpoints) in selected.items():
-            if symbol in failures or symbol in approved:
+            if symbol in failures or symbol in approved or symbol in planned:
                 continue
             live = tuple(row for key, value in cache.items() if key[1] == symbol for row in value.rows)
             observed_days = {timestamp(row[0]).astimezone(NEW_YORK).date() for row in live}

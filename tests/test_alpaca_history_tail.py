@@ -120,9 +120,15 @@ class HistoryTailTests(unittest.TestCase):
             matched=True,
             tail_all=endpoints.tail_all,
             comparison=comparison,
-            lineage_generation="receipt-1",
+            lineage_generation="a" * 64,
         )
-        self.assertIs(selected.for_lineage("receipt-1"), selected)
+        self.assertIs(selected.for_lineage("a" * 64), selected)
+        serialized = json.loads(json.dumps(selected.document()))
+        self.assertEqual(serialized["schema_version"], 2)
+        accepted = EndpointSelection.from_document(serialized)
+        self.assertEqual(accepted.lineage_generation, "a" * 64)
+        self.assertEqual(accepted.comparison, comparison)
+        self.assertIsNone(accepted.for_lineage("b" * 64).comparison)
         changed = selected.for_lineage("receipt-2")
         self.assertIsNone(changed.comparison)
         self.assertIsNone(changed.matched)
@@ -131,8 +137,8 @@ class HistoryTailTests(unittest.TestCase):
             changed.consume("store", "GOOG", "generation", "end", "asof"),
             endpoints,
         )
-        with self.assertRaisesRegex(DownloadError, "cannot select a durable correction"):
-            selected.document()
+        with self.assertRaisesRegex(DownloadError, "invalid dated durable pricing selection"):
+            EndpointSelection.from_document({**serialized, "lineage_generation": "receipt"})
         document = changed.document()
         self.assertNotIn("lineage_generation", document)
         with self.assertRaisesRegex(DownloadError, "durable pricing lineage generation"):
@@ -991,6 +997,59 @@ class HistoryTailPipelineTests(unittest.TestCase):
             self.assertEqual(len(traced), 1)
             self.assertEqual(traced[0]["details"]["history_check_actions"], 1)
             self.assertEqual(traced[0]["details"]["latest_session_corrections_selected"], 1)
+
+    def test_interrupted_dated_comparison_resumes_one_session_correction(self):
+        from libs.alpaca_lineage_build import storage as lineage_storage
+        from libs.alpaca_lineage_build import universe_state
+
+        with fixture() as case:
+            root = case.store / "end_of_day/lineage"
+            entry = lineage_storage.read_index(root, "AAA")["symbols"]["AAA"]
+            entry["projection"]["historical_price_routes"] = [
+                {
+                    "symbol": "AAA",
+                    "owner": "former",
+                    "asset_id": "former-uuid",
+                    "asof": "2016-01-04",
+                    "start": "2016-01-04",
+                    "end_exclusive": "2016-01-05",
+                }
+            ]
+            lineage_storage._update_index(root, {"AAA": entry})
+            case.live["AAA"] = [case.old[0], {**case.old[-1], "v": 12345}]
+
+            def stop_after_dated_comparison(params):
+                if "AAA" in params["symbols"].split(","):
+                    if params["start"][:10] == "2016-01-04":
+                        self.assertEqual((params["asof"], params["adjustment"]), ("2016-01-04", "all"))
+                    if params["adjustment"] == "raw":
+                        self.assertEqual(params["start"][:10], "2026-10-16")
+                        raise ProcessInterrupted
+                return case.page(params)
+
+            with (
+                patch.object(case.pricing, "_get", side_effect=stop_after_dated_comparison),
+                self.assertRaises(ProcessInterrupted),
+            ):
+                case.update()
+            work = universe_state.read_state(case.store)["work"]["AAA"]
+            correction = work["pricing_correction"]
+            self.assertEqual(correction["scope"], "latest_session")
+            self.assertEqual(correction["selection"]["lineage_generation"], entry["sha256"])
+            case.pages.clear()
+
+            def continue_without_comparing(params):
+                if "AAA" in params["symbols"].split(","):
+                    self.assertEqual(params["start"][:10], "2026-10-16")
+                    self.assertNotEqual(params["adjustment"], "all")
+                return case.page(params)
+
+            with patch.object(case.pricing, "_get", side_effect=continue_without_comparing):
+                report = case.update(retry_blocked=True)
+            self.assertTrue(report["complete"], report)
+            for view in download.read_pricing_views(case.store, "AAA").values():
+                self.assertEqual([row[0][:10] for row in view], ["2016-01-04", "2026-10-16"])
+                self.assertEqual(view[-1][5], "12345")
 
 
 class WorkEstimateTests(unittest.TestCase):

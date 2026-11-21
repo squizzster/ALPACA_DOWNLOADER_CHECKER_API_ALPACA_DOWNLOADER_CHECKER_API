@@ -642,5 +642,10 @@
     "modifications": [
       "Connect the observed common-stock episode preceding a corroborated same-label split to the active security without dating the provider identifier change or replacing the accepted identity membership."
     ]
+  },
+  {
+    "modifications": [
+      "Close established acquiree ticker ownership at a corroborated cross-label stock merger and bind a later traded session to its separately observed current occupant."
+    ]
   }
 ]

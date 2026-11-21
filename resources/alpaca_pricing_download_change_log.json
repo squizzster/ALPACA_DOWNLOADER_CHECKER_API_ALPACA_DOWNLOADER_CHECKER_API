@@ -381,5 +381,10 @@
     "modifications": [
       "Publish the inserted dates and row positions from selected-session corrections with their source generations, and carry applicable positions through later appends and rollover."
     ]
+  },
+  {
+    "modifications": [
+      "Keep the selected lineage generation in durable dated comparison corrections, preserving existing retained-price publication scopes."
+    ]
   }
 ]

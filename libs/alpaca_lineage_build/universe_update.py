@@ -13,7 +13,8 @@ from libs.common.debug_trace import traced
 
 from . import storage, universe_plan, universe_state
 from .catalogue import observe_catalogue
-from .comparison_routes import route_selector
+from .comparison_route_review import review_routes
+from .comparison_routes import dated_route_selector, route_selector
 from .context import accept_context, recover_and_accept_correlation_policy
 from .contract import LineageError
 from .metadata import EvidenceClient
@@ -615,6 +616,23 @@ def histories_locked(
     result, work = prepared["result"], policy.work
     root = store / "end_of_day/lineage"
 
+    if reviews := selection.get("comparison_route_reviews"):
+        reviewed = review_routes(store, reviews, accepted["index"], context=context, progress=progress)
+        result["stages"]["comparison_route_review"] = reviewed
+        for item in reviewed["results"]:
+            if item["status"] in {"failed", "waiting_for_pricing"}:
+                affected = item.get("affected", [item["symbol"]])
+                policy.blocked.update(affected)
+                policy.command_failures.append({**item, "stage": "comparison_route_review"})
+        if reviewed["failed"] and storage.path_at(root, ".pending.json").exists():
+            result["failed"] += reviewed["failed"]
+            result["failures"] = [*policy.failures, *policy.command_failures]
+            result["error"] = "pending comparison route publication must finish before pricing"
+            return None
+        published = {name for item in reviewed["results"] for name in item.get("processed", ())}
+        if published:
+            policy.update_index({name: context.index["symbols"][name] for name in published})
+
     @traced("registration")
     def register(symbols):
         additions = set(symbols) - registered
@@ -673,6 +691,7 @@ def histories_locked(
             from_dates={s: work[s].get("pricing_start") for s in symbols},
             context=context.pricing(),
             missing_route=acquisition_route,
+            dated_route=dated_route_selector(acquisition_index),
             lineage_generations=acquisition_lineage_generations,
         )
         pricing["results"].extend(value["results"])

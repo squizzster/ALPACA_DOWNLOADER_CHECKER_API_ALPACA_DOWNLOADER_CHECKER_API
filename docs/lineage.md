@@ -671,6 +671,16 @@ continuity proof: an accepted identity-preserving event or exact informative raw
 boundary, with complete matching eight-view grids. Use selected group inputs, never decisions derived from the
 disputed edge. Divergent independent concurrent sources keep their histories.
 
+An established acquiree interval ends on a cross-ticker stock merger's effective date when the dated
+provider action and exact inactive acquiree and distinct acquirer endpoints agree. A separate distribution or
+later competing evidence keeps the old boundary undecided. A same-day one-for-one record with the same
+source and destination ticker and CUSIP supplies no distinct claimant by itself. The terminal action closes
+the supported interval and records its provenance. The later traded session can use the existing
+contemporaneous current-label observation when no other interval covers it, including when only that writable
+suffix is materialized. The historical identities retain their existing memberships and assignments.
+[Stock merger ownership](../libs/alpaca_end_of_day_security_correlation/stock_merger_occupation.py) and
+[bounded current source](../libs/alpaca_end_of_day_security_correlation/closed_departure.py).
+
 Shared UUID still requires bounded historical-label evidence: own source plus informative exact matching suffix,
 existing independent-history proof, or accepted bounded round trip. Exact matching historical spans can establish
 row ownership without certifying a UUID join; unmatched spans remain unresolved. No source extends proof into an

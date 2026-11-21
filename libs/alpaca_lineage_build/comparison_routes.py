@@ -1,6 +1,57 @@
 """Select a dated provider label from accepted lineage for a missing observation."""
 
 
+def dated_price_scopes(indexed):
+    """Lend closed own-label scopes directly from the accepted lineage selector."""
+    return tuple(
+        {**route, "lineage_generation": indexed["sha256"]}
+        for route in indexed.get("projection", {}).get("historical_price_routes", ())
+    )
+
+
+def dated_routes(index, entries):
+    result = {}
+    for entry in entries:
+        symbol = entry["symbol"]
+        selected = index["symbols"].get(symbol) or {}
+        generation = entry.get("source_sha256")
+        if (
+            generation
+            and selected.get("source_sha256") == generation
+            and (scopes := dated_price_scopes(selected))
+        ):
+            result[symbol] = scopes
+    return result
+
+
+def dated_route_selector(index):
+    def select(symbol, source_generation):
+        entry = index["symbols"].get(symbol) or {}
+        return (
+            dated_price_scopes(entry)
+            if source_generation and entry.get("source_sha256") == source_generation
+            else ()
+        )
+
+    return select
+
+
+def assert_current_dated_routes(root, index, generations):
+    """Bind selected routes again only if the compact lineage selector advanced."""
+    from . import storage
+    from .contract import LineageError
+
+    with storage.publication_lock(root):
+        if (root / ".pending.json").exists():
+            raise LineageError("pending lineage publication; recover it before dated pricing correction")
+        if storage.index_state(root) == index.get("projection_state"):
+            return
+        for symbol, generation in generations.items():
+            entry = storage.read_index(root, symbol)["symbols"].get(symbol, {})
+            if entry.get("sha256") != generation:
+                raise LineageError(f"{symbol}: dated pricing route changed before correction")
+
+
 def _retired_source_asset_id(receipt, lookups, current):
     """Use the producer's last positive own-label handoff after an exact 404."""
     unavailable = [

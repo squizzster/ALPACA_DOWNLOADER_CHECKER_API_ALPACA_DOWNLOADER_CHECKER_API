@@ -44,6 +44,25 @@ def project_receipt(receipt):
     retired = next(
         (item for item in receipt["evidence"]["asset_lookups"] if item.get("lookup_kind") == "asset_id"), None
     )
+    historical_price_routes = [
+        {
+            "owner": owner,
+            "asset_id": interval["asset_id"],
+            "symbol": interval["historical_symbol"],
+            "start": interval["start_date_inclusive"],
+            "end_exclusive": interval["end_date_exclusive"],
+            "asof": instant[:10],
+        }
+        for owner, (instant, interval) in sorted(receipt.get("observation_routes", {}).items())
+        if interval.get("historical_symbol") == receipt["symbol"]
+        and interval.get("start_date_inclusive")
+        and interval.get("end_date_exclusive")
+        and interval["start_date_inclusive"] <= instant[:10] < interval["end_date_exclusive"]
+        and any(
+            rule["name"] == "stock_merger_acquiree_terminal_boundary"
+            for rule in interval.get("ownership_interval_rules", ())
+        )
+    ]
     return {
         "schema_version": PROJECTION_VERSION,
         "computation_revision": receipt.get("computation_revision", 0),
@@ -76,6 +95,7 @@ def project_receipt(receipt):
         "history_correction_id": receipt.get("history_correction_id"),
         "assignment_handoffs_complete": assignment_handoffs_complete(receipt),
         "last_observed_symbol_lookup": last_observed_symbol_lookup(receipt),
+        **({"historical_price_routes": historical_price_routes} if historical_price_routes else {}),
         **(
             {
                 "retired_uuid_assessed": True,

@@ -741,5 +741,15 @@
     "modifications": [
       "Acknowledge published numerical repairs independently of pending session work, resume interrupted acknowledgements from the lineage selector, and expose a missing numerical prerequisite as a lineage publication failure."
     ]
+  },
+  {
+    "modifications": [
+      "Project closed own-label pricing routes from completed lineage and carry the selecting generation through a current-occupation latest-session correction and recovery."
+    ]
+  },
+  {
+    "modifications": [
+      "Select affected older own-label decisions from unfinished historical comparisons during daily update. Publish the retained-evidence lineage decision through its journal before the pricing retry uses the selected route."
+    ]
   }
 ]

@@ -5,7 +5,7 @@ policy:
   policy_version: 1.0.0
   policy_role: production
   implementation:
-    correlation_version: 102
+    correlation_version: 103
     lineage_version: 37
   execution:
     established_fixed_point:

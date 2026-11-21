@@ -13,11 +13,12 @@ PRODUCTION_POLICY_SCHEMA_VERSION = 4
 PRODUCTION_POLICY_ID = "alpaca_security_correlation"
 PRODUCTION_POLICY_VERSION = "1.0.0"
 PRODUCTION_POLICY_ROLE = "production"
-PRODUCTION_EXECUTION_PROFILE = "correlation_v102_policy_engine"
-PRODUCTION_CORRELATION_VERSION = 102
+PRODUCTION_EXECUTION_PROFILE = "correlation_v103_policy_engine"
+PRODUCTION_CORRELATION_VERSION = 103
 PRODUCTION_LINEAGE_VERSION = 37
 POLICY_PROVENANCE_LINEAGE_VERSION = 34
-PRODUCTION_POLICY_SEMANTIC_SHA256 = "045adf0c0181f3c922bbba2e4f95d18389347c90969620fa71d9909232b2520b"
+PRODUCTION_POLICY_SEMANTIC_SHA256 = "7c649a381cea6a7025c87ab580882adda74c9e8a05699a47ac891cab3c9bad16"
+RETAINED_V102_SEMANTIC_SHA256 = "045adf0c0181f3c922bbba2e4f95d18389347c90969620fa71d9909232b2520b"
 RETAINED_V101_SEMANTIC_SHA256 = "ee8caa235f40a5927dfb8b2e889843b508b944161b8d82bba02eee76b71f49d3"
 RETAINED_V100_SEMANTIC_SHA256 = "bf2c282ae97b74a2a3739b81c0cf2805f65b6fec49ace74b2ba9b1370f44315a"
 RETAINED_V99_SEMANTIC_SHA256 = "6031fed9ebf115c04b5fda4145ca9c520758b294800894e2b4eae4160576beb0"
@@ -178,6 +179,7 @@ def retained_v79_policy(provenance: Any) -> bool:
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -220,6 +222,7 @@ def retained_v80_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -258,6 +261,7 @@ def retained_v81_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -299,6 +303,7 @@ def retained_v82_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -335,6 +340,7 @@ def retained_v83_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -370,6 +376,7 @@ def retained_v84_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -404,6 +411,7 @@ def retained_v85_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -437,6 +445,7 @@ def retained_v86_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -469,6 +478,7 @@ def retained_v87_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -500,6 +510,7 @@ def retained_v88_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -530,6 +541,7 @@ def retained_v89_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -559,6 +571,7 @@ def retained_v90_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -587,6 +600,7 @@ def retained_v91_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -614,6 +628,7 @@ def retained_v92_policy(provenance):
             (100, 37),
             (101, 37),
             (102, 37),
+            (103, 37),
         }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
@@ -630,7 +645,18 @@ def retained_v93_policy(provenance):
     }
     return (
         (PRODUCTION_CORRELATION_VERSION, PRODUCTION_LINEAGE_VERSION)
-        in {(94, 37), (95, 37), (96, 37), (97, 37), (98, 37), (99, 37), (100, 37), (101, 37), (102, 37)}
+        in {
+            (94, 37),
+            (95, 37),
+            (96, 37),
+            (97, 37),
+            (98, 37),
+            (99, 37),
+            (100, 37),
+            (101, 37),
+            (102, 37),
+            (103, 37),
+        }
         and valid_policy_provenance(provenance)
         and all(provenance.get(key) == value for key, value in frozen.items())
     )
@@ -734,6 +760,19 @@ def retained_v101_policy(provenance):
         "execution_profile": "correlation_v101_policy_engine",
         "implementation": {"correlation_version": 101, "lineage_version": 37},
         "semantic_sha256": RETAINED_V101_SEMANTIC_SHA256,
+    }
+    return valid_policy_provenance(provenance) and all(
+        provenance.get(key) == value for key, value in frozen.items()
+    )
+
+
+def retained_v102_policy(provenance):
+    """Recognize the policy preceding stock-merger departure attribution."""
+    frozen = {
+        **expected_policy_identity(),
+        "execution_profile": "correlation_v102_policy_engine",
+        "implementation": {"correlation_version": 102, "lineage_version": 37},
+        "semantic_sha256": RETAINED_V102_SEMANTIC_SHA256,
     }
     return valid_policy_provenance(provenance) and all(
         provenance.get(key) == value for key, value in frozen.items()

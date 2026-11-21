@@ -1042,8 +1042,13 @@ class WorkPolicy:
                 "comparison_end_exclusive",
                 "comparison_asof",
             )
-            if correction == prior.get("correction_id") and all(
-                previous_contract.get(key) == contract.get(key) for key in binding
+            previous_selection = previous_contract.get("selection") or {}
+            previous_route = previous_selection.get("lineage_generation")
+            route = selection.lineage_generation if selection is not None else None
+            if (
+                correction == prior.get("correction_id")
+                and previous_route == route
+                and all(previous_contract.get(key) == contract.get(key) for key in binding)
             ):
                 contract["observations"] = merge_observations(
                     previous_contract.get("observations", {}), contract["observations"]
@@ -1070,8 +1075,9 @@ class WorkPolicy:
             # A correction ID names one exact requirement. Renewing evidence or
             # binding must invalidate both source stamps and equal-price receipts.
             requirement = (*binding, "scope", "observations", "advance_end_exclusive")
-            if correction == prior.get("correction_id") and any(
-                contract.get(key) != previous_contract.get(key) for key in requirement
+            if correction == prior.get("correction_id") and (
+                previous_route != route
+                or any(contract.get(key) != previous_contract.get(key) for key in requirement)
             ):
                 correction = uuid4().hex
             item = obligation(

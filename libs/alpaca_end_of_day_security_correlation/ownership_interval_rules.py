@@ -16,8 +16,8 @@ from .occupancy_anchor import (
 )
 from .same_ticker_distribution import NAME as SAME_TICKER_DISTRIBUTION
 from .security_identity import security_identity_for_alpaca_assets
+from .stock_merger_occupation import DEPARTURE_NAME, select_departure, select_occupation
 from .stock_merger_occupation import NAME as DISTINCT_STOCK_MERGER_OCCUPATION
-from .stock_merger_occupation import select_occupation
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
 
 CLOSED_PRIOR_ACTION_ANCHORED_SUFFIX_CORRELATION_VERSION = 74
@@ -1209,6 +1209,7 @@ def prepare_ticker_ownership(
     allow_closed_prior_action_anchored_suffix: bool = False,
     closed_prior_terminal_conflicts: bool = True,
     allow_cross_label_stock_merger_occupation: bool = False,
+    allow_stock_merger_departure: bool = False,
     sourced_successions: tuple = (),
 ) -> PreparedTickerOwnership:
     # This owner translates dated evidence into ticker-ownership intervals.
@@ -1272,6 +1273,13 @@ def prepare_ticker_ownership(
                     (applied,),
                 )
                 intervals = (*(retired if interval == prior else interval for interval in intervals), activated)
+        if allow_stock_merger_departure and rule.name == "same_ticker_stock_merger_uuid_transition":
+            departure = select_departure(lineage, intervals, normalized_actions)
+            if departure is not None:
+                prior, day, action_id = departure
+                applied = AppliedOwnershipIntervalRule(rule_order, DEPARTURE_NAME, (action_id,))
+                retired = replace(prior, end_date_exclusive=day, applied_rules=(*prior.applied_rules, applied))
+                intervals = tuple(retired if interval == prior else interval for interval in intervals)
 
     if established is None:
         established = (intervals, tuple(evidence_issues))
@@ -1287,6 +1295,7 @@ def build_ticker_ownership_intervals(
     allow_closed_prior_action_anchored_suffix: bool = False,
     closed_prior_terminal_conflicts: bool = True,
     allow_cross_label_stock_merger_occupation: bool = False,
+    allow_stock_merger_departure: bool = False,
     sourced_successions: tuple = (),
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
     prepared = prepare_ticker_ownership(
@@ -1297,6 +1306,7 @@ def build_ticker_ownership_intervals(
         allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
         closed_prior_terminal_conflicts=closed_prior_terminal_conflicts,
         allow_cross_label_stock_merger_occupation=allow_cross_label_stock_merger_occupation,
+        allow_stock_merger_departure=allow_stock_merger_departure,
         sourced_successions=sourced_successions,
     )
     return list(prepared.complete), list(prepared.complete_issues)

@@ -6,6 +6,7 @@ import urllib.error
 from collections import defaultdict
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from itertools import groupby
 from pathlib import Path
 
 from libs.alpaca_data_api_solver import build_plan
@@ -13,10 +14,17 @@ from libs.common.debug_trace import event
 from libs.common.provider_http import balanced_batches
 
 from .contract import COLUMNS, NEW_YORK, DownloadError, failure_outcome, timestamp
-from .endpoints import Endpoints, compare_history, comparison_rows, different_fields, history_windows
+from .endpoints import (
+    Endpoints,
+    compare_history,
+    comparison_rows,
+    different_fields,
+    history_windows,
+    session_window,
+)
 from .http import execute_bar_plan
 
-VERSION = 12
+VERSION = 13
 DEFAULT_BATCH_SIZE = 4000
 
 
@@ -54,11 +62,41 @@ def _day(row):
     return timestamp(row[0]).astimezone(NEW_YORK).date()
 
 
-def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE):
+def select_dated_endpoints(entry, scopes):
+    selected = {}
+    for _, row in _endpoints(entry):
+        day = _day(row)
+        matching = [scope for scope in scopes if scope["start"] <= day.isoformat() < scope["end_exclusive"]]
+        if not matching:
+            continue
+        if len(matching) != 1 or matching[0]["symbol"] != entry["symbol"]:
+            raise DownloadError(f"{entry['symbol']}: ambiguous dated pricing comparison route")
+        if matching[0]["asof"] != entry["asof"]:
+            selected[day] = matching[0]
+    return selected
+
+
+def comparison_windows(entry, selected, cutoff=None):
+    cutoff = cutoff or timestamp(entry["end_exclusive"])
+    points = _points(entry)
+    rows = comparison_rows(entry["first_all"], points.tail_all) if selected else ()
+    for start, end in history_windows(points, cutoff=cutoff):
+        if not selected:
+            yield start, end, entry["asof"]
+            continue
+        ranged = (row for row in rows if start <= timestamp(row[0]) < end)
+        for asof, run in groupby(ranged, key=lambda row: selected.get(_day(row), {}).get("asof", entry["asof"])):
+            run = tuple(run)
+            yield session_window(run[0])[0], session_window(run[-1], cutoff=end)[1], asof
+
+
+def plan(snapshot, batch_size=DEFAULT_BATCH_SIZE, *, routes=None):
+    routes = routes or {}
     groups = defaultdict(set)
     for entry in snapshot["entries"]:
-        for start, end in history_windows(_points(entry), cutoff=timestamp(entry["end_exclusive"])):
-            groups[start, end, entry["asof"]].add(entry["symbol"])
+        symbol = entry["symbol"]
+        for start, end, asof in comparison_windows(entry, routes.get(symbol)):
+            groups[start, end, asof].add(symbol)
     needs = [
         {
             "kind": "bars",
@@ -80,11 +118,28 @@ def changed_fields(stored, live):
     }
 
 
-def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None, missing_route=None):
+def verify(
+    snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None, missing_route=None, dated_routes=None
+):
     """Compare the producer's baseline once and carry usable observations forward."""
     started = time.monotonic()
-    action_plan = plan(snapshot, batch_size)
     entries = {entry["symbol"]: entry for entry in snapshot["entries"]}
+    routes, failures, failed = {}, [], set()
+    for symbol, scopes in (dated_routes or {}).items():
+        try:
+            selected = select_dated_endpoints(entries[symbol], scopes)
+        except DownloadError as error:
+            failures.append({"symbols": [symbol], "reason": str(error)})
+            failed.add(symbol)
+            continue
+        if selected:
+            routes[symbol] = selected
+    selected_snapshot = (
+        {**snapshot, "entries": [e for e in entries.values() if e["symbol"] not in failed]}
+        if failed
+        else snapshot
+    )
+    action_plan = plan(selected_snapshot, batch_size, routes=routes)
     metrics = {
         "planned_batches": sum(
             len(balanced_batches(action["request"]["params"]["symbols"].split(",")))
@@ -113,7 +168,7 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None, 
     )
     stats["tickers"] = len(entries)
     stats["last_session_dates"] = len({_day(entry["last_all"]) for entry in entries.values()})
-    differences, missing, missing_endpoints, matched, failures, failed = [], [], [], [], [], set()
+    differences, missing, missing_endpoints, matched = [], [], [], []
     decisions = {}
 
     def on_failure(step, action, error):
@@ -182,10 +237,24 @@ def verify(snapshot, get_page, *, batch_size=DEFAULT_BATCH_SIZE, progress=None, 
             by_day[_day(row)] = row
         if symbol in failed:
             continue
+        planned = routes.get(symbol, {})
+        for endpoint, stored in _endpoints(entry) if planned else ():
+            day = _day(stored)
+            if day in planned and day in by_day:
+                route = planned[day]
+                mapped_endpoints.append(
+                    {
+                        **route,
+                        "endpoint": endpoint,
+                        "session": day.isoformat(),
+                        "mapped_symbol": symbol,
+                        "planned": True,
+                    }
+                )
         if missing_route is not None:
             for endpoint, stored in _endpoints(entry):
                 day = _day(stored)
-                if day in by_day:
+                if day in by_day or day in planned:
                     continue
                 try:
                     route = missing_route(entry, day.isoformat())

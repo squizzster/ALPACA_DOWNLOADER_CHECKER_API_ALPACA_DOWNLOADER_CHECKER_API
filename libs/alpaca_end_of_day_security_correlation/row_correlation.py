@@ -290,6 +290,7 @@ class CorrelationCache:
         resumed_current_sources=False,
         observed_current_sessions=False,
         cross_label_stock_merger_occupation=False,
+        stock_merger_departure=False,
         main_component_arrivals=False,
     ):
         if any(
@@ -317,6 +318,7 @@ class CorrelationCache:
         self.resumed_current_sources = resumed_current_sources
         self.observed_current_sessions = observed_current_sessions
         self.cross_label_stock_merger_occupation = cross_label_stock_merger_occupation
+        self.stock_merger_departure = stock_merger_departure
         self.main_component_arrivals = main_component_arrivals
         self._retired_labels = {}
         self.row_correlation_rules = row_correlation_rules
@@ -658,6 +660,7 @@ class CorrelationCache:
                         allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
                         closed_prior_terminal_conflicts=self.completed_event_scope,
                         allow_cross_label_stock_merger_occupation=self.cross_label_stock_merger_occupation,
+                        allow_stock_merger_departure=self.stock_merger_departure,
                         sourced_successions=successions,
                     )
                 )
@@ -677,6 +680,7 @@ class CorrelationCache:
                     allow_closed_prior_action_anchored_suffix=self.closed_prior_action_anchored_suffixes,
                     closed_prior_terminal_conflicts=self.completed_event_scope,
                     allow_cross_label_stock_merger_occupation=self.cross_label_stock_merger_occupation,
+                    allow_stock_merger_departure=self.stock_merger_departure,
                     sourced_successions=successions,
                 )
                 phase_intervals = {include_action_anchored_current_suffix: (intervals, interval_issues)}

@@ -19,6 +19,7 @@ from libs.alpaca_pricing_download.storage import regular_path
 from libs.common.debug_trace import event, span, traced
 
 from . import storage
+from .comparison_routes import assert_current_dated_routes, dated_price_scopes
 from .completed_corrections import covers_selected_advance
 from .context import HistoryScope, accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
@@ -45,6 +46,7 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
         if symbol in summarized or not item.get("required_history_check") or not work_policy.allowed({symbol}):
             continue
         try:
+            indexed = work_policy.index["symbols"].get(symbol, {})
             if progress:
                 progress("required_history", {"symbol": symbol, "state": "checking"})
             selected = check_retained_source(
@@ -53,7 +55,9 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
                 end_date,
                 client=pricing_client,
                 pending=item,
-                indexed_generation=work_policy.index["symbols"].get(symbol, {}).get("source_sha256"),
+                indexed_generation=indexed.get("source_sha256"),
+                lineage_generation=indexed.get("sha256"),
+                dated_scopes=dated_price_scopes(indexed),
             )
         except (RuntimeError, OSError, ValueError) as error:
             work_policy.fail({symbol}, error, stage="history_check")
@@ -267,8 +271,17 @@ def refresh_existing(
         }
 
     def replace_and_reconcile(prepared, baseline_token, *, recovered=(), serving_generation=None):
+        bound_routes = {
+            item["symbol"]: selection.lineage_generation
+            for item in prepared
+            if (selection := item.get("endpoint_selection")) is not None
+            and selection.lineage_generation is not None
+        }
+
         def before_publish():
             assert_current(store, baseline_token)
+            if bound_routes:
+                assert_current_dated_routes(context.accept_store().root, selected_index, bound_routes)
             if serving_generation is not None:
                 from libs.alpaca_serving_catalogue.storage import selector_state
 
@@ -638,17 +651,19 @@ def refresh_existing(
                 continue
             if not contract.get("selection"):
                 raise DownloadError("invalid durable latest-session correction; owning recovery required")
+            entry_lineage = (selected_index["symbols"].get(symbol) or {}).get("sha256")
             selection = EndpointSelection.from_document(contract["selection"])
             if (
                 entry["end_exclusive"] == contract.get("comparison_end_exclusive", contract["end_exclusive"])
                 and entry["asof"] == (selection.comparison_asof or selection.asof)
+                and (selection.lineage_generation is None or selection.lineage_generation == entry_lineage)
                 and selection.applies(
                     store,
                     symbol,
                     generation,
                     contract["end_exclusive"],
                     contract["asof"],
-                    lineage_generation=(selected_index["symbols"].get(symbol) or {}).get("sha256"),
+                    lineage_generation=entry_lineage,
                 )
             ):
                 durable_selections[symbol] = selection
@@ -675,14 +690,19 @@ def refresh_existing(
         # DO NOT reopen ticker histories to re-prove the stored baseline here.
         selected_scopes = {entry["symbol"]: requested_scope(entry["symbol"]) for entry in candidates}
         with span("live_history_check", symbols=len(selected_snapshot["entries"])) as check_trace:
-            from .comparison_routes import route_selector
+            from .comparison_routes import dated_routes, route_selector
 
             select_route = route_selector(context.accept_store().root, selected_index)
 
             def missing_route(entry, day):
                 return select_route(entry["symbol"], day, entry["source_sha256"])
 
-            handoff = verify(selected_snapshot, pricing_client._get, missing_route=missing_route)
+            handoff = verify(
+                selected_snapshot,
+                pricing_client._get,
+                missing_route=missing_route,
+                dated_routes=dated_routes(selected_index, selected_snapshot["entries"]),
+            )
             check_trace.update(complete=handoff["complete"], **handoff["stats"], requests=handoff["requests"])
         routed_generations = {}
         for route in handoff["mapped_endpoints"]:
@@ -690,33 +710,18 @@ def refresh_existing(
             prior = routed_generations.setdefault(route["symbol"], generation)
             if generation is None or prior != generation:
                 raise DownloadError("mapped endpoint routes changed lineage generation")
-        routed_differences = {
-            symbol
-            for symbol in routed_generations
-            if symbol in handoff["comparisons"] and handoff["comparisons"][symbol]["decision"] != "unchanged"
-        }
-        if routed_differences:
-            for symbol in sorted(routed_differences):
-                event(
-                    "mapped_history_difference_unhandled",
-                    symbol=symbol,
-                    decision=handoff["comparisons"][symbol]["decision"],
-                    lineage_generation=routed_generations[symbol],
-                )
-                if work_policy is not None:
-                    work_policy.fail(
-                        {symbol},
-                        DownloadError(
-                            f"{symbol}: mapped retained-history difference requires route-aware correction"
-                        ),
-                        stage="history_check",
-                    )
-            checks.append(handoff)
-            error = DownloadError(
-                "mapped retained-history difference requires route-aware correction; no replacements started"
-            )
-            error.work_failure_recorded = work_policy is not None
-            raise error
+        routed_differences = set()
+        for route in handoff["mapped_endpoints"]:
+            symbol = route["symbol"]
+            comparison = handoff["comparisons"].get(symbol)
+            if comparison is None or comparison["decision"] == "unchanged":
+                continue
+            if (
+                not route.get("planned")
+                or comparison["decision"] != "latest_session"
+                or comparison["changed_sessions"][0][:10] == route["session"]
+            ):
+                routed_differences.add(symbol)
         assert_current(store, snapshot["token"])
         # Live-check completion is per symbol. A peer's missing endpoint or
         # failed request cannot revoke this producer's completed comparison.
@@ -751,7 +756,7 @@ def refresh_existing(
                         correction_id=work_policy.completed_corrections[symbol]["correction_id"],
                     )
         differing = {item["symbol"] for item in handoff["differences"]}
-        completed = matched | differing
+        completed = (matched | differing) - routed_differences
         for difference in handoff["differences"]:
             event(
                 "history_endpoint_difference",
@@ -813,6 +818,27 @@ def refresh_existing(
                 "checked",
                 {**handoff["stats"], "requests": handoff["requests"], "seconds": handoff["live_seconds"]},
             )
+        if routed_differences:
+            for symbol in sorted(routed_differences):
+                event(
+                    "mapped_history_difference_unhandled",
+                    symbol=symbol,
+                    decision=handoff["comparisons"][symbol]["decision"],
+                    lineage_generation=routed_generations[symbol],
+                )
+                if work_policy is not None:
+                    work_policy.fail(
+                        {symbol},
+                        DownloadError(
+                            f"{symbol}: mapped retained-history difference requires route-aware correction"
+                        ),
+                        stage="history_check",
+                    )
+            error = DownloadError(
+                "mapped retained-history difference requires route-aware correction; no replacements started"
+            )
+            error.work_failure_recorded = work_policy is not None
+            raise error
         if not handoff["complete"]:
             if work_policy is not None:
                 for failure in handoff["failures"]:
@@ -822,6 +848,7 @@ def refresh_existing(
                         [symbol],
                         {
                             "reason": "missing live comparison bar",
+                            "source_sha256": selected_sources.get(symbol, accepted_generations.get(symbol)),
                             "missing_endpoints": [
                                 item for item in handoff["missing_endpoints"] if item["symbol"] == symbol
                             ],

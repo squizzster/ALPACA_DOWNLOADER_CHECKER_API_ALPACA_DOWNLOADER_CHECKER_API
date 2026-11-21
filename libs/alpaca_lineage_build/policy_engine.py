@@ -60,6 +60,9 @@ from libs.alpaca_end_of_day_security_correlation.same_ticker_distribution import
 from libs.alpaca_end_of_day_security_correlation.stock_merger_occupation import (
     CORRELATION_VERSION as CROSS_LABEL_STOCK_MERGER_VERSION,
 )
+from libs.alpaca_end_of_day_security_correlation.stock_merger_occupation import (
+    DEPARTURE_VERSION as STOCK_MERGER_DEPARTURE_VERSION,
+)
 from libs.alpaca_end_of_day_security_correlation.terminal_episode import (
     ACTION_ANCHORED_VACANT_TICKER_BRIDGE_CORRELATION_VERSION,
     VACANT_TICKER_BRIDGE_CORRELATION_VERSION,
@@ -272,6 +275,7 @@ def _correlation_cache(policy) -> CorrelationCache:
         cross_label_stock_merger_occupation=(
             policy.implementation_correlation_version >= CROSS_LABEL_STOCK_MERGER_VERSION
         ),
+        stock_merger_departure=policy.implementation_correlation_version >= STOCK_MERGER_DEPARTURE_VERSION,
         main_component_arrivals=(
             policy.implementation_correlation_version >= MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION
         ),

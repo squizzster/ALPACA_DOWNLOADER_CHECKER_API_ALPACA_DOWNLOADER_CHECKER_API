@@ -9,7 +9,7 @@ from test_alpaca_lineage_build import IdentityClient, asset
 from test_alpaca_live_check import bar, entry, snapshot
 
 from libs.alpaca_lineage_build import storage as lineage_storage
-from libs.alpaca_lineage_build.comparison_routes import historical_route
+from libs.alpaca_lineage_build.comparison_routes import dated_routes, historical_route
 from libs.alpaca_lineage_build.pipeline import run_lineage
 from libs.alpaca_pricing_download import live_check
 from libs.alpaca_pricing_download.contract import FIELDS
@@ -108,6 +108,64 @@ def retired_receipt():
 
 
 class ComparisonRouteTests(unittest.TestCase):
+    def test_same_ticker_uses_dated_mapping_before_request_and_keeps_one_latest_change(self):
+        newest = entry("REUSED")
+        oldest = bar("2025-04-02")
+        prior = bar("2025-05-01")
+        latest = bar("2026-10-14", v=555)
+        selected = snapshot(newest)
+        selected["entries"][0].update(
+            source_sha256="a" * 64,
+            first_all=[str(oldest[key]) for key in FIELDS],
+            tail_all=[[str(row[key]) for key in FIELDS] for row in (oldest, prior, bar())],
+        )
+        index = {
+            "symbols": {
+                "REUSED": {
+                    "sha256": "b" * 64,
+                    "source_sha256": "a" * 64,
+                    "projection": {
+                        "historical_price_routes": [
+                            {
+                                "symbol": "REUSED",
+                                "owner": "former",
+                                "asset_id": "former-uuid",
+                                "start": "2025-04-02",
+                                "end_exclusive": "2025-05-02",
+                                "asof": "2025-05-01",
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+        planned = dated_routes(index, selected["entries"])
+        self.assertEqual(dated_routes(index, [{**selected["entries"][0], "source_sha256": "c" * 64}]), {})
+        requests = []
+
+        def get_page(params):
+            request = (params["start"][:10], params["end"][:10], params["asof"], params["adjustment"])
+            requests.append(request)
+            # The provider has a bar for these dates under both occupations.
+            # A default-current request must never be made for an older date.
+            value = {
+                ("2025-04-02", "2025-04-03", "2025-05-01", "all"): oldest,
+                ("2025-05-01", "2025-05-02", "2025-05-01", "all"): prior,
+                ("2026-10-14", "2026-10-14", "2026-10-15", "all"): latest,
+            }[request]
+            return {"bars": {"REUSED": [value]}}
+
+        with patch.object(live_check, "compare_history", wraps=live_check.compare_history) as compare:
+            result = live_check.verify(selected, get_page, dated_routes=planned)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["comparisons"]["REUSED"]["decision"], "latest_session")
+        self.assertEqual({r["session"] for r in result["mapped_endpoints"]}, {"2025-04-02", "2025-05-01"})
+        self.assertTrue(
+            all(r["planned"] and r["lineage_generation"] == "b" * 64 for r in result["mapped_endpoints"])
+        )
+        self.assertEqual(compare.call_count, 1)
+        self.assertEqual(len(requests), 3)
+
     def test_route_consumes_dated_positive_owner_and_current_generation(self):
         value = receipt()
         self.assertEqual(
@@ -116,6 +174,21 @@ class ComparisonRouteTests(unittest.TestCase):
         )
         self.assertIsNone(historical_route(value, "2026-10-14", "generation"))
         self.assertIsNone(historical_route(value, "2026-10-13", "changed"))
+
+    def test_competing_dated_scopes_block_only_their_source_before_provider_requests(self):
+        first = {"symbol": "NEW", "start": "2026-10-14", "end_exclusive": "2026-10-15", "asof": "2026-10-14"}
+        second = {**first, "asof": "2026-10-13"}
+
+        def get_page(params):
+            self.assertEqual(params["symbols"], "PEER")
+            return {"bars": {"PEER": [bar()]}}
+
+        result = live_check.verify(
+            snapshot(entry("NEW"), entry("PEER")), get_page, dated_routes={"NEW": (first, second)}
+        )
+        self.assertEqual(result["matched"], ["PEER"])
+        self.assertEqual(result["stats"]["failed"], 1)
+        self.assertEqual(result["failures"][0]["symbols"], ["NEW"])
 
     def test_retired_source_uses_unambiguous_membership_and_cusip_bound_route(self):
         self.assertEqual(

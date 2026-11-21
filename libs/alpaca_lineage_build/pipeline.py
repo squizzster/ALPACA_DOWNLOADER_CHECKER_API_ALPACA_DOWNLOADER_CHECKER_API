@@ -19,7 +19,7 @@ from libs.common.debug_trace import event, traced
 from . import group_engine as _group_engine
 from . import storage
 from .acquisition import unavailable_pricing
-from .comparison_routes import route_selector
+from .comparison_routes import dated_route_selector, route_selector
 from .context import accept_context
 from .continuation import scoped_identity_memberships
 from .contract import (
@@ -312,6 +312,7 @@ def _select_dependency_suffixes(
             else None
         ),
         missing_route=route_selector(Path(store) / "end_of_day/lineage", index),
+        dated_route=dated_route_selector(index),
         lineage_generations={
             symbol: index["symbols"][symbol]["sha256"]
             for symbol in groups

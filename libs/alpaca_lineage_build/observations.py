@@ -18,6 +18,7 @@ from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
     SPLIT_ADJUSTED_RENAME_TAPE,
     TERMINAL_RENAME_PREFIX,
 )
+from libs.alpaca_end_of_day_security_correlation.stock_merger_occupation import DEPARTURE_NAME
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 
 from .adjustment_basis import INCOMPATIBLE_SPLIT_BASIS, bounded_prefixes, incompatible_prefixes
@@ -32,6 +33,7 @@ def _own_interval(report, segment, last, *, day=None):
     interval = dict(segment.get("ticker_ownership_interval") or {})
     members = set(segment["security_identity"].get("member_alpaca_asset_ids", ()))
     day = day or timestamp(last).astimezone(NEW_YORK).date().isoformat()
+    departures = []
     # DO NOT REMOVE WITHOUT USER AUTH!#
     # A split may change CUSIP/UUID within an already accepted public identity.
     # Its old UUID's arrival interval can remain open while the new UUID carries
@@ -46,6 +48,22 @@ def _own_interval(report, segment, last, *, day=None):
             continue
         if upper is not None:
             interval["end_date_exclusive"] = min(interval.get("end_date_exclusive") or upper, upper)
+        if any(rule["name"] == DEPARTURE_NAME for rule in other.get("ownership_interval_rules", ())):
+            departures.append(other)
+    # An independent row rule can choose the same owner without annotating its
+    # segment with the completed departure. Preserve that route for pricing.
+    if len(departures) == 1:
+        (departure,) = departures
+        if interval.get("asset_id", departure["asset_id"]) == departure["asset_id"]:
+            interval = {
+                **departure,
+                **interval,
+                "start_date_inclusive": max(
+                    interval.get("start_date_inclusive") or departure["start_date_inclusive"],
+                    departure["start_date_inclusive"],
+                ),
+                "ownership_interval_rules": departure["ownership_interval_rules"],
+            }
     return interval
 
 

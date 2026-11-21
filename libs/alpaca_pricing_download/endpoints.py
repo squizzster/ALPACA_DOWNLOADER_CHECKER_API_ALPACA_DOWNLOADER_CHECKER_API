@@ -203,20 +203,30 @@ class EndpointSelection:
     lineage_generation: str | None = None
 
     def document(self):
-        if self.lineage_generation is not None:
-            raise DownloadError("mapped retained-history comparisons cannot select a durable correction")
         values = asdict(self)
-        values.pop("lineage_generation")
-        return {"schema_version": 1, **values}
+        if self.lineage_generation is None:
+            values.pop("lineage_generation")
+            return {"schema_version": 1, **values}
+        return {"schema_version": 2, **values}
 
     @classmethod
     def from_document(cls, document):
-        if not isinstance(document, dict) or document.get("schema_version") != 1:
+        if not isinstance(document, dict) or document.get("schema_version") not in (1, 2):
             raise DownloadError("unsupported durable pricing selection")
-        if "lineage_generation" in document:
+        if document["schema_version"] == 1 and "lineage_generation" in document:
             raise DownloadError("unsupported durable pricing lineage generation")
         values = {key: value for key, value in document.items() if key != "schema_version"}
         comparison = values.get("comparison")
+        if document["schema_version"] == 2:
+            generation = values.get("lineage_generation")
+            if (
+                not isinstance(generation, str)
+                or len(generation) != 64
+                or any(c not in "0123456789abcdef" for c in generation)
+                or not isinstance(comparison, dict)
+                or comparison.get("decision") not in ("unchanged", "latest_session")
+            ):
+                raise DownloadError("invalid dated durable pricing selection")
         if comparison is not None:
             if comparison.get("decision") not in ("unchanged", "latest_session", "full_history"):
                 raise DownloadError("invalid durable pricing decision")
@@ -225,6 +235,7 @@ class EndpointSelection:
                 tuple(comparison["changed_sessions"]),
                 tuple(tuple(row) for row in comparison["live_all"]),
                 tuple((session, tuple(names)) for session, names in comparison.get("field_changes", ())),
+                tuple(comparison.get("added_sessions", ())),
             )
         try:
             return cls(**values)

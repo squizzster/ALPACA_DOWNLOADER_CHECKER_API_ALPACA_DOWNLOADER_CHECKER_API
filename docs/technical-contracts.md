@@ -596,11 +596,19 @@ A routed comparison is additionally bound to that receipt generation, so a chang
 comparison without invalidating unrelated ordinary comparisons. This is provider request planning from accepted
 facts, not a new identity calculation or a peer metadata lookup. Backward routing stops at each earlier rename;
 later reuse of that label cannot redirect the old identity.
-This request choice does not allocate rows or require already allocated ownership of the missing date.
+For successive owners of the same ticker, a completed merger boundary and the last selected observation under
+the former owner supply a dated request scope in the compact lineage index. Live checks select the matching
+scope for the first and tail observations before planning requests. A tail spanning that boundary uses a
+separate window for each mapping. The historical run uses its retained mapping date, and the current run uses
+the current request mapping. These plans require the selected pricing and lineage generations and open no
+lineage receipt bodies. A matched routed history can still select a latest-session correction when the change
+belongs to the ordinary current mapping. The version-2 endpoint selection carries the lineage generation
+through correction and interruption recovery. A changed binding invalidates the comparison. A difference
+requiring historical mapped acquisition remains an explicit owning recovery condition.
+The missing-label fallback plans a request without allocating rows for that date.
 Recovered observations enter the original single comparison. Missing alternate observations stay
-incomplete and route errors preserve independent completed peers. A mapped difference also fails closed: this
-focused route does not manufacture current-label evidence or select a correction/replacement that would need
-historical-label acquisition. Results and debug events identify each missing endpoint; request metrics count probes
+incomplete and route errors preserve independent completed peers. Differences from the legacy missing-only
+label fallback still require owning correction. Results and debug events identify each missing endpoint; request metrics count probes
 and recovered endpoints. Once the resulting suffix and exact workflow obligation are committed in the lineage projection,
 an interrupted acknowledgement consumes that compact publication on restart and excludes the already-published
 label from another live comparison. This rule does not infer ticker identity from a companion's returned bar.
@@ -825,6 +833,12 @@ and numerical requirements retain their own completion conditions.
 
 Ordinary eligible summary members complete that sequence before discovery advances their dependencies.
 Selection's changed-identity and lost-eligibility facts reconcile before those members enter maintenance.
+An unfinished comparison with missing older endpoints can select a retained lineage review before pricing.
+Selection binds the missing sessions and mapping to the current summary boundary. For an older decision,
+an open own-label assignment to a different UUID and a retained outgoing merger select the affected group.
+The lineage producer evaluates the accepted evidence and publishes through its ordinary journal. A completed
+review supplies its route or leaves the comparison outstanding. On restart the current receipt carries that
+decision, and the pricing owner carries any completed comparison under the selected route generation.
 Later phases retain each completed comparison even when an independent member fails. A comparison is bound to
 its summary entry and pricing generation; reuse requires the same accepted selectors and current allowed scope.
 Matching comparisons and differing comparisons are distinct from append approval. The completed decision selects

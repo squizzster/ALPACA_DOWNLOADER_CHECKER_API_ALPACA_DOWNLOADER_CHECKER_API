@@ -23,6 +23,14 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (27, 27, 109, 128):
+        binding = {**binding, "lineage_runtime": 127}
+        bindings.append(binding)
+        current = (27, 27, 109, 127)
+    if allow_previous and current == (27, 27, 109, 127):
+        binding = {**binding, "correlation_runtime": 108, "lineage_runtime": 126}
+        bindings.append(binding)
+        current = (27, 27, 108, 126)
     if allow_previous and current == (27, 27, 108, 126):
         binding = {**binding, "lineage_runtime": 125}
         bindings.append(binding)

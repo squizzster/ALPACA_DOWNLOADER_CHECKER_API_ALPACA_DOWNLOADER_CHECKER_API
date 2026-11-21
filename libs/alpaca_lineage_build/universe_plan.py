@@ -7,11 +7,12 @@ from pathlib import Path
 from libs.alpaca_data_api_solver import build_plan
 from libs.alpaca_pricing_download import check_summary
 from libs.alpaca_pricing_download.append import MAX_SYMBOLS, _cohorts, append_needs
-from libs.alpaca_pricing_download.contract import ADJUSTMENTS, HISTORY_START, timestamp
+from libs.alpaca_pricing_download.contract import ADJUSTMENTS, HISTORY_START, DownloadError, timestamp
 from libs.alpaca_pricing_download.correction import applicable_contract
 from libs.alpaca_pricing_download.download import _endpoint_window, acquisition_asof
 from libs.alpaca_pricing_download.late_bars import session_ranges
 from libs.alpaca_pricing_download.live_check import plan as check_plan
+from libs.alpaca_pricing_download.live_check import select_dated_endpoints
 from libs.alpaca_pricing_download.update_checks import read_checks
 from libs.alpaca_recovery_registry import load_labels
 from libs.alpaca_security_lineage.lineage import compact_asset
@@ -22,6 +23,7 @@ from libs.common.work_scope import compact_selection
 
 from . import storage, universe_state
 from .catalogue import DISCOVERY_EXCHANGES, by_symbol, discovery_labels
+from .comparison_route_review import select_reviews
 from .contract import LineageError, document_digest, reusable_decision
 from .projection import require_complete
 from .work_contract import (
@@ -469,6 +471,9 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         "deferred": deferred,
         "selection_failures": failures,
         "discovered_active_labels": len(discovered),
+        "comparison_route_reviews": select_reviews(
+            accepted, work, graph, restricted_groups | failures.keys(), end_date
+        ),
     }
 
 
@@ -478,6 +483,8 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     # Estimates describe accepted work and conditional expansion, not permission
     # to execute it or a reason to probe each ticker to improve an estimate.
     summary = accepted["summary"]
+    route_reviews = selection.get("comparison_route_reviews", {})
+    review_members = {name for review in route_reviews.values() for name in review["members"]}
     deferred = {item["symbol"] for item in selection["deferred"]} | set(selection.get("selection_failures", {}))
     eligible = [
         entry
@@ -521,6 +528,9 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             and selected.get("symbol") == symbol
             and selected.get("end") == contract.get("end_exclusive")
             and selected.get("asof") == contract.get("asof")
+            and (
+                not selected.get("lineage_generation") or selected["lineage_generation"] == indexed.get("sha256")
+            )
             and entry.get("source_sha256") == contract.get("source_sha256") == selected.get("generation")
             and entry.get("source_sha256")
             and entry.get("asof") == (selected.get("comparison_asof") or selected.get("asof"))
@@ -536,9 +546,21 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
         entry for entry in eligible if entry["symbol"] not in reused_comparisons | completed_corrections
     ]
     legacy_tails = [entry for entry in eligible if entry.get("tail_all") is None]
-    history = check_plan(
-        {**summary, "entries": [entry for entry in check_entries if entry.get("tail_all") is not None]}
-    )
+    from .comparison_routes import dated_routes
+
+    checked = [entry for entry in check_entries if entry.get("tail_all") is not None]
+    scopes = dated_routes(accepted["index"], checked)
+    routes, ambiguous = {}, set()
+    for entry in checked:
+        symbol = entry["symbol"]
+        if symbol in scopes:
+            try:
+                routes[symbol] = select_dated_endpoints(entry, scopes[symbol])
+            except DownloadError:
+                ambiguous.add(symbol)  # Execution reports these without requesting their prices.
+    if ambiguous:
+        checked = [entry for entry in checked if entry["symbol"] not in ambiguous]
+    history = check_plan({**summary, "entries": checked}, routes=routes)
     target = timestamp(end_date + "T00:00:00Z")
     frozen_targets = {
         symbol: min(target, timestamp(selection["work"][symbol]["pricing_correction"]["end_exclusive"]))
@@ -731,6 +753,8 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "catalogue_actions": 1,
             "selection_metadata_http_requests_observed": metadata_requests,
             "history_check_actions": count([history]),
+            "comparison_route_review_sources": len(route_reviews),
+            "comparison_route_review_members_upper_bound": len(review_members),
             "legacy_tail_upgrades": len(legacy_tails),
             "legacy_tail_payload_reads_upper_bound": 3 * len(legacy_tails),
             "legacy_tail_metadata_reads_upper_bound": 5 * len(legacy_tails),
@@ -767,6 +791,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             "conditional_work": (
                 "Positive late-bar probes select the remaining required views for the returned sessions. "
                 "Independent first/tail comparisons may select local correction or replacement. "
+                "Retained comparison route reviews may split selected first/tail windows by dated ownership. "
                 "Source-only completed correction IDs reduce pending estimates when execution selects their manifests. "
                 "Dependency checks/acquisition, new full-history first-session confirmations, additional exact/CUSIP "
                 "lookups, corporate actions and complete-group expansion remain conditional."

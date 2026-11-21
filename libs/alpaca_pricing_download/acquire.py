@@ -91,6 +91,7 @@ def acquire_selected(
     on_append_work_selected=None,
     on_empty_suffixes=None,
     missing_route=None,
+    dated_route=None,
     lineage_generations=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
@@ -527,6 +528,7 @@ def acquire_selected(
                     },
                     acquired=acquired,
                     missing_route=missing_route,
+                    dated_route=dated_route,
                     source_generations=selected_generations,
                     lineage_generations=lineage_generations,
                     approved_lineage_generations={
