@@ -13,7 +13,6 @@ from .context import accept_context
 from .contract import (
     ADJUSTMENTS,
     HISTORY_START,
-    BarsSymbolUnavailable,
     DownloadError,
     InitialPricingUnavailable,
     digest,
@@ -93,6 +92,7 @@ def acquire_selected(
     missing_route=None,
     dated_route=None,
     lineage_generations=None,
+    group_keys=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
     # First/latest all is the sole retained-history acceptance boundary, including
@@ -323,6 +323,7 @@ def acquire_selected(
                 merge_ranges=False,
                 acquired=acquired,
                 retain_states=True,
+                group_keys=group_keys,
                 on_completed=accept_selections,
             )
             return states
@@ -423,20 +424,18 @@ def acquire_selected(
         try:
             consumer, _ = acquire_full(cohort, client, metrics=metrics, progress=progress)
         except (RuntimeError, OSError, ValueError) as error:
-            # A label-specific rejection must not fail every other member of a batch.
-            # Exact fallback runs only for the selected failed cohort and remains bounded.
+            # Action failures travel with their own symbols. A plan-level failure
+            # cannot authorize replaying completed actions against another client.
             outcome = failure_outcome(error)
-            if not isinstance(error, BarsSymbolUnavailable) and outcome["http_status"] != 400:
-                results.extend(
-                    {
-                        "symbol": need["symbols"][0],
-                        "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
-                        "outcome": outcome,
-                    }
-                    for need in cohort
-                )
-                continue
-            consumer = ordinary_client
+            results.extend(
+                {
+                    "symbol": need["symbols"][0],
+                    "status": "blocked" if outcome["outcome"] == "access_denied" else "failed",
+                    "outcome": outcome,
+                }
+                for need in cohort
+            )
+            continue
         for need in cohort:
             symbol = need["symbols"][0]
             try:
@@ -483,6 +482,7 @@ def acquire_selected(
             endpoint_selections=endpoint_selections,
             context=context,
             acquired=acquired,
+            group_keys=group_keys,
         )
         for item in extended["results"]:
             if item.get("outcome", {}).get("outcome") == "access_denied":
@@ -534,6 +534,7 @@ def acquire_selected(
                     approved_lineage_generations={
                         symbol: endpoint_selections[symbol].lineage_generation for symbol in buffered
                     },
+                    group_keys=group_keys,
                 )
                 if buffered and callable(getattr(client, "execute_plan", None))
                 else [(list(buffered), ordinary_client, {})]

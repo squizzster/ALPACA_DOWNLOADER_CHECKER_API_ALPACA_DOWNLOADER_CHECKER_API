@@ -565,7 +565,7 @@
   },
   {
     "modifications": [
-      "Allow selected read-only diagnostic groups to consume the operation\u2019s completed immutable store/path acceptance without reopening its manifest; generation applicability remains independently checked."
+      "Allow selected read-only diagnostic groups to consume the operation’s completed immutable store/path acceptance without reopening its manifest; generation applicability remains independently checked."
     ]
   },
   {
@@ -750,6 +750,17 @@
   {
     "modifications": [
       "Select affected older own-label decisions from unfinished historical comparisons during daily update. Publish the retained-evidence lineage decision through its journal before the pricing retry uses the selected route."
+    ]
+  },
+  {
+    "modifications": [
+      "Authorize former ticker occupation inference for fresh group decisions and preserve completed decisions under their recorded policy and source bindings. Preserve the terminal adjustment basis when a display changes and select a demonstrably fuller former aggregate as one complete bundle only when its adjusted price and share scales agree.",
+      "Pass selected lineage memberships to suffix planning and acquisition so related provider labels can be separated without rereading lineage receipts.",
+      "Retain dated SIP observations for former tickers named in dividends or as stock-paying acquirers and for historical OTC asset pricing routes. A literal following-day OTC sample and bounded forward OTC and backward dated SIP searches preserve the actual trade dates and scope. Retain provider-reported trade size and sale conditions. Reuse completed observations and credential-bound entitlement outcomes.",
+      "Resolve ambiguous fresh mapped routes with up to two native literal daily raw observations bound to both source generations and mappings. Record when direct symbol lookups returned an exchange snapshot or a 404 and preserve the original observation source across reuse.",
+      "Discover dated candidate tickers for inactive or OTC equities through a licensed asset CUSIP or a native action naming the same participant and resolving to the same UUID. Retain the participant, date, competing identifiers and unavailable results. Append compares the native assignment facts once per report and skips the descriptive receipts.",
+      "On a fresh Q-suffixed OTC issue with a mapped historical listed-tape trade and no stronger native identifier, admit a former ticker only after its returned cash dividend and exact CUSIP lookup identify the same terminal equity. Carry completed search outcomes and cover only missing action dates.",
+      "For a freshly selected retired listed equity with a cash merger and a zero-activity final daily bar on its effective date, retain one bounded latest SIP trade observation alongside the native acquiree and consideration."
     ]
   }
 ]

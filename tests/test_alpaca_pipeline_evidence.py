@@ -9,7 +9,7 @@ from unittest.mock import patch
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.metadata import EvidenceClient
 from libs.alpaca_pipeline.codec import Decoder, Encoder
-from libs.alpaca_pipeline.evidence import export_evidence, import_evidence
+from libs.alpaca_pipeline.evidence import SCHEMA_VERSION, export_evidence, import_evidence
 from libs.alpaca_pricing_download.contract import failure_outcome
 from libs.alpaca_security_lineage.alpaca_http import IdentityHttpError
 
@@ -144,6 +144,13 @@ class PipelineEvidenceTests(unittest.TestCase):
 
         original = observed_client()
         state = {field: getattr(original, field) for field in _FIELDS}
+        del state["trade_tape_samples"]
+        del state["otc_trade_access"]
+        del state["literal_bar_observations"]
+        del state["otc_status_queries"]
+        del state["cusip_action_windows"]
+        del state["cusip_action_cursors"]
+        del state["cusip_action_index"]
         encoder = Encoder()
         state["accepted_event_projections"] = [{"authored": True}]
         document = {
@@ -168,7 +175,7 @@ class PipelineEvidenceTests(unittest.TestCase):
         state = {field: getattr(original, field) for field in _FIELDS}
         document = {
             "schema": "alpaca.pipeline.evidence",
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "state": encoder.encode(state),
             "provider_evidence_views": encoder.encode([]),
         }
@@ -235,7 +242,7 @@ class PipelineEvidenceTests(unittest.TestCase):
         state = {field: getattr(original, field) for field in _FIELDS}
         document = {
             "schema": "alpaca.pipeline.evidence",
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "state": encoder.encode(state),
             "provider_evidence_views": encoder.encode([(closed, projected)]),
         }
@@ -256,7 +263,7 @@ class PipelineEvidenceTests(unittest.TestCase):
         original = observed_client()
         encoder = Encoder()
         document = export_evidence(original, encoder.encode)
-        for version in (True, 0, 2):
+        for version in (True, 0, SCHEMA_VERSION + 1):
             with self.assertRaisesRegex(LineageError, "unsupported"):
                 import_evidence(
                     {**document, "schema_version": version}, NoRequests(), Decoder(encoder.objects).decode

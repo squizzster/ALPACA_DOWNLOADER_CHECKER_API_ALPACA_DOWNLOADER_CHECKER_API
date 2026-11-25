@@ -1,6 +1,7 @@
 import io
 import unittest
 import urllib.error
+from datetime import datetime, timedelta
 from unittest import mock
 
 from libs.alpaca_security_lineage import (
@@ -715,6 +716,24 @@ class IdentityReportTests(unittest.TestCase):
 
 
 class AlpacaIdentityClientTests(unittest.TestCase):
+    def test_positive_exchange_snapshot_carries_its_actual_observation_time(self) -> None:
+        client = AlpacaIdentityClient("key", "secret", rate_limiter=FakeRateLimiter())
+        local = {"present": True, "downloads": []}
+        with (
+            mock.patch.object(client, "request_json", return_value=META_ASSET) as request,
+            mock.patch.object(client, "get_corporate_actions", return_value=[]),
+        ):
+            report = build_identity_report("META", local, client, query_dates=("2020-01-01", "2021-01-01"))
+        request.assert_called_once()
+        (lookup,) = report["asset_lookups"]
+        self.assertEqual(lookup["asset"]["exchange"], "NASDAQ")
+        self.assertEqual(datetime.fromisoformat(lookup["observed_at_utc"]).utcoffset(), timedelta(0))
+        client.seed_asset_lookup("META", asset=META_ASSET, http_status=200)
+        with mock.patch.object(
+            client, "request_json", side_effect=AssertionError("repeated positive observation")
+        ):
+            self.assertNotIn("observed_at_utc", client.get_asset_lookup("META"))
+
     def test_asset_lookup_exposes_not_found_http_status(self) -> None:
         response_body = io.BytesIO(b'{"code":40410000,"message":"asset not found"}')
         http_error = urllib.error.HTTPError(
@@ -731,11 +750,20 @@ class AlpacaIdentityClientTests(unittest.TestCase):
         ):
             result = client.get_asset_lookup("MISSING")
 
+        self.assertEqual(datetime.fromisoformat(result.pop("observed_at_utc")).utcoffset(), timedelta(0))
         self.assertEqual(
             {"outcome": "not_found", "http_status": 404, "asset": None},
             result,
         )
         self.assertTrue(response_body.closed)
+
+    def test_reused_undated_404_is_not_redated(self) -> None:
+        client = AlpacaIdentityClient("key", "secret", rate_limiter=FakeRateLimiter())
+        client.seed_asset_lookup("MISSING", asset=None, http_status=404)
+        with mock.patch.object(client, "request_json", side_effect=AssertionError("repeated 404")):
+            self.assertEqual(
+                client.get_asset_lookup("MISSING"), {"outcome": "not_found", "http_status": 404, "asset": None}
+            )
 
     def test_asset_not_found_returns_none_and_closes_error_response(self) -> None:
         response_body = io.BytesIO(b'{"message":"not found"}')

@@ -1249,8 +1249,8 @@ def download_pricing(
                 name in prior_nonempty and not rows for name, rows in views.items()
             )
             if empties_history and not attempt:
-                # Preserve the existing one bounded exact acquisition fallback
-                # for a batch-suppressed view. No selected comparison is repeated.
+                # A replacement erasing a nonempty view needs one fresh full
+                # acquisition. Its completed retained comparison still applies.
                 full_history, restarted, check = True, True, "changed_during_acquisition"
                 continue
             observed_instants = {}

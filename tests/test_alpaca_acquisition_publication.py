@@ -103,17 +103,17 @@ class AcquisitionPublicationTests(unittest.TestCase):
                 self.assertEqual(source["latest_request"]["end_exclusive"], "2026-10-17T00:00:00Z")
                 self.assertEqual({page["adjustment"] for page in self.pages}, {"raw", "all"})
 
-    def test_exact_fallback_also_rejects_a_changed_source_before_fetching(self):
+    def test_full_plan_failure_does_not_replay_or_replace_an_independent_publication(self):
         store = self.directory / "fallback"
 
-        def rejected_batch(*_args, **_kwargs):
+        def rejected_plan(*_args, **_kwargs):
             download_pricing(store, "AAA", "2026-10-16", client=FakeClient([bar("2016-01-04", "75")]))
-            raise HTTPError("https://example.invalid", 400, "batch rejected", {}, None)
+            raise HTTPError("https://example.invalid", 400, "plan rejected", {}, None)
 
-        with patch.object(acquire, "acquire_full", side_effect=rejected_batch):
+        with patch.object(acquire, "acquire_full", side_effect=rejected_plan):
             result = self.acquire(store, "initial_absence")
         self.assertEqual(result["failed"], 1)
-        self.assertIn("changed after acquisition selection", result["results"][0]["outcome"]["error"])
+        self.assertEqual(result["results"][0]["outcome"]["http_status"], 400)
         self.assertEqual(self.pages, [])
         self.assertEqual(read_pricing_views(store, "AAA")["all"][0][4], "75")
 

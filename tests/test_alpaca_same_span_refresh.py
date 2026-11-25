@@ -143,9 +143,12 @@ class SameSpanRefreshTests(unittest.TestCase):
     def test_one_omitted_view_cannot_erase_previously_published_prices(self):
         self.check_omitted_replacement(adjustment="all")
 
-    def check_omitted_replacement(self, adjustment=None):
-        # Equal retained request ranges exercise true symbol batching. Different
-        # ranges stay separate and must not be widened to create this fixture.
+    def test_partial_mapped_replacement_keeps_new_earlier_sessions(self):
+        self.live["BBB"].insert(0, bar("2026-10-07"))
+        self.check_omitted_replacement(earlier_only=True)
+
+    def check_omitted_replacement(self, adjustment=None, earlier_only=False):
+        # Equal request ranges would let the provider suppress part or all of BBB.
         download_pricing(
             self.store,
             "BBB",
@@ -166,26 +169,31 @@ class SameSpanRefreshTests(unittest.TestCase):
                 and params["end"][:19] == "2026-10-14T23:59:59"
                 and (adjustment is None or params["adjustment"] == adjustment)
             ):
-                response["bars"].pop("BBB", None)
+                if earlier_only and "BBB" in response["bars"]:
+                    response["bars"]["BBB"] = [r for r in response["bars"]["BBB"] if r["t"][:10] == "2026-10-13"]
+                else:
+                    response["bars"].pop("BBB", None)
             return response
 
         with patch.object(self.client, "_get", side_effect=omitted):
             result = self.run_refresh()
         self.assertTrue(result["complete"], result)
-        self.assertTrue(next(r for r in result["pricing"]["results"] if r["symbol"] == "BBB")["restarted"])
+        self.assertFalse(any(r["restarted"] for r in result["pricing"]["results"]))
         self.assertTrue(all(item["has_data"] for item in result["pricing"]["results"]))
         for rows in read_pricing_views(self.store, "BBB").values():
-            self.assertEqual([row[0][:10] for row in rows], ["2026-10-13"])
-            self.assertEqual(rows[0][5], "42")
-        exact_histories = [
+            self.assertEqual(
+                [row[0][:10] for row in rows], ["2026-10-07", "2026-10-13"] if earlier_only else ["2026-10-13"]
+            )
+            self.assertEqual(rows[-1][5], "42")
+        histories = [
             call
             for call in self.calls
-            if "," not in call["symbols"]
-            and call["start"][:10] <= "2026-10-03"
-            and call["end"][:19] == "2026-10-14T23:59:59"
+            if call["start"][:10] <= "2026-10-03" and call["end"][:19] == "2026-10-14T23:59:59"
         ]
-        self.assertEqual({call["symbols"] for call in exact_histories}, {"BBB"})
-        self.assertEqual(len(exact_histories), 2 if adjustment is None else 8)
+        self.assertCountEqual(
+            [(call["symbols"], call["adjustment"]) for call in histories],
+            [(symbol, view) for symbol in ("AAA", "BBB") for view in ("raw", "all")],
+        )
         self.assertEqual(files_snapshot(self.root("CCC")), unchanged)
 
     def test_confirmed_empty_full_replacement_is_bounded_and_can_remove_old_rows(self):

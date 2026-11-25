@@ -305,6 +305,7 @@ def _select_dependency_suffixes(
         progress=progress,
         context=context.pricing() if context is not None else None,
         select_append_work=True,
+        group_keys={symbol: min(members) for symbol, members in groups.items() if len(members) > 1},
         on_append_work_selected=persist_selected,
         on_empty_suffixes=(
             (lambda results: accept_empty_suffixes(work_policy, groups, results))

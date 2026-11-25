@@ -502,8 +502,17 @@ the absence of an anomaly confined to an unrequested view. Both `raw` and `all` 
 
 [Adaptive acquisition](../libs/alpaca_pricing_download/adaptive.py) applies to new tickers, selected replacements
 and missing-session appends, as well as localized corrections seeded with the accepted live `all` observation.
-Each response-dependent stage batches only its selected symbols at their exact
-requested ranges. Completed pagination precedes the next decision. Successful observations survive an exact
+For a fresh history or selected full replacement, each adaptive stage requests one symbol per action at its
+exact range. A date-mapped request containing several symbols can return an entire shared historical episode
+under one label while still returning later sessions under another. A nonempty result can therefore have an
+incomplete prefix. The same single-symbol plan covers the first-session confirmation for each directly
+observed view. Completed independent symbols remain available when a peer's acquisition or confirmation
+fails. Missing-session suffixes and localized latest-session corrections can batch symbols with identical
+ranges. When a physical request would include multiple members of the same selected lineage group,
+the planner separates those labels and fills available space with unrelated symbols. It uses the published
+membership already held by the caller or the group already selected for dependency work. That membership
+affects transport only. A suffix with no known related companion uses its ordinary roster.
+Completed pagination precedes the next decision. Successful observations survive an exact
 transport fallback, and completed decisions cross into publication without rehashing, renormalizing or replaying
 the policy. A fresh scope makes its own decision; old payloads and endpoint approvals are not equivalence inputs.
 All eight logical views remain available through the existing publication representation. The source's optional
@@ -511,7 +520,6 @@ All eight logical views remain available through the existing publication repres
 an exact selected-session correction records its bounded range proofs together. This is provenance for that
 acquisition, not authorization to infer later ranges or reinterpret retained partitions.
 Earlier acquisition policy provenance remains readable and does not invalidate completed retained pricing.
-New full histories and selected replacements confirm only directly acquired views at their first session.
 Completed trigger observations supply confirmation for the same adjustment/session; those observations are not
 requested again. Full replacement compares its new output against carried live `all` rows before accepting
 publication. A present differing `all` witness selected by the retained-boundary comparison is a request-context
@@ -564,7 +572,7 @@ HTTP 504 remains a server failure; the client timeout cannot extend the provider
 These owners enforce acquisition stages, row budgets, exact fallbacks and bounded retries. Completed
 normalized responses are sliced without renormalization. Only newly acquired full histories or selected
 replacements receive independent producer confirmation; an approved append never confirms old history again.
-Endpoint checks batch identical session windows across symbols but never widen their date coverage to save
+Retained boundary checks batch identical session windows across symbols but never widen their date coverage to save
 pages. Acquisition carries immutable accepted endpoints and completed comparison results to execution, bound
 to store, symbol, source generation, cutoff and mapping. Execution rechecks the generation under its lock;
 it does not reread the validator or replay the comparison. Completed comparisons survive a peer or suffix
@@ -576,7 +584,7 @@ validation or compilation for the unchanged entry and target. Completed adjustme
 endpoint and extent projections through publication. Lineage carries its locked source generation and completed
 correction-scope decision, including a negative decision, into payload loading and broader reconciliation.
 Only after successful full batch pagination do omitted symbols complete empty at the transport boundary.
-Ordinary acquisition consumes that completed response without individual rechecks. The history-comparison owner
+Missing-session acquisition consumes that completed response. The retained history-comparison owner
 has additional evidence: its compact baseline names an already retained endpoint. Provider batch companions can suppress
 that bar, so a completed omission triggers one singleton confirmation action with the identical session, adjustment
 and mapping date. Returned endpoints are retained; failed batches are not interpreted as absence. A request
@@ -613,8 +621,8 @@ and recovered endpoints. Once the resulting suffix and exact workflow obligation
 an interrupted acknowledgement consumes that compact publication on restart and excludes the already-published
 label from another live comparison. This rule does not infer ticker identity from a companion's returned bar.
 Transport, shape or pagination errors leave actions incomplete. Replacement emptying a
-previously nonempty view needs bounded fresh producer confirmation; ordinary empty appends/initial empty histories
-retain batched acquisition.
+previously nonempty view needs bounded fresh producer confirmation. A completed single-symbol initial
+acquisition can establish an empty history on its own.
 
 Response bodies live with their consumer. Request-size splits preserve ordered pagination without retaining
 older cohorts through recursive closures/handled tracebacks. Retained [AcquisitionFailure](../libs/alpaca_pricing_download/failures.py)

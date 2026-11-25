@@ -949,7 +949,11 @@ class ProductionMembershipTests(TestCase):
                             ("OLD", "all", "2024-01-03", "2024-01-06"),
                             ("NEW", "all", "2024-01-03", "2024-01-11"),
                             *(
-                                [("NEW,OLD", view, "2024-01-12", "2024-01-12") for view in ("raw", "all")]
+                                [
+                                    (label, view, "2024-01-12", "2024-01-12")
+                                    for label in ("NEW", "OLD")
+                                    for view in ("raw", "all")
+                                ]
                                 if append
                                 else []
                             ),

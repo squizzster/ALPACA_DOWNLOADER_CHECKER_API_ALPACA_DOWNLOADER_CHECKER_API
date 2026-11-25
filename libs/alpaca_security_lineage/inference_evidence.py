@@ -99,11 +99,19 @@ def provider_evidence(evidence, *, local_report=None):
     reject_assertions(actions, where="retained provider observations")
     query = evidence["query"]
     local = local_report or {"present": True, "downloads": [], "counts_known": False}
+    # Sealed research-era reports could not retain a licensed native asset
+    # CUSIP. A raw-shaped extra cannot seed a new discovery request.
+    lookups = [
+        {**lookup, "asset": {k: v for k, v in lookup["asset"].items() if k != "cusip"}}
+        if "cusip" in (lookup.get("asset") or {})
+        else lookup
+        for lookup in evidence["asset_lookups"]
+    ]
     report = report_from_observations(
         query["input_symbol"],
         local,
         actions,
-        evidence["asset_lookups"],
+        lookups,
         evidence["queried_symbols"],
         start_date=query["corporate_actions_start"],
         end_date=query["corporate_actions_end"],

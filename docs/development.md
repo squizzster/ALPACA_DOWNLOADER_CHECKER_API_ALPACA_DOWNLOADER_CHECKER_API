@@ -63,6 +63,25 @@ No fact-injection candidate or mechanism is admissible. Apply the
    diagnostic results never authorize it. Continuation and recovery consume completed results without
    reopening research assertions or replaying accepted work.
 
+The [lineage regression symbols](../tests/fixtures/lineage_symbols.txt) select a bounded development
+comparison. The file contains one seed per selected group, including reused tickers, delistings,
+cash acquisitions, changing share terms and unresolved histories. To compare two executable policies
+on those complete groups, run
+
+```bash
+xargs -a tests/fixtures/lineage_symbols.txt ./alpaca-lineage-debug run --store data_pricing \
+  --control-policy resources/alpaca_security_correlation_v103_legacy_policy.yaml \
+  --policy resources/alpaca_security_correlation_policy.yaml --tickers
+```
+
+The diagnostic reports stored/control drift separately from changes caused by the candidate.
+The file supplies work selection only. Fresh builds discover related labels through provider
+observations and use the same rules for symbols outside the regression set.
+
+For a possible rename, check which provider observation first names the other ticker, which dates
+independently establish its spelling, and whether the adjusted prices remain on a common basis
+across the proposed boundary. A mapped response may reproduce both prices under either requested label.
+
 Standalone ownership resolution and online serving eligibility remain separate facts. The
 [implementation review](trust-boundary-handoff.html#f67) records the generic-only inference boundary,
 its verified guards and remaining adoption limits. Former factual-repair success expectations are not

@@ -1,3 +1,4 @@
+import hmac
 import json
 import math
 import threading
@@ -5,13 +6,18 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 from libs.alpaca_data_api_solver import (
     ACTION_URL,
     ASSET_URL,
+    NEW_YORK,
     build_plan,
+    cusip_action_request,
+    instant,
     market_split_parameters,
+    trade_tape_request,
     validate_version,
 )
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
@@ -114,6 +120,12 @@ class AlpacaIdentityClient:
         self.rate_limiter = rate_limiter or AlpacaIdentityRequestRateLimiter()
         self.request_count = 0
         self._seeded_asset_lookups: dict[str, dict[str, Any]] = {}
+        self.cusip_action_cursors = {}
+
+    def trade_entitlement_scope(self, nonce):
+        """Operation-salted credential binding for a transported OTC subscription denial."""
+        material = f"alpaca-otc-entitlement\0{nonce}\0{self.headers['APCA-API-KEY-ID']}".encode()
+        return hmac.digest(self.headers["APCA-API-SECRET-KEY"].encode(), material, "sha256").hex()
 
     def seed_asset_lookup(
         self,
@@ -168,9 +180,18 @@ class AlpacaIdentityClient:
                 if error.code == 429 and not last:
                     self.rate_limiter.defer_requests_for_seconds(rate_limit_delay_seconds(error.headers))
                     return RETRY
-                raise IdentityHttpError(
+                failure = IdentityHttpError(
                     error.code, f"Alpaca returned HTTP {error.code} for {url}: {response_body}"
-                ) from error
+                )
+                if error.code == 403:
+                    try:
+                        reason = json.loads(response_body)
+                    except ValueError:
+                        reason = None
+                    failure.otc_subscription_denied = isinstance(reason, dict) and (
+                        reason.get("message") == "subscription does not permit querying OTC data"
+                    )
+                raise failure from error
             if isinstance(error, urllib.error.URLError):
                 raise RuntimeError(f"Alpaca request failed for {url}: {error.reason}") from error
             raise error
@@ -238,6 +259,29 @@ class AlpacaIdentityClient:
         )
         return self.execute_plan(plan)[0][0]
 
+    def get_cusip_actions(self, cusip, start, end):
+        need = {
+            "kind": "corporate_actions_by_cusip",
+            "why": "lineage_evidence",
+            "cusip": cusip,
+            "start": start,
+            "end": end,
+        }
+        return self.execute_plan(build_plan({"steps": [{"needs": [need]}]}))[0][0]
+
+    def get_trade_tape_sample(self, symbol, session, *, asof="-", feed="sip", through_session=None, sort="asc"):
+        need = {
+            "kind": "historical_trade_tape",
+            "why": "dated_ticker_tape",
+            "symbol": symbol,
+            "session": session,
+            "asof": asof,
+            "feed": feed,
+            **({"through_session": through_session} if through_session is not None else {}),
+            **({"sort": sort} if sort != "asc" else {}),
+        }
+        return self.execute_plan(build_plan({"steps": [{"needs": [need]}]}))[0][0]
+
     def execute_plan(self, plan, *, metrics=None):
         """Execute ordered metadata actions; results retain step/action positions."""
         # The solver owns request construction, but this credential-bearing
@@ -249,6 +293,28 @@ class AlpacaIdentityClient:
             for action in step["actions"]:
                 # Plans and executor endpoint checks share the solver's URL constants.
                 strategy, url = action["strategy"], action["request"]["url"]
+                if strategy == "corporate_actions_by_cusip":
+                    expected = cusip_action_request(action.get("cusip"), action.get("start"), action.get("end"))
+                    if action["request"] != expected or action.get("pagination") != {
+                        "parameter": "page_token",
+                        "response_field": "next_page_token",
+                    }:
+                        raise ValueError("CUSIP action plan exceeds its selected filter or dates")
+                    continue
+                if strategy == "historical_trade_tape":
+                    if "through_session" in action and action["through_session"] is None:
+                        raise ValueError("trade tape interval requires an explicit final session")
+                    expected = trade_tape_request(
+                        action.get("symbol"),
+                        action.get("session"),
+                        action.get("asof"),
+                        action.get("feed"),
+                        through_session=action.get("through_session"),
+                        sort=action.get("sort", "asc"),
+                    )
+                    if action["request"] != expected or "pagination" in action:
+                        raise ValueError("trade tape plan exceeds its selected date range or mapping")
+                    continue
                 if not (
                     strategy == "asset_lookup"
                     and url.startswith(ASSET_URL + "/")
@@ -281,10 +347,15 @@ class AlpacaIdentityClient:
                             "outcome": "not_found" if asset is None else "found",
                             "http_status": 404 if asset is None else 200,
                             "asset": asset,
+                            "observed_at_utc": datetime.now(timezone.utc).isoformat(),
                         }
                     )
+                elif action["strategy"] == "historical_trade_tape":
+                    values.append(self._execute_trade_tape(action))
                 elif action["strategy"] == "market_split_session":
                     values.append(self._execute_corporate_action(action, metrics=metrics))
+                elif action["strategy"] == "corporate_actions_by_cusip":
+                    values.append(self._execute_cusip_actions(action, metrics=metrics))
                 elif action["strategy"] == "asset_catalogue":
                     values.append(
                         self.request_json(
@@ -296,6 +367,90 @@ class AlpacaIdentityClient:
                     values.append(self._corporate_action_with_splitting(action, metrics=metrics))
             results.append(values)
         return results
+
+    def _execute_trade_tape(self, action):
+        request = action["request"]
+        params = request["params"]
+        sample = {
+            "symbol": action["symbol"],
+            "session": action["session"],
+            "feed": params["feed"],
+            "asof": params["asof"],
+            "start": params["start"],
+            "end": params["end"],
+            "limit": params["limit"],
+            **({"through_session": action["through_session"]} if "through_session" in action else {}),
+            **({"sort": params["sort"]} if params["sort"] != "asc" else {}),
+        }
+        try:
+            document = self.request_json(request["url"] + "?" + urllib.parse.urlencode(params))
+        except IdentityHttpError as error:
+            if error.status not in (403, 404):
+                raise
+            if (
+                error.status == 403
+                and params["feed"] == "otc"
+                and getattr(error, "otc_subscription_denied", False)
+            ):
+                return {
+                    **sample,
+                    "http_status": 403,
+                    "outcome": "unavailable",
+                    "reason": "otc_subscription_denied",
+                }
+            return {**sample, "http_status": error.status, "outcome": "unavailable"}
+        trades = document.get("trades")
+        # A completed empty native page can explicitly contain "trades": null.
+        if trades is None and "trades" in document:
+            trades = []
+        if document.get("symbol") != sample["symbol"] or not isinstance(trades, list) or len(trades) > 1:
+            raise RuntimeError("Alpaca returned an invalid trade tape sample for the requested route")
+        sample["returned_symbol"] = document["symbol"]
+        if not trades:
+            if document.get("next_page_token") not in (None, ""):
+                raise RuntimeError("empty first trade page does not establish an empty interval")
+            return {**sample, "http_status": 200, "outcome": "no_trades"}
+        trade = trades[0]
+        if not isinstance(trade, dict) or not isinstance(trade.get("t"), str) or len(trade["t"]) <= 10:
+            raise RuntimeError("Alpaca returned a trade without a dated timestamp")
+        try:
+            observed = instant(trade["t"])
+        except ValueError as error:
+            raise RuntimeError("Alpaca returned an invalid trade timestamp") from error
+        if not instant(params["start"]) <= observed <= instant(params["end"]):
+            raise RuntimeError("Alpaca returned a trade outside the selected session")
+        if any(trade.get(field) is not None and not isinstance(trade[field], str) for field in ("z", "x")):
+            raise RuntimeError("Alpaca returned an invalid trade tape or execution venue field")
+        for key, name in (("p", "price"), ("s", "size")):
+            value = trade.get(key)
+            if value is not None and (
+                type(value) not in (int, float)
+                or value < 0
+                or isinstance(value, float)
+                and not math.isfinite(value)
+            ):
+                raise RuntimeError(f"Alpaca returned an invalid trade {name}")
+        conditions = trade.get("c")
+        if conditions is not None and (
+            not isinstance(conditions, list) or any(not isinstance(code, str) for code in conditions)
+        ):
+            raise RuntimeError("Alpaca returned invalid trade sale conditions")
+        return {
+            **sample,
+            "http_status": 200,
+            "outcome": "observed",
+            "trade": {key: trade[key] for key in ("t", "z", "x", "p", "s", "c") if key in trade},
+            **(
+                {"observed_session": observed.astimezone(NEW_YORK).date().isoformat()}
+                if "through_session" in action
+                else {}
+            ),
+            "tape_network": (
+                {"A": "CTA network A", "B": "CTA network B", "C": "Nasdaq UTP"}.get(trade.get("z"), "unknown")
+                if params["feed"] == "sip"
+                else "unknown"
+            ),
+        }
 
     def execute_corporate_action_parts(self, action, *, on_completed, on_failure):
         """Lend completed physical responses before independent subsets run."""
@@ -330,19 +485,53 @@ class AlpacaIdentityClient:
             error_type=RuntimeError,
             metrics=metrics,
         ):
-            if not isinstance(response_document, dict):
-                raise RuntimeError("corporate-actions request unexpectedly returned no response")
-
-            action_groups = response_document.get("corporate_actions")
-            if not isinstance(action_groups, dict):
-                raise RuntimeError("corporate-actions response has no corporate_actions object")
-            for response_key, actions in action_groups.items():
-                if not isinstance(actions, list):
-                    raise RuntimeError(f"corporate-actions group {response_key!r} is not a list")
-                action_type = ACTION_TYPE_BY_RESPONSE_KEY.get(response_key, response_key)
-                for action in actions:
-                    if not isinstance(action, dict):
-                        raise RuntimeError(f"corporate-actions group {response_key!r} contains a non-object")
-                    normalized_actions.append({**action, "action_type": action_type})
+            normalized_actions.extend(_normalize_actions(response_document))
 
         return normalized_actions
+
+    def _execute_cusip_actions(self, action, *, metrics=None):
+        key = (action["cusip"], action["start"], action["end"])
+        saved = self.cusip_action_cursors.setdefault(key, {"actions": [], "tokens": [], "next": None})
+        params = dict(action["request"]["params"])
+        while True:
+            if saved["next"] is not None:
+                params["page_token"] = saved["next"]
+            if metrics is not None:
+                metrics["page_requests"] = metrics.get("page_requests", 0) + 1
+            try:
+                document = self.request_json(ACTION_URL + "?" + urllib.parse.urlencode(params))
+            except IdentityHttpError as error:
+                if error.status != 403:
+                    raise
+                # A denied interval supplies no positive or negative action evidence,
+                # even if preceding pages succeeded.
+                del self.cusip_action_cursors[key]
+                return {"outcome": "denied", "http_status": 403, "actions": []}
+            rows = _normalize_actions(document)
+            token = document.get("next_page_token")
+            if token is not None and (not isinstance(token, str) or not token or token in saved["tokens"]):
+                raise RuntimeError("invalid or repeated CUSIP action next_page_token")
+            saved["actions"].extend(rows)
+            if token is None:
+                del self.cusip_action_cursors[key]
+                return {"outcome": "complete", "http_status": 200, "actions": saved["actions"]}
+            saved["tokens"].append(token)
+            saved["next"] = token
+
+
+def _normalize_actions(response_document):
+    if not isinstance(response_document, dict):
+        raise RuntimeError("corporate-actions request unexpectedly returned no response")
+    action_groups = response_document.get("corporate_actions")
+    if not isinstance(action_groups, dict):
+        raise RuntimeError("corporate-actions response has no corporate_actions object")
+    normalized = []
+    for response_key, actions in action_groups.items():
+        if not isinstance(actions, list):
+            raise RuntimeError(f"corporate-actions group {response_key!r} is not a list")
+        action_type = ACTION_TYPE_BY_RESPONSE_KEY.get(response_key, response_key)
+        for action in actions:
+            if not isinstance(action, dict):
+                raise RuntimeError(f"corporate-actions group {response_key!r} contains a non-object")
+            normalized.append({**action, "action_type": action_type})
+    return normalized

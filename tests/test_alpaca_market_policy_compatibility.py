@@ -30,6 +30,7 @@ from libs.alpaca_lineage_build.correlation_policy_contract import (
     RETAINED_V99_SEMANTIC_SHA256,
     RETAINED_V100_SEMANTIC_SHA256,
     RETAINED_V101_SEMANTIC_SHA256,
+    RETAINED_V103_SEMANTIC_SHA256,
 )
 
 
@@ -90,6 +91,9 @@ class MarketPolicyCompatibilityTests(TestCase):
 
     def test_unchanged_v101_publication_keeps_provenance_without_upstream_replay(self):
         self.unchanged(101, RETAINED_V101_SEMANTIC_SHA256)
+
+    def test_unchanged_v103_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(103, RETAINED_V103_SEMANTIC_SHA256)
 
     def unchanged(self, version, semantic):
         with fixture() as case:

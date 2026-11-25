@@ -3,7 +3,10 @@ from collections import deque
 from datetime import date
 from typing import Any
 
+from libs.alpaca_data_api_solver import valid_cusip
+
 from .alpaca_http import AlpacaIdentityClient
+from .cusip_discovery import discover
 from .query_dates import local_query_dates
 from .settings import (
     CUSIP_FIELD_PATTERN,
@@ -51,9 +54,12 @@ def extract_cusips(actions: list[dict[str, Any]]) -> list[str]:
     )
 
 
-def compact_asset(asset: dict[str, Any]) -> dict[str, Any]:
+def compact_asset(asset: dict[str, Any], *, include_cusip=False) -> dict[str, Any]:
     fields = ("id", "class", "exchange", "symbol", "name", "status", "tradable")
-    return {field_name: asset.get(field_name) for field_name in fields}
+    result = {field_name: asset.get(field_name) for field_name in fields}
+    if include_cusip and valid_cusip(asset.get("cusip")):
+        result["cusip"] = asset["cusip"]
+    return result
 
 
 def _authoritative_name_change_symbol(
@@ -175,7 +181,15 @@ def build_identity_report(
     queued_symbols = {symbol}
     queried_symbols = []
     actions_by_key = {}
+    # An operation client already reconciles native identities across query routes.
+    # Direct API callers must reconcile their raw CUSIP and symbol responses here.
+    direct_cusip_actions = {}
+    owns_cusip_conflicts = not callable(getattr(client, "cusip_discovery_windows", None))
     asset_lookups_by_key = {}
+    cusip_discovery = None
+    status_query = None
+    considered_snapshot = False
+    new_filtered_actions = False
 
     def queue_symbol(candidate):
         if candidate in queued_symbols:
@@ -187,7 +201,8 @@ def build_identity_report(
         queued_symbols.add(candidate)
         pending_symbols.append(candidate)
 
-    while pending_symbols:
+    while pending_symbols or new_filtered_actions:
+        new_filtered_actions = False
         while pending_symbols:
             prefetch = getattr(client, "prefetch_corporate_actions", None)
             if prefetch is not None:
@@ -206,7 +221,14 @@ def build_identity_report(
                         json.dumps(item, sort_keys=True, separators=(",", ":")),
                     ),
                 ):
-                    actions_by_key[action_identity_key(action)] = action
+                    key = action_identity_key(action)
+                    if (
+                        direct_cusip_actions
+                        and key in direct_cusip_actions
+                        and direct_cusip_actions[key] != action
+                    ):
+                        raise ValueError(f"conflicting corporate-action identity: {key}")
+                    actions_by_key[key] = action
                     for related_symbol in sorted(related_name_change_symbols(action)):
                         queue_symbol(related_symbol)
 
@@ -236,7 +258,12 @@ def build_identity_report(
                     "found": asset is not None,
                     "outcome": observed["outcome"],
                     "http_status": observed["http_status"],
-                    "asset": compact_asset(asset) if asset is not None else None,
+                    "asset": compact_asset(asset, include_cusip=True) if asset is not None else None,
+                    **{
+                        name: observed[name]
+                        for name in ("source", "observed_at_utc")
+                        if lookup_kind == "symbol" and observed.get(name) is not None
+                    },
                 }
         for candidate in sorted(
             {
@@ -247,6 +274,34 @@ def build_identity_report(
             }
         ):
             queue_symbol(candidate)
+        if not pending_symbols and not considered_snapshot:
+            considered_snapshot = True
+            candidates, cusip_discovery = discover(
+                symbol, asset_lookups_by_key, actions, start_date, end_date, client
+            )
+            probe = getattr(client, "otc_status_query", None)
+            if probe and not candidates and cusip_discovery is None and len(queued_symbols) == 1:
+                confirmed, status_query = probe(asset_lookups_by_key["symbol", symbol], start_date, end_date)
+                if confirmed is not None:
+                    queue_symbol(confirmed)
+            for candidate in sorted(candidates):
+                queue_symbol(candidate)
+            for window in (cusip_discovery or {}).get("windows", ()):
+                for observed in window["actions"]:
+                    action = observed["action"]
+                    key = action_identity_key(action)
+                    if owns_cusip_conflicts:
+                        if key in actions_by_key and actions_by_key[key] != action:
+                            raise ValueError(f"conflicting corporate-action identity: {key}")
+                        direct_cusip_actions[key] = action
+                    if (
+                        observed["ticker"] not in queued_symbols
+                        or not start_date <= action_date(action) <= end_date
+                    ):
+                        continue
+                    if key not in actions_by_key:
+                        actions_by_key[key] = action
+                        new_filtered_actions = True
 
     own = asset_lookups_by_key["symbol", symbol]
     resolve_retirement = getattr(client, "retired_asset_lookup", None)
@@ -254,21 +309,27 @@ def build_identity_report(
         observation = resolve_retirement()
         if observation is not None:
             asset_lookups_by_key["asset_id", observation["lookup"]] = observation
-    return accept_provider_evidence(
-        report_from_observations(
-            symbol,
-            local_report,
-            actions,
-            [
-                asset_lookups_by_key[key]
-                for key in sorted(asset_lookups_by_key, key=lambda key: (key[0] != "symbol", key[1]))
-            ],
-            queried_symbols,
-            start_date=start_date,
-            end_date=end_date,
-            request_count=client.request_count,
-        )
+    report = report_from_observations(
+        symbol,
+        local_report,
+        actions,
+        [
+            asset_lookups_by_key[key]
+            for key in sorted(asset_lookups_by_key, key=lambda key: (key[0] != "symbol", key[1]))
+        ],
+        queried_symbols,
+        start_date=start_date,
+        end_date=end_date,
+        request_count=client.request_count,
     )
+    if cusip_discovery is not None:
+        report["cusip_action_discovery"] = cusip_discovery
+    if status_query is not None:
+        report["otc_status_symbol_query"] = status_query
+    remember = getattr(client, "remember_cusip_labels", None)
+    if remember is not None:
+        remember(report)
+    return accept_provider_evidence(report)
 
 
 def report_from_observations(
@@ -298,6 +359,8 @@ def report_from_observations(
         identity = assets_by_id.setdefault(
             asset_id,
             {
+                # A licensed asset snapshot has no effective date. Only dated
+                # action endpoints and exact CUSIP lookups feed identity occupancy.
                 **compact_asset(asset),
                 "lookup_symbols": set(),
                 "lookup_cusips": set(),

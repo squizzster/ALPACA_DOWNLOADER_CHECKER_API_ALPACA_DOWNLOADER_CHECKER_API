@@ -547,6 +547,7 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
     ]
     legacy_tails = [entry for entry in eligible if entry.get("tail_all") is None]
     from .comparison_routes import dated_routes
+    from .selection import pricing_group_keys
 
     checked = [entry for entry in check_entries if entry.get("tail_all") is not None]
     scopes = dated_routes(accepted["index"], checked)
@@ -646,16 +647,25 @@ def preview(accepted, selection, observation, end_date, *, metadata_requests=1):
             }
         )
     plans = [build_plan({"steps": [{"needs": cohort}]}) for cohort in _cohorts(initial)]
+    group_keys = pricing_group_keys(
+        accepted["index"], {need["symbols"][0] for needs in (append, empty, correction_needs) for need in needs}
+    )
     correction_plans = [
-        build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
+        build_plan(
+            {"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False, group_keys=group_keys
+        )
         for cohort in _cohorts(correction_needs)
     ]
     empty_plans = [
-        build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
+        build_plan(
+            {"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False, group_keys=group_keys
+        )
         for cohort in _cohorts(empty)
     ]
     append_plans = [
-        build_plan({"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False)
+        build_plan(
+            {"steps": [{"needs": cohort}]}, max_symbols=MAX_SYMBOLS, merge_ranges=False, group_keys=group_keys
+        )
         for cohort in _cohorts(append)
     ]
     late_bar_sources = {

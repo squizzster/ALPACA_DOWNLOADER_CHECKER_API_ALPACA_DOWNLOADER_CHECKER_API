@@ -175,15 +175,22 @@ class ApiSolverTests(unittest.TestCase):
         self.assertTrue(all(action["strategy"] == "bars_single_range" for action in actions))
         self.assertEqual({action["request"]["params"]["adjustment"] for action in actions}, set(ADJUSTMENTS))
 
-    def test_three_full_histories_share_eight_actions(self):
-        result = plan(
-            *(
-                need([symbol], why="changed_data", start="2016-01-01", adjustments=list(ADJUSTMENTS))
-                for symbol in ("KNDI", "KWR", "AMZN")
-            )
-        )
-        self.assertEqual(len(result["steps"][0]["actions"]), 8)
-        self.assertEqual(result["steps"][0]["actions"][0]["request"]["params"]["symbols"], "AMZN,KNDI,KWR")
+    def test_full_history_and_first_row_requests_isolate_mapped_symbols(self):
+        for reason in (
+            "changed_data",
+            "retained_replacement",
+            "initial_or_invalidated_history",
+            "acquisition_check",
+        ):
+            with self.subTest(reason=reason):
+                actions = plan(
+                    need(["AAA", "BBB"], why=reason, start="2016-01-01", adjustments=["raw", "all"]),
+                    need(["CCC"], why=reason, start="2016-01-02", adjustments=["raw", "all"]),
+                )["steps"][0]["actions"]
+                self.assertCountEqual(
+                    [(a["request"]["params"]["symbols"], a["request"]["params"]["adjustment"]) for a in actions],
+                    [(symbol, view) for symbol in ("AAA", "BBB", "CCC") for view in ("raw", "all")],
+                )
 
     def test_symbol_cap_and_url_size_are_respected(self):
         result = plan(need([f"S{i}" for i in range(8001)]))
@@ -193,6 +200,30 @@ class ApiSolverTests(unittest.TestCase):
         )
         limited = plan(need(["A" + str(i) + "X" * 80 for i in range(50)]), max_url_bytes=3000)
         self.assertGreater(len(limited["steps"][0]["actions"]), 1)
+
+    def test_only_co_requested_peers_separate_and_nearby_windows_cannot_merge_them(self):
+        group_keys = {"AAA": "group1", "BBB": "group1", "CCC": "group2", "DDD": "group2"}
+        same = need(["AAA", "BBB", "CCC", "DDD", "EEE"], why="append_completed_sessions")
+        actions = plan(same, group_keys=group_keys)["steps"][0]["actions"]
+        self.assertCountEqual([a["request"]["params"]["symbols"] for a in actions], ["AAA,CCC,EEE", "BBB,DDD"])
+        later = need(["BBB", "EEE"], why="append_completed_sessions", start="2026-10-12", end="2026-10-13")
+        actions = plan({**same, "symbols": ["AAA", "CCC"]}, later, group_keys=group_keys)["steps"][0]["actions"]
+        self.assertCountEqual([a["request"]["params"]["symbols"] for a in actions], ["AAA,CCC", "BBB,EEE"])
+
+    def test_known_groups_respect_existing_physical_subdivision_and_request_budget(self):
+        symbols = [f"T{i:04}" for i in range(1500)]
+        append = need(symbols, why="append_completed_sessions")
+        separate = {symbols[0]: "shared", symbols[-1]: "shared"}
+        safe = plan(append, group_keys=separate)["steps"][0]["actions"]
+        self.assertEqual(len(safe), 1)  # The transport's two physical requests already separate these peers.
+        colliding = {symbol: "shared" for symbol in symbols[:2]}
+        actions = plan(append, group_keys=colliding)["steps"][0]["actions"]
+        requests = [a["request"]["params"]["symbols"].split(",") for a in actions]
+        self.assertEqual(len(requests), 2)
+        self.assertCountEqual([s for request in requests for s in request], symbols)
+        self.assertTrue(
+            all(len(request) <= 1000 and len(colliding.keys() & set(request)) == 1 for request in requests)
+        )
 
     def test_nearby_sparse_boundaries_share_request_with_exact_delivery_ranges(self):
         result = plan(

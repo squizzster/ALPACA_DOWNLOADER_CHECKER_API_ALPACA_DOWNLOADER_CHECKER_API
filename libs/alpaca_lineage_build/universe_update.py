@@ -21,6 +21,7 @@ from .metadata import EvidenceClient
 from .pipeline import run_lineage
 from .refresh import refresh_required_history
 from .registration import command_policy
+from .selection import pricing_group_keys
 from .update import update_everything
 from .work_contract import (
     WorkPolicy,
@@ -693,6 +694,7 @@ def histories_locked(
             missing_route=acquisition_route,
             dated_route=dated_route_selector(acquisition_index),
             lineage_generations=acquisition_lineage_generations,
+            group_keys=pricing_group_keys(acquisition_index, symbols),
         )
         pricing["results"].extend(value["results"])
         pricing["requests"][target] = value["requests"]

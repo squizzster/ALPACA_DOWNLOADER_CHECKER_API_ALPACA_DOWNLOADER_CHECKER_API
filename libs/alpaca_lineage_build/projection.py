@@ -24,11 +24,12 @@ def last_observed_symbol_lookup(receipt):
     if len(lookups) == 1 and lookups[0].get("asset"):
         asset = lookups[0]["asset"]
         if asset.get("symbol") == receipt["symbol"] and asset.get("class") == "us_equity":
+            stamp = lookups[0].get("observed_at_utc")
+            if stamp is None and lookups[0].get("source") == "asset_catalogue":
+                stamp = receipt["evidence"].get("catalogue_observed_at_utc")
             return {
                 **lookups[0],
-                "catalogue_observed_at_utc": lookups[0].get(
-                    "observed_at_utc", receipt["evidence"].get("catalogue_observed_at_utc")
-                ),
+                "catalogue_observed_at_utc": stamp,
             }
     return receipt.get("last_observed_symbol_lookup")
 

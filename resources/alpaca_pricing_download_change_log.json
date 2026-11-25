@@ -386,5 +386,11 @@
     "modifications": [
       "Keep the selected lineage generation in durable dated comparison corrections, preserving existing retained-price publication scopes."
     ]
+  },
+  {
+    "modifications": [
+      "Acquire each fresh or selected replacement history and its first-session confirmations independently so mapped aliases cannot hide earlier sessions. Preserve completed peer acquisitions when a confirmation fails.",
+      "Carry selected group membership into ordinary and dependency suffix acquisition to separate related mapped requests while retaining completed comparisons and adaptive observations."
+    ]
   }
 ]

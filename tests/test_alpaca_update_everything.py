@@ -79,6 +79,54 @@ class UpdateEverythingTests(unittest.TestCase):
             self.store, end, pricing_client=self.client, identity_client=self.identity, **kwargs
         )
 
+    def test_approved_daily_append_uses_published_group_to_keep_both_mapped_suffixes(self):
+        from test_alpaca_durable_maintenance import rename
+
+        from libs.alpaca_lineage_build.universe_plan import preview
+
+        self.store = self.store.parent / "mapped"
+        assets = {symbol: asset(symbol) for symbol in ("AAA", "BBB", "CCC")}
+        self.identity = IdentityClient({**assets, "111111111": assets["BBB"]}, [rename()])
+        self.live = {symbol: [*self.old, bar("2026-10-15"), bar("2026-10-16")] for symbol in assets}
+        for symbol in assets:
+            download_pricing(self.store, symbol, "2026-10-15", client=FakeClient(self.old))
+        built = run_lineage(self.store, list(assets), identity_client=self.identity)
+        self.assertEqual(built["failed"], 0, built)
+        projection.rebuild(self.store)
+        accepted = {
+            "summary": check_summary.read_snapshot(self.store),
+            "index": lineage_storage.read_index(self.store / "end_of_day/lineage"),
+            "late_bar_repairs": {"sources": {}},
+            "serving_catalogue": {"pending_symbols": []},
+        }
+        with patch.object(lineage_storage, "read_receipt", side_effect=AssertionError("group already selected")):
+            plan = preview(
+                accepted,
+                {"work": {}, "deferred": []},
+                {"catalogue_observed_at_utc": "2026-10-15", "records": []},
+                "2026-10-17",
+            )
+        self.assertEqual(plan["expected_io"]["append_actions_before_reconciliation"], 16)
+
+        def page(params):
+            response = self.page(params)
+            if params["start"][:10] == "2026-10-15" and {"AAA", "BBB"} <= response["bars"].keys():
+                response["bars"]["BBB"] = response["bars"]["BBB"][1:]
+            return response
+
+        with patch.object(self.client, "_get", side_effect=page):
+            result = self.run_update()
+        self.assertTrue(result["complete"], result)
+        self.assertCountEqual(
+            [(p["symbols"], p["adjustment"]) for p in self.calls if p["start"][:10] == "2026-10-15"],
+            [(symbols, view) for symbols in ("AAA,CCC", "BBB") for view in ("raw", "all")],
+        )
+        for symbol in assets:
+            self.assertEqual(
+                [row[0][:10] for row in read_pricing_views(self.store, symbol)["all"][-2:]],
+                ["2026-10-15", "2026-10-16"],
+            )
+
     def assert_finished(self):
         ready = check_summary.read_snapshot(self.store)
         self.assertEqual({entry["symbol"] for entry in ready["entries"]}, {"AAA", "BBB"})

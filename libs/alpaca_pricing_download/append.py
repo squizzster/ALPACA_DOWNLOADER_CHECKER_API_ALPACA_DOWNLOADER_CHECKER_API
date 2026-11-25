@@ -297,6 +297,7 @@ def append_entries(
     context=None,
     acquired=None,
     retained_partitions=None,
+    group_keys=None,
 ):
     """Batch explicit trusted baselines through the ordinary append publisher."""
     if workers not in (1, 2, 3):
@@ -333,6 +334,7 @@ def append_entries(
                 progress=progress,
                 merge_ranges=False,
                 acquired=acquired,
+                group_keys=group_keys,
             )
         except (RuntimeError, OSError, ValueError) as error:
             results.extend(
@@ -428,6 +430,7 @@ def append_ready(
         progress=progress,
         before_publish=lambda: assert_current(store, snapshot["token"]),
         approved_generations=snapshot.get("approved_generations"),
+        group_keys=snapshot.get("pricing_group_keys"),
         context=context,
         retained_partitions=retained_partitions,
     )

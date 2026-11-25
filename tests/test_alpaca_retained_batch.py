@@ -26,6 +26,54 @@ from libs.alpaca_pricing_download.http import BarsClient
 
 
 class RetainedBatchTests(unittest.TestCase):
+    def test_dependency_selection_separates_mapped_group_peers_and_reuses_each_positive_suffix(self):
+        self.check_mapped_suffix(dependency=True)
+
+    def test_ordinary_retained_acquisition_separates_only_mapped_group_peers(self):
+        self.check_mapped_suffix(dependency=False)
+
+    def check_mapped_suffix(self, *, dependency):
+        from libs.alpaca_lineage_build.pipeline import _select_dependency_suffixes
+
+        groups = {"AAA": {"AAA", "BBB"}, "BBB": {"AAA", "BBB"}, "CCC": {"CCC"}, "DDD": {"DDD"}}
+
+        def page(params):
+            response = self.page(params)
+            if params["start"][:10] == "2026-10-15" and {"AAA", "BBB"} <= response["bars"].keys():
+                response["bars"].pop("BBB")
+            return response
+
+        with patch.object(self.client, "_get", side_effect=page):
+            if dependency:
+                result = _select_dependency_suffixes(
+                    self.store,
+                    groups,
+                    "2026-10-17",
+                    index={"symbols": {}},
+                    client=self.client,
+                    context=None,
+                    progress=self.observe,
+                    work_policy=None,
+                    empty_suffixes=set(),
+                )
+                self.assertEqual(result["skipped"], 0, result)
+            else:
+                result = acquire.acquire_selected(
+                    self.store,
+                    groups,
+                    "2026-10-17",
+                    client=self.client,
+                    progress=self.observe,
+                    group_keys={"AAA": "AAA", "BBB": "AAA"},
+                )
+        self.assertEqual(result["failed"], 0, result)
+        self.assertCountEqual(
+            [(p["symbols"], p["adjustment"]) for _, p in self.pages if p["start"][:10] == "2026-10-15"],
+            [(symbols, view) for symbols in ("AAA,CCC,DDD", "BBB") for view in ("raw", "all")],
+        )
+        for symbol in groups:
+            self.assertEqual(read_pricing_views(self.store, symbol)["all"][-1][0][:10], "2026-10-16")
+
     def test_each_suffix_stage_failure_preserves_every_successful_view(self):
         for index, failed_view in enumerate(ADJUSTMENTS):
             with self.subTest(failed_view=failed_view):
@@ -961,11 +1009,13 @@ class RetainedBatchTests(unittest.TestCase):
         acquisitions = [
             v
             for phase, v in self.progress
-            if phase == "retained_history_acquisition"
+            if phase in {"retained_history_acquisition", "retained_replacement"}
             and v.get("state") == "started"
             and v.get("adaptive_stage") == 1
         ]
         self.assertEqual([v["symbols"] for v in acquisitions], [2, 2])
+        full = [params["symbols"] for _, params in self.pages if params["start"][:10] == "2016-01-01"]
+        self.assertEqual(set(full), {"AAA", "CCC"})
         self.assertEqual(
             [item["symbol"] for item in result["results"] if item["mode"] == "full_refresh"], ["AAA", "CCC"]
         )

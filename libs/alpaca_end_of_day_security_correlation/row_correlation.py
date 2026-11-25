@@ -26,6 +26,8 @@ from .evidence import (
     build_ticker_ownership_intervals,
     identity_candidates_for_symbol,
 )
+from .former_ticker import NAME as FORMER_TICKER_METHOD
+from .former_ticker import FormerTickerPeriods
 from .identity_partition import OneSessionDistinctUuidTransition
 from .mapped_rename_chain import SPLIT_ADJUSTED_RENAME_TAPE
 from .name_change import (
@@ -107,6 +109,7 @@ class _RowDecision:
     use_rule_identity_basis: bool = False
     component_only: bool = False
     correlation_method: str | None = None
+    former_ticker_raw_agreement: str | None = None
 
     def grouping_key(self) -> tuple:
         if self.branch == CORRELATED_BRANCH:
@@ -126,6 +129,7 @@ class _RowDecision:
                 self.use_rule_identity_basis,
                 self.component_only,
                 self.correlation_method,
+                self.former_ticker_raw_agreement,
             )
         return (
             self.branch,
@@ -178,6 +182,7 @@ class _RowRuleContext:
     closed_prior_action_anchored_suffixes: bool = False
     current_source_ownership: BoundedSourceOwnership | None = None
     sourced_rename_mapping: sourced_rename.RenameCertificate | sourced_rename.DisputedMapping | None = None
+    former_occupation: tuple[FormerTickerPeriods, ...] = ()
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -291,6 +296,7 @@ class CorrelationCache:
         observed_current_sessions=False,
         cross_label_stock_merger_occupation=False,
         stock_merger_departure=False,
+        former_ticker_occupation=False,
         main_component_arrivals=False,
     ):
         if any(
@@ -319,6 +325,9 @@ class CorrelationCache:
         self.observed_current_sessions = observed_current_sessions
         self.cross_label_stock_merger_occupation = cross_label_stock_merger_occupation
         self.stock_merger_departure = stock_merger_departure
+        self.former_ticker_occupation = former_ticker_occupation
+        self._former_occupations = None
+        self.former_source_generations = {}
         self.main_component_arrivals = main_component_arrivals
         self._retired_labels = {}
         self.row_correlation_rules = row_correlation_rules
@@ -559,6 +568,20 @@ class CorrelationCache:
             self._source_work[key] = PreparedSource(items)
         return self._source_work[key]
 
+    def former_occupation(self, symbol):
+        if not self.former_ticker_occupation or not self.rename_scope_complete:
+            return (), ()
+        if self._former_occupations is None:
+            from .former_ticker import select
+
+            self._former_occupations = select(
+                self._name_change_sources,
+                self.selected_evidence or {},
+                pricing_generations=self.former_source_generations,
+            )
+        intervals, limits = self._former_occupations
+        return intervals.get(symbol, ()), limits.get(symbol, ())
+
     def inherit_continuity(self, established):
         # Same selected inputs and established rules; only the certified fourth
         # rule changes. Reuse the completed chronology and continuity authorities.
@@ -579,6 +602,11 @@ class CorrelationCache:
         self._source_work = dict(established._source_work)
         self._current_source_ownership = dict(established._current_source_ownership)
         self._session_consensus = dict(established._session_consensus)
+        self.former_ticker_occupation = established.former_ticker_occupation
+        self.former_source_generations = established.former_source_generations
+        self._former_occupations = established._former_occupations
+        if self.former_ticker_occupation and self._former_occupations is None:
+            self.selected_evidence = established.selected_evidence
 
     def register_name_change_source(self, symbol, downloads, *, complete):
         if not complete:
@@ -1762,6 +1790,37 @@ def _decide_row(
     for rule_order, rule in enumerate(rules, start=1):
         decision = rule.apply(context)
         if decision is not None:
+            for occupation in context.former_occupation:
+                former = occupation.interval_on(context.session_date)
+                if former is None:
+                    continue
+                replaceable = (
+                    decision.asset_id == former.asset_id
+                    and decision.interval is None
+                    and decision.cusip in (None, former.cusip)
+                    and decision.identity_confidence == "unique_candidate"
+                ) or decision.reason_codes in {
+                    ("prior_pricing_run_before_ticker_reuse_gap",),
+                    ("outside_supported_name_change_history",),
+                    ("ambiguous_security_identity_candidates",),
+                    ("undated_requested_ticker_reuse_boundary",),
+                }
+                if replaceable:
+                    decision = _RowDecision(
+                        branch=CORRELATED_BRANCH,
+                        asset_id=former.asset_id,
+                        cusip=former.cusip,
+                        interval=former,
+                        identity_confidence="dated_cusip_and_traded_history",
+                        correlation_method=FORMER_TICKER_METHOD,
+                        former_ticker_raw_agreement=(
+                            ("partial" if context.session_date in occupation.partial_dates else "equal")
+                            if occupation.terminal == context.requested_symbol
+                            else None
+                        ),
+                        warning_codes=("observed_trading_dates_only", "effective_rename_date_unknown"),
+                    )
+                break
             if isinstance(
                 context.current_source_ownership, (DatedCurrentAnchorOwnership, ObservedCurrentSessionOwnership)
             ) and decision.reason_codes in {
@@ -2009,6 +2068,7 @@ def correlate_download_rows(
     # Unrelated reused-symbol occupants already have no edge to the prior lineage.
     context = dict(
         requested_symbol=requested_symbol,
+        former_occupation=cache.former_occupation(requested_symbol)[0] if cache is not None else (),
         selected_asof_interval=selected_interval,
         selected_asof_identity_chain_asset_ids=selected_identity_chain_asset_ids,
         intervals=intervals,
@@ -2155,6 +2215,11 @@ def correlate_download_rows(
                     "security_identity": identity,
                     "identity_confidence": decision.identity_confidence,
                     "correlation_method": decision.correlation_method or decision.rule_name,
+                    **(
+                        {"former_ticker_raw_agreement": decision.former_ticker_raw_agreement}
+                        if decision.former_ticker_raw_agreement
+                        else {}
+                    ),
                     "ticker_ownership_interval": (
                         {
                             **replace(

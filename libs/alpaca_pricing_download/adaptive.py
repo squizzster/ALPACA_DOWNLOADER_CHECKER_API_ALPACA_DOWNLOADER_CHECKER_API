@@ -137,6 +137,7 @@ def acquire_adjustments(
     observations=None,
     retain_states=False,
     on_completed=None,
+    group_keys=None,
 ):
     """Batch each adaptive stage, then select the next from completed observations.
 
@@ -197,7 +198,12 @@ def acquire_adjustments(
             }
             for i in pending
         ]
-        plan = build_plan({"steps": [{"needs": stage_needs}]}, max_symbols=2000, merge_ranges=merge_ranges)
+        plan = build_plan(
+            {"steps": [{"needs": stage_needs}]},
+            max_symbols=2000,
+            merge_ranges=merge_ranges,
+            group_keys=group_keys,
+        )
         plans.append(plan)
         stage = stage_needs[0]["why"]
         started, pages_before = monotonic(), metrics.get("page_requests", 0)

@@ -9,10 +9,12 @@ from bisect import bisect_left
 from collections import defaultdict
 from copy import deepcopy
 from decimal import Decimal
+from fractions import Fraction
 from functools import cache
 from operator import eq
 
 from libs.alpaca_end_of_day_security_correlation.correlation_version import CORRELATION_VERSION
+from libs.alpaca_end_of_day_security_correlation.former_ticker import NAME as FORMER_TICKER_OCCUPATION
 from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
     CLOSED_ENTRY_RENAME_PREFIX,
     SPLIT_ADJUSTED_RENAME_TAPE,
@@ -23,6 +25,8 @@ from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timesta
 
 from .adjustment_basis import INCOMPATIBLE_SPLIT_BASIS, bounded_prefixes, incompatible_prefixes
 from .contract import LineageError
+
+FORMER_TICKER_BASIS_LIMIT = "former_ticker_numerical_basis_unconfirmed"
 
 # DO NOT REMOVE WITHOUT USER AUTH!#
 # This is the producer's numerical decision, independent of identity membership.
@@ -369,6 +373,52 @@ def _agree(rows, same):
     return all(first == other or same(first, other) for other in rows)
 
 
+def _compatible_partial_basis(former, mapped, same):
+    """Can the fuller traded aggregate replace the mapped row in all eight views?"""
+    # The raw producer already established identical open/close and the strictly
+    # contained mapped aggregate. Only the adjusted comparisons are outstanding.
+    former_volume, mapped_volume = Fraction(former["raw"][5]), Fraction(mapped["raw"][5])
+    raw_pair = (id(former["raw"]), id(mapped["raw"]))
+    price_pairs, share_pairs = {raw_pair}, {raw_pair}
+    for view in ADJUSTMENTS[1:]:
+        full, part = former[view], mapped[view]
+        pair = id(full), id(part)
+        if pair not in price_pairs:
+            if not same((full[1], full[4]), (part[1], part[4])):
+                return False
+            high, low = Decimal(full[2]), Decimal(full[3])
+            if high < Decimal(part[2]) or low > Decimal(part[3]) or not low <= Decimal(part[7]) <= high:
+                return False
+            price_pairs.add(pair)
+        if (view == "all" or "split" in view) and pair not in share_pairs:
+            # Split-containing views can round shares. The two observations must
+            # admit a common split-volume scale within one reported share each.
+            if abs(Fraction(full[5]) * mapped_volume - Fraction(part[5]) * former_volume) > (
+                former_volume + mapped_volume
+            ):
+                return False
+            share_pairs.add(pair)
+    return True
+
+
+def _former_price_source(complete, route, same):
+    mapped_name, former_name, agreement = route
+    mapped, former = complete[mapped_name], complete[former_name]
+    if agreement == "partial":
+        supported = _compatible_partial_basis(former, mapped, same)
+        return (former_name if supported else mapped_name), False, not supported
+    checked = {(id(former["raw"]), id(mapped["raw"]))} if agreement == "equal" else set()
+    for view in ADJUSTMENTS:
+        pair = id(former[view]), id(mapped[view])
+        if pair in checked:
+            continue
+        left, right = former[view][1:], mapped[view][1:]
+        if left != right and not same(left, right):
+            return mapped_name, False, True
+        checked.add(pair)
+    return mapped_name, True, False
+
+
 def _continuous_adjustments(pid, complete, dated, authorities, values, equal, inputs, own, instants, same):
     """Prefer positive adjustment continuity over an otherwise direct WI route.
 
@@ -439,6 +489,7 @@ def _select_new_observations(
     labels = defaultdict(set)
     market_sources = defaultdict(set)
     adjustment_sources = defaultdict(dict)
+    former_routes = {}
     mapped_starts = defaultdict(list)
     bounded_scopes = defaultdict(list)
     for symbol, report in reports.items():
@@ -469,6 +520,13 @@ def _select_new_observations(
                         None,
                     )
                 scope = (pid, symbol, segment["historical_symbol"])
+                former_label = segment.get("correlation_method") == FORMER_TICKER_OCCUPATION
+                raw_agreement = segment.get("former_ticker_raw_agreement") if adjustment == "raw" else None
+                former_route = (
+                    (symbol, segment["historical_symbol"], raw_agreement)
+                    if former_label and raw_agreement and symbol != segment["historical_symbol"]
+                    else None
+                )
                 for index in range(segment["row_start"] - 1, segment["row_end"]):
                     key = id(view.views[adjustment]), index
                     if key not in row_cache:
@@ -476,6 +534,8 @@ def _select_new_observations(
                     row = row_cache[key]
                     owners[index] = pid
                     instant = _instant(row[0], instants)
+                    if former_route:
+                        former_routes[(pid, instant)] = former_route
                     if reason:
                         # An opened comparison can use its already accepted
                         # counterpart. It does not select the whole old episode.
@@ -497,7 +557,14 @@ def _select_new_observations(
                         market_sources[(pid, instant)].add(symbol)
                     if authority.get("continuing_adjustments"):
                         adjustment_sources[(pid, instant)][symbol] = authority["continuing_adjustments"]
-                if not sole_source and adjustment == "raw" and segment["historical_symbol"] == symbol:
+                # A dated display inferred on this pair cannot establish
+                # source-wide numerical precedence on other sessions.
+                if (
+                    not sole_source
+                    and adjustment == "raw"
+                    and segment["historical_symbol"] == symbol
+                    and not former_label
+                ):
                     last = view.views[adjustment][segment["row_end"] - 1][0]
                     if symbol not in own[pid] or _instant(last, instants) > _instant(
                         own[pid][symbol][0], instants
@@ -523,6 +590,7 @@ def _select_new_observations(
         complete_selection=reopened_choices is None,
     )
     choices, corrections, contested, incomplete = {}, {}, set(), set()
+    former_selections, basis_limits = set(), set()
     label_days = {}
     # The same physical rows can represent several views. Reuse a comparison
     # across those views and the complete-bundle tie breaker for this contest.
@@ -539,15 +607,35 @@ def _select_new_observations(
                 incomplete.add((pid, instant))
             continue
         same.cache_clear()
-        values = {name: {view: row[1:] for view, row in bundle.items()} for name, bundle in sources.items()}
-        equal = {
-            view: _agree((bundle[view] for bundle in values.values() if view in bundle), same)
-            for view in ADJUSTMENTS
-        }
-        if not all(equal.values()):
-            contested.add((pid, instant))
+        former_route = former_routes.get((pid, instant))
+        if former_route and sources.keys() != set(former_route[:2]):
+            former_route = None
         complete = {name: views for name, views in sources.items() if set(views) == set(ADJUSTMENTS)}
         dated = market_sources[(pid, instant)] & complete.keys()
+        if former_route and not dated and len(complete) == 2:
+            # A dated spelling supplies neither a new adjustment vintage nor a
+            # source-wide remap. A fuller former aggregate can supply the whole
+            # bundle only when the adjusted observations support its basis.
+            winner, identical, basis_limit = _former_price_source(complete, former_route, same)
+            choices[(pid, instant)] = winner
+            if not identical:
+                contested.add((pid, instant))
+                former_selections.add((pid, instant))
+            if basis_limit:
+                basis_limits.add((pid, instant))
+            continue
+        values = {name: {view: row[1:] for view, row in bundle.items()} for name, bundle in sources.items()}
+        known_raw = former_route and former_route[2] in {"equal", "partial"}
+        equal = {}
+        for view in ADJUSTMENTS:
+            if known_raw and all(
+                view in bundle and bundle[view] is bundle.get("raw") for bundle in sources.values()
+            ):
+                equal[view] = former_route[2] == "equal"
+            else:
+                equal[view] = _agree((bundle[view] for bundle in values.values() if view in bundle), same)
+        if not all(equal.values()):
+            contested.add((pid, instant))
         adjusted = _continuous_adjustments(
             pid, complete, dated, adjustment_sources[(pid, instant)], values, equal, inputs, own, instants, same
         )
@@ -569,7 +657,9 @@ def _select_new_observations(
             # Exact bundles need no authority contest. A lexical tie is safe only
             # after complete numerical equality; genuine ambiguity stays explicit.
             same_bundle = bool(complete) and all(
-                equal[view] or _agree((values[name][view] for name in complete), same) for view in ADJUSTMENTS
+                equal[view]
+                or (len(complete) < len(sources) and _agree((values[name][view] for name in complete), same))
+                for view in ADJUSTMENTS
             )
             choices[(pid, instant)] = min(complete) if same_bundle else None
             continue
@@ -601,7 +691,7 @@ def _select_new_observations(
     }
     correction_routes = {
         (pid, choices[(pid, instant)])
-        for pid, instant in contested
+        for pid, instant in contested - former_selections
         if choices[(pid, instant)] is not None and choices[(pid, instant)] not in market_sources[(pid, instant)]
     }
     for pid, winner in sorted(correction_routes):
@@ -648,11 +738,13 @@ def _select_new_observations(
                 # labels. Publish their union separately, including ambiguity,
                 # and split a run whenever either accepted decision changes.
                 unsupported_basis = (pid, instant) in incompatible
+                former_basis_limit = (pid, instant) in basis_limits
                 if (
                     run is None
                     or run["observation_selection"] != state
                     or run["observation_tickers"] != tickers
                     or (INCOMPATIBLE_SPLIT_BASIS in run.get("warnings", ())) != unsupported_basis
+                    or (FORMER_TICKER_BASIS_LIMIT in run.get("warnings", ())) != former_basis_limit
                 ):
                     run = {
                         **segment,
@@ -666,6 +758,12 @@ def _select_new_observations(
                     elif INCOMPATIBLE_SPLIT_BASIS in run.get("warnings", ()):
                         run["warnings"] = [
                             value for value in run["warnings"] if value != INCOMPATIBLE_SPLIT_BASIS
+                        ]
+                    if former_basis_limit:
+                        run["warnings"] = sorted({*run.get("warnings", ()), FORMER_TICKER_BASIS_LIMIT})
+                    elif FORMER_TICKER_BASIS_LIMIT in run.get("warnings", ()):
+                        run["warnings"] = [
+                            value for value in run["warnings"] if value != FORMER_TICKER_BASIS_LIMIT
                         ]
                     segments.append(run)
                 else:

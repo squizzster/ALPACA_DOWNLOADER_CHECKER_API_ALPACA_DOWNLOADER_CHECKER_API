@@ -25,5 +25,13 @@
     "modifications": [
       "Plan literal ticker raw observations and single-session market split terms for bounded price checks."
     ]
+  },
+  {
+    "modifications": [
+      "Plan each full price history and its first-session confirmations under one symbol per request, preventing mapped aliases from suppressing historical sessions.",
+      "Separate co-requested members of known mapped pricing groups when their physical request would collide, preserving unrelated batching and the existing request-size limits.",
+      "Plan a single chronological trade on one New York date or an inclusive literal OTC interval, and the last trade on a bounded historical SIP interval under an explicitly dated mapping.",
+      "Plan a bounded single-CUSIP corporate-action discovery request using inclusive dates and complete US actions."
+    ]
   }
 ]

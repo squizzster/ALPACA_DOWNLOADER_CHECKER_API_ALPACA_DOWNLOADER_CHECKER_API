@@ -12,9 +12,9 @@ from libs.alpaca_security_lineage.inference_evidence import ProviderEvidence, re
 
 EVIDENCE_ERROR_TYPES = (RuntimeError, OSError, ValueError, LineageError, DownloadError, IdentityHttpError)
 SCHEMA = "alpaca.pipeline.evidence"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-_FIELDS = (
+_V1_FIELDS = (
     "assets",
     "actions",
     "action_intervals",
@@ -31,6 +31,16 @@ _FIELDS = (
     "observation",
     "restricted_identifiers",
     "retained_symbols",
+)
+_FIELDS = (
+    *_V1_FIELDS,
+    "trade_tape_samples",
+    "otc_trade_access",
+    "literal_bar_observations",
+    "otc_status_queries",
+    "cusip_action_windows",
+    "cusip_action_cursors",
+    "cusip_action_index",
 )
 _RETIRED_FIELDS = (
     "event_supplements",
@@ -90,11 +100,12 @@ def import_evidence(document, client, decode, *, work_policy=None):
         or set(document) != {"schema", "schema_version", "state", "provider_evidence_views"}
         or document["schema"] != SCHEMA
         or type(document["schema_version"]) is not int
-        or document["schema_version"] != SCHEMA_VERSION
+        or document["schema_version"] not in (1, SCHEMA_VERSION)
     ):
         raise LineageError("unsupported pipeline evidence handoff")
     state = decode(document["state"])
-    if not isinstance(state, dict) or set(state) != set(_FIELDS):
+    fields = _V1_FIELDS if document["schema_version"] == 1 else _FIELDS
+    if not isinstance(state, dict) or set(state) != set(fields):
         raise LineageError("incomplete pipeline evidence handoff; research assertion state is not supported")
     accepted_provider_state = isinstance(state, ProviderEvidence)
     if not accepted_provider_state:
@@ -111,6 +122,15 @@ def import_evidence(document, client, decode, *, work_policy=None):
     evidence.client = client
     evidence.work_policy = work_policy
     evidence._provider_evidence_views = {id(original): (original, projected) for original, projected in views}
-    for field in _FIELDS:
+    for field in fields:
         setattr(evidence, field, state[field])
+    if document["schema_version"] == 1:
+        evidence.trade_tape_samples = {}
+        evidence.otc_trade_access = {}
+        evidence.literal_bar_observations = {}
+        evidence.otc_status_queries = {}
+        evidence.cusip_action_windows = {}
+        evidence.cusip_action_cursors = {}
+        evidence.cusip_action_index = {"by_asset": {}, "by_symbol": {}, "matches": {}, "failures": {}}
+    evidence.initialize_trade_transport()
     return evidence

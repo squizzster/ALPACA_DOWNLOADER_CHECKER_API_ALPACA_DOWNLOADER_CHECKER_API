@@ -90,6 +90,15 @@ def market_sessions_between(first: str, last: str) -> tuple[str, ...]:
     return dates[bisect_left(dates, first) : bisect_right(dates, last)]
 
 
+def next_market_session_after(session_date: str) -> str | None:
+    """Select only the next scheduled date within this calendar's coverage."""
+    dates, _, _ = _calendar()
+    if session_date < dates[0]:
+        return None
+    position = bisect_right(dates, session_date)
+    return dates[position] if 0 < position < len(dates) else None
+
+
 def regular_market_hours(session_date):
     """The selected exchange session's actual local open and close, including early closes."""
     hours = _calendar()[2].get(session_date)

@@ -617,7 +617,9 @@ def build_security_correlation_report(
         "row_correlation_rule_order": row_correlation_rule_order(rules=row_correlation_rules),
         "uuid_lineage_edges": [edge.as_report_object() for edge in uuid_lineage_edges],
         "ticker_ownership_intervals": [_interval_report_object(interval) for interval in intervals],
-        "evidence_issues": evidence_issues,
+        # A limited former-ticker candidate is explanatory metadata. Its
+        # alternatives do not veto independently established assignments.
+        "evidence_issues": [*evidence_issues, *cache.former_occupation(symbol)[1]],
         "predecessor_prefix_assessments": [item.as_report_object() for item in predecessor_prefixes],
         "files": files,
         "correlated": {

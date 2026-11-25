@@ -820,6 +820,7 @@ def acquire_full(
     acquired=None,
     observations=None,
     required_observations=None,
+    group_keys=None,
 ):
     """Acquire shared ranges; only new/replaced histories need producer confirmation.
 
@@ -834,8 +835,9 @@ def acquire_full(
         on_failure=on_failure,
         acquired=acquired,
         observations=observations,
+        group_keys=group_keys,
     )
-    probes, correction_approvals = [], {}
+    probes, confirmation_states, correction_approvals = [], [], {}
     for need, state in zip(needs, states, strict=True):
         symbol, end = state.symbol, state.end
         if state.completed is None:
@@ -871,22 +873,27 @@ def acquire_full(
         # These are fresh producer checks for newly acquired output, not a
         # revalidation of completed stored history. Their independent responses
         # must not be replaced with the acquisition body being checked.
-        probes.extend(
-            _endpoint_needs(
-                symbol,
-                {
-                    name: tuple(
-                        row for row in endpoints[name][:1] if timestamp(row[0]) not in confirmed.get(name, ())
-                    )
-                    for name in state.observed
-                },
-                need["asof"],
-                "acquisition_check",
-                cutoff=end,
-            )
-        )
+        first_rows = {
+            name: tuple(row for row in endpoints[name][:1] if timestamp(row[0]) not in confirmed.get(name, ()))
+            for name in state.observed
+        }
+        for probe in _endpoint_needs(symbol, first_rows, need["asof"], "acquisition_check", cutoff=end):
+            probes.append(probe)
+            confirmation_states.append(state)
+
+    def failed_confirmation(step, action, error):
+        # A failed first-row request belongs to this newly acquired symbol alone.
+        # Carry it to its publisher and keep independent completed acquisitions.
+        failure = AcquisitionFailure.from_error(error)
+        for target in action["deliver"]:
+            state = confirmation_states[target["need"]]
+            if state.failure is None or failure.outcome == "access_denied":
+                state.failure = failure
+        if on_failure is not None:
+            on_failure(step, action, error)
+
     checked, checks = (
-        _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=on_failure)
+        _prefetch(probes, client, check=True, metrics=metrics, progress=progress, on_failure=failed_confirmation)
         if probes
         else ({}, {"steps": []})
     )
@@ -918,6 +925,7 @@ def acquire_retained(
     source_generations=None,
     lineage_generations=None,
     approved_lineage_generations=None,
+    group_keys=None,
 ):
     """First/latest all approval -> missing sessions, or selected full replacement."""
     from .live_check import comparison_windows, select_dated_endpoints
@@ -950,7 +958,7 @@ def acquire_retained(
                 if prior is None or prior[1] and not exact_fallback or outcome["outcome"] == "access_denied":
                     failure = (
                         established_pricing_rejection(symbol, error)
-                        if action["why"] == "retained_history_acquisition"
+                        if action["why"] in {"retained_history_acquisition", "retained_replacement"}
                         and isinstance(error, BarsSymbolUnavailable)
                         else error
                     )
@@ -1176,12 +1184,14 @@ def acquire_retained(
         if decision.decision != "full_history":
             start = timestamp(source["latest_request"]["end_exclusive"])
             retained[symbol] = endpoints
+            why = "retained_history_acquisition"
         else:
             replacements[symbol] = {"all": decision.live_all}
+            why = "retained_replacement"
         needs.append(
             {
                 "kind": "bars",
-                "why": "retained_history_acquisition",
+                "why": why,
                 "symbols": [symbol],
                 "adjustments": list(ADJUSTMENTS),
                 "asof": asof,
@@ -1207,6 +1217,7 @@ def acquire_retained(
                 on_failure=failed,
                 acquired=acquired,
                 required_observations=replacements,
+                group_keys=group_keys,
             )
             yield (
                 sorted(symbols),
@@ -1222,7 +1233,7 @@ def acquire_retained(
 
 @traced("pricing_correction")
 def replace_prepared(
-    store, prepared, *, client, cohort_size=32, progress=None, before_publish=None, context=None
+    store, prepared, *, client, cohort_size=32, progress=None, before_publish=None, context=None, group_keys=None
 ):
     """Bound memory by cohort; the solver alone chooses concrete API requests."""
     if type(cohort_size) is not int or cohort_size < 1:
@@ -1355,6 +1366,7 @@ def replace_prepared(
                     retained_endpoints=retained,
                     observations=observations,
                     required_observations=required,
+                    group_keys=group_keys,
                     on_failure=failed,
                 )
                 if needs

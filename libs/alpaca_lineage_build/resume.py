@@ -192,22 +192,39 @@ def assignment_summary(previous, boundaries):
     return result
 
 
+# Changes to native actions, lookups and group membership can change ownership.
+# These producer receipts carry discovery, descriptive tape or transport details.
+_NON_ASSIGNMENT_FIELDS = frozenset(
+    {
+        "api_request_count",
+        "archive_cusip_action_endpoints",
+        "catalogue_observed_at_utc",
+        "cusip_action_discovery",
+        "historical_trade_tape",
+        "mapped_historical_trade_tape",
+        "mapping_endpoint_observations",
+        "otc_historical_trade_tape",
+        "otc_status_symbol_query",
+        "sourced_fact_applications",
+        "sourced_fact_intents",
+        "terminal_cash_merger_trade",
+    }
+)
+
+
 def _evidence_facts(value, *, append=False, historical=False):
-    result = deepcopy(value)
     from libs.alpaca_security_lineage.sourced_facts import EXTENSIONS, canonical_extension
 
+    result = deepcopy({k: v for k, v in value.items() if k not in _NON_ASSIGNMENT_FIELDS})
     for extension in EXTENSIONS.values():
         if extension in result:
             result[extension] = canonical_extension(result[extension])
-    result.pop("api_request_count", None)
-    result.pop("catalogue_observed_at_utc", None)
-    # Metadata owns these lookup-invalidation baselines and completes any
-    # required acquisition before this handoff. Adding/changing its bookkeeping
-    # alone is not new lineage evidence; actual lookup/action facts stay below.
-    result.pop("mapping_endpoint_observations", None)
-    result.pop("sourced_fact_applications", None)
-    result.pop("sourced_fact_intents", None)
     for lookup in result.get("asset_lookups", ()):
+        if isinstance(lookup.get("asset"), dict):
+            lookup["asset"].pop("cusip", None)  # Optional current snapshot, never a dated owner.
+        prior_asset = (lookup.get("retained_symbol_lookup") or {}).get("asset")
+        if isinstance(prior_asset, dict):
+            prior_asset.pop("cusip", None)
         lookup.pop("source", None)
         if lookup.get("lookup_kind") == "symbol":
             lookup.pop("observed_at_utc", None)
@@ -227,38 +244,36 @@ def _evidence_facts(value, *, append=False, historical=False):
         # query labels record where it looked, not another ownership fact.
         # Returned actions, lookups and unresolved endpoints remain compared.
         result.pop("queried_symbols", None)
-    if historical:
-        # A newly completed negative UUID lookup supplies no owner for a
-        # previously unresolved row. Keep the assessment on the receipt while
-        # comparing only facts that can change accepted dated ownership.
-        if "asset_lookups" in result:
-            result["asset_lookups"] = [
-                item
-                for item in result["asset_lookups"]
-                if not (
-                    item.get("lookup_kind") == "asset_id"
-                    and item.get("outcome") == "not_found"
-                    and item.get("http_status") == 404
-                    and item.get("asset") is None
-                )
-            ]
+    return _historical_facts(result) if historical else result
 
-        # Names and current active/tradable presentation describe a fresh asset
-        # observation. With the same provider UUID, symbol, class and exchange,
-        # they affect new suffix projection but cannot revoke completed row owners.
-        def without_descriptions(item):
-            if isinstance(item, list):
-                return [without_descriptions(value) for value in item]
-            if not isinstance(item, dict):
-                return item
-            projected = {key: without_descriptions(value) for key, value in item.items()}
-            if {"id", "symbol", "class", "exchange"} <= projected.keys():
-                for field in ("name", "status", "tradable"):
-                    projected.pop(field, None)
-            return projected
 
-        result = without_descriptions(result)
-    return result
+def _historical_facts(result):
+    """Narrow an already prepared comparison to facts affecting historical ownership."""
+    if "asset_lookups" in result:
+        # A newly observed negative UUID lookup supplies no historical owner.
+        result["asset_lookups"] = [
+            item
+            for item in result["asset_lookups"]
+            if not (
+                item.get("lookup_kind") == "asset_id"
+                and item.get("outcome") == "not_found"
+                and item.get("http_status") == 404
+                and item.get("asset") is None
+            )
+        ]
+
+    def without_descriptions(item):
+        if isinstance(item, list):
+            return [without_descriptions(value) for value in item]
+        if not isinstance(item, dict):
+            return item
+        projected = {key: without_descriptions(value) for key, value in item.items()}
+        if {"id", "symbol", "class", "exchange"} <= projected.keys():
+            for field in ("name", "status", "tradable"):
+                projected.pop(field, None)
+        return projected
+
+    return without_descriptions(result)
 
 
 def preserves_retired_prefix(prior, current):
@@ -304,9 +319,7 @@ def evidence_delta(previous, current, *, append=False):
     if before == after:
         return {"scope": "none", "changed_fields": []}
     changed = sorted(key for key in before.keys() | after.keys() if before.get(key) != after.get(key))
-    if append and _evidence_facts(previous, append=True, historical=True) == _evidence_facts(
-        current, append=True, historical=True
-    ):
+    if append and _historical_facts(before) == _historical_facts(after):
         return {"scope": "added_sessions", "changed_fields": changed}
     return {"scope": "complete_group", "changed_fields": changed}
 

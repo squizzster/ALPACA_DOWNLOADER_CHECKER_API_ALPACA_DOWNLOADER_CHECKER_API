@@ -7,17 +7,19 @@ acquisition stage; later consistency checks must be submitted after acquisition.
 import heapq
 import json
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
-from libs.common.provider_http import balanced_batches
+from libs.common.provider_http import SYMBOL_BATCH_LIMIT, balanced_batches
 
-VERSION = 5
+VERSION = 6
 BAR_URL = "https://data.alpaca.markets/v2/stocks/bars"
 ASSET_URL = "https://paper-api.alpaca.markets/v2/assets"
 ACTION_URL = "https://data.alpaca.markets/v1/corporate-actions"
+STOCK_URL = "https://data.alpaca.markets/v2/stocks"
 ADJUSTMENTS = {
     "raw",
     "split",
@@ -31,6 +33,12 @@ ADJUSTMENTS = {
 NEW_YORK = ZoneInfo("America/New_York")
 PAGE_LIMIT = 10000
 ASSET_CATALOGUE_MIN_SYMBOLS = 100
+SINGLE_SYMBOL_BAR_REASONS = {
+    "initial_or_invalidated_history",
+    "retained_replacement",
+    "changed_data",
+    "acquisition_check",
+}
 
 
 def validate_version():
@@ -162,7 +170,135 @@ def market_split_parameters(day):
     }
 
 
-def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
+def _canonical_equity_symbol(symbol):
+    return (
+        isinstance(symbol, str)
+        and bool(symbol)
+        and symbol[0].isalpha()
+        and symbol == symbol.upper()
+        and all(c.isascii() and (c.isalnum() or c in ".-") for c in symbol)
+    )
+
+
+def trade_tape_request(symbol, session, asof="-", feed="sip", *, through_session=None, sort="asc"):
+    """One trade on a selected date, a forward literal OTC interval or a backward mapped SIP interval."""
+    if not _canonical_equity_symbol(symbol):
+        raise ValueError("trade tape sample requires a canonical US-equity ticker")
+    if not isinstance(session, str) or date.fromisoformat(session).isoformat() != session:
+        raise ValueError("trade tape sample requires one ISO session")
+    if asof != "-" and (not isinstance(asof, str) or date.fromisoformat(asof).isoformat() != asof):
+        raise ValueError("trade tape sample requires a dated or literal symbol mapping")
+    if feed not in ("sip", "otc") or feed == "otc" and asof != "-":
+        raise ValueError("trade tape samples require SIP or a literal OTC route")
+    if through_session is None:
+        if sort != "asc":
+            raise ValueError("a descending trade search requires an explicit interval")
+    else:
+        if (
+            not isinstance(through_session, str)
+            or date.fromisoformat(through_session).isoformat() != through_session
+            or through_session < session
+        ):
+            raise ValueError("trade intervals require ordered ISO session dates")
+        if not (feed == "otc" and sort == "asc" or feed == "sip" and asof != "-" and sort == "desc"):
+            raise ValueError("trade intervals require forward literal OTC or backward dated SIP mapping")
+    following = date.fromisoformat(through_session or session) + timedelta(days=1)
+    closing_second = iso(instant(following.isoformat()) - timedelta(seconds=1))
+    return {
+        "url": f"{STOCK_URL}/{symbol}/trades",
+        "params": {
+            "asof": asof,
+            "feed": feed,
+            "start": iso(instant(session)),
+            "end": closing_second.removesuffix("Z") + ".999999999Z",
+            "sort": sort,
+            "limit": 1,
+        },
+    }
+
+
+def _has_mapped_peers(symbols, group_keys):
+    for batch in balanced_batches(symbols):
+        keys = [group_keys[s] for s in batch if s in group_keys]
+        if len(set(keys)) < len(keys):
+            return True
+    return False
+
+
+def _separate_mapped_peers(symbols, group_keys):
+    if not group_keys or len(symbols) < 2 or not _has_mapped_peers(symbols, group_keys):
+        return [set(symbols)]
+    # This logical action would put known peers in one physical request. Rotate
+    # each related group across distinct requests and fill free space with peers
+    # from other groups. Both the physical cap and the largest group bound the
+    # minimum number of requests; subsets still fit the original URL budget.
+    related, independent = {}, []
+    for symbol in symbols:
+        if symbol in group_keys:
+            related.setdefault(group_keys[symbol], []).append(symbol)
+        else:
+            independent.append(symbol)
+    count = max(math.ceil(len(symbols) / SYMBOL_BATCH_LIMIT), max(map(len, related.values())))
+    rosters = [set() for _ in range(count)]
+    position = 0
+    for members in related.values():
+        if len(members) == 1:
+            independent.extend(members)
+            continue
+        for symbol in members:
+            rosters[position].add(symbol)
+            position = (position + 1) % count
+    position = 0
+    for symbol in independent:
+        while len(rosters[position]) == SYMBOL_BATCH_LIMIT:
+            position += 1
+        rosters[position].add(symbol)
+    return rosters
+
+
+def _bar_chunks(symbols, group_keys, max_symbols, available_bytes):
+    chunk, size = [], 0
+    for symbol in sorted(symbols):
+        encoded = len(quote(symbol, safe=""))
+        if encoded > available_bytes:
+            raise ValueError("one symbol exceeds the configured request URL limit")
+        if chunk and (len(chunk) == max_symbols or size + 3 + encoded > available_bytes):
+            yield from _separate_mapped_peers(chunk, group_keys)
+            chunk, size = [], 0
+        size += (3 if chunk else 0) + encoded
+        chunk.append(symbol)
+    if chunk:
+        yield from _separate_mapped_peers(chunk, group_keys)
+
+
+def valid_cusip(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Z0-9*@#]{8}[0-9]", value) is not None
+
+
+def cusip_action_request(cusip, start, end):
+    if (
+        not valid_cusip(cusip)
+        or not all(
+            isinstance(value, str) and date.fromisoformat(value).isoformat() == value for value in (start, end)
+        )
+        or start > end
+    ):
+        raise ValueError("CUSIP action discovery requires one CUSIP and inclusive ISO dates")
+    return {
+        "url": ACTION_URL,
+        "params": {
+            "cusips": cusip,
+            "start": start,
+            "end": end,
+            "region": "us",
+            "limit": 1000,
+            "data_quality": "complete",
+            "sort": "asc",
+        },
+    }
+
+
+def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges, group_keys):
     """Plan daily bars and exact asset lookups; unknown need kinds fail closed.
 
     Bars need kind/why/symbols/adjustments/asof/ranges. Each range has inclusive
@@ -174,11 +310,43 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
         raise ValueError("expected an object containing a needs array")
     if type(max_symbols) is not int or max_symbols < 1 or type(max_url_bytes) is not int or max_url_bytes < 512:
         raise ValueError("invalid request-size limits")
-    buckets, lookups, symbol_lookups, corporate, order = {}, {}, {}, {}, []
+    buckets, lookups, symbol_lookups, corporate, tape_samples, order = {}, {}, {}, {}, {}, []
+    cusip_actions = {}
     for need_index, need in enumerate(document["needs"]):
         if not isinstance(need, dict) or not isinstance(need.get("why"), str) or not need["why"].strip():
             raise ValueError("each need requires a nonempty why")
         why, kind = need["why"], need.get("kind")
+        if kind == "corporate_actions_by_cusip":
+            if set(need) != {"kind", "why", "cusip", "start", "end"}:
+                raise ValueError("CUSIP action discovery requires exactly one CUSIP and date range")
+            key = (why, need["cusip"], need["start"], need["end"])
+            if key not in cusip_actions:
+                cusip_actions[key] = []
+                order.append((kind, key))
+            cusip_actions[key].append(need_index)
+            continue
+        if kind == "historical_trade_tape":
+            if (
+                set(need) - {"through_session", "sort"} != {"kind", "why", "symbol", "session", "asof", "feed"}
+                or any(not isinstance(need[k], str) for k in ("symbol", "session", "asof", "feed"))
+                or ("through_session" in need and not isinstance(need["through_session"], str))
+                or need.get("sort", "asc") not in ("asc", "desc")
+            ):
+                raise ValueError("trade tape sample requires one ticker, session and mapping")
+            key = (
+                why,
+                need["symbol"],
+                need["session"],
+                need["asof"],
+                need["feed"],
+                need.get("through_session"),
+                need.get("sort", "asc"),
+            )
+            if key not in tape_samples:
+                tape_samples[key] = []
+                order.append((kind, key))
+            tape_samples[key].append(need_index)
+            continue
         if kind == "market_split_session":
             day = need.get("session")
             if set(need) != {"kind", "why", "session"}:
@@ -231,12 +399,7 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
         if kind != "bars" or set(need) != {"kind", "why", "symbols", "adjustments", "asof", "ranges"}:
             raise ValueError("unsupported download need or invalid bar-need fields")
         symbols = _strings(need["symbols"], "symbols")
-        if any(
-            symbol != symbol.strip().upper()
-            or not symbol[0].isalpha()
-            or not all(c.isascii() and (c.isalnum() or c in ".-") for c in symbol)
-            for symbol in symbols
-        ):
+        if not all(_canonical_equity_symbol(symbol) for symbol in symbols):
             raise ValueError("bars require canonical US-equity ticker labels")
         adjustments = _strings(need["adjustments"], "adjustments")
         if set(adjustments) - ADJUSTMENTS:
@@ -247,6 +410,13 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
             raise ValueError("asof must be YYYY-MM-DD")
         if not isinstance(need["ranges"], list) or not need["ranges"]:
             raise ValueError("ranges must be a nonempty array")
+        # A mapped batch can suppress an entire historical episode for one label,
+        # even when the provider returns later sessions under that same label.
+        rosters = (
+            [(symbol, (symbol,)) for symbol in symbols]
+            if why in SINGLE_SYMBOL_BAR_REASONS
+            else [(None, symbols)]
+        )
         for range_index, window in enumerate(need["ranges"]):
             if not isinstance(window, dict) or set(window) != {"start", "end_exclusive"}:
                 raise ValueError("a range requires start and end_exclusive")
@@ -255,18 +425,53 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
                 raise ValueError("range start must precede its exclusive end")
             target = (need_index, range_index, iso(start), iso(end))
             for adjustment in adjustments:
-                key = (why, asof, adjustment)
-                if key not in buckets:
-                    buckets[key] = {}
-                    order.append(("bars", key))
-                group = buckets[key].setdefault(
-                    (start, end), {"start": start, "end": end, "symbols": set(), "targets": {}}
-                )
-                group["symbols"].update(symbols)
-                group["targets"].setdefault(target, set()).update(symbols)
+                for isolated_symbol, roster in rosters:
+                    key = (why, asof, adjustment, isolated_symbol)
+                    if key not in buckets:
+                        buckets[key] = {}
+                        order.append(("bars", key))
+                    group = buckets[key].setdefault(
+                        (start, end), {"start": start, "end": end, "symbols": set(), "targets": {}}
+                    )
+                    group["symbols"].update(roster)
+                    group["targets"].setdefault(target, set()).update(roster)
 
     actions = []
     for kind, key in order:
+        if kind == "corporate_actions_by_cusip":
+            why, cusip, start, end = key
+            actions.append(
+                {
+                    "strategy": kind,
+                    "why": why,
+                    "cusip": cusip,
+                    "start": start,
+                    "end": end,
+                    "request": cusip_action_request(cusip, start, end),
+                    "pagination": {"parameter": "page_token", "response_field": "next_page_token"},
+                    "deliver": [{"need": index} for index in cusip_actions[key]],
+                }
+            )
+            continue
+        if kind == "historical_trade_tape":
+            why, symbol, session, asof, feed, through, sort = key
+            actions.append(
+                {
+                    "strategy": kind,
+                    "why": why,
+                    "symbol": symbol,
+                    "session": session,
+                    "asof": asof,
+                    "feed": feed,
+                    **({"through_session": through} if through is not None else {}),
+                    **({"sort": sort} if sort != "asc" else {}),
+                    "request": trade_tape_request(
+                        symbol, session, asof, feed, through_session=through, sort=sort
+                    ),
+                    "deliver": [{"need": index} for index in tape_samples[key]],
+                }
+            )
+            continue
         if kind == "market_split_session":
             index, why, day = key
             actions.append(
@@ -375,11 +580,12 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
                 }
             )
             continue
-        why, asof, adjustment = key
+        why, asof, adjustment, _ = key
 
         def fits(group):
             return (
                 len(group["symbols"]) <= max_symbols
+                and (not group_keys or not _has_mapped_peers(sorted(group["symbols"]), group_keys))
                 and len(BAR_URL)
                 + 1
                 + len(urlencode(_params(group["symbols"], group["start"], group["end"], asof, adjustment)))
@@ -389,7 +595,6 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
 
         groups = []
         for original in buckets[key].values():
-            chunk, size = [], 0
             # Commas are encoded as %2C; reserve space for a continuation token.
             base_size = (
                 len(BAR_URL)
@@ -397,28 +602,10 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
                 + len(urlencode(_params([], original["start"], original["end"], asof, adjustment)))
                 + 2048
             )
-            for symbol in sorted(original["symbols"]):
-                added = len(quote(symbol, safe="")) + (3 if chunk else 0)
-                if chunk and (len(chunk) == max_symbols or base_size + size + added > max_url_bytes):
-                    subset = set(chunk)
-                    groups.append(
-                        {
-                            **original,
-                            "symbols": subset,
-                            "targets": {
-                                target: symbols & subset
-                                for target, symbols in original["targets"].items()
-                                if symbols & subset
-                            },
-                        }
-                    )
-                    chunk, size, added = [], 0, len(quote(symbol, safe=""))
-                if base_size + size + added > max_url_bytes:
-                    raise ValueError("one symbol exceeds the configured request URL limit")
-                chunk.append(symbol)
-                size += added
-            if chunk:
-                subset = set(chunk)
+            for subset in _bar_chunks(original["symbols"], group_keys, max_symbols, max_url_bytes - base_size):
+                if subset == original["symbols"]:
+                    groups.append(original)
+                    continue
                 groups.append(
                     {
                         **original,
@@ -462,7 +649,7 @@ def _build_step(document, *, max_symbols, max_url_bytes, merge_ranges):
     return {"actions": actions}
 
 
-def build_plan(document, *, max_symbols=4000, max_url_bytes=60000, merge_ranges=True):
+def build_plan(document, *, max_symbols=4000, max_url_bytes=60000, merge_ranges=True, group_keys=None):
     """Optimize independently within each ordered step; never across steps."""
     # TRUST BOUNDARY: owners supply reasoned needs; this pure solver emits actions.
     # It neither reads stores nor proves requests completed. Executors exhaust
@@ -473,7 +660,13 @@ def build_plan(document, *, max_symbols=4000, max_url_bytes=60000, merge_ranges=
     return {
         "schema_version": VERSION,
         "steps": [
-            _build_step(step, max_symbols=max_symbols, max_url_bytes=max_url_bytes, merge_ranges=merge_ranges)
+            _build_step(
+                step,
+                max_symbols=max_symbols,
+                max_url_bytes=max_url_bytes,
+                merge_ranges=merge_ranges,
+                group_keys=group_keys or {},
+            )
             for step in document["steps"]
         ],
     }

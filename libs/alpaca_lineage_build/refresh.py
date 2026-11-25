@@ -23,6 +23,7 @@ from .comparison_routes import assert_current_dated_routes, dated_price_scopes
 from .completed_corrections import covers_selected_advance
 from .context import HistoryScope, accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
+from .selection import pricing_group_keys
 from .work_contract import acquisition_fingerprint
 
 
@@ -79,6 +80,10 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
             client=pricing_client,
             context=context.pricing(),
             progress=progress,
+            group_keys=pricing_group_keys(
+                work_policy.index,
+                (item["symbol"] for item in prepared if item.get("correction_scope") == "latest_session"),
+            ),
         )
         if prepared
         else empty
@@ -299,6 +304,10 @@ def refresh_existing(
             progress=progress,
             before_publish=before_publish,
             context=pricing_context,
+            group_keys=pricing_group_keys(
+                selected_index,
+                (item["symbol"] for item in prepared if item.get("correction_scope") == "latest_session"),
+            ),
         )
         replaced["results"].extend(recovered)
         pricing["results"].extend(replaced["results"])
@@ -1014,6 +1023,14 @@ def refresh_existing(
                 **ready,
                 "entries": approved_entries,
                 "approved_generations": generations,
+                "pricing_group_keys": pricing_group_keys(
+                    index,
+                    (
+                        entry["symbol"]
+                        for entry in approved_entries
+                        if not end_date or entry["end_exclusive"][:10] < end_date
+                    ),
+                ),
                 "approved_scopes": {
                     entry["symbol"]: verified_scopes[entry["symbol"]] for entry in approved_entries
                 },

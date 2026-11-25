@@ -292,33 +292,36 @@ class PricingScopeRegressions(unittest.TestCase):
         self.assertEqual(result["results"][0]["completed_scope"], "selected_sessions")
         self.assertFalse((root / ".pending.json").exists())
 
-    def test_batch_rejection_retains_completed_raw_stage_for_exact_fallback(self):
+    def test_rejected_full_replacement_keeps_completed_peer_without_replaying_raw(self):
         self.seed("AAA")
         self.seed("BBB")
         self.live = [bar("2016-01-04", "500"), *self.old[1:]]
         original = self.page
 
         def reject(params):
-            if params["symbols"] == "AAA,BBB" and params["adjustment"] == "all":
+            self.assertNotIn(",", params["symbols"])
+            if params["symbols"] == "AAA" and params["adjustment"] == "all":
                 self.calls.append(dict(params))
-                raise HTTPError("fixture", 400, "batch rejected", {}, None)
+                raise HTTPError("fixture", 400, "mapped request rejected", {}, None)
             return original(params)
 
         prepared = refresh.prepare_refresh(self.store, ["AAA", "BBB"])
         self.work().require_correction(prepared)
         with patch.object(self.client, "_get", side_effect=reject):
             result = refresh.replace_prepared(self.store, prepared, client=self.client)
-        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(result["failed"], 1, result)
         acquisition_raw = [
             call for call in self.calls if call["adjustment"] == "raw" and call["start"][:10] == "2016-01-01"
         ]
-        self.assertEqual([call["symbols"] for call in acquisition_raw], ["AAA,BBB"])
-        self.assertEqual(
-            {call["symbols"] for call in self.calls if call["adjustment"] == "all"}, {"AAA,BBB", "AAA", "BBB"}
+        self.assertCountEqual([call["symbols"] for call in acquisition_raw], ["AAA", "BBB"])
+        self.assertCountEqual(
+            [(c["symbols"], c["start"][:10]) for c in self.calls if c["adjustment"] == "all"],
+            [("AAA", "2016-01-01"), ("BBB", "2016-01-01"), ("BBB", "2016-01-04")],
         )
-        for item in result["results"]:
-            self.assertTrue(item["changed"])
-            self.assertEqual(item["completed_scope"], "full_history")
+        by_symbol = {item["symbol"]: item for item in result["results"]}
+        self.assertEqual(by_symbol["AAA"]["outcome"]["http_status"], 400)
+        self.assertTrue(by_symbol["BBB"]["changed"])
+        self.assertEqual(by_symbol["BBB"]["completed_scope"], "full_history")
 
     def test_probe_retry_consumes_checkpoint_without_repeating_owner_merge(self):
         self.seed()
@@ -498,7 +501,10 @@ class PricingScopeRegressions(unittest.TestCase):
         with patch.object(self.client, "_get", side_effect=denied):
             result = refresh.replace_prepared(self.store, prepared, client=self.client)
         self.assertEqual(result["failed"], 2, result)
-        self.assertEqual([call["symbols"] for call in self.calls], ["AAA,BBB", "AAA,BBB"])
+        self.assertCountEqual(
+            [(c["symbols"], c["adjustment"]) for c in self.calls],
+            [(symbol, view) for symbol in ("AAA", "BBB") for view in ("raw", "all")],
+        )
 
     def test_ordinary_append_and_rollover_validate_only_new_acquisition_rows(self):
         for target, day in (

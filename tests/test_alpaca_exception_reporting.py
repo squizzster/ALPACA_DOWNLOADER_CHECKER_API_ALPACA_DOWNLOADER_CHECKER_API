@@ -253,7 +253,7 @@ class ExceptionReportingTests(TestCase):
         needs = [
             {
                 "kind": "bars",
-                "why": "changed_data",
+                "why": "retained_history_acquisition",
                 "symbols": [symbol],
                 "asof": "2026-10-12",
                 "adjustments": list(ADJUSTMENTS),

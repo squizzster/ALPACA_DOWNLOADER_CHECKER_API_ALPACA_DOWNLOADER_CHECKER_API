@@ -41,6 +41,7 @@ from .contract import (
 )
 from .correction_prefix import complete_prefix_boundaries
 from .dependency_suffixes import applicable_empty_suffix, group_empty_suffixes
+from .former_ticker_bars import complete_literal_edges
 from .metadata import (
     EvidenceClient,
     RetainedReportClient,
@@ -453,7 +454,18 @@ def finish_correlated_group(
 
 
 def correlate_components(
-    store, selected_inputs, evidence, previous, deps, unavailable, *, policy, retain, services, completion=None
+    store,
+    selected_inputs,
+    evidence,
+    previous,
+    deps,
+    unavailable,
+    *,
+    policy,
+    retain,
+    services,
+    completion=None,
+    literal_clients=None,
 ):
     """Evaluate each current component with exactly its selected receipt inputs.
 
@@ -491,6 +503,28 @@ def correlate_components(
             selected_reports.update(completed[component_key])
             continue
         if not retain:
+            member_inputs = {member: selected_inputs[member] for member in members}
+            member_evidence = {member: evidence[member] for member in members}
+            auxiliary = component & unavailable.keys()
+            auxiliary_evidence = {n: unavailable[n]["evidence"] for n in auxiliary}
+            if (
+                literal_clients
+                and len(members) >= 2
+                and not members & auxiliary
+                and component == members | auxiliary
+            ):
+                selected = complete_literal_edges(
+                    store,
+                    member_inputs,
+                    member_evidence,
+                    previous,
+                    *literal_clients,
+                    completion.setdefault("former_ticker_components", {}).setdefault(component_key, {}),
+                )
+                if selected:
+                    member_evidence.update(selected)
+                    evidence.update(selected)
+                    completion.setdefault("former_ticker_source_evidence", {}).update(selected)
             for member in sorted(members):
                 view = selected_inputs[member]
                 services.event(
@@ -504,14 +538,12 @@ def correlate_components(
             if retain
             else services.correlate(
                 store,
-                {member: selected_inputs[member] for member in members},
-                {member: evidence[member] for member in members},
+                member_inputs,
+                member_evidence,
                 policy=policy,
                 selected_group=sorted(component),
-                unavailable_pricing=sorted(component & unavailable.keys()),
-                auxiliary_evidence={
-                    name: unavailable[name]["evidence"] for name in component & unavailable.keys()
-                },
+                unavailable_pricing=sorted(auxiliary),
+                auxiliary_evidence=auxiliary_evidence,
                 evidence_generations={member: storage.document_digest(evidence[member]) for member in members},
                 pricing_generations={member: selected_inputs[member].source_sha256 for member in members},
             )
@@ -2086,6 +2118,19 @@ def process_group(
                                 "assembly_key": assembly_key,
                             }
                             context.group_completions[completion_key] = completion
+                        literal_clients = None
+                        if (
+                            pricing_client is not None
+                            and len(inputs) >= 2
+                            and not retained_rebuild
+                            and not resume
+                            and not no_new_rows
+                            and correlation_policy.implementation_correlation_version >= 104
+                        ):
+                            literal_clients = pricing_client, evidence_client
+                            # The unmodified metadata handoff above binds group retries. Only
+                            # the report view gains the selected component's dated observations.
+                            evidence = {**evidence, **completion.get("former_ticker_source_evidence", {})}
                         if "correlation" not in completion:
                             components, reports = correlate_components(
                                 store,
@@ -2098,6 +2143,7 @@ def process_group(
                                 retain=no_new_rows,
                                 services=services,
                                 completion=completion,
+                                literal_clients=literal_clients,
                             )
                             if any(previous.values()) and (
                                 correlation_policy.implementation_correlation_version >= 94

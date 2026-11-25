@@ -647,5 +647,10 @@
     "modifications": [
       "Close established acquiree ticker ownership at a corroborated cross-label stock merger and bind a later traded session to its separately observed current occupant."
     ]
+  },
+  {
+    "modifications": [
+      "Attribute observed former ticker occupations using native cash dividends or stock-paying acquirers, exact CUSIP identity, distinct ticker reuse and supporting provider price histories."
+    ]
   }
 ]

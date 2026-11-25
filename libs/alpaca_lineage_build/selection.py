@@ -5,6 +5,16 @@ from collections import defaultdict
 from .contract import MAX_CLOSURE, LineageError
 
 
+def pricing_group_keys(index, symbols):
+    """Lend a transport grouping from already selected, sorted lineage memberships."""
+    entries = index["symbols"]
+    return {
+        symbol: members[0]
+        for symbol in symbols
+        if len(members := entries.get(symbol, {}).get("group_members", ())) > 1
+    }
+
+
 class DependencyGraph:
     # Indexed dependency/UUID links select the complete work group in memory.
     # They are not identity merges. DO NOT discover the same membership by opening

@@ -96,6 +96,7 @@ ASSIGNMENT_FIELDS = {
     "security_identity",
     "identity_confidence",
     "correlation_method",
+    "former_ticker_raw_agreement",
     "ticker_ownership_interval",
     "correlation_rule",
     "warnings",

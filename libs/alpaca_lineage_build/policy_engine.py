@@ -18,6 +18,8 @@ from libs.alpaca_end_of_day_security_correlation.closed_departure import (
 from libs.alpaca_end_of_day_security_correlation.correlation import (
     build_security_correlation_report,
 )
+from libs.alpaca_end_of_day_security_correlation.former_ticker import VERSION as FORMER_TICKER_VERSION
+from libs.alpaca_end_of_day_security_correlation.former_ticker import complete_source_scope
 from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
     BOUNDED_RENAME_PREFIX_VERSION,
     SPLIT_ADJUSTED_RENAME_PREFIX_VERSION,
@@ -276,6 +278,7 @@ def _correlation_cache(policy) -> CorrelationCache:
             policy.implementation_correlation_version >= CROSS_LABEL_STOCK_MERGER_VERSION
         ),
         stock_merger_departure=policy.implementation_correlation_version >= STOCK_MERGER_DEPARTURE_VERSION,
+        former_ticker_occupation=policy.implementation_correlation_version >= FORMER_TICKER_VERSION,
         main_component_arrivals=(
             policy.implementation_correlation_version >= MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION
         ),
@@ -384,6 +387,14 @@ def _selected_group_cache(
             and not auxiliary.intersection(inputs)
             and set(selected_group) == inputs.keys() | auxiliary
         )
+        cache.former_ticker_occupation = (
+            cache.former_ticker_occupation
+            and not closed_sources
+            and cache.rename_scope_complete
+            and complete_source_scope(inputs)
+        )
+        if cache.former_ticker_occupation:
+            cache.former_source_generations = {name: view.source_sha256 for name, view in inputs.items()}
         cache.closed_departure_current_sources &= set(selected_group) == set(inputs) and not unavailable_pricing
         return cache
 

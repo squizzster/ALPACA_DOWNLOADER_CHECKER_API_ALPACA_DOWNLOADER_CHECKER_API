@@ -2,11 +2,15 @@
 
 from collections import defaultdict
 from datetime import date, timedelta
+from secrets import token_hex
+from threading import Condition
 from uuid import UUID
 
 from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
-from libs.alpaca_data_api_solver import build_plan, split_action
+from libs.alpaca_data_api_solver import build_plan, split_action, valid_cusip
+from libs.alpaca_end_of_day_security_correlation.former_ticker import anchor_cusip
 from libs.alpaca_pricing_download.contract import NEW_YORK, DownloadError, symbol_label, timestamp
+from libs.alpaca_security_lineage.cusip_discovery import accept_window, dated_matches, missing_intervals
 from libs.alpaca_security_lineage.inference_evidence import (
     provider_actions,
     provider_evidence,
@@ -23,6 +27,9 @@ from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, M
 from libs.common.debug_trace import event
 
 from .contract import LineageError, document_digest
+from .terminal_cash_trade import FIELD as TERMINAL_CASH_TRADE_FIELD
+from .terminal_cash_trade import carry_terminal_cash_trade
+from .trade_tape import record_samples
 
 DEPENDENCY_HANDOFF_CORRELATION_VERSION = 77
 
@@ -179,6 +186,14 @@ class EvidenceClient:
         self.client = client
         self.assets = {}
         self.actions = {}
+        self.trade_tape_samples = {}
+        self.literal_bar_observations = {}
+        self.otc_status_queries = {}
+        self.cusip_action_windows = {}
+        self.cusip_action_cursors = getattr(client, "cusip_action_cursors", {})
+        self.cusip_action_index = {"by_asset": {}, "by_symbol": {}, "matches": {}, "failures": {}}
+        self.otc_trade_access = {}
+        self.initialize_trade_transport()
         self.action_intervals = defaultdict(dict)
         self.by_id = {}
         self.catalogue = None
@@ -234,6 +249,127 @@ class EvidenceClient:
     @property
     def request_count(self):
         return self.client.request_count
+
+    def initialize_trade_transport(self):
+        self._trade_condition = Condition()
+        self._cusip_action_condition = Condition()
+        if hasattr(self.client, "cusip_action_cursors"):
+            self.client.cusip_action_cursors = self.cusip_action_cursors
+        self._trade_pending = set()
+        self._otc_probing = self._otc_authorized = False
+        self._otc_denied_client = None
+
+    def get_literal_bar_observation(self, pricing, symbol, session, *, binding):
+        from .former_ticker_bars import observe_literal_bar
+
+        key = symbol, session, binding
+        with self._trade_condition:
+            while key in self._trade_pending:
+                self._trade_condition.wait()
+            if key in self.literal_bar_observations:
+                return self.literal_bar_observations[key]
+            if self.work_policy is not None:
+                self.work_policy.check({symbol})
+            self._trade_pending.add(key)
+        try:
+            event("metadata_literal_bar", symbol=symbol, session=session)
+            value = observe_literal_bar(pricing, symbol, session)
+            with self._trade_condition:
+                self.literal_bar_observations[key] = value
+            return value
+        finally:
+            with self._trade_condition:
+                self._trade_pending.remove(key)
+                self._trade_condition.notify_all()
+
+    def _otc_denied(self):
+        state = self.otc_trade_access
+        if not state:
+            return False
+        binding = getattr(self.client, "trade_entitlement_scope", None)
+        if (
+            binding
+            and binding(state["nonce"]) == state["scope"]
+            or not binding
+            and self._otc_denied_client is self.client
+        ):
+            return True
+        # The transport received different credentials. The recorded failed
+        # request is retained by its source, but cannot deny this account access.
+        self.trade_tape_samples.pop(state["request_key"], None)
+        self.otc_trade_access = {}
+        self._otc_authorized = False
+        return False
+
+    def get_trade_tape_sample(
+        self, symbol, session, *, asof="-", mapping_asset_id=None, feed="sip", through_session=None, sort="asc"
+    ):
+        key = (symbol, session, asof, mapping_asset_id, feed)
+        if through_session is not None:
+            key = (*key, through_session)
+        if sort != "asc":
+            if sort != "desc" or feed != "sip" or asof == "-" or through_session is None or not mapping_asset_id:
+                raise ValueError(
+                    "descending trade evidence requires a bounded dated SIP route and selected asset"
+                )
+            key = (*key, sort)
+        otc = feed == "otc"
+        with self._trade_condition:
+            while key in self._trade_pending or otc and self._otc_probing:
+                self._trade_condition.wait()
+            denied = otc and self._otc_denied()
+            if key in self.trade_tape_samples:
+                return self._value(self.trade_tape_samples[key])
+            if denied:
+                return None  # No request was made on this source/date.
+            acquire_sample = getattr(self.client, "get_trade_tape_sample", None)
+            if not callable(acquire_sample):
+                return None  # This metadata-only adapter has no trade observation.
+            if self.work_policy is not None:
+                self.work_policy.check({symbol})
+            self._trade_pending.add(key)
+            probe = otc and not self._otc_authorized
+            if probe:
+                self._otc_probing = True
+        try:
+            try:
+                interval = {"through_session": through_session} if through_session is not None else {}
+                if sort != "asc":
+                    interval["sort"] = sort
+                event(
+                    "metadata_trade_tape_sample",
+                    symbol=symbol,
+                    session=session,
+                    asof=asof,
+                    feed=feed,
+                    **interval,
+                )
+                result = acquire_sample(symbol, session, asof=asof, feed=feed, **interval)
+            except (RuntimeError, OSError, ValueError) as error:
+                error.request_identifiers = [symbol]
+                result = error
+            with self._trade_condition:
+                self.trade_tape_samples[key] = result
+                if otc and isinstance(result, dict):
+                    if result.get("http_status") == 403 and result.get("reason") == "otc_subscription_denied":
+                        nonce = token_hex(16)
+                        binding = getattr(self.client, "trade_entitlement_scope", None)
+                        self.otc_trade_access = {
+                            "nonce": nonce,
+                            "scope": binding(nonce) if binding else None,
+                            "request_key": key,
+                        }
+                        self._otc_denied_client = self.client
+                        self._otc_authorized = False
+                    elif result.get("http_status") == 200:
+                        self._otc_authorized = True
+                return self._value(result)
+        finally:
+            with self._trade_condition:
+                self._trade_pending.remove(key)
+                if probe:
+                    self._otc_probing = False
+                self._trade_condition.notify_all()
 
     def get_asset_lookup(
         self, identifier, *, completed_lookup=None, lookup_kind="cusip", reason="exact_mapping_required"
@@ -332,10 +468,26 @@ class EvidenceClient:
                 if identifier in self.assets
                 else None
             )
+            # An optional asset field appearing on a new licence cannot by
+            # itself reopen a completed legacy observation or start a backfill.
+            saved = lookup.get("asset")
+            snapshot_cusip = "cusip" in (saved or {})
+            if (
+                snapshot_cusip
+                and observed is not None
+                and not valid_cusip((observed.get("asset") or {}).get("cusip"))
+            ):
+                saved = {k: v for k, v in saved.items() if k != "cusip"}
+                snapshot_cusip = False
             if observed is not None and (
                 lookup["outcome"] != observed["outcome"]
                 or lookup["http_status"] != observed["http_status"]
-                or lookup.get("asset") != (compact_asset(observed["asset"]) if observed.get("asset") else None)
+                or saved
+                != (
+                    compact_asset(observed["asset"], include_cusip=snapshot_cusip)
+                    if observed.get("asset")
+                    else None
+                )
             ):
                 return False
             if lookup["lookup_kind"] == "cusip" and not self.mapping_current(evidence, lookup):
@@ -349,7 +501,9 @@ class EvidenceClient:
             cache = self._provider_evidence_views = {}
         key = id(evidence)
         if key not in cache:
-            cache[key] = (evidence, provider_evidence(evidence, local_report=local_report))
+            projected = provider_evidence(evidence, local_report=local_report)
+            self.carry_cusip_labels(projected)
+            cache[key] = (evidence, projected)
         return cache[key][1]
 
     def dependency_observation(self, symbol):
@@ -448,7 +602,7 @@ class EvidenceClient:
                 or not isinstance(asset.get("tradable"), bool)
             )
             identifier = asset.get("id")
-            compact = compact_asset(asset)
+            compact = compact_asset(asset, include_cusip=True)
             if isinstance(identifier, str) and identifier:
                 prior = assets_by_id.get(identifier)
                 if not complete or identifier in assets_by_id and prior != compact:
@@ -658,7 +812,120 @@ class EvidenceClient:
         except LineageError as error:
             error.request_identifiers = [symbol]
             raise
-        return actions
+        additional = self.cusip_action_index["by_symbol"].get(symbol)
+        if not additional:
+            return actions
+        by_id = {action_identity_key(action): action for action in actions}
+        for identity, action in additional.items():
+            if start <= action_date(action) <= end:
+                if identity in self.action_conflicts:
+                    raise LineageError(f"conflicting corporate-action identity: {identity}")
+                by_id.setdefault(identity, action)
+        return list(by_id.values())
+
+    def carry_cusip_labels(self, report):
+        index = self.cusip_action_index
+        for item in report.get("archive_cusip_action_endpoints", ()):
+            facts = index["by_asset"].setdefault((item["asset_id"], item["cusip"]), {})
+            for match in item["matches"]:
+                key = (match["action_type"], match["action_id"], match["symbol_field"])
+                facts[key] = match
+        discovery = report.get("cusip_action_discovery")
+        if discovery and discovery["windows"]:
+            intervals = self.cusip_action_windows.setdefault(discovery["cusip"], {})
+            for window in discovery["windows"]:
+                key = window["start"], window["end"]
+                if key not in intervals:
+                    self._lend_cusip_window(discovery["cusip"], window)
+                    intervals[key] = window
+
+    def _lend_cusip_window(self, cusip, window):
+        rows = [item["action"] for item in window["actions"]]
+        self._record_actions(rows)
+        self._check_action_conflicts(rows)
+        accepted = defaultdict(list)
+        for match in window["matches"]:
+            accepted[cusip, match["action_type"], match["action_id"]].append(match)
+        self.cusip_action_index["matches"].update(accepted)
+        for item in window["actions"]:
+            symbol, action = item["ticker"], item["action"]
+            if symbol:
+                self.cusip_action_index["by_symbol"].setdefault(symbol, {})[action_identity_key(action)] = action
+
+    def known_cusip_labels(self, binding, start, end):
+        facts = self.cusip_action_index["by_asset"].get((binding["asset_id"], binding["cusip"]), {})
+        return {m["symbol"] for m in facts.values() if start <= m["process_date"] <= end}
+
+    def dated_cusip_matches(self, action, cusip):
+        key = cusip, *action_identity_key(action)
+        matches = self.cusip_action_index["matches"]
+        if key not in matches:
+            matches[key] = dated_matches(action, cusip)
+        return matches[key]
+
+    def remember_cusip_labels(self, report):
+        for lookup in report["asset_lookups"]:
+            asset = lookup.get("asset") or {}
+            cusip = lookup["lookup"]
+            if (
+                lookup["lookup_kind"] != "cusip"
+                or lookup.get("outcome") != "found"
+                or lookup.get("http_status") != 200
+                or not valid_cusip(cusip)
+                or asset.get("cusip") not in (None, cusip)
+                or asset.get("class") != "us_equity"
+                or not asset.get("id")
+                or asset.get("status") != "inactive"
+                and asset.get("exchange") != "OTC"
+            ):
+                continue
+            matches = [
+                m
+                for action in report["corporate_actions"]
+                for m in self.dated_cusip_matches(action, cusip)
+                if m["symbol"] != asset.get("symbol")
+            ]
+            if matches:
+                report.setdefault("archive_cusip_action_endpoints", []).append(
+                    {"asset_id": asset["id"], "cusip": cusip, "matches": matches}
+                )
+        self.carry_cusip_labels(report)
+
+    def cusip_discovery_windows(
+        self, binding, start, end, *, retained=(), already_covered=(), covered_by_symbol=False
+    ):
+        """Use only uncovered intervals of the singleton provider-native action filter."""
+        cusip = binding["cusip"]
+        # An unchanged licensed endpoint can recur in peer-group work. Accept
+        # each complete interval once, including a scoped empty response or denial.
+        with self._cusip_action_condition:
+            intervals = self.cusip_action_windows.setdefault(cusip, {})
+            for window in retained:
+                key = window["start"], window["end"]
+                if key not in intervals:
+                    self._lend_cusip_window(cusip, window)
+                    intervals[key] = window
+            get_actions = getattr(self.client, "get_cusip_actions", None)
+            if callable(get_actions) and not covered_by_symbol:
+                for lower, upper in missing_intervals(start, end, [*intervals, *already_covered]):
+                    failures = self.cusip_action_index["failures"]
+                    scope = cusip, lower, upper
+                    if scope in failures:
+                        raise failures[scope]
+                    if self.work_policy is not None:
+                        self.work_policy.check({binding["symbol"], cusip})
+                    event(
+                        "metadata_cusip_actions", symbol=binding["symbol"], cusip=cusip, start=lower, end=upper
+                    )
+                    response = get_actions(cusip, lower, upper)
+                    try:
+                        window = accept_window(response, cusip, lower, upper)
+                        self._lend_cusip_window(cusip, window)
+                    except (ValueError, LineageError) as error:
+                        failures[scope] = error
+                        raise
+                    intervals[lower, upper] = window
+            return [window for (a, b), window in sorted(intervals.items()) if a <= end and start <= b]
 
 
 class _CompletedLookupChanged(RuntimeError):
@@ -714,13 +981,14 @@ class RetainedReportClient:
             return observed
         if symbol in self.symbols and symbol not in self.invalidated_symbols:
             saved = self.symbols[symbol]
-            if saved.get("asset"):
-                return {
-                    **saved,
-                    "observed_at_utc": saved.get(
-                        "observed_at_utc", self.evidence.get("catalogue_observed_at_utc")
-                    ),
-                }
+            if (
+                saved.get("source") == "asset_catalogue"
+                and saved.get("asset")
+                and "observed_at_utc" not in saved
+            ):
+                stamp = self.evidence.get("catalogue_observed_at_utc")
+                if stamp:
+                    return {**saved, "observed_at_utc": stamp}
             return saved
         return self.client.get_symbol_lookup(symbol)
 
@@ -728,12 +996,18 @@ class RetainedReportClient:
 class WindowClient:
     # Completed mappings remain authoritative until their endpoint/action inputs
     # change. A newly acquired endpoint has the same authority on every route.
-    def __init__(self, client, symbol, previous, refresh):
+    def __init__(self, client, symbol, previous, refresh, *, status_view=None, allow_status_search=False):
         self.client, self.symbol = client, symbol
         self.previous = previous
+        self.status_view = status_view
+        self.allow_status_search = allow_status_search
+        self.early_mapped_samples = None
         self.start = None if refresh or previous is None else previous["anchor_month"] + "-01"
-        self.lookup_sources = {}
         evidence = (previous or {}).get("evidence", {}) if client is not None else {}
+        self.retained_otc_search = (evidence.get("otc_historical_trade_tape") or {}).get(
+            "following_trade_search"
+        )
+        self.otc_limits_changed = refresh
         self.completed_actions = {action_identity_key(action): action for action in provider_actions(evidence)}
         self.completed_cusip_lookups = {
             lookup["lookup"]: lookup
@@ -741,6 +1015,7 @@ class WindowClient:
             if lookup["lookup_kind"] == "cusip"
         }
         self.changed_cusips = set()
+        self.trade_tape_inputs_changed = False
         self.retained_lookups = {}
         self.consumed_symbols = {}
 
@@ -761,6 +1036,19 @@ class WindowClient:
     def get_asset_lookup(self, identifier):
         previous = self.completed_lookup(identifier)
         result = self.client.get_asset_lookup(identifier, completed_lookup=previous)
+        prior = self.completed_cusip_lookups.get(identifier)
+        if self.retained_otc_search and prior and not self.otc_limits_changed:
+            if (prior.get("asset") or {}).get("id") != (result.get("asset") or {}).get("id"):
+                self.otc_limits_changed = any(
+                    item.get("cusip") == identifier
+                    for item in self.previous["evidence"].get("input_symbol_occupants", ())
+                )
+        if prior and not self.trade_tape_inputs_changed:
+            before, after = prior.get("asset") or {}, result.get("asset") or {}
+            if any(before.get(k) != after.get(k) for k in ("id", "symbol", "class", "status", "exchange")):
+                self.trade_tape_inputs_changed = any(
+                    anchor_cusip(a, self.symbol) == identifier for a in self.completed_actions.values()
+                )
         if previous is not None and identifier not in self.client.assets:
             self.retained_lookups[identifier] = result
         return result
@@ -768,9 +1056,35 @@ class WindowClient:
     def get_symbol_lookup(self, symbol):
         lookup = self.client.get_symbol_lookup(symbol)
         self.consumed_symbols[symbol] = lookup
-        if "source" in lookup:
-            self.lookup_sources[symbol] = lookup["source"]
         return lookup
+
+    def cusip_discovery_windows(self, binding, start, end, *, covered_by_symbol):
+        previous = (self.previous or {}).get("evidence", {})
+        saved = previous.get("cusip_action_discovery")
+        retained, covered = (), ()
+        if previous and (not saved or all(saved.get(k) == value for k, value in binding.items())):
+            retained = saved["windows"] if saved else ()
+            # The previous scope was already assessed. In particular, a
+            # legacy selector did not request this route. Never backfill it.
+            query = previous["query"]
+            covered = [(query["corporate_actions_start"], query["corporate_actions_end"])]
+        return self.client.cusip_discovery_windows(
+            binding, start, end, retained=retained, already_covered=covered, covered_by_symbol=covered_by_symbol
+        )
+
+    def remember_cusip_labels(self, report):
+        self.client.remember_cusip_labels(report)
+
+    def otc_status_query(self, own, start, end):
+        from .otc_status import discover
+
+        return discover(self, own, start, end)
+
+    def known_cusip_labels(self, binding, start, end):
+        return self.client.known_cusip_labels(binding, start, end)
+
+    def dated_cusip_matches(self, action, cusip):
+        return self.client.dated_cusip_matches(action, cusip)
 
     def retired_asset_lookup(self):
         """Join the last positive own-label observation to its exact asset UUID."""
@@ -886,6 +1200,12 @@ class WindowClient:
         for action in current:
             accepted = self.completed_actions.get(action_identity_key(action))
             if accepted != action:
+                if self.retained_otc_search and not self.otc_limits_changed:
+                    self.otc_limits_changed = self.symbol in action_symbols([action, accepted or {}])
+                if not self.trade_tape_inputs_changed and any(
+                    anchor_cusip(item, self.symbol) for item in (action, accepted or {})
+                ):
+                    self.trade_tape_inputs_changed = True
                 self.changed_cusips.update(extract_cusips([action, *([accepted] if accepted else [])]))
                 if isinstance(self.client, RetainedReportClient):
                     labels = action_symbols([action, *([accepted] if accepted else [])])
@@ -933,7 +1253,9 @@ def retained_metadata(view, client, previous, *, refresh=False):
     ):
         return None
     if not retired_uuid_lookup_required(previous) and client.evidence_current(evidence):
-        return evidence
+        if TERMINAL_CASH_TRADE_FIELD not in evidence:
+            return evidence
+        return carry_terminal_cash_trade(view, evidence, previous_generation=previous.get("source_sha256"))
     # Changed descriptions or operator facts need their new metadata projection,
     # while the already completed provider action union keeps its exact scope.
     return acquire(
@@ -941,16 +1263,19 @@ def retained_metadata(view, client, previous, *, refresh=False):
         RetainedReportClient(client, evidence),
         previous,
         query_dates=(query["corporate_actions_start"], query["corporate_actions_end"]),
+        observe_new_tapes=False,
     )
 
 
-def acquire(view, client, previous=None, *, refresh=False, query_dates=None):
+def acquire(view, client, previous=None, *, refresh=False, query_dates=None, observe_new_tapes=True):
     if previous:
         evidence = client.provider_view(previous["evidence"], local_report=view.local)
         if evidence is not previous["evidence"]:
             previous = {**previous, "evidence": evidence}
     for _ in range(MAX_NAME_CHANGE_SYMBOLS + 1):
-        window = WindowClient(client, view.symbol, previous, refresh)
+        window = WindowClient(
+            client, view.symbol, previous, refresh, status_view=view, allow_status_search=observe_new_tapes
+        )
         try:
             # DO NOT REMOVE WITHOUT USER AUTH!#
             # The bar mapping date can be historical. Corporate-action discovery
@@ -976,24 +1301,32 @@ def acquire(view, client, previous=None, *, refresh=False, query_dates=None):
         evidence = _finish_evidence(evidence, window)
         if not window.evidence_current(evidence):
             continue  # A later symbol lookup changed an earlier retained dependency.
+        if observe_new_tapes:
+            record_samples(view, evidence, window, refresh=refresh)
         return evidence
     raise LineageError("metadata lookup changes exceeded the name-change traversal limit")
 
 
 def _finish_evidence(evidence, window):
     evidence.pop("api_request_count", None)
+    if window.previous:
+        # Carry each observation with its original ticker, date, feed and mapping.
+        for key in (
+            "historical_trade_tape",
+            "mapped_historical_trade_tape",
+            "otc_historical_trade_tape",
+            "former_ticker_literal_bars",
+        ):
+            if key in window.previous["evidence"]:
+                evidence[key] = window.previous["evidence"][key]
+        if window.status_view is not None and TERMINAL_CASH_TRADE_FIELD in window.previous["evidence"]:
+            evidence[TERMINAL_CASH_TRADE_FIELD] = window.previous["evidence"][TERMINAL_CASH_TRADE_FIELD]
+            evidence = carry_terminal_cash_trade(window.status_view, evidence, window)
     observation = getattr(window.client, "observation", None)
     if observation is not None:
         evidence["catalogue_observed_at_utc"] = observation["catalogue_observed_at_utc"]
     elif window.previous and "catalogue_observed_at_utc" in window.previous["evidence"]:
         evidence["catalogue_observed_at_utc"] = window.previous["evidence"]["catalogue_observed_at_utc"]
-    for lookup in evidence["asset_lookups"]:
-        if lookup["lookup_kind"] == "symbol" and lookup["lookup"] in window.lookup_sources:
-            lookup["source"] = window.lookup_sources[lookup["lookup"]]
-        if lookup["lookup_kind"] == "symbol":
-            observed = window.consumed_symbols.get(lookup["lookup"], {})
-            if "observed_at_utc" in observed:
-                lookup["observed_at_utc"] = observed["observed_at_utc"]
     mapping_observations = {}
     for lookup in evidence["asset_lookups"]:
         if lookup["lookup_kind"] != "cusip":

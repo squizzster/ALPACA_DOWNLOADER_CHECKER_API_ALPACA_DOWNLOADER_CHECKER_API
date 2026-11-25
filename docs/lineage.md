@@ -94,6 +94,154 @@ generations. Publication retains the existing ID, its supported dates and the ex
 observations. The lineage owner also retains the displaced literal observations and registers their last
 traded date for independent attribution to another issuer with a matching traded history.
 
+#### Former tickers identified by corporate actions
+
+For a fresh OTC equity with a five-letter ticker ending in Q, Alpaca may report a
+historical SIP trade on a listed tape under the mapped terminal ticker. When the ordinary
+traversal and native CUSIP paths have supplied no former ticker or usable identifier, the
+metadata producer can use the four-letter root for one corporate-action query. It first
+uses any completed portions of that symbol's action coverage. A native positive cash dividend
+must name the queried symbol on an ex-date inside the raw price span and no later than the
+observed listed-tape trade. With fresh daily rows in memory, the ex-date needs positive volume
+or trade count, or a directly observed mapped trade on that date. An exact lookup
+of that dividend's CUSIP must return the terminal US equity's UUID and ticker before the
+returned symbol enters normal metadata and pricing discovery. The source receipt records the
+filter, coverage, supporting dividend, lookup and outcome in `otc_status_symbol_query`.
+An empty response, unavailable lookup or different returned issuer leaves the spelling
+unconfirmed. Applicable published assignments keep their existing scope.
+
+For a selected inactive or OTC equity, metadata can discover a former label starting with the
+terminal ticker. The asset API may supply a licensed CUSIP. A dated corporate action can also name
+the terminal ticker and CUSIP on the same participant when its completed exact CUSIP lookup identifies
+the terminal equity's UUID. The licensed snapshot takes precedence. Among independently resolved
+action CUSIPs, the most recent processing date selects the query. A same-day reverse split or name
+change can explicitly order an old and new CUSIP. Equally supported alternatives remain recorded
+without selecting a filter.
+
+After ordinary symbol actions have been traversed, the producer queries complete US actions by
+the selected CUSIP over the selected dates if existing native endpoints have not identified another
+label. The source evidence records the CUSIP's origin, query bounds, outcome, action IDs, process dates and matching
+participant fields in `cusip_action_discovery`. Only the documented participant carrying the
+requested CUSIP can name a ticker for ordinary symbol acquisition. A returned action with one
+named ticker joins its normal action evidence even when the symbol query omitted it. A transaction
+with distinct parties keeps its full record and the matching role in the CUSIP evidence.
+An already observed action and exact CUSIP mapping can name the ticker directly when its terminal
+asset is selected later. The asset CUSIP remains a snapshot. Empty responses, unmatched actions and access denials supply no dated label. Selected
+extensions request only uncovered intervals and legacy receipts keep their completed scope.
+
+On fresh group work, a positive cash dividend can identify the trading ticker on its ex-date. A stock
+or stock-and-cash merger can identify the acquirer's ticker on its effective date when Alpaca names
+both parties with distinct tickers and CUSIPs and supplies positive consideration. The acquirer's
+observation applies to its own security. The acquiree keeps its own price history.
+An exact CUSIP lookup must resolve the dated participant to an inactive or OTC equity under another
+ticker. The terminal ticker's own asset lookup must identify the same equity.
+The group compares the two already selected daily SIP raw histories. The terminal route
+must be mapped after the traded period. Literal symbol requests directly support the trading label.
+Alpaca also uses literal semantics when a ticker is absent on the mapping date. A contemporaneous
+exact 404 can support absence. A dated subsequent occupant's entry and departure, complete action
+coverage, and an exact 404 can also support absence after that departure.
+
+The dated label covers the supported portion of the shared trading period. Varying prices and matching
+activity support continuity. An interior mapped aggregate can contain fewer trades when its open and
+close agree and its price range fits inside the former ticker's range. Matching full aggregates on both
+sides distinguish this from merely sharing a close. When the API supplies matching raw trades and a
+dated event but cannot date the surrounding spelling, an individual event date can stand on its own. A successful
+empty literal trade observation on that date contradicts the mapped trades. Competing spellings retain
+their ordinary disposition on disputed dates. The source receipt records the material limit.
+
+The existing public ID, CUSIP, supporting action IDs and observed endpoints accompany the dated label.
+The first and last observed sessions bound the price assignment. A formal rename date or an OTC trade
+requires its own evidence. The group cache carries the assessment across views and passes. Applicable
+published groups and accepted prefixes continue through their existing handoffs.
+
+Independently stored labels can have adjacent trading dates even when Alpaca supplies no connecting
+action, CUSIP or shared UUID. A dated bar query can bridge such a boundary after both labels are known.
+That response identifies the requested route. Its bars can use a different adjustment basis from the
+independently acquired generations. Fresh lineage discovers candidate labels through its provider
+dependencies and preserves each numerical generation until its mapping is established.
+
+When both fresh source histories use symbol mapping, their shared prices can come from an
+even earlier ticker. The group can request the former ticker's literal daily SIP raw bar on the
+first and last eligible sessions. Each singleton uses `asof=-`. The source receipt stores
+`former_ticker_literal_bars` with each exact request, the returned OHLC, volume, trade count
+and VWAP, and the two selected pricing generations and mappings. A successful empty result
+records `no_bars`. An explicit provider rejection records `unavailable`. Direct symbol lookups
+record when Alpaca returned the asset snapshot or a 404. An asset selected from the catalogue
+uses that catalogue's observation time. An existing literal route or a supported current mapping can resolve this
+question without additional bar requests. Completed literal observations survive peer failures
+under the same store, former pricing generation and former mapping. A changed terminal generation
+selects a new pair assessment that can consume that same literal observation.
+
+#### Dated trade tape evidence
+
+On a priced source, the producer requests the first chronological Alpaca SIP trade
+under the literal event ticker (`asof=-`) on its earliest qualifying dividend ex-date or acquirer effective date
+whose entire New York date falls in the source span. The standalone group's source evidence
+exposes this observation in `historical_trade_tape`. With the
+[standalone reader](public-api.md#standalone-reader), inspect
+`group.evidence["sources"][source_symbol]["evidence"]` for the selected source's dated samples.
+
+An OTC asset with a historical gap after its last stored raw SIP session selects a mapped sample
+on that raw date, using the pricing request's ticker and `asof`. A week of elapsed coverage
+establishes eligibility. A shorter gap requires a known subsequent market session inside the
+request. With the same raw date and provider UUID, an advancing current-label mapping keeps
+the original dated observation. A changed pinned mapping or provider UUID selects its own route.
+The source receipt exposes it in `mapped_historical_trade_tape`. Its returned symbol identifies the provider's
+mapped response. The pricing-route binding records the UUID seen in the symbol's asset
+lookup. Establishing the historical ticker on that date requires separate evidence.
+
+When that mapped raw-end day returns HTTP 200 with no trades, a complete archived source can
+look for its latest earlier SIP print. The first search covers the earliest complete New York
+date within the selected raw span through the day before the empty endpoint, using the same
+symbol and mapping, descending time order and a one-trade limit. The endpoint response remains
+in place. Its `last_trade_search` records the raw and request bounds, pricing generation,
+provider UUID, mapping, actual request and response, and the dates of established absence.
+A subsequent empty interval can retain the earlier positive response alongside the new request.
+Applicable pricing ancestry carries the completed intervals forward. Newly admitted dates select
+only uncovered portions, newest first. A selected metadata refresh can extend an older empty
+point receipt through this rule. A normal unchanged update leaves its completed scope intact.
+
+Each point sample covers one New York date and one trade. Its receipt records the requested ticker,
+session, request bounds, feed, mapping and HTTP outcome. A returned trade records its
+timestamp `t`, SIP tape code `z`, execution venue `x`, price `p`, size `s` and sale conditions `c` when present.
+A trade can be reported on a day whose daily bar shows zero eligible volume and trades.
+Tape C identifies the
+Nasdaq UTP network, while A and B identify their respective CTA networks. Other or missing tape
+codes are recorded as unknown. An explicitly null or empty trade collection records `no_trades`
+when the response identifies the requested ticker and has no continuation token.
+The network observation applies to that dated trade. Asset
+lookups separately retain the provider's current or terminal exchange snapshot.
+
+A fresh listed-equity history can have a zero-volume, zero-trade final SIP bar on the
+effective date of a cash merger. When the acquiree ticker and CUSIP resolve to the
+same inactive asset, lineage requests the last reported SIP trade from the most recent
+preceding positive daily bar through the merger date. The source evidence field
+`terminal_cash_merger_trade` retains the mapped request, its result, the target UUID,
+native action ID and cash rate. A reported trade may fall after the regular close.
+Daily prices, eligible trading activity, public coverage and cash consideration keep
+their respective producer records. Accepted histories do not select a retrospective search.
+
+After an earlier listed-tape print is found, its actual New York date selects the next OTC session.
+An empty or unavailable backward search supplies no such date. When the first market session
+following the selected historical SIP date falls entirely within the source
+request's New York dates, lineage can sample one trade for the terminal ticker with `feed=otc` and literal
+mapping. An actual response is recorded separately in `otc_historical_trade_tape`. A returned
+trade establishes an OTC print on its timestamp. A successful empty response records
+`no_trades`. HTTP 403 and 404 record `unavailable`. When the provider explicitly denies
+OTC subscription access, the operation reuses the denial for the same credentials and
+records that HTTP result only on the route actually requested. An unchanged source carries
+its original outcome. A newly selected route or explicit metadata refresh can observe
+current access. A listing interval or market transition date requires additional evidence.
+
+If a mapped SIP trade has a listed tape and this first literal OTC date returns a complete, empty page,
+`following_trade_search` can locate the first later OTC print. One ascending, one-trade query spans
+the next calendar day through the last complete New York date in selected coverage. A dated departure,
+different observed occupant or accepted corporate-action departure can shorten that search. The result records
+its pricing generation, mapping UUID, contiguous empty coverage and the latest physical request and
+response. A positive result identifies the literal symbol, actual New York date and original timestamp.
+An extension of an empty result starts after the covered dates. A completed first print stays bound
+to its original search. Ownership and OTC price acquisition require separate evidence.
+
 ## Lineage reuse
 
 [contract.py](../libs/alpaca_lineage_build/contract.py), `reusable_decision`, and
@@ -176,6 +324,16 @@ number. The selected rows retain their original precision and spelling. Unresolv
 Numerical selection preserves dated labels independently, including ambiguity. The dated-label producer can resolve supported
 collisions without changing that numerical choice. Readers/exports consume completed decisions without
 repeating selection/activity checks.
+
+When a dated dividend or qualifying acquirer observation establishes a former ticker, the terminal route
+normally keeps its complete numerical bundle for that identity and session. If raw values agree but
+dividend, split or other adjusted views differ, the assignment records `former_ticker_numerical_basis_unconfirmed`.
+The same limit applies when the dated label is better supported than a numerical source switch.
+The former route supplies all eight views when the raw producer found a strictly fuller aggregate and
+the adjusted opens and closes match, the former price range contains the mapped range and VWAP, and
+the split volumes admit the same share scale within one reported share per route. The observed data
+establish the common basis only at the provider's precision. This comparison uses the selected pair
+and its completed raw result. Its scope ends at that session.
 
 When overlapping bundles disagree in any field and request mapping `asof` lies outside accepted occupancy, lineage
 requests only that source's full retained span at an observed own-label mapping date. Accepted departures across

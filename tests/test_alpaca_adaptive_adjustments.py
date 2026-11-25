@@ -319,32 +319,35 @@ class AdaptiveTests(unittest.TestCase):
                 )
                 self.assert_views(symbol, self.live[symbol])
 
-    def test_fourth_view_singleton_fallback_keeps_all_three_completed_stages(self):
+    def test_fourth_full_history_view_failure_keeps_completed_peer_and_never_replays_a_stage(self):
         for symbol in ("AAA", "BBB"):
             self.live[symbol] = precision_rows("2016-01-04")
 
-        def reject_split_batch(params):
+        def reject_split(params):
             self.assertIn(params["adjustment"], ("raw", "all", "dividend", "split"))
-            if params["symbols"] == "AAA,BBB" and params["adjustment"] == "split":
+            self.assertNotIn(",", params["symbols"])
+            if params["symbols"] == "BBB" and params["adjustment"] == "split":
                 self.pages.append(dict(params))
-                raise HTTPError("fixture", 400, "split batch rejected", {}, None)
+                raise HTTPError("fixture", 400, "split request rejected", {}, None)
             return self.page(params)
 
         with (
-            patch.object(self.client, "_get", side_effect=reject_split_batch),
+            patch.object(self.client, "_get", side_effect=reject_split),
             patch.object(adaptive, "digest", wraps=adaptive.digest) as hashed,
         ):
             result = acquire.acquire_selected(self.store, ["AAA", "BBB"], "2026-10-17", client=self.client)
-        self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(hashed.call_count, 8)
-        history = [p for p in self.pages if p["start"][:10] == "2016-01-01"]
+        self.assertEqual(result["failed"], 1, result)
         self.assertEqual(
-            [p["adjustment"] for p in history], ["raw", "all", "dividend", "split", "split", "split"]
+            {r["symbol"]: r["status"] for r in result["results"]}, {"AAA": "published", "BBB": "failed"}
         )
-        self.assertEqual([p["symbols"] for p in history[:4]], ["AAA,BBB"] * 4)
-        self.assertCountEqual([p["symbols"] for p in history[4:]], ["AAA", "BBB"])
+        self.assertEqual(hashed.call_count, 7)
+        history = [p for p in self.pages if p["start"][:10] == "2016-01-01"]
         for symbol in self.live:
-            self.assert_views(symbol, self.live[symbol])
+            self.assertEqual(
+                [p["adjustment"] for p in history if p["symbols"] == symbol], ["raw", "all", "dividend", "split"]
+            )
+        self.assert_views("AAA", self.live["AAA"])
+        self.assertFalse((self.store / "end_of_day/pricing/BBB/source.manifest.json").exists())
 
     def test_completed_four_view_acquisition_rejects_a_changed_generation_without_more_requests(self):
         self.live["AAA"] = precision_rows("2016-01-04")
@@ -368,26 +371,51 @@ class AdaptiveTests(unittest.TestCase):
         self.assertEqual(len(self.pages), concurrent["pages"])
         self.assertEqual([p["adjustment"] for p in self.pages], ["raw", "all", "dividend", "split"] * 2)
 
-    def test_initial_exact_fallback_keeps_completed_raw_observation(self):
+    def test_fresh_histories_keep_whole_and_partial_episodes_suppressed_by_mapped_companions(self):
+        for symbol in ("AAA", "BBB", "CCC"):
+            self.live[symbol] = pattern_rows(PATTERN_GROUPS["all_equal"])
+
+        def mapped_response(params):
+            response = self.page(params)
+            if "," in params["symbols"]:
+                response["bars"].pop("BBB", None)
+                if "CCC" in response["bars"]:
+                    response["bars"]["CCC"] = [r for r in response["bars"]["CCC"] if r["t"][:4] == "2026"]
+            return response
+
+        with (
+            patch.object(self.client, "_get", side_effect=mapped_response),
+            patch.object(adaptive, "digest", wraps=adaptive.digest) as hashed,
+        ):
+            result = acquire.acquire_selected(self.store, list(self.live), "2026-10-17", client=self.client)
+        self.assertEqual(result["failed"], 0, result)
+        self.assertEqual(hashed.call_count, 6)
+        self.assertCountEqual(
+            [(p["symbols"], p["adjustment"], p["start"][:10]) for p in self.pages],
+            [(s, a, d) for s in self.live for a in ("raw", "all") for d in ("2016-01-01", "2016-01-04")],
+        )
+        for symbol in self.live:
+            self.assert_views(symbol, self.live[symbol])
+
+    def test_failed_initial_first_row_confirms_peers_without_repeating_full_histories(self):
         for symbol in ("AAA", "BBB"):
             self.live[symbol] = pattern_rows(PATTERN_GROUPS["all_equal"])
 
-        def reject_second_batch(params):
-            if params["symbols"] == "AAA,BBB" and params["adjustment"] == "all":
-                raise HTTPError("fixture", 400, "batch rejected", {}, None)
-            return self.page(params)
+        def fail_confirmation(params):
+            response = self.page(params)
+            if (params["symbols"], params["start"][:10], params["adjustment"]) == ("BBB", "2016-01-04", "raw"):
+                raise HTTPError("fixture", 400, "first row unavailable", {}, None)
+            return response
 
-        with (
-            patch.object(self.client, "_get", side_effect=reject_second_batch),
-            patch.object(adaptive, "digest", wraps=adaptive.digest) as hashed,
-        ):
-            result = acquire.acquire_selected(self.store, ["AAA", "BBB"], "2026-10-17", client=self.client)
-        self.assertEqual(result["failed"], 0, result)
-        self.assertEqual(hashed.call_count, 4)
-        raw_history = [p for p in self.pages if p["adjustment"] == "raw" and p["start"][:10] == "2016-01-01"]
-        self.assertEqual([p["symbols"] for p in raw_history], ["AAA,BBB"])
-        for symbol in self.live:
-            self.assert_views(symbol, self.live[symbol])
+        with patch.object(self.client, "_get", side_effect=fail_confirmation):
+            result = acquire.acquire_selected(self.store, list(self.live), "2026-10-17", client=self.client)
+        self.assertEqual(
+            {r["symbol"]: r["status"] for r in result["results"]}, {"AAA": "published", "BBB": "failed"}
+        )
+        self.assertEqual(len(self.pages), 8)
+        self.assertEqual(len({(p["symbols"], p["adjustment"], p["start"]) for p in self.pages}), 8)
+        self.assert_views("AAA", self.live["AAA"])
+        self.assertFalse((self.store / "end_of_day/pricing/BBB/source.manifest.json").exists())
 
     def test_malformed_later_page_cannot_complete_an_adaptive_observation(self):
         self.live["AAA"] = pattern_rows(PATTERN_GROUPS["all_equal"])
