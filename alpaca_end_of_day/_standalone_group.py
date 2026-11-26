@@ -15,6 +15,7 @@ from .standalone import (
     _date,
     _group_evidence,
     _group_securities,
+    _pricing_manifest,
     _public_id,
     _read_views,
     _rows,
@@ -138,6 +139,8 @@ class GroupSnapshot:
         self._assignments = self._sources = self._cache = None
         self._all_assignments = self._receipts = None
         self._evidence = None
+        if hasattr(self, "_equal_partition_cache"):
+            del self._equal_partition_cache
         if hasattr(self, "_transfer_date_rows"):
             self._transfer_date_rows.clear()
 
@@ -194,6 +197,39 @@ class GroupSnapshot:
             if receipt.get("numerical_source_revision") is not None
         }
 
+    def equal_pricing_partition(self, left, right, kind):
+        """Compare eight published logical digests for a selected source replacement."""
+        from libs.alpaca_lineage_build.recovery_handoffs import recall, remember
+
+        store = self._reader.store
+        pair = tuple(sorted((name, self._sources[name]["boundaries"][kind]["sha256"]) for name in (left, right)))
+        binding = kind, pair
+        if not hasattr(self, "_equal_partition_cache"):
+            self._equal_partition_cache = {}
+        cache = self._equal_partition_cache
+        if binding in cache:
+            return cache[binding]
+        held = recall(store, "equal_pricing_partition", binding)
+        if held is not None:
+            cache[binding] = held
+            return held
+        signatures = []
+        for name, generation in pair:
+            document = _pricing_manifest(
+                store / "end_of_day/pricing" / name, self._sources[name], kind, cache, self._cache
+            )
+            remember(store, "pricing_partition_document", (name, kind, generation), document)
+            signatures.append(
+                {
+                    item["adjustment"]: (item["rows"], item["logical_sha256"])
+                    for item in document["adjustments"]
+                    if isinstance(item.get("logical_sha256"), str) and len(item["logical_sha256"]) == 64
+                }
+            )
+        equal = signatures[0].keys() == set(ADJUSTMENTS) and signatures[0] == signatures[1]
+        cache[binding] = equal
+        return remember(store, "equal_pricing_partition", binding, equal)
+
     def numerical_source_equivalences(self):
         """Borrow completed equality projections from the selected receipts."""
         return {
@@ -208,8 +244,10 @@ class GroupSnapshot:
 
         held = recall(self._reader.store, "source_choice_bundles", revision["id"])
         days = set(revision["sessions"][public_id]) if days is None else set(days)
-        if held is not None and public_id in held:
-            return {day: values for day, values in held[public_id].items() if day in days}
+        completed = {day: values for day, values in (held or {}).get(public_id, {}).items() if day in days}
+        days -= completed.keys()
+        if not days:
+            return completed
         from bisect import bisect_left
 
         from libs.alpaca_pricing_download.contract import COLUMNS, NEW_YORK, timestamp
@@ -256,7 +294,7 @@ class GroupSnapshot:
                     selected[day][adjustment] = {"bar": frames[frame_key]}
         if any(set(values) != set(ADJUSTMENTS) for values in selected.values()):
             raise StandaloneReaderError("revised observations lack their selected complete bundle")
-        return selected
+        return {**completed, **selected}
 
     def serving_inputs(self):
         """Compact published ownership runs, independent of physical rollover.

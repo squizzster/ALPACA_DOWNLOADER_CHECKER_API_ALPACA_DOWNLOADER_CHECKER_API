@@ -218,8 +218,11 @@ def _correlate_until_stable(
 
 def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
     accepted = {}
+    dated = {}
     for symbol, view in inputs.items():
         accepted[symbol] = getattr(view, "accepted_identity_memberships", None) or {}
+        if periods := getattr(view, "accepted_dated_identity_memberships", None):
+            dated[symbol] = periods
         graph = getattr(view, "accepted_uuid_lineage_candidates", None)
         if graph is not None:
             cache._uuid_candidates[id(graph[0])] = graph
@@ -252,6 +255,7 @@ def _register_sources(cache: CorrelationCache, inputs: dict[str, Any]) -> None:
                 timestamp(last).astimezone(NEW_YORK).date().isoformat() if last else None,
             )
     cache.accepted_identity_memberships = accepted
+    cache.accepted_dated_identity_memberships = dated
 
 
 def _correlation_cache(policy) -> CorrelationCache:

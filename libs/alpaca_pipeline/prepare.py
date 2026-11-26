@@ -19,7 +19,7 @@ from .execution import stage_lock
 from .handoffs import Prepared
 from .state import export_recovery, export_state, import_state
 
-VERSION = 15
+VERSION = 16
 SCHEMA_VERSION = 1
 
 

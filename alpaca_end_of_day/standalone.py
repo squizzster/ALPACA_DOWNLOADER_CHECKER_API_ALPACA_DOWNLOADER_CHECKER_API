@@ -235,6 +235,41 @@ def _selected_path(cache, root, relative):
     return cache[key]
 
 
+def _pricing_manifest(root, source, kind, cache, retained=None):
+    """Borrow the selected pricing producer's compact payload descriptors."""
+    from libs.alpaca_lineage_build.recovery_handoffs import recall
+
+    boundary = source["boundaries"][kind]
+    # The legacy date projection lends this exact manifest and its raw rows to
+    # lineage. Form the existing path-bound key even when the document is held.
+    manifest_key = "selected_manifest", root / boundary["manifest"], source["symbol"], kind, boundary["sha256"]
+    if manifest_key not in cache:
+        held = recall(
+            Path(root).parent.parent.parent,
+            "pricing_partition_document",
+            (source["symbol"], kind, boundary["sha256"]),
+        )
+        if held is not None:
+            cache[manifest_key] = held
+            return held
+        manifest_path = _selected_path(cache, root, boundary["manifest"])
+        manifest = (
+            retained.document(manifest_path, boundary["sha256"])
+            if retained is not None
+            else read_document(manifest_path)
+        )
+        if (
+            manifest.get("schema_version") not in SUPPORTED_VERSIONS
+            or manifest.get("symbol") != source["symbol"]
+            or manifest.get("boundary") != "alpaca_pricing_" + kind
+        ):
+            raise StandaloneReaderError("pricing boundary has a different owner or version")
+        cache[manifest_key] = manifest
+    elif retained is not None:
+        retained.ledger.record("manifest_reuses")
+    return cache[manifest_key]
+
+
 def _rows(root, source, kind, adjustment, cache, retained=None):
     # Only the selected physical payload is opened. Alias equality and source
     # validation belong to the downloader, not to this consumer.
@@ -252,32 +287,14 @@ def _rows(root, source, kind, adjustment, cache, retained=None):
     if held is not None:
         cache[rows_key] = held[adjustment]
         return cache[rows_key]
-    relative = boundary["manifest"]
-    manifest_path = _selected_path(cache, root, relative)
-    manifest_key = "selected_manifest", manifest_path, source["symbol"], kind, boundary["sha256"]
-    if manifest_key not in cache:
-        manifest = (
-            retained.document(manifest_path, boundary["sha256"])
-            if retained is not None
-            else read_document(manifest_path)
-        )
-        if (
-            manifest.get("schema_version") not in SUPPORTED_VERSIONS
-            or manifest.get("symbol") != source["symbol"]
-            or manifest.get("boundary") != "alpaca_pricing_" + kind
-        ):
-            raise StandaloneReaderError("pricing boundary has a different owner or version")
-        cache[manifest_key] = manifest
-    elif retained is not None:
-        retained.ledger.record("manifest_reuses")
-    manifest = cache[manifest_key]
+    manifest = _pricing_manifest(root, source, kind, cache, retained)
     entry = next(item for item in manifest["adjustments"] if item["adjustment"] == adjustment)
     if entry["storage"] == "empty":
         cache[rows_key] = ()
         return cache[rows_key]
     if entry["storage"] not in {"file", "exact_copy"}:
         raise StandaloneReaderError("unsupported pricing storage selection")
-    relative = str(PurePosixPath(relative).parent / entry["file"])
+    relative = str(PurePosixPath(boundary["manifest"]).parent / entry["file"])
     payload = _selected_path(cache, root, relative)
     payload_key = "selected_payload", payload, entry["sha256"]
     if payload_key not in cache:

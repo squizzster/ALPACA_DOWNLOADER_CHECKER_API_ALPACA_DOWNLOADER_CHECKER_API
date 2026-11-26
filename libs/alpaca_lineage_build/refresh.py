@@ -24,7 +24,7 @@ from .completed_corrections import covers_selected_advance
 from .context import HistoryScope, accept_context, recover_and_accept_correlation_policy
 from .pipeline import run_lineage
 from .selection import pricing_group_keys
-from .work_contract import acquisition_fingerprint
+from .work_contract import acquisition_fingerprint, correction_satisfied
 
 
 @traced("required_history")
@@ -48,6 +48,14 @@ def refresh_required_history(store, *, pricing_client, work_policy, end_date, co
             continue
         try:
             indexed = work_policy.index["symbols"].get(symbol, {})
+            if (
+                indexed.get("source_sha256")
+                and indexed["source_sha256"] == work_policy.history_approved.get(symbol)
+                and correction_satisfied(
+                    item, indexed["source_sha256"], indexed.get("projection", {}).get("history_correction_id")
+                )
+            ):
+                continue  # Discovery lineage already consumed the completed pricing advance.
             if progress:
                 progress("required_history", {"symbol": symbol, "state": "checking"})
             selected = check_retained_source(

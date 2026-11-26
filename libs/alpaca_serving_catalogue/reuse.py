@@ -224,12 +224,18 @@ def select_prefixes(group, previous, inputs, offsets, *, rebuild_projection=Fals
             if prefix is not None:
                 prefix["previous_publication"] = prior_group["decision_generation"]
                 prefixes[record["public_id"]] = prefix
+    from .equal_partitions import select as equal_partition_prefixes
     from .source_revision import select_revisions
 
     # Numerical and membership handoffs for original source rows cannot lend
     # their outcomes to an identity whose immutable dated payload changed.
     skipped = set(prefixes) | changed | intervals.keys()
-    for selector in (select_revisions, _dated_market_prefixes, _relabelled_whole_donors):
+    for selector in (
+        select_revisions,
+        _dated_market_prefixes,
+        equal_partition_prefixes,
+        _relabelled_whole_donors,
+    ):
         more = selector(group, previous, inputs, offsets, skipped)
         prefixes.update(more)
         skipped.update(more)

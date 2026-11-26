@@ -282,6 +282,7 @@ def finish_correlated_group(
     completion=None,
     dated_labels=None,
     mapping_cache=None,
+    prepare_only=False,
 ):
     """Consume completed correlation and retained choices under the owning locks.
 
@@ -360,6 +361,7 @@ def finish_correlated_group(
             retained_choices=retained_choices,
             invalidated_scopes=affected,
             instant_keys=completion.setdefault("instant_keys", {}),
+            **({"equality_outcomes": completion["equal_bundles"]} if "equal_bundles" in completion else {}),
             **label_options,
         )
         completion["numerical"] = reports, dict(mapping_corrections)
@@ -429,8 +431,11 @@ def finish_correlated_group(
                 expanded_prefixes=tuple(completion.get("expanded_prefixes", ())),
             )
             completion["publication"] = publication.__dict__
+        publication = CompletedGroupPublication(**completion["publication"])
+        if prepare_only:
+            return publication
         return publish_completed_group(
-            CompletedGroupPublication(**completion["publication"]),
+            publication,
             acquisition_waves=acquisition_waves,
             checks=checks,
             graph=graph,
@@ -692,6 +697,8 @@ def process_group(
             checks = services.read_checks(store, locked)
             sources = services.current_sources(store, locked, known=index["symbols"])
             selected = {name: storage.document_digest(source) for name, source in sources.items()}
+            if work_policy is not None:
+                work_policy.recover_continued_advances(sources, selected)
             if retained_recovery is not None:
                 retained_recovery.accept_sources(group, selected)
             # A returned publication is authoritative. A later acknowledgement
@@ -2041,7 +2048,9 @@ def process_group(
                                     inputs[seed], prior, root, assignment_boundaries
                                 )
                         scoped_memberships = (
-                            services.scoped_identity_memberships(choice_prefix_sources, old_boundaries)
+                            services.scoped_identity_memberships(
+                                choice_prefix_sources, old_boundaries, inputs=inputs
+                            )
                             if historical_lineage
                             else {}
                         )
@@ -2080,7 +2089,9 @@ def process_group(
                                     )
                                     if kind not in old_boundaries[name]:
                                         old_boundaries[name].update(read_boundaries(prior, kinds={kind}))
-                            memberships = services.scoped_identity_memberships(resumed_previous, old_boundaries)
+                            memberships = services.scoped_identity_memberships(
+                                resumed_previous, old_boundaries, inputs=inputs
+                            )
                             for name, view in inputs.items():
                                 if name not in resumed_previous:
                                     continue

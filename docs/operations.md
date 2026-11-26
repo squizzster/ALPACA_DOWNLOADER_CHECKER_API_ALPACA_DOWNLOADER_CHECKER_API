@@ -158,6 +158,33 @@ prices, rerun correlation or numerical selection, or rebuild assignment projecti
 prepared outputs block publication. The same generation and mapping checks apply. Selected serving maintenance
 follows publication; generate a new selected [CSV export](exports.md#per-identity-csv-export) to consume it.
 
+For a newly authorized assessment, prepare one selected complete group against its current publication:
+
+```bash
+./alpaca-cli-eod lineage prepare-recovery --store data_pricing --symbol LABEL --output /tmp/recovery.pending.json
+```
+
+This writes an unapproved candidate outside the store. It uses the accepted pricing and metadata from the
+selected group. Add `--observe-market-evidence` to acquire missing, rule-selected SIP/OTC trade observations
+and literal raw bars at the selected ownership boundaries. Successful responses, empty results and entitlement
+denials keep their actual request scopes. A temporary authenticated checkpoint beside the output carries
+completed requests through an interruption. Retrying a completed preparation with the same path, scope and
+mode checks selector applicability before returning the existing output.
+
+For an identity whose old and new selections each cover the same complete eight-view session grid, the
+candidate records the dates when its winning pricing source changes. The original numerical selector's
+complete-bundle equality can carry the prior serving result across those dates. The packet carries the
+selected native values for the remaining changed dates so serving can validate them directly. Identity
+and label changes outside that numerical scope remain visible in the complete group comparison. If the
+labels change while multiple contributing pricing sources keep every selected date, serving consumes a
+dated market projection and retains its prior numerical result.
+
+Review the candidate's `comparison.public_change_intervals`, the complete-group dimensions in
+`comparison.comparison`, and the candidate receipts against the selected baseline. When the result is
+supported, save a reviewed copy with `review.version` set to `1`, `review.status` set to `approved`
+and the reviewer's conclusion in `review.conclusion`. Pass that copy to `lineage recover --selection`.
+Preparation leaves pricing, lineage and serving publications in place until a reviewed recovery runs.
+
 For a diagnosed numerical-source conflict with accepted ownership, use the same commands with an
 `alpaca_lineage_numerical_recovery` selection, schema version 1 and mode `numerical_only`.
 The [numerical-only contract](technical-contracts.md#numerical-only-completion) defines the exact group,

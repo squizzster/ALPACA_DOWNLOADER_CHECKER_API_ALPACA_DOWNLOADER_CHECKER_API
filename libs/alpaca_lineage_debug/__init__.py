@@ -1,6 +1,6 @@
 """Read-only lineage research and visibility; production publication is separate."""
 
-VERSION = 27
+VERSION = 28
 SCHEMA_VERSION = 1
 
 
@@ -23,6 +23,11 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (28, 27, 111, 130):
+        # Completed comparisons keep their original policy and group generations.
+        binding = {**binding, "debug": 27, "correlation_runtime": 110, "lineage_runtime": 129}
+        bindings.append(binding)
+        current = (27, 27, 110, 129)
     if allow_previous and current == (27, 27, 110, 129):
         binding = {**binding, "correlation_runtime": 109, "lineage_runtime": 128}
         bindings.append(binding)

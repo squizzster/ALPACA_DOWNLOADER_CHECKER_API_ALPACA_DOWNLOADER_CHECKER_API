@@ -25,6 +25,50 @@ from libs.alpaca_serving_catalogue.producer import maintain
 
 
 class ChangeHandoffTests(unittest.TestCase):
+    def test_partition_transfer_does_not_read_descriptors_for_stale_or_different_positions(self):
+        from types import SimpleNamespace
+
+        from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+        from libs.alpaca_serving_catalogue.equal_partitions import select
+
+        def source(generation, runs):
+            return {
+                "pricing_generation": generation,
+                "views": {
+                    mode: {
+                        "rows": 3,
+                        "ownership": [
+                            {"rows": size, "owner": [pid, ["OLD"] if pid else None]} for size, pid in runs
+                        ],
+                    }
+                    for mode in ADJUSTMENTS
+                },
+            }
+
+        old = source("old", [(2, "one"), (1, None)])
+        new = source("new", [(1, None), (2, "one")])
+        released = source("old", [(3, None)])
+        group = SimpleNamespace(equal_pricing_partition=lambda *_: self.fail("unselected manifest read"))
+        previous = [
+            {
+                "policy": policy.policy(),
+                "history_validation": {
+                    "inputs": {"OLD": old},
+                    "identities": {"one": dict.fromkeys(ADJUSTMENTS, extend_coverage({"OLD"}))},
+                    "prefix_records": [{"public_id": "one"}],
+                },
+            }
+        ]
+        offsets = {
+            name: {view: {"completed_years": 0, "current_year": 3, "current_month": 3} for view in ADJUSTMENTS}
+            for name in ("OLD", "NEW")
+        }
+        inputs = {"OLD": released, "NEW": new}
+        self.assertEqual(select(group, previous, inputs, offsets, set()), {})
+        inputs["NEW"] = old
+        inputs["OLD"] = {**released, "pricing_generation": "replacement"}
+        self.assertEqual(select(group, previous, inputs, offsets, set()), {})
+
     def test_replacement_span_survives_subsequent_append_and_unchanged_publications(self):
         first = {"history_changes": [], "publication": 0}
         token = digest(json_bytes(first))
@@ -78,7 +122,7 @@ class IncrementalServingTests(NativeCase):
 
             self.publish_change(connect, symbol)
 
-    def connect_alias(self, *, winner="TEST"):
+    def connect_alias(self, *, winner="TEST", label="TEST"):
         entries = lineage_storage.read_index(self.root)["symbols"]
         sources = {name: entries[name]["source_sha256"] for name in ("TEST", "ALIAS")}
         for symbol in sources:
@@ -90,7 +134,7 @@ class IncrementalServingTests(NativeCase):
                     for entry in boundary["adjustments"]:
                         for segment in entry["segments"]:
                             segment["security_identity"]["security_id"] = "e" * 64
-                            segment["historical_symbol"] = "TEST"
+                            segment["historical_symbol"] = label
                             segment["observation_tickers"] = [segment["historical_symbol"]]
                             segment["observation_selection"] = (
                                 "selected" if receipt["symbol"] == winner else "superseded"
@@ -507,6 +551,74 @@ class IncrementalServingTests(NativeCase):
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["reused_history_prefixes"], 1)
         self.assert_full_agreement("TEST")
+
+    def test_equal_partition_source_replacement_reuses_every_view_and_relabels(self):
+        from alpaca_end_of_day import _standalone_group
+        from libs.alpaca_lineage_build import recovery_handoffs
+
+        self.add_symbol("ALIAS")
+        self.connect_alias()
+        self.bootstrap()
+        self.connect_alias(winner="ALIAS", label="EARLY")
+        manifests = []
+        read = _standalone_group._pricing_manifest
+
+        def selected(root, source, kind, cache, retained):
+            manifests.append((source["symbol"], kind))
+            return read(root, source, kind, cache, retained)
+
+        with (
+            recovery_handoffs.operation(self.store),
+            patch.object(_standalone_group, "_pricing_manifest", side_effect=selected),
+            patch.object(standalone, "_rows", side_effect=AssertionError("equal history reopened")),
+            patch.object(_standalone_group, "_rows", side_effect=AssertionError("accepted dates reopened")),
+            patch.object(policy, "_bar_reasons", side_effect=AssertionError("equal values checked")),
+        ):
+            with patch.object(policy, "_metadata", side_effect=OSError("interrupted after prefix preparation")):
+                interrupted = maintain(self.store)
+            self.assertFalse(interrupted["complete"])
+            self.assertEqual(sorted(manifests), [("ALIAS", "current_month"), ("TEST", "current_month")])
+            manifests.clear()
+            result = maintain(self.store)
+            self.assertTrue(result["complete"], result)
+            self.assertEqual(result["checked_bars"], 0)
+            self.assertEqual(result["full_history_evaluations"], 0)
+            self.assertEqual(result["reused_history_prefixes"], 1)
+            self.assertFalse(manifests, "retry reopened the completed logical descriptors")
+            self.assertTrue(maintain(self.store)["complete"])
+            self.assertFalse(manifests)
+        data = DataLibrary(store=self.store)
+        (match,) = data.resolve_ticker("EARLY", on="2026-10-05")
+        self.assertEqual(match.public_id, "e" * 64)
+        (security,) = data.list_securities()
+        self.assertEqual(security.stored_session_count, len(self.bars))
+
+    def test_one_unmatched_adjusted_partition_keeps_the_new_source_unvalidated(self):
+        from alpaca_end_of_day import _standalone_group
+
+        self.add_symbol("ALIAS")
+        self.connect_alias()
+        self.bootstrap()
+        self.connect_alias(winner="ALIAS")
+        original = _standalone_group._pricing_manifest
+
+        def changed(root, source, kind, cache, retained):
+            manifest = original(root, source, kind, cache, retained)
+            if source["symbol"] == "ALIAS":
+                return {
+                    **manifest,
+                    "adjustments": [
+                        {**item, "logical_sha256": "f" * 64} if item["adjustment"] == "all" else item
+                        for item in manifest["adjustments"]
+                    ],
+                }
+            return manifest
+
+        with patch.object(_standalone_group, "_pricing_manifest", side_effect=changed):
+            result = maintain(self.store)
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["full_history_evaluations"], 1)
+        self.assertEqual(result["checked_bars"], len(self.bars) * 8)
 
     def test_overlapping_sources_reuse_only_when_historical_selection_is_preserved(self):
         def low(rows):

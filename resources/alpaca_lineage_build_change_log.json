@@ -762,5 +762,14 @@
       "On a fresh Q-suffixed OTC issue with a mapped historical listed-tape trade and no stronger native identifier, admit a former ticker only after its returned cash dividend and exact CUSIP lookup identify the same terminal equity. Carry completed search outcomes and cover only missing action dates.",
       "For a freshly selected retired listed equity with a cash merger and a zero-activity final daily bar on its effective date, retain one bounded latest SIP trade observation alongside the native acquiree and consideration."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve accepted dated UUID memberships when carrying closed assignments and continuing a selected source. Disjoint public-identity intervals retain their own scope.",
+      "Carry an applicable completed full pricing correction and its empty dependency suffix into the pricing owner when independent coverage still needs to advance.",
+      "Record each unfinished workflow item's required and published coverage, obligation, correction and pricing generation in its durable outcome and daily report, using the selected completion boundary.",
+      "Prepare the canonical producer's lineage receipts and changed boundaries for a selected group, carrying bounded native market observations and the complete comparison into review and generation-bound installation.",
+      "Carry complete-bundle equality, newly selected observations and label-only changes from canonical preparation to serving under their actual source and receipt generations."
+    ]
   }
 ]

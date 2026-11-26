@@ -1,6 +1,8 @@
+from bisect import bisect_right
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from operator import attrgetter, itemgetter
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -202,6 +204,16 @@ class _CorrelatedRow:
     decision: _RowDecision
 
 
+def _dated_membership(periods, day):
+    """Return the local accepted component and the last day of this selection."""
+    stop = bisect_right(periods, day, key=itemgetter(0))
+    if stop:
+        _, last, identity = periods[stop - 1]
+        if day <= last:
+            return identity, last
+    return None, periods[stop][0] - timedelta(days=1) if stop < len(periods) else None
+
+
 def _parse_session_date(timestamp: object, row_number: int) -> tuple[str, date]:
     if not isinstance(timestamp, str):
         raise SecurityCorrelationError(f"row {row_number}: timestamp is not a string")
@@ -389,6 +401,7 @@ class CorrelationCache:
         self._sourced_successions = {}
         self._source_work = {}
         self.accepted_identity_memberships = {}
+        self.accepted_dated_identity_memberships = {}
         self.accepted_current_source_ownership = {}
         self.retained_split_suffixes = set()
         self.accepted_same_ticker_distributions = {}
@@ -2143,18 +2156,26 @@ def correlate_download_rows(
         )
 
     branches = {CORRELATED_BRANCH: list(established_segments), UNCORRELATED_BRANCH: []}
+    uniform_memberships = cache.accepted_identity_memberships.get(requested_symbol, {}) if cache else {}
+    dated_memberships = cache.accepted_dated_identity_memberships.get(requested_symbol, {}) if cache else {}
     segment_start = 0
     while segment_start < len(correlated_rows):
-        decision = correlated_rows[segment_start].decision
+        first_row = correlated_rows[segment_start]
+        decision = first_row.decision
         grouping_key = decision.grouping_key()
         segment_end = segment_start + 1
+        stop = len(correlated_rows)
+        accepted_identity = uniform_memberships.get(decision.asset_id)
+        if periods := dated_memberships.get(decision.asset_id):
+            accepted_identity, through = _dated_membership(periods, first_row.session_date)
+            if through is not None and through < correlated_rows[-1].session_date:
+                stop = bisect_right(correlated_rows, through, lo=segment_end, key=attrgetter("session_date"))
         while (
-            segment_end < len(correlated_rows)
+            segment_end < stop
             and correlated_rows[segment_end].row_number == correlated_rows[segment_end - 1].row_number + 1
             and correlated_rows[segment_end].decision.grouping_key() == grouping_key
         ):
             segment_end += 1
-        first_row = correlated_rows[segment_start]
         last_row = correlated_rows[segment_end - 1]
         segment = _segment_source(source, first_row, last_row)
         segment["correlation_rule"] = {
@@ -2189,11 +2210,6 @@ def correlate_download_rows(
             )
             historical_symbol = decision.historical_symbol or (
                 decision.interval.historical_symbol if decision.interval is not None else requested_symbol
-            )
-            accepted_identity = (
-                cache.accepted_identity_memberships.get(requested_symbol, {}).get(decision.asset_id)
-                if cache is not None
-                else None
             )
             # A dated UUID selection does not revoke that UUID's completed public
             # membership. The continuation owner supplied this applicable handoff;

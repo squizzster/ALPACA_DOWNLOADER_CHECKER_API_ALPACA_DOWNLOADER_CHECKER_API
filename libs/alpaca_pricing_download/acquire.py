@@ -93,6 +93,7 @@ def acquire_selected(
     dated_route=None,
     lineage_generations=None,
     group_keys=None,
+    continued_correction_advance=None,
 ):
     """Only selected labels open manifests; completed requests win over acknowledgements."""
     # First/latest all is the sole retained-history acceptance boundary, including
@@ -111,6 +112,7 @@ def acquire_selected(
     needs, selected_generations, results, retained, empty = [], {}, [], {}, []
     append_sources = {}
     endpoint_selections = {}
+    corrected_appends, observed_empty = {}, set()
 
     def select_endpoints(root, symbol, source):
         accepted = context.endpoint_selections.get(symbol)
@@ -226,17 +228,26 @@ def acquire_selected(
                     }
                 )
                 continue
-            if (
-                select_append_work
-                and source
-                and not extending
-                and (symbol not in invalidate or accepted_evidence)
-            ):
+            retained_mapping = (
+                source is not None and not extending and (symbol not in invalidate or accepted_evidence)
+            )
+            continuation = (
+                continued_correction_advance(root, source, selected_generations[symbol], end.date().isoformat())
+                if retained_mapping and symbol not in invalidate and continued_correction_advance
+                else None
+            )
+            if select_append_work and retained_mapping and not continuation:
                 # The suffix producer selects whether retained history is needed.
                 # Keep validators closed until it returns nonempty or fails.
                 append_sources[symbol] = source
                 continue
+            generation = selected_generations[symbol]
             source, endpoints = select_endpoints(root, symbol, source)
+            if continuation and selected_generations[symbol] == generation:
+                corrected_appends[symbol] = append.SelectedAppendEntry(source, endpoints)
+                if continuation == "completed_empty_suffix":
+                    observed_empty.add(symbol)
+                continue
         if source and not extending and (symbol not in invalidate or accepted_evidence):
             # Retain this coherent selection for batched ordinary endpoint checks.
             # Empty ranges use the existing incremental covered-range path.
@@ -470,10 +481,19 @@ def acquire_selected(
                     {"completed": len(results), "selected": len(selected_generations), **results[-1]},
                 )
         del consumer
-    if empty:
+    for symbol in sorted(observed_empty):
+        try:
+            result = append.publish_observed_empty_append(
+                store, corrected_appends[symbol], end, selected_generations[symbol], endpoint_selections[symbol]
+            )
+            results.append({**result, "continued_correction_advance": True})
+        except (RuntimeError, OSError, ValueError) as error:
+            results.append({"symbol": symbol, "status": "failed", "outcome": failure_outcome(error)})
+    pending_appends = [*empty, *(item for name, item in corrected_appends.items() if name not in observed_empty)]
+    if pending_appends:
         extended = append_entries(
             store,
-            empty,
+            pending_appends,
             end_date,
             client=client,
             workers=workers,
@@ -487,8 +507,12 @@ def acquire_selected(
         for item in extended["results"]:
             if item.get("outcome", {}).get("outcome") == "access_denied":
                 item["status"] = "blocked"
+            if item["symbol"] in corrected_appends and item.get("source_sha256"):
+                item["continued_correction_advance"] = True
             results.append(item)
-        metrics["empty_coverage_append"] = extended["requests"]
+        metrics["approved_coverage_append" if corrected_appends else "empty_coverage_append"] = extended[
+            "requests"
+        ]
     for selected in _endpoint_cohorts(retained):
         buffered = {symbol: value for symbol, value in selected.items() if value[1] is not None}
         completed = set()

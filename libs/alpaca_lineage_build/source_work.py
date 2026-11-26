@@ -14,7 +14,7 @@ from libs.alpaca_security_lineage.inference_evidence import provider_evidence, r
 
 from . import source_observations, storage
 from .assignment_handoff import produce, selected
-from .continuation import identity_memberships
+from .continuation import membership_candidates, scoped_identity_memberships
 from .contract import COMPUTATION_REVISION, VERSION, LineageError, document_digest, versions
 from .numerical_mapping import PendingNumericalWork
 from .observation_carry import membership_choices
@@ -295,11 +295,11 @@ def _prepare_group_evidence_and_source_work(controls, evidence, auxiliary, *, ca
     reject_assertions(evidence, where="source-work provider evidence")
     reject_assertions(auxiliary, where="source-work auxiliary evidence")
     applicability = cache.setdefault("owner_applicability", {})
-    candidates = {}
-    for control in controls.values():
-        for identity in (control.previous or {}).get("identity_memberships", ()):
-            for identifier in identity["member_alpaca_asset_ids"]:
-                candidates.setdefault(identifier, {})[identity["security_id"]] = identity
+    candidates = membership_candidates(
+        identity
+        for control in controls.values()
+        for identity in (control.previous or {}).get("identity_memberships", ())
+    )
     # Each source keeps its own accepted component. Incomparable peer scopes do
     # not manufacture a new union merely because they contain a common UUID.
     memberships = {
@@ -335,24 +335,16 @@ def _prepare_group_evidence_and_source_work(controls, evidence, auxiliary, *, ca
 
 def closed_source(control, plan):
     scoped_membership = bool(plan.membership_refinement and plan.membership_refinement["changes"])
-    memberships = (
-        {
-            identifier: identity
-            for identity in control.previous["identity_memberships"]
-            for identifier in identity["member_alpaca_asset_ids"]
-        }
-        if scoped_membership
-        else plan.memberships
-        if plan.dispositions[control.symbol] == "A"
-        else {
-            **plan.memberships,
-            **{
-                identifier: identity
-                for identity in control.previous["identity_memberships"]
-                for identifier in identity["member_alpaca_asset_ids"]
-            },
-        }
-    )
+    memberships = plan.memberships
+    if scoped_membership or plan.dispositions[control.symbol] != "A":
+        memberships = {} if scoped_membership else dict(memberships)
+        for member, owners in membership_candidates(control.previous["identity_memberships"]).items():
+            if len(owners) == 1:
+                memberships[member] = next(iter(owners.values()))
+            else:
+                # The old segment and observation route already identify their
+                # public owner. A closed adapter never needs a dated lookup.
+                memberships.pop(member, None)
     report = None if scoped_membership else getattr(control, "accepted_report", None)
     if report is None:
         report = (plan.prepared_reports or {}).get(control.symbol)
@@ -473,7 +465,7 @@ def project_closed_source(view, evidence, plan, policy, root, cache):
     }
     memberships = view.accepted_identity_memberships
     id_map = {
-        identity["security_id"]: memberships[identity["member_alpaca_asset_ids"][0]]
+        identity["security_id"]: memberships.get(identity["member_alpaca_asset_ids"][0], identity)
         for identity in prior.get("identity_memberships", ())
     }
     changes = {old: identity for old, identity in id_map.items() if old != identity["security_id"]}
@@ -548,7 +540,10 @@ def accepted_report(view, plan, root, cache):
     """Selected peer report assembly, only when the evaluator consults it."""
     if view.accepted_report is not None:
         return view.accepted_report
-    view.accepted_report = retained_ownership_report(view.previous, view.local, plan.memberships, root, cache)
+    memberships = getattr(view, "accepted_identity_memberships", None)
+    view.accepted_report = retained_ownership_report(
+        view.previous, view.local, plan.memberships if memberships is None else memberships, root, cache
+    )
     return view.accepted_report
 
 
@@ -650,7 +645,7 @@ def retained_ownership_report(prior, local, memberships, root, cache, *, kinds=N
 
 def retain_split_suffix(view, prior, root, assignment_cache):
     """Carry the accepted later rows and membership into a selected prefix review."""
-    memberships = identity_memberships({view.symbol: prior}, {})
+    memberships = scoped_identity_memberships({view.symbol: prior}, {}, inputs={view.symbol: view})[view.symbol]
     return RetainedSplit(
         prior["current_source_ownership"],
         retained_ownership_report(prior, view.local, memberships, root, assignment_cache),

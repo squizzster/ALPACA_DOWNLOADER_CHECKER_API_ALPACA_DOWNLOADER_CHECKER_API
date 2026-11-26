@@ -652,5 +652,10 @@
     "modifications": [
       "Attribute observed former ticker occupations using native cash dividends or stock-paying acquirers, exact CUSIP identity, distinct ticker reuse and supporting provider price histories."
     ]
+  },
+  {
+    "modifications": [
+      "Apply a source's dated accepted identity membership when resolving a continuing observation and preserve its earlier frozen identity assignments."
+    ]
   }
 ]

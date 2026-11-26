@@ -657,6 +657,7 @@ def histories_locked(
     )
     result["stages"]["maintenance"] = initial_maintenance
     acquisition_groups = {}
+    summarized = {entry["symbol"] for entry in (context.summary or accepted["summary"])["entries"]}
     for symbol, item in work.items():
         # Missing members accepted only through dependency expansion need
         # group context. There the lineage owner can distinguish an exact
@@ -666,8 +667,20 @@ def histories_locked(
             and bool(set(item.get("required_group", ())) - {symbol})
             and auxiliary_work(item)
         )
-        if item["acquire"] and not lineage_owned_auxiliary and policy.allowed({symbol}):
-            acquisition_groups.setdefault(pricing_target(item), []).append(symbol)
+        target = pricing_target(item)
+        projection = policy.index["symbols"].get(symbol, {}).get("projection", {})
+        lost_summary_advance = (
+            symbol not in summarized
+            and item.get("required_history_check")
+            and "advance_summary_coverage" in item.get("reasons", ())
+            and projection.get("processed_through", target)[:10] < target
+        )
+        if (
+            (item["acquire"] or lost_summary_advance)
+            and not lineage_owned_auxiliary
+            and policy.allowed({symbol})
+        ):
+            acquisition_groups.setdefault(target, []).append(symbol)
     pricing = {"results": [], "requests": {}, "failed": 0}
     acquisition_route = None
     if acquisition_groups:
@@ -695,14 +708,15 @@ def histories_locked(
             dated_route=dated_route_selector(acquisition_index),
             lineage_generations=acquisition_lineage_generations,
             group_keys=pricing_group_keys(acquisition_index, symbols),
+            continued_correction_advance=policy.continued_correction_advance,
         )
         pricing["results"].extend(value["results"])
         pricing["requests"][target] = value["requests"]
         pricing["failed"] += value["failed"]
     result["stages"]["acquisition"] = pricing
     policy.record_results(pricing, stage="acquisition")
+    policy.accept_continued_advances(pricing["results"])
     failed_symbols = {s for s in work if not policy.allowed({s})}
-    summarized = {entry["symbol"] for entry in accepted["summary"]["entries"]}
     changed_sources = {
         item["symbol"]: item["source_sha256"]
         for item in pricing["results"]
@@ -862,7 +876,7 @@ def histories_locked(
             else:
                 unfinished.append(symbol)
     if unfinished:
-        policy.fail(unfinished, {"reason": "required pricing or lineage not complete"}, stage="completion")
+        policy.fail_unfinished(unfinished, index["symbols"], pending)
     result["failures"] = [*policy.failures, *policy.command_failures]
     result["pending_work"] = universe_state.count_pending(store)
     # Workflow owns failed symbol obligations; command owners record failures

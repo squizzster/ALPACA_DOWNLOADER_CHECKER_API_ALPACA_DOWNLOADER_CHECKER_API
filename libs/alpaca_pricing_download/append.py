@@ -35,7 +35,7 @@ from .download import (
 from .endpoints import endpoints_of, session_extent
 from .handoff import load_published_boundary
 from .history_tail import assemble_legacy_tail
-from .responses import completed_bars
+from .responses import CompletedBars, completed_bars
 from .storage import load_source, read_validator, recover, regular_path, ticker_lock, trace_source_selection
 
 # Bound provider work, not just URL length. A valid but oversized request can
@@ -46,8 +46,26 @@ MAX_SYMBOLS = 2000
 MAX_ROWS = 200000  # Bound acquired rows across eight views per publication cohort.
 
 
+class SelectedAppendEntry(dict):
+    """Coverage and last observation from pricing's selected source and accepted validator."""
+
+    def __init__(self, source, endpoints):
+        if endpoints is None or endpoints.tail_all is None:
+            raise DownloadError(f"{source['symbol']}: correction advance requires its published comparison tail")
+        request = source["latest_request"]
+        rows = endpoints["all"]
+        super().__init__(
+            symbol=source["symbol"],
+            asof=request["asof"],
+            end_exclusive=request["end_exclusive"],
+            last_all=rows[-1] if rows else None,
+        )
+
+
 def _validate_append_entry(entry):
-    """Accept the active-summary row or an internal empty-source baseline."""
+    """Accept published coverage or validate an ordinary append baseline."""
+    if isinstance(entry, SelectedAppendEntry):
+        return entry["symbol"], entry["asof"], timestamp(entry["end_exclusive"]), entry["last_all"]
     if entry.get("last_all") is not None:
         symbol, asof, end, row, _ = (
             entry.serialized if isinstance(entry, AcceptedEntry) else validate_entry(entry)
@@ -279,6 +297,16 @@ def _publish_append(
             "pending_update": written["pending_update"],
             "adjustment_acquisition": adjustment_acquisition.proof if adjustment_acquisition else None,
         }
+
+
+def publish_observed_empty_append(store, entry, target, generation, endpoints):
+    """Publish independently required coverage from the selected all-view empty suffix."""
+    symbol, need, _ = _append_need(entry, target)
+    start = timestamp(need["ranges"][0]["start"])
+    bars = {name: CompletedBars(symbol, name, start, target, need["asof"], ()) for name in ADJUSTMENTS}
+    return _publish_append(
+        store, entry, need, bars, approved_source_sha256=generation, endpoint_selection=endpoints
+    )
 
 
 @traced("pricing_append_entries")

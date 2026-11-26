@@ -15,7 +15,8 @@ from libs.alpaca_security_lineage.inference_evidence import reject_assertions
 from . import storage
 from .assignment_handoff import accept_observation_choices, selected
 from .continuation import validate_handoff
-from .contract import COMPUTATION_REVISION, LineageError
+from .contract import COMPUTATION_REVISION, LineageError, document_digest
+from .correlation_policy_contract import valid_sha256
 from .retained_recovery import RECOVERY_BOUNDARY, accept_selection
 
 CANDIDATE_BOUNDARY = "alpaca_retained_candidate_handoff"
@@ -30,6 +31,7 @@ class PreparedCandidate:
     policy: dict
     assignments: dict
     observations: object = None
+    execution_sha256: str | None = None
 
 
 _ASSERTED_OUTPUTS = (
@@ -126,6 +128,24 @@ def accept_candidate(value, store):
         store,
     )
     group = selection.groups[0]
+    preparation = value.get("preparation")
+    execution = None
+    if preparation is not None:
+        if (
+            not isinstance(preparation, dict)
+            or preparation.get("operation_id") != group.operation_id
+            or not valid_sha256(preparation.get("execution_sha256"))
+            or type(preparation.get("market_evidence")) is not bool
+        ):
+            raise LineageError("invalid canonical candidate preparation scope")
+        execution = preparation["execution_sha256"]
+        marker = preparation
+        if "output_generation" in value:
+            if not valid_sha256(value["output_generation"]):
+                raise LineageError("invalid canonical candidate output generation")
+            marker = {"preparation": preparation, "output_generation": value["output_generation"]}
+        group = replace(group, operation_id=document_digest(marker))
+        selection = replace(selection, groups=(group,))
     receipts, boundaries, previous = (
         value.get("candidate_receipts"),
         value.get("candidate_boundaries"),
@@ -191,7 +211,10 @@ def accept_candidate(value, store):
             raise LineageError("prepared selected observations require one completed source revision")
         observations = accept(value["selected_observation_bundles"], next(iter(revisions.values())))
     return replace(
-        selection, prepared=PreparedCandidate(receipts, boundaries, previous, provenance, accepted, observations)
+        selection,
+        prepared=PreparedCandidate(
+            receipts, boundaries, previous, provenance, accepted, observations, execution
+        ),
     )
 
 
@@ -293,6 +316,11 @@ def publish_prepared(selection, context, *, progress=None, accepted_inputs=None,
     with storage.writer_lock(store, accepted_store=context.accept_store()) as root:
         recovered = context.recover_lineage(root)
         policy = context.accept_correlation_policy()
+        if (
+            prepared.execution_sha256 is not None
+            and context.accept_ruleset().execution_sha256 != prepared.execution_sha256
+        ):
+            raise LineageError("canonical producer selection changed from candidate preparation")
         current = policy.provenance()
         if {k: v for k, v in current.items() if k != "file_sha256"} != {
             k: v for k, v in prepared.policy.items() if k != "file_sha256"

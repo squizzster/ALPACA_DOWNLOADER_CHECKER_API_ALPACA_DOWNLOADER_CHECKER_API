@@ -73,11 +73,14 @@ class RetainedLineageRebuildTests(unittest.TestCase):
             )
             for name in ("FUN", "SIX")
         }
+
         # Produce the actual old append failure through the real publication
         # path, then install its unmarked legacy envelope as a synthetic fixture.
-        with patch.object(
-            pipeline, "scoped_identity_memberships", side_effect=lambda previous, _: dict.fromkeys(previous, {})
-        ):
+        def omit_accepted_membership(previous, _boundaries, *, inputs):
+            self.assertEqual(previous.keys(), inputs.keys())
+            return {name: {} for name in previous}
+
+        with patch.object(pipeline, "scoped_identity_memberships", side_effect=omit_accepted_membership):
             case.run_build(symbols=["FUN"], client=client, pricing_handoff=publications)
         self.assertNotEqual(
             case.assignments("FUN")[-1]["security_identity"]["security_id"], accepted["security_id"]

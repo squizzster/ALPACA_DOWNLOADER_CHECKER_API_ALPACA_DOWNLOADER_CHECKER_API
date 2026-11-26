@@ -137,5 +137,10 @@
     "modifications": [
       "Reuse completed lineage comparisons under their recorded bindings after workflow catalogue retention changed."
     ]
+  },
+  {
+    "modifications": [
+      "Preserve completed generic comparisons under their recorded policy and group generations across the dated assignment continuation and recovery changes."
+    ]
   }
 ]

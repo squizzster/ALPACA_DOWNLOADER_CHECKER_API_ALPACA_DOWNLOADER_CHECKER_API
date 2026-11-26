@@ -74,5 +74,10 @@
       "Carry completed trade samples between metadata stages with their feed, ticker, exact dates, mapping and operation-scoped OTC entitlement outcome. Preserve literal single-date, forward OTC and descending dated SIP observations and completed empty or unavailable responses across fresh-group peer failures.",
       "Transport completed CUSIP-filtered action intervals and accepted pagination cursors across metadata stages. Carry completed OTC status-symbol queries across peer interruptions."
     ]
+  },
+  {
+    "modifications": [
+      "Carry generation-bound source membership intervals through the standalone stage transport when a provider UUID spans multiple accepted public identities."
+    ]
   }
 ]

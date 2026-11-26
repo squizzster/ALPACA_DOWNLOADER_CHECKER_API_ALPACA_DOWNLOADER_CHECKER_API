@@ -131,3 +131,49 @@ class WorkBatchTests(unittest.TestCase):
             self.assertEqual(item["attempts"], 1)
             self.assertEqual(item["obligation_id"], self.work[symbol]["obligation_id"])
             self.assertIsNotNone(item["retry_after_utc"])
+
+    def test_unfinished_outcomes_retain_each_selected_scope_without_rechecking_completion(self):
+        work = {
+            symbol: {
+                **self.work[symbol],
+                "pricing_end_exclusive": "2026-10-21",
+                "required_group": ["S0", "S1"],
+                "required_history_check": True,
+                "correction_id": "accepted-correction",
+            }
+            for symbol in ("S0", "S1")
+        }
+        policy = WorkPolicy(self.store, {"symbols": {}}, work, [], "2026-10-21")
+        entries = {
+            "S0": {
+                "source_sha256": "source",
+                "projection": {
+                    "processed_through": "2026-10-20T00:00:00Z",
+                    "history_correction_id": "accepted-correction",
+                    "update_obligation_id": "prior",
+                    "pricing_request": {"history_start": "2016-01-01T00:00:00Z"},
+                },
+            }
+        }
+        policy.history_approved["S0"] = "source"
+        with (
+            patch.object(policy, "satisfying_entry", side_effect=AssertionError("repeated completion check")),
+            patch.object(state, "read_state", side_effect=AssertionError("reopened work")),
+            patch.object(state, "connect_sqlite", wraps=state.connect_sqlite) as connect,
+        ):
+            policy.fail_unfinished(["S0", "S1"], entries, {"S1": "pending", "OUTSIDE": "unrelated"})
+        self.assertEqual(connect.call_count, 2)
+        saved = state.read_state(self.store, symbols=list(work))["work"]
+        reports = {item["symbol"]: item["completion"] for item in policy.failures}
+        for symbol, facts in reports.items():
+            self.assertEqual(facts, saved[symbol]["outcome"]["completion"])
+            self.assertEqual(facts["obligation_id"], work[symbol]["obligation_id"])
+            self.assertEqual(facts["required_end_exclusive"], "2026-10-21")
+            self.assertEqual(facts["required_correction_id"], "accepted-correction")
+            self.assertTrue(facts["required_history_check"])
+            self.assertEqual(facts["pending_lineage_symbols"], ["S1"])
+        self.assertEqual(reports["S0"]["published_through_exclusive"], "2026-10-20T00:00:00Z")
+        self.assertEqual(reports["S0"]["published_correction_id"], "accepted-correction")
+        self.assertEqual(reports["S0"]["approved_history_generation"], "source")
+        self.assertIsNone(reports["S1"]["published_through_exclusive"])
+        self.assertIsNone(reports["S1"]["approved_history_generation"])

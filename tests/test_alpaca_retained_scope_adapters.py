@@ -1,22 +1,27 @@
 """Retained observations and closed memberships keep their producer scopes."""
 
 import copy
+from datetime import date
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
 import test_alpaca_lineage_build as fixture
 import test_alpaca_predecessor_prefix as prefix_fixture
+from test_alpaca_end_of_day_security_correlation import asset, complete_query, correlation_source
+from test_alpaca_pipeline_codec import roundtrip
 from test_alpaca_public_common_continuation import common_fact
 from test_alpaca_security_relations import conversion_fact
 
 from libs.alpaca_end_of_day_security_correlation import correlation, row_correlation
+from libs.alpaca_end_of_day_security_correlation.ownership_interval_rules import TickerOwnershipInterval
 from libs.alpaca_end_of_day_security_correlation.security_identity import security_identity_for_alpaca_assets
 from libs.alpaca_lineage_build import (
     catalogue,
     continuation,
     metadata,
     pipeline,
+    policy_engine,
     pricing,
     resume,
     source_work,
@@ -24,7 +29,7 @@ from libs.alpaca_lineage_build import (
     storage,
     transform,
 )
-from libs.alpaca_lineage_build.contract import LineageError
+from libs.alpaca_lineage_build.contract import LineageError, RecoveryRequired, failure_outcome
 from libs.alpaca_lineage_build.correlation_policy import load_authorized_policy
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_security_lineage import event_supplements, sourced_facts
@@ -129,6 +134,238 @@ def identity(name, members):
 
 
 class SourceMembershipScopeTests(TestCase):
+    def dated_case(self, *, departure="2024-01-12"):
+        first, last = identity("first", ["shared"]), identity("later", ["shared", "new"])
+        route = {
+            "asset_id": "shared",
+            "historical_symbol": "CLOSED",
+            "start_date_inclusive": "2024-01-08",
+            "end_date_exclusive": departure,
+        }
+        local = {
+            "identity_memberships": [first, last],
+            "identity_intervals": [
+                {"security_id": "first", "from": "2024-01-03", "to": "2024-01-04"},
+                {"security_id": "later", "from": "2024-01-08", "to": "2024-01-09"},
+            ],
+            "assignment_summary": {"raw": {"last_session": "2024-01-09"}},
+            "observation_routes": {"later": ["2024-01-09T05:00:00Z", route]},
+        }
+        previous = {"CLOSED": local, "LIVE": {"identity_memberships": [last]}, "PEER": {}}
+        views = {
+            name: pricing.MetadataSourceControl("/test", name, {}, name, {}, prior)
+            for name, prior in previous.items()
+        }
+        members = continuation.scoped_identity_memberships(previous, {}, inputs=views)
+        for name, mapping in members.items():
+            views[name].accepted_identity_memberships = mapping
+        return previous, views
+
+    def test_disjoint_accepted_components_stay_local_and_split_otherwise_identical_row_decisions_on_dates(self):
+        prior, views = self.dated_case()
+        earlier, later = prior["CLOSED"]["identity_memberships"]
+        self.assertNotIn("shared", views["CLOSED"].accepted_identity_memberships)
+        self.assertNotIn("shared", views["PEER"].accepted_identity_memberships)
+        self.assertIs(views["LIVE"].accepted_identity_memberships["shared"], later)
+        self.assertIs(views["PEER"].accepted_identity_memberships["new"], later)
+        with patch.object(
+            continuation, "_source_memberships", side_effect=AssertionError("repeated producer decision")
+        ):
+            views, earlier, later = roundtrip((views, earlier, later))
+        cache = row_correlation.CorrelationCache()
+        policy_engine._register_sources(cache, views)
+        ticker = "CLOSED"
+        issuer = asset("shared", ticker, "Synthetic security")
+        evidence = {
+            "query": complete_query(ticker),
+            "corporate_actions": [],
+            "identities": [issuer],
+            "asset_lookups": [{"lookup": ticker, "lookup_kind": "symbol", "found": True, "asset": issuer}],
+            "symbol_occupancy_evidence": [],
+        }
+        interval = TickerOwnershipInterval(ticker, "111111111", "shared", None, None, ())
+        days = ("03", "04", "05", "08", "09", "10", "11", "12")
+        rows = [{"t": "2024-01-" + day + "T17:00:00Z"} for day in days]
+        result = row_correlation.correlate_download_rows(
+            rows, correlation_source(ticker, asof="2024-01-12"), evidence, [interval], cache=cache
+        )
+        self.assertEqual(result["uncorrelated"], [])
+        parts = result["correlated"]
+        self.assertEqual([(s["row_start"], s["row_end"]) for s in parts], [(1, 2), (3, 3), (4, 7), (8, 8)])
+        self.assertIs(parts[0]["security_identity"], earlier)
+        self.assertIs(parts[2]["security_identity"], later)
+        self.assertEqual(parts[1]["security_identity"], parts[-1]["security_identity"])
+        self.assertNotIn(parts[1]["security_identity"]["security_id"], {"first", "later"})
+        # No owner is manufactured when the ordinary dated row rules cannot
+        # assign a provider UUID, even on an established membership date.
+        no_asset = {
+            "query": complete_query(ticker),
+            "corporate_actions": [],
+            "identities": [],
+            "asset_lookups": [],
+        }
+        unresolved = row_correlation.correlate_download_rows(
+            rows[:1], correlation_source(ticker, asof="2024-01-12"), no_asset, [], cache=cache
+        )
+        self.assertEqual(unresolved["correlated"], [])
+        self.assertEqual(unresolved["uncorrelated"][0]["row_count"], 1)
+
+    def test_open_route_extends_only_the_latest_actual_own_symbol_uuid_observation(self):
+        for changed in (
+            "open",
+            "another_uuid",
+            "another_label",
+            "earlier_observation",
+            "later_other_source_owner",
+        ):
+            with self.subTest(changed=changed):
+                prior, views = self.dated_case(departure=None)
+                source = prior["CLOSED"]
+                route = source["observation_routes"]["later"]
+                if changed == "another_uuid":
+                    route[1]["asset_id"] = "new"
+                elif changed == "another_label":
+                    route[1]["historical_symbol"] = "OTHER"
+                elif changed == "earlier_observation":
+                    route[0] = "2024-01-08T05:00:00Z"
+                elif changed == "later_other_source_owner":
+                    source["assignment_summary"]["raw"]["last_session"] = "2024-01-10"
+                continuation.scoped_identity_memberships(prior, {}, inputs=views)
+                periods = views["CLOSED"].accepted_dated_identity_memberships["shared"]
+                self.assertEqual(periods[-1][1], date.max if changed == "open" else date(2024, 1, 9))
+
+    def test_empty_peer_suffix_never_assembles_old_date_scopes_or_lends_a_conflicted_uuid(self):
+        prior, views = self.dated_case()
+        closed = views["CLOSED"]
+        closed.materialization_scope = "retained_suffix"
+        closed.views = dict.fromkeys(ADJUSTMENTS, ())
+        with patch.object(
+            continuation, "identity_intervals", side_effect=AssertionError("opened closed membership dates")
+        ):
+            memberships = continuation.scoped_identity_memberships(prior, {}, inputs=views)
+            no_closed_input = continuation.scoped_identity_memberships(prior, {}, inputs={"LIVE": views["LIVE"]})
+        self.assertFalse(hasattr(closed, "accepted_dated_identity_memberships"))
+        self.assertNotIn("shared", memberships["CLOSED"])
+        self.assertNotIn("shared", memberships["PEER"])
+        self.assertEqual("later", memberships["LIVE"]["shared"]["security_id"])
+        self.assertEqual(memberships, no_closed_input)
+
+    def test_frozen_positions_and_observation_routes_keep_both_ids_on_every_view(self):
+        previous, views = self.dated_case()
+        prior = previous["CLOSED"]
+        owners = prior["identity_memberships"]
+        prior.update(
+            symbol="CLOSED",
+            anchor_month="2024-01",
+            source_rows=16,
+            evidence_issues=[],
+            row_partition_complete=True,
+            ownership_interval_rule_order=[],
+            row_correlation_rule_order=[],
+        )
+        early = {"asset_id": "shared", "historical_symbol": "CLOSED", "end_date_exclusive": "2024-01-05"}
+        prior["observation_routes"]["first"] = ["2024-01-04T05:00:00Z", early]
+        segments = []
+        for index, (day, owner) in enumerate(zip(("04", "09"), owners, strict=True), 1):
+            session = "2024-01-" + day
+            segments.append(
+                {
+                    "from": session,
+                    "to": session,
+                    "branch": "correlated",
+                    "row_count": 1,
+                    "row_start": index,
+                    "row_end": index,
+                    "security_identity": owner,
+                    "canonical_security": {"security_id": owner["security_id"], "alpaca_asset_id": "shared"},
+                    "historical_symbol": "CLOSED",
+                    "observation_selection": "selected",
+                }
+            )
+        documents = {
+            "current_month": {
+                "adjustments": [{"adjustment": view, "segments": segments} for view in ADJUSTMENTS]
+            }
+        }
+        local = {"downloads": [{"adjustment": view, "file": view + ".gz"} for view in ADJUSTMENTS]}
+        with (
+            patch.object(source_work, "assignment_documents", return_value=documents),
+            patch.object(pricing, "load_pricing", side_effect=AssertionError("opened price history")),
+            patch.object(row_correlation, "_decide_row", side_effect=AssertionError("replayed accepted owner")),
+        ):
+            report = source_work.retained_ownership_report(
+                prior, local, views["CLOSED"].accepted_identity_memberships, None, {}
+            )
+        for view in ADJUSTMENTS:
+            parts = [s for s in report["correlated"]["segments"] if s["adjustment"] == view]
+            self.assertEqual(
+                [
+                    (
+                        p["row_start"],
+                        p["security_identity"]["security_id"],
+                        p["canonical_security"]["security_id"],
+                    )
+                    for p in parts
+                ],
+                [(1, "first", "first"), (2, "later", "later")],
+            )
+            self.assertTrue(all(p["accepted_row_ownership"] for p in parts))
+        self.assertEqual(report["retained_observation_routes"], prior["observation_routes"])
+
+    def test_closed_metadata_projection_preserves_accepted_public_ids_without_opening_assignment_bodies(self):
+        for scope in ("retained", "B", "scoped_refinement"):
+            with self.subTest(scope=scope):
+                previous, views = self.dated_case()
+                prior, control = previous["CLOSED"], views["CLOSED"]
+                first, later = prior["identity_memberships"]
+                control.source = {"boundaries": {}, "latest_request": {"end_exclusive": "2024-01-25T00:00:00Z"}}
+                held = {"correlated": {"segments": [{"security_identity": first}, {"security_identity": later}]}}
+                control.accepted_report = held
+                plan = source_work_contract.SourceWorkPlan(
+                    {"CLOSED": "A" if scope == "scoped_refinement" else scope},
+                    {"shared": later, "new": later},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    False,
+                    prepared_reports={"CLOSED": held},
+                    membership_refinement={"changes": {"other-source": "selected"}}
+                    if scope == "scoped_refinement"
+                    else None,
+                )
+                with (
+                    patch.object(
+                        source_work,
+                        "assignment_documents",
+                        side_effect=AssertionError("opened completed assignments"),
+                    ),
+                    patch.object(pricing, "load_pricing", side_effect=AssertionError("opened accepted prices")),
+                ):
+                    closed = source_work.closed_source(control, plan)
+                    receipt, documents = source_work.project_closed_source(
+                        closed, {}, plan, SimpleNamespace(provenance=lambda: {}), None, {}
+                    )
+                self.assertNotIn("shared", closed.accepted_identity_memberships)
+                self.assertIs(held, closed.accepted_report)
+                self.assertEqual(receipt["identity_memberships"], [first, later])
+                self.assertIs(receipt["observation_routes"], prior["observation_routes"])
+                self.assertIs(receipt["identity_intervals"], prior["identity_intervals"])
+                self.assertEqual(documents, {})
+
+    def test_missing_or_overlapping_selected_date_bounds_use_typed_internal_recovery(self):
+        for kind in ("missing", "overlap"):
+            with self.subTest(kind=kind):
+                previous, views = self.dated_case()
+                if kind == "overlap":
+                    previous["CLOSED"]["identity_intervals"][0]["to"] = "2024-01-08"
+                else:
+                    previous["CLOSED"]["identity_intervals"].pop(0)
+                with self.assertRaisesRegex(RecoveryRequired, "accepted UUID membership is ambiguous") as raised:
+                    continuation.scoped_identity_memberships(previous, {}, inputs=views)
+                self.assertEqual(failure_outcome(raised.exception)["outcome"], "recovery_required")
+
     def test_shared_uuid_does_not_replace_either_sources_accepted_component(self):
         pinned, live = identity("pinned", ["old", "shared"]), identity("live", ["shared", "new"])
         previous = {

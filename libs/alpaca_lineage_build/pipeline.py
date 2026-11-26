@@ -43,7 +43,7 @@ from .pricing import load_pricing
 from .selection import DependencyGraph
 from .source_work import prepare_group_evidence_and_source_work
 from .transform import correlate
-from .work_contract import auxiliary_work
+from .work_contract import auxiliary_work, correction_advance_target
 
 
 def _group_services():
@@ -312,6 +312,7 @@ def _select_dependency_suffixes(
             if work_policy is not None
             else None
         ),
+        continued_correction_advance=work_policy.continued_correction_advance if work_policy else None,
         missing_route=route_selector(Path(store) / "end_of_day/lineage", index),
         dated_route=dated_route_selector(index),
         lineage_generations={
@@ -332,6 +333,7 @@ def _select_dependency_suffixes(
         )
     if work_policy is not None:
         work_policy.record_results(value, stage="dependency_acquisition")
+        work_policy.accept_continued_advances(value["results"])
     return {
         **value,
         "requested": len(groups),
@@ -395,7 +397,19 @@ def _catch_up_published_dependencies(
             if source.get("history_start", HISTORY_START)[:10] > start:
                 result["deferred_full_range"] += 1
                 prefix_required = True
-            elif source["latest_request"]["end_exclusive"][:10] < end:
+                continue
+            covered = source["latest_request"]["end_exclusive"][:10]
+            correction_target = (
+                correction_advance_target(work_policy.work.get(symbol, {}))
+                if can_request and work_policy
+                else None
+            )
+            if correction_target and covered < correction_target <= (end_date or end):
+                # This source owes its own pricing coverage, independent of the
+                # group. Its completed empty selection feeds the append publisher.
+                targets.setdefault(correction_target, []).append(symbol)
+                continue
+            if covered < end:
                 suffix_selected = True
                 if symbol in receipts or empty_suffixes:
                     generation = (

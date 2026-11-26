@@ -14,6 +14,10 @@ requests. The final `complete` value includes both stages and serving completion
 A completed attempt exits zero even when required data work remains; its warning diagnostic and `complete: false`
 keep that limitation visible. Registry Git bookkeeping runs only for fully complete data results. An execution
 that cannot return the complete attempt, malformed input and interrupted publication retain their error paths.
+An unfinished workflow item at the completion stage includes a `completion` object in both the report and its
+durable outcome. It gives the required and published date bounds, obligation and correction IDs, published
+and approved pricing generations, and group labels with a pending lineage check. These values come from the
+same selection used for acknowledgement. A null field means the corresponding observation was absent.
 Serving reports `pending_export_inputs` counts for pricing and lineage invalidations affecting published
 components; applicable unfinished invalidations prevent completion even when its scheduling queue is empty.
 Work-plan fields are conditional, not a guarantee of total requests; see

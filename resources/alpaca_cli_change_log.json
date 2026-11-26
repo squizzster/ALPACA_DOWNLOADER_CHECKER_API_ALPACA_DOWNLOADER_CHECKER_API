@@ -265,5 +265,10 @@
     "modifications": [
       "Use the completed dated lineage scopes when checking prices for a reused ticker."
     ]
+  },
+  {
+    "modifications": [
+      "Expose lineage prepare-recovery to prepare one selected group for review using the canonical rules and optionally acquire missing native market observations."
+    ]
   }
 ]

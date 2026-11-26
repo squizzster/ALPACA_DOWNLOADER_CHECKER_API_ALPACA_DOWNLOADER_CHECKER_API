@@ -221,6 +221,19 @@ def pricing_target(item, *, lineage_coverage=None):
     return item.get("pricing_end_exclusive", item["end_exclusive"])
 
 
+def correction_advance_target(item):
+    contract = item.get("pricing_correction") or {}
+    if (
+        not item.get("correction_id")
+        or item.get("invalidate_pricing")
+        or contract.get("scope") != "full_history"
+        or contract.get("cause") != "selected_all_rows_changed"
+        or contract.get("advance_end_exclusive") != pricing_target(item)
+    ):
+        return None
+    return contract["advance_end_exclusive"]
+
+
 def covers_pricing_start(item, request):
     """Coverage includes the accepted inclusive start, even for an empty source."""
     start = item.get("pricing_start")
@@ -1168,6 +1181,42 @@ class WorkPolicy:
                 return {**completed, "source_sha256": generation}
         return None
 
+    def continued_correction_advance(self, root, source, generation, target):
+        """Select the unfinished suffix of the exact advance that produced a full correction."""
+        from libs.alpaca_pricing_download.refresh import recover_selected_correction
+
+        from .completed_corrections import covers_selected_advance
+        from .dependency_suffixes import applicable_empty_suffix, group_empty_suffixes
+
+        symbol = source["symbol"]
+        item = self.work.get(symbol, {})
+        if correction_advance_target(item) != target:
+            return None
+        publication = recover_selected_correction(
+            root,
+            source,
+            generation,
+            item["correction_id"],
+            completion=item.get("correction_completion"),
+            needs_notice=False,
+        )
+        request = source["latest_request"]
+        if not publication or not covers_selected_advance(
+            item["pricing_correction"],
+            store=self.store,
+            entry={**request, "source_sha256": generation},
+            publication=publication,
+            target=target,
+            invalidated=False,
+        ):
+            return None
+        self.accept_correction_completions([publication])
+        group = self.graph.closure({symbol})
+        receipts = group_empty_suffixes(group, self.work).get(symbol, ())
+        if receipts and applicable_empty_suffix(receipts, generation, source, target):
+            return "completed_empty_suffix"
+        return "acquire_missing_suffix"
+
     def carry_correction_completions(self, results):
         """Accept already-published append ancestry before lineage consumes it."""
         carried = []
@@ -1183,7 +1232,84 @@ class WorkPolicy:
                 carried.append({**result, "correction_completion": completed})
         self.accept_correction_completions(carried)
 
-    def fail(self, symbols, outcome, *, stage):
+    def accept_continued_advances(self, results):
+        continued = [row for row in results if row.get("continued_correction_advance")]
+        self.carry_correction_completions(continued)
+        self.history_approved.update((row["symbol"], row["source_sha256"]) for row in continued)
+
+    def recover_continued_advances(self, sources, generations):
+        """Recover an installed correction and its exact append from the pricing owner's ancestry."""
+        from libs.alpaca_pricing_download.contract import timestamp
+        from libs.alpaca_pricing_download.download import acquisition_asof
+
+        for symbol in self.work.keys() & sources.keys():
+            generation = generations[symbol]
+            target = correction_advance_target(self.work[symbol])
+            if not target or self.history_approved.get(symbol) == generation:
+                continue
+            item, source = self.work[symbol], sources[symbol]
+            contract = item["pricing_correction"]
+            request = source["latest_request"]
+            changes = source.get("history_changes", ())
+            if (
+                not changes
+                or contract.get("store") != str(self.store)
+                or contract.get("symbol") != symbol
+                or source.get("history_start") != contract["start"]
+                or request["start"] != contract["end_exclusive"]
+                or request["end_exclusive"] != target + "T00:00:00Z"
+                or contract.get("comparison_end_exclusive") != contract["end_exclusive"]
+                or contract.get("comparison_asof") != contract["asof"]
+                or request["asof"]
+                != acquisition_asof({"latest_request": contract}, timestamp(request["end_exclusive"]))
+                or changes[0]["changed_from"] is not None
+                and changes[0]["changed_from"] < request["start"][:10]
+            ):
+                continue
+            if source.get("history_correction_id") == item["correction_id"]:
+                # The correction made one child of its selected input and the
+                # append made one child of that correction. An inherited old
+                # correction ID alone cannot approve another generation.
+                if len(changes) < 2 or changes[1]["source_sha256"] != contract["source_sha256"]:
+                    continue
+            else:
+                # An equal-price correction left its selected input in place.
+                completion = self.correction_completion_for(symbol, generation, source)
+                if not completion or changes[0]["source_sha256"] != contract["source_sha256"]:
+                    continue
+                self.accept_correction_completions(
+                    [{"symbol": symbol, "source_sha256": generation, "correction_completion": completion}]
+                )
+            self.history_approved[symbol] = generation
+
+    def fail_unfinished(self, symbols, entries, pending):
+        """Report the selected requirement and publication that failed to complete it."""
+        facts = {}
+        for symbol in symbols:
+            item = self.work[symbol]
+            entry = entries.get(symbol) or {}
+            projection = entry.get("projection") or {}
+            request = projection.get("pricing_request") or {}
+            group = set(item.get("required_group", ())) | {symbol}
+            facts[symbol] = {
+                "obligation_id": item.get("obligation_id"),
+                "required_history_start": item.get("pricing_start"),
+                "required_end_exclusive": item.get("pricing_end_exclusive", item.get("end_exclusive")),
+                "required_history_check": bool(item.get("required_history_check")),
+                "required_correction_id": item.get("correction_id"),
+                "published_obligation_id": projection.get("update_obligation_id"),
+                "published_history_start": request.get("history_start"),
+                "published_through_exclusive": projection.get("processed_through"),
+                "published_correction_id": projection.get("history_correction_id"),
+                "published_source_generation": entry.get("source_sha256"),
+                "approved_history_generation": self.history_approved.get(symbol),
+                "pending_lineage_symbols": sorted(name for name in group if name in pending),
+            }
+        self.fail(
+            facts, {"reason": "required pricing or lineage not complete"}, stage="completion", completion=facts
+        )
+
+    def fail(self, symbols, outcome, *, stage, completion=None):
         """Include maintenance and newly discovered dependencies in durable retries."""
         from . import universe_state
 
@@ -1235,6 +1361,10 @@ class WorkPolicy:
             if stage in {"history_check", "history_correction", "append"}:
                 item = {**item, "required_history_check": True, "obligation_id": uuid4().hex}
             requirements[symbol] = item
+        reports = {
+            symbol: outcome if completion is None else {**outcome, "completion": completion[symbol]}
+            for symbol in requirements
+        }
         if requirements:
             accepted = universe_state.put_work_group(self.store, requirements)
             self.work.update(accepted)
@@ -1245,15 +1375,14 @@ class WorkPolicy:
                         self.store,
                         symbol,
                         status=status,
-                        outcome={**outcome, "stage": stage},
+                        outcome={**reports[symbol], "stage": stage},
                         attempts=1,
                         batch=batch,
                         expected=item,
                     )
             self.work.update(outcomes)
-        for symbol in requirements:
-            self.blocked.add(symbol)
-            self.failures.append({"symbol": symbol, "stage": stage, **outcome})
+        self.blocked.update(requirements)
+        self.failures.extend({"symbol": symbol, "stage": stage, **report} for symbol, report in reports.items())
         self.restricted_identifiers.update(outcome.get("request_identifiers", []))
 
     def record_results(self, value, *, stage):

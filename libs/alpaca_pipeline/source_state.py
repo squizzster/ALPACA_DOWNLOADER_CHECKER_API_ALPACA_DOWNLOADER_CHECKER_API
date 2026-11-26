@@ -15,6 +15,7 @@ from libs.alpaca_security_lineage.inference_evidence import reject_assertions
 # Mutable adapters attach these completed decisions after construction. Their
 # presence is meaningful and is retained independently of dataclass defaults.
 ADAPTER_EXTRAS = (
+    "accepted_dated_identity_memberships",
     "_accepted_binding_applies",
     "accepted_report",
     "accepted_provider_evidence",

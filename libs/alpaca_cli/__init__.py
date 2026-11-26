@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 51
+VERSION = 52
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -315,6 +315,7 @@ def build_parser():
         "refresh",
         "rebuild",
         "recover",
+        "prepare-recovery",
         "inspect",
         "migrate-index",
         "migrate-policy",
@@ -328,6 +329,16 @@ def build_parser():
             p.add_argument("--selection", type=Path, required=True)
             p.add_argument("--plan", action="store_true")
             p.add_argument("--debug", type=Path, metavar="FILE.jsonl")
+        elif name == "prepare-recovery":
+            p.add_argument("--symbol", required=True, help="one source in a published complete group")
+            p.add_argument(
+                "--output", type=Path, required=True, help="review packet outside the production store"
+            )
+            p.add_argument(
+                "--observe-market-evidence",
+                action="store_true",
+                help="observe missing dated trades and literal endpoints selected by the canonical rules",
+            )
         elif name == "rebuild":
             p.add_argument("--all-published", action="store_true", required=True)
             p.add_argument("--plan", action="store_true")
@@ -598,6 +609,15 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "prepare-recovery":
+            from libs.alpaca_lineage_build.candidate_preparation import prepare
+
+            return prepare(
+                args.store,
+                args.symbol,
+                args.output,
+                market_clients=clients if args.observe_market_evidence else None,
+            )
         if operation == "repair-occupation":
             from libs.alpaca_lineage_build.occupation_repair import reconcile
 

@@ -79,11 +79,12 @@ generation, effective mapping, membership or policy rejects the candidate; a mis
 into explicit owning preparation rather than silently recalculating. Serving still owns validation of newly
 selected numerical contributions, and export consumes its completed catalogue normally.
 
-Unchanged candidate boundaries retain their accepted references and already-read bodies; preparation does
-not reconstruct them. A prepared numerical source revision may additionally carry version-1
-`selected_observation_bundles`. Explicit view slots select shared physical parts, bound to the revision's
-exact sessions and chosen sources. Ingress accepts that transport once and retains its immutable aliases.
-Publication carries those selected values into serving rather than opening their pricing payloads again.
+Unchanged candidate boundaries retain their accepted references and already-read bodies. A prepared
+numerical source revision may carry `selected_observation_bundles`. Version 1 contains all revised dates.
+Version 2 contains exactly the revised dates outside `numeric_reuse_sessions`. Each view selects a
+shared physical part bound to its date, winning source and revision. The reader consumes the retained
+values before assembling any separately requested missing dates. A fully equal replacement can carry
+its dated numerical decision without a values payload.
 
 The separate [research-admission owner](../libs/alpaca_lineage_build/research_admission.py) can prepare an
 already completed generic result under its exact review, store, complete-group, policy and receipt/pricing
@@ -838,6 +839,13 @@ A lineage retry uses the published group’s required span. The workflow cutoff 
 pricing coverage for a lagging peer. An applicable empty suffix can satisfy the peer’s dependency check
 while its stored pricing coverage stays at its original endpoint. Independent coverage, mapping, correction
 and numerical requirements retain their own completion conditions.
+When a full replacement has already published for an independently required advance, its exact
+correction ID, predecessor generation, request mapping and selected cutoff approve the remaining suffix
+after the source leaves summary membership. Daily and focused lineage can publish that coverage through
+the ordinary pricing append journal. A completed all-view empty selection supplies the suffix directly
+within its original source and request scope. Any missing suffix is acquired once. After an interrupted
+append, its installed request and pricing ancestry establish which corrected prefix reached the requested
+cutoff. A different predecessor, earlier price change or changed mapping invalidates that approval.
 
 Ordinary eligible summary members complete that sequence before discovery advances their dependencies.
 Selection's changed-identity and lost-eligibility facts reconcile before those members enter maintenance.
@@ -1076,6 +1084,14 @@ overlap reconstruction. Ordinary history reads construct no coverage-ranking pro
 independent identity changes do not invalidate it. Proven appends skip old rows/closed payloads; suffix containers
 may contain older rows. Changed adjusted-source selection, ownership, replacement or absent ancestry requires
 affected-history evaluation.
+
+When one physical pricing source replaces another for an entire identity, serving can carry the prior
+numerical and calendar outcomes. Its original source generation must still apply, and both selections
+must cover exactly the same positions within each contributing partition in every adjustment view.
+Only this selected substitution compares the row counts and all eight logical digests from the pricing
+producer's compact partition manifests. Equal selections retain their accepted checkpoint and use the
+new source membership. A change to displayed labels uses the accepted raw dates. One unequal view leaves
+the replacement subject to its scoped numerical revision or ordinary first validation.
 
 A producer-certified latest-session correction can retain the checkpoint before that row. The serving producer
 publishes preceding-session raw labels and numerical outcomes during normal evaluation. Current ownership runs

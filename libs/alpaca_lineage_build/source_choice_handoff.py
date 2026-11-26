@@ -21,7 +21,7 @@ def accept(value, revision):
         not isinstance(value, dict)
         or set(value) != {"version", "revision_id", "identities"}
         or type(value.get("version")) is not int
-        or value["version"] != 1
+        or value["version"] not in (1, 2)
         or value["revision_id"] != revision["id"]
         or not isinstance(value["identities"], dict)
         or value["identities"].keys() != revision["sessions"].keys()
@@ -29,7 +29,10 @@ def accept(value, revision):
         raise LineageError("incomplete selected-observation bundle handoff")
     identities, observations = {}, {}
     for pid, days in value["identities"].items():
-        if not isinstance(days, dict) or set(days) != set(revision["sessions"][pid]):
+        required = set(revision["sessions"][pid])
+        if value["version"] == 2:
+            required.difference_update(revision["numeric_reuse_sessions"][pid])
+        if not isinstance(days, dict) or set(days) != required:
             raise LineageError("selected-observation sessions differ from their completed revision")
         encoded, expanded = {}, {}
         for day, entry in days.items():
@@ -63,12 +66,12 @@ def accept(value, revision):
         identities[pid] = _FrozenDict(encoded)
         observations[pid] = _FrozenDict(expanded)
     return AcceptedSourceBundles(
-        {"version": 1, "revision_id": revision["id"], "identities": _FrozenDict(identities)},
+        {"version": value["version"], "revision_id": revision["id"], "identities": _FrozenDict(identities)},
         _FrozenDict(observations),
     )
 
 
-def produce(bundles, revision):
+def produce(bundles, revision, *, required_only=False):
     identities = {}
     for pid, days in bundles.items():
         identities[pid] = {}
@@ -82,4 +85,6 @@ def produce(bundles, revision):
                     parts.append(value)
                 slots[view] = physical[key]
             identities[pid][day] = {"views": slots, "partitions": parts}
-    return accept({"version": 1, "revision_id": revision["id"], "identities": identities}, revision)
+    return accept(
+        {"version": 2 if required_only else 1, "revision_id": revision["id"], "identities": identities}, revision
+    )

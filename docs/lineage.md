@@ -1037,8 +1037,14 @@ still selects owning work; an old accepted empty interval cannot become a reason
 
 Accepted UUID membership retains each source's request scope. Two peers may carry different completed public
 components containing the same UUID; group connectivity does not merge those components or invalidate either
-source's historical owner. Only unambiguous peer membership may fill a missing local entry. Conflicting owners
-inside one source still require explicit recovery. When a peer selects complete-group work, applicable sources
+source's historical owner. Only unambiguous peer membership may fill a missing local entry. When one
+source has published different public IDs containing the same UUID, its accepted contribution dates distinguish
+their scopes. Frozen rows and closed-source metadata carry their own published IDs directly. Newly evaluated
+rows consult a dated membership only after their provider UUID is resolved. The final component can continue
+along its own observed ticker route through any dated departure. Source dates outside these scopes use the
+ordinary row evidence. An empty suffix skips the dated membership projection. A source requiring that projection
+selects technical recovery when its accepted dates overlap across owners or omit a competing ID.
+When a peer selects complete-group work, applicable sources
 carry their positive dated row decisions in full-source positions; new and unresolved rows enter the cascade.
 Explicit numerical states remain separate from row ownership. A dated market with zero new rows across all of its episode
 sources retains its accepted public binding even though suffix reports contain no segments. This supplies no row

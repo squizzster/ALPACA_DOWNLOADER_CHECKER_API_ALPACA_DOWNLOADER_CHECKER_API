@@ -127,6 +127,11 @@ class AlpacaIdentityClient:
         material = f"alpaca-otc-entitlement\0{nonce}\0{self.headers['APCA-API-KEY-ID']}".encode()
         return hmac.digest(self.headers["APCA-API-SECRET-KEY"].encode(), material, "sha256").hex()
 
+    def market_observation_handoff_token(self, digest):
+        """Bind a preparation's closed physical responses to their original credentials."""
+        material = f"alpaca-canonical-market-handoff\0{digest}\0{self.headers['APCA-API-KEY-ID']}".encode()
+        return hmac.digest(self.headers["APCA-API-SECRET-KEY"].encode(), material, "sha256").hex()
+
     def seed_asset_lookup(
         self,
         identifier: str,

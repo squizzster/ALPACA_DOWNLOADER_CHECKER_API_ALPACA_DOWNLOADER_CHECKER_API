@@ -2,11 +2,11 @@
 
 from bisect import bisect_right
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS, NEW_YORK, timestamp
 
-from .contract import LineageError, valid_sha256
+from .contract import LineageError, RecoveryRequired, valid_sha256
 
 HANDOFF_VERSION = 1
 
@@ -291,51 +291,112 @@ def identity_intervals(previous, boundaries):
     ]
 
 
-def identity_memberships(previous, boundaries):
-    """Consume compact membership, or project already selected legacy assignments."""
-    accepted = {}
-    for symbol, prior in previous.items():
-        identities = prior.get("identity_memberships")
-        if identities is None:
-            identities = [
-                segment["security_identity"]
-                for document in boundaries.get(symbol, {}).values()
-                for entry in document["adjustments"]
-                for segment in entry["segments"]
-                if segment["branch"] == "correlated"
-            ]
-        for identity in identities:
-            for member in identity["member_alpaca_asset_ids"]:
-                existing = accepted.setdefault(member, identity)
-                if existing["security_id"] != identity["security_id"]:
-                    raise LineageError(
-                        "accepted UUID membership is ambiguous; explicit lineage recovery required"
+def membership_candidates(identities):
+    candidates = {}
+    for identity in identities:
+        for member in identity["member_alpaca_asset_ids"]:
+            candidates.setdefault(member, {})[identity["security_id"]] = identity
+    return candidates
+
+
+def _source_memberships(symbol, prior, boundaries, *, select_dates):
+    """Keep unconditional membership separate from source-local dated components."""
+    identities = prior.get("identity_memberships")
+    if identities is None:
+        identities = (
+            segment["security_identity"]
+            for document in boundaries.values()
+            for entry in document["adjustments"]
+            for segment in entry["segments"]
+            if segment["branch"] == "correlated"
+        )
+    candidates = membership_candidates(identities)
+    uniform = {member: next(iter(ids.values())) for member, ids in candidates.items() if len(ids) == 1}
+    competing = {member: ids for member, ids in candidates.items() if len(ids) > 1}
+    if not competing or not select_dates:
+        return uniform, competing.keys(), {}
+    bounds = {pid: [] for ids in competing.values() for pid in ids}
+    for interval in identity_intervals(prior, boundaries):
+        if interval["security_id"] in bounds:
+            bounds[interval["security_id"]].append((interval["from"], interval["to"]))
+    dated = {}
+    for member, ids in competing.items():
+        if any(not bounds[pid] for pid in ids):
+            raise RecoveryRequired(
+                f"{symbol}: accepted UUID membership is ambiguous for {member}; missing dated contributions, explicit lineage recovery required"
+            )
+        periods = []
+        for first, last, pid in sorted((a, b, pid) for pid in ids for a, b in bounds[pid]):
+            first, last = date.fromisoformat(first), date.fromisoformat(last)
+            if periods and first <= periods[-1][1]:
+                start, end, owner = periods[-1]
+                if owner["security_id"] != pid:
+                    raise RecoveryRequired(
+                        f"{symbol}: accepted UUID membership is ambiguous for {member} on {first}; overlapping contributions require explicit lineage recovery"
                     )
-    return accepted
+                periods[-1] = (start, max(end, last), owner)
+            else:
+                periods.append((first, last, ids[pid]))
+        first, last, latest = periods[-1]
+        route = prior.get("observation_routes", {}).get(latest["security_id"])
+        # Only the final positively observed own-ticker route can carry a dated
+        # component past its accepted contribution. Honor any known departure.
+        terminal_day = prior.get("assignment_summary", {}).get("raw", {}).get("last_session")
+        if route and route[0][:10] == last.isoformat() == terminal_day:
+            interval = route[1]
+            if (
+                interval.get("asset_id") == member
+                and interval.get("historical_symbol") == symbol
+                and "end_date_exclusive" in interval
+            ):
+                end = interval.get("end_date_exclusive")
+                if end is None or last.isoformat() < end:
+                    periods[-1] = (
+                        first,
+                        date.fromisoformat(end) - timedelta(days=1) if end else date.max,
+                        latest,
+                    )
+        dated[member] = tuple(periods)
+    return uniform, competing.keys(), dated
 
 
-def scoped_identity_memberships(previous, boundaries):
-    """Keep completed membership under each source's accepted request scope.
+def scoped_identity_memberships(previous, boundaries, *, inputs=None):
+    """A peer may lend only an unconditional UUID membership with one public owner.
 
-    Peers can carry different completed component extents, including a pinned
-    historical source and a later continuation. They do not supply one global
-    answer for a shared UUID. Only unambiguous peer entries may fill a missing
-    local entry; a source's own accepted decision always keeps its authority.
-    Ambiguity inside one source remains an owning-recovery condition.
+    Accepted rows keep their original IDs. A date-dependent membership is local
+    to its source and can apply to new rows only on its recorded date scope.
     """
-    local = {
-        name: identity_memberships({name: prior}, boundaries) if prior else {}
-        for name, prior in previous.items()
-    }
-    shared, ambiguous = {}, set()
-    for memberships in local.values():
+    local, shared, ambiguous = {}, {}, set()
+    for name, prior in previous.items():
+        view = inputs.get(name) if inputs is not None else None
+        # Its dated assignments are already closed. An empty selected suffix
+        # cannot use a historical date map even when a peer adds sessions.
+        select_dates = (
+            inputs is None
+            or view is not None
+            and not (
+                getattr(view, "materialization_scope", None) == "retained_suffix"
+                and not any(view.views.values())
+            )
+        )
+        memberships, conflicting, dated = (
+            _source_memberships(name, prior, boundaries.get(name, {}), select_dates=select_dates)
+            if prior
+            else ({}, (), {})
+        )
+        local[name] = memberships
+        ambiguous.update(conflicting)
+        if view is not None:
+            if dated:
+                view.accepted_dated_identity_memberships = dated
+            elif hasattr(view, "accepted_dated_identity_memberships"):
+                del view.accepted_dated_identity_memberships
         for member, identity in memberships.items():
-            if member in ambiguous:
-                continue
             existing = shared.setdefault(member, identity)
             if existing["security_id"] != identity["security_id"]:
                 ambiguous.add(member)
-                shared.pop(member)
+    for member in ambiguous:
+        shared.pop(member, None)
     return {name: {**shared, **memberships} for name, memberships in local.items()}
 
 
