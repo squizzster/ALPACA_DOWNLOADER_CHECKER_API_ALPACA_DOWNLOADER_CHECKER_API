@@ -270,5 +270,10 @@
     "modifications": [
       "Expose lineage prepare-recovery to prepare one selected group for review using the canonical rules and optionally acquire missing native market observations."
     ]
+  },
+  {
+    "modifications": [
+      "Retire a rejected auxiliary pricing request from the heartbeat's unresolved count when its lineage group completes that exact request scope."
+    ]
   }
 ]

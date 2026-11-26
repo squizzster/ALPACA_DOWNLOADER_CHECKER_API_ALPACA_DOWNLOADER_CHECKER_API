@@ -6,10 +6,12 @@ retains only bounded failure diagnostics, and cannot authorize or finish work.
 
 import math
 from collections import deque
+from datetime import timedelta
 from functools import wraps
 from time import monotonic
 
-from libs.alpaca_pricing_download.contract import failure_outcome
+from libs.alpaca_data_api_solver import iso
+from libs.alpaca_pricing_download.contract import DownloadError, failure_outcome, timestamp
 from libs.alpaca_pricing_download.http import REQUESTS_PER_MINUTE
 
 
@@ -35,6 +37,10 @@ class UpdateEstimate:
         self.failures = 0
         self.unresolved = set()
         self.scopes = {}
+        self.dependency_phase = None
+        self.dependency_requests = {}
+        self.dependency_pages = {}
+        self.dependency_rejections = {}
         self.last_failure = {}
         self.complete = False
         self.phase = None
@@ -51,6 +57,12 @@ class UpdateEstimate:
                 for key, expected in (("error_type", str), ("http_status", int))
                 if type(values.get(key)) is expected
             }
+            if (
+                values.get("error_type") == "BarsSymbolUnavailable"
+                and values.get("http_status") == 400
+                and values.get("first_page") is True
+            ):
+                self._record_dependency_rejection(values.get("request"))
         start, finish = values.get("started"), values.get("finished")
         if not all(type(value) in (int, float) and math.isfinite(value) for value in (start, finish)):
             return
@@ -61,7 +73,53 @@ class UpdateEstimate:
         self.last_finished = finish if self.last_finished is None else max(finish, self.last_finished)
         self.samples.append((start, finish))
 
+    def _record_dependency_rejection(self, request):
+        if not isinstance(request, dict) or not isinstance(request.get("symbols"), str):
+            return
+        symbol = request.get("symbols")
+        selected = self.dependency_requests.get(symbol)
+        if not isinstance(selected, dict) or request.get("adjustment") != "raw" or request.get("feed") != "sip":
+            return
+        if request.get("asof") != selected.get("end_exclusive") or request.get("timeframe") != "1Day":
+            return
+        # The solver sends its exclusive UTC end as the preceding microsecond.
+        try:
+            start = iso(timestamp(request.get("start")))
+            end = iso(timestamp(request.get("end")) + timedelta(microseconds=1))
+        except (DownloadError, OverflowError):
+            return
+        if start == f"{selected.get('from')}T00:00:00Z" and end == f"{selected.get('end_exclusive')}T00:00:00Z":
+            self.dependency_pages[symbol] = self.failures
+
     def observe(self, stage, values):
+        if stage.endswith("dependency_acquisition"):
+            phase = stage.removesuffix("dependency_acquisition")
+            wave = values.get("wave")
+            if type(wave) is not int or wave <= 1 or self.dependency_phase != phase:
+                self.dependency_rejections.clear()
+            self.dependency_phase = phase
+            self.dependency_pages.clear()
+            required = values.get("required")
+            self.dependency_requests = required if isinstance(required, dict) else {}
+        elif self.dependency_phase is not None and stage == self.dependency_phase + "dependency_pricing":
+            # Remember the page this pricing owner actually classified. Publication can still fail.
+            symbol = values.get("symbol")
+            if (
+                values.get("state") == "unavailable"
+                and isinstance(symbol, str)
+                and symbol in self.dependency_pages
+            ):
+                self.dependency_rejections[symbol] = self.dependency_pages.pop(symbol)
+        elif self.dependency_phase is not None and stage == self.dependency_phase + "lineage_group":
+            unavailable = values.get("unavailable_pricing")
+            if values.get("status") == "processed" and isinstance(unavailable, (tuple, list)):
+                for symbol in unavailable:
+                    if isinstance(symbol, str):
+                        self.unresolved.discard(self.dependency_rejections.get(symbol))
+            self.dependency_phase = None
+            self.dependency_requests = {}
+            self.dependency_pages.clear()
+            self.dependency_rejections.clear()
         if values.get("state") == "started" and values.get("request_scope") is True:
             self.scopes[stage] = self.failures
         elif values.get("state") == "completed":
@@ -182,10 +240,13 @@ def measured_request(function, progress, *, clock=monotonic):
             try:
                 outcome = failure_outcome(error)
                 parameters = args[0] if args and isinstance(args[0], dict) else kwargs.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    parameters = {}
                 failure = {
                     "error_type": type(error).__name__,
                     "http_status": outcome.get("http_status"),
                     "error": outcome["error"][:768],
+                    "first_page": not parameters.get("page_token"),
                     "request": {
                         key: str(parameters[key])[:160]
                         for key in ("symbols", "adjustment", "asof", "start", "end", "feed", "timeframe")

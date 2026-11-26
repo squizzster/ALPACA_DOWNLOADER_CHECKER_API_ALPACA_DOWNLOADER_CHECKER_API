@@ -4,6 +4,7 @@ import io
 import math
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from libs.alpaca_cli.command_progress import PHASES, progress_callback
@@ -111,6 +112,126 @@ class UpdateETATests(unittest.TestCase):
             estimate.request({"started": value, "finished": 1, "succeeded": True})
         self.assertEqual(estimate.context()["estimated_remaining_seconds"], "TBD")
         self.assertEqual(estimate.completed, 0)
+
+    def test_only_the_current_groups_exact_auxiliary_rejection_leaves_the_unresolved_count(self):
+        estimate = self.trained()
+        request = {
+            "symbols": "AUX",
+            "asof": "2026-10-15",
+            "adjustment": "raw",
+            "feed": "sip",
+            "timeframe": "1Day",
+            "start": "2016-01-01T00:00:00Z",
+            "end": "2026-10-14T23:59:59.999999Z",
+        }
+
+        def reject(*, first_page=True, **scope):
+            estimate.request(
+                {
+                    "succeeded": False,
+                    "error_type": "BarsSymbolUnavailable",
+                    "http_status": 400,
+                    "first_page": first_page,
+                    "request": {**request, **scope},
+                }
+            )
+
+        reject()
+        required = {"AUX": {"from": "2016-01-01", "end_exclusive": "2026-10-15"}}
+        estimate.observe("recovery_dependency_acquisition", {"wave": 1, "required": required})
+        reject()
+        reject(symbols="PRIMARY")
+        reject(asof="2026-10-14")
+        reject(end="2026-10-13T23:59:59.999999Z")
+        reject(first_page=False)
+        estimate.observe("recovery_dependency_pricing", {"symbol": "AUX", "state": "unavailable"})
+        reject()  # A later exception cannot appropriate the producer's completed request.
+        estimate.observe("recovery_dependency_acquisition", {"wave": 2, "required": {"PEER": required["AUX"]}})
+        completed = {"status": "processed", "unavailable_pricing": ["AUX"]}
+        estimate.observe("discovery_lineage_lineage_group", completed)
+        self.assertEqual(estimate.context()["eta_unresolved_request_failures"], 7)
+        estimate.observe("recovery_lineage_group", completed)
+        self.assertEqual(estimate.unresolved, {1, 3, 4, 5, 6, 7})
+        self.assertEqual(estimate.context()["eta_unresolved_request_failures"], 6)
+        self.assertEqual(estimate.context()["eta_request_failures"], 7)
+        self.assertEqual(estimate.context()["eta_status"], "unknown")
+
+    def test_malformed_optional_diagnostics_leave_failed_pages_observed(self):
+        estimate = self.trained()
+        failure = {
+            "succeeded": False,
+            "started": 8,
+            "finished": 9,
+            "error_type": "BarsSymbolUnavailable",
+            "http_status": 400,
+            "first_page": True,
+        }
+        required = {"from": "2016-01-01", "end_exclusive": "malformed"}
+        page = {
+            "symbols": "AUX",
+            "adjustment": "raw",
+            "feed": "sip",
+            "timeframe": "1Day",
+            "asof": "malformed",
+            "start": "2016-01-01T00:00:00Z",
+            "end": "bad date",
+        }
+        inputs = (
+            (None, page),
+            ({"AUX": ["malformed"]}, page),
+            ({"AUX": required}, None),
+            ({"AUX": required}, {**page, "symbols": ["AUX", "PEER"]}),
+            ({"AUX": required}, page),
+        )
+        for scope, request in inputs:
+            estimate.observe("dependency_acquisition", {"wave": 1, "required": scope})
+            estimate.request({**failure, "request": request})
+            estimate.observe("lineage_group", {"status": "processed", "unavailable_pricing": [[], "AUX"]})
+        context = estimate.context()
+        self.assertEqual(context["eta_unresolved_request_failures"], len(inputs))
+        self.assertEqual(context["eta_pricing_pages_completed"], 8 + len(inputs))
+
+    def test_real_group_retires_the_rejection_only_after_its_disposition_completes(self):
+        from test_alpaca_lineage_acquisition import AuxiliaryAcquisitionTests
+
+        from libs.alpaca_lineage_build import storage
+        from libs.alpaca_lineage_build.pipeline import run_lineage
+
+        for seed, interrupted, expected in (("BUYER", False, 0), ("BUYER", True, 1), ("ENTITLE", False, 1)):
+            with self.subTest(seed=seed, interrupted=interrupted):
+                case = AuxiliaryAcquisitionTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                identities = case.prepare_entitlement()
+                pricing, requests = case.rejected_client()
+                estimate = self.trained()
+                observed = []
+
+                def report(stage, values):
+                    if stage == "eta_request":
+                        estimate.request(values)
+                    else:
+                        estimate.observe(stage, values)
+                    if stage == "dependency_pricing" and values.get("state") == "unavailable":
+                        observed.append(estimate.context()["eta_unresolved_request_failures"])
+
+                pricing._get = measured_request(pricing._get, report)
+                stop = patch.object(storage, "finish_publication", side_effect=OSError("interrupted"))
+                with stop if interrupted else nullcontext():
+                    result = run_lineage(
+                        case.store,
+                        [seed],
+                        identity_client=identities,
+                        pricing_client=pricing,
+                        end_date="2026-10-15",
+                        progress=report,
+                    )
+                self.assertEqual(result["failed"], expected, result)
+                self.assertEqual(observed, [1] if seed == "BUYER" else [])
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(estimate.context()["eta_unresolved_request_failures"], expected)
+                self.assertEqual(estimate.context()["eta_request_failures"], 1)
+                self.assertEqual(estimate.context()["eta_status"], "unknown" if expected else "conditional")
 
     def test_observer_preserves_response_identity_exception_and_exact_call_count(self):
         from unittest.mock import Mock

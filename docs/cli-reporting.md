@@ -164,7 +164,9 @@ they enter scalar failure handoffs. Heartbeats retain `eta_request_failures`,
 `eta_unresolved_request_failures`, `eta_last_error_type` and an available `eta_last_http_status`.
 Successful retries inside the original call remain one successful observation. A completed producer request
 scope with zero failures retires exceptions observed inside that scope, including supported batch fallback;
-unrelated successful calls or scopes cannot retire an earlier unfinished failure. Successful overall completion
+unrelated successful calls or scopes cannot retire an earlier unfinished failure. When a completed lineage group
+records an auxiliary symbol as unavailable, its matching initial raw SIP rejection leaves the unresolved count.
+The cumulative failure count and original diagnostic retain the request. Successful overall completion
 retires the remaining observations. Reporting never retries requests or reopens accepted work.
 
 The exact late-bar request plan replaces its provisional selection estimate. Newly selected request plans

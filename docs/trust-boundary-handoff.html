@@ -220,7 +220,9 @@ retains ordering, delivery and response-lifetime regressions. These checks do no
 or close F15's broader coverage limits.</p>
 <p>Reporting regressions in <a href="../tests/test_alpaca_update_eta.py">test_alpaca_update_eta.py</a>
 cover concurrent request measurement, failed calls, changed request scope, counter resets, heartbeat cadence
-and synthetic update parity through serving. <a href="../tests/test_alpaca_exception_reporting.py">Exception-boundary regressions</a>
+and synthetic update parity through serving. A completed group consumes its own unavailable auxiliary price
+request in the estimate. Interrupted groups and independent rejected requests retain their unresolved counts.
+<a href="../tests/test_alpaca_exception_reporting.py">Exception-boundary regressions</a>
 exercise a rejected batch followed by successful exact acquisition, unknown ETA availability with a separate reason,
 completed producer-scope recovery, unrelated peer failures, bounded normal diagnostics and wrapped HTTP status.
 They preserve exact request counts and original exceptions without diagnostic storage reads.
