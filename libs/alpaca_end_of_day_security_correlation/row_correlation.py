@@ -8,7 +8,13 @@ from zoneinfo import ZoneInfo
 
 from libs.alpaca_security_lineage import EXCHANGE_TEST_SYMBOL, HISTORICAL_MARKET_DATA_ONLY
 
-from . import public_common_continuation, same_ticker_distribution, security_relations, sourced_rename
+from . import (
+    due_bill_cash,
+    public_common_continuation,
+    same_ticker_distribution,
+    security_relations,
+    sourced_rename,
+)
 from .closed_departure import (
     BoundedSourceOwnership,
     DatedCurrentAnchorOwnership,
@@ -185,6 +191,7 @@ class _RowRuleContext:
     current_source_ownership: BoundedSourceOwnership | None = None
     sourced_rename_mapping: sourced_rename.RenameCertificate | sourced_rename.DisputedMapping | None = None
     former_occupation: tuple[FormerTickerPeriods, ...] = ()
+    due_bill_intervals: tuple[TickerOwnershipInterval, ...] = ()
 
 
 RowRuleFunction = Callable[[_RowRuleContext], _RowDecision | None]
@@ -309,6 +316,7 @@ class CorrelationCache:
         cross_label_stock_merger_occupation=False,
         stock_merger_departure=False,
         former_ticker_occupation=False,
+        cash_due_bill_continuations=False,
         main_component_arrivals=False,
     ):
         if any(
@@ -338,6 +346,8 @@ class CorrelationCache:
         self.cross_label_stock_merger_occupation = cross_label_stock_merger_occupation
         self.stock_merger_departure = stock_merger_departure
         self.former_ticker_occupation = former_ticker_occupation
+        self.cash_due_bill_continuations = cash_due_bill_continuations
+        self._due_bill_intervals = {}
         self._former_occupations = None
         self.former_source_generations = {}
         self.main_component_arrivals = main_component_arrivals
@@ -595,6 +605,21 @@ class CorrelationCache:
         intervals, limits = self._former_occupations
         return intervals.get(symbol, ()), limits.get(symbol, ())
 
+    def due_bill_intervals(self, symbol, lineage, intervals, edges, consensus):
+        if not self.cash_due_bill_continuations or symbol not in self._name_change_sources:
+            return ()
+        if symbol not in self._due_bill_intervals:
+            self._due_bill_intervals[symbol] = due_bill_cash.traded_intervals(
+                symbol,
+                lineage,
+                intervals,
+                edges,
+                self._name_change_sources[symbol],
+                consensus,
+                peers=(item for name, item in (self.selected_evidence or {}).items() if name != symbol),
+            )
+        return self._due_bill_intervals[symbol]
+
     def inherit_continuity(self, established):
         # Same selected inputs and established rules; only the certified fourth
         # rule changes. Reuse the completed chronology and continuity authorities.
@@ -614,6 +639,8 @@ class CorrelationCache:
         self._sourced_successions = dict(established._sourced_successions)
         self._source_work = dict(established._source_work)
         self._current_source_ownership = dict(established._current_source_ownership)
+        self.cash_due_bill_continuations = established.cash_due_bill_continuations
+        self._due_bill_intervals = established._due_bill_intervals
         self._session_consensus = dict(established._session_consensus)
         self.former_ticker_occupation = established.former_ticker_occupation
         self.former_source_generations = established.former_source_generations
@@ -1360,6 +1387,20 @@ def _apply_unique_uuid_candidate_rule(context: _RowRuleContext) -> _RowDecision 
     if any(
         rule.name == "name_change_ticker_transition" for item in own_intervals for rule in item.applied_rules
     ) and not any(item.contains(context.session_date) for item in own_intervals):
+        for interval in context.due_bill_intervals:
+            if interval.contains(context.session_date):
+                return _RowDecision(
+                    branch=CORRELATED_BRANCH,
+                    asset_id=interval.asset_id,
+                    cusip=interval.cusip,
+                    interval=interval,
+                    identity_confidence="action_supported",
+                    warning_codes=(
+                        "observed_trading_dates_only",
+                        "cash_merger_effective_date_matches_distribution_ex_date",
+                    ),
+                    correlation_method=due_bill_cash.METHOD,
+                )
         return _RowDecision(
             branch=UNCORRELATED_BRANCH,
             reason_codes=("outside_supported_name_change_history",),
@@ -2082,6 +2123,11 @@ def correlate_download_rows(
     context = dict(
         requested_symbol=requested_symbol,
         former_occupation=cache.former_occupation(requested_symbol)[0] if cache is not None else (),
+        due_bill_intervals=cache.due_bill_intervals(
+            requested_symbol, lineage, intervals, uuid_lineage_edges, adjustment_consensus
+        )
+        if cache is not None
+        else (),
         selected_asof_interval=selected_interval,
         selected_asof_identity_chain_asset_ids=selected_identity_chain_asset_ids,
         intervals=intervals,

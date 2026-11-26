@@ -21,7 +21,7 @@ LOSS = "outside_supported_name_change_history"
 RULE = "retained_same_source_accepted_owner"
 
 
-def _checkpoint(group, offline, source):
+def _accepted_source_checkpoint(group, offline, source):
     name = group.seed
     envelope = offline.get("offline_ownership", {})
     checkpoints = envelope.get("checkpoints", ())
@@ -71,7 +71,16 @@ def _checkpoint(group, offline, source):
         }
     ):
         raise LineageError("accepted owner does not cover a clean all-view source and label grid")
+    return pid, owner, prior, size
 
+
+def _checkpoint(group, offline, source):
+    pid, owner, prior, size = _accepted_source_checkpoint(group, offline, source)
+    name = group.seed
+    record = prior["history_validation"]["prefix_records"][0]
+    first, last = record["first_session"], record["validated_through"]
+    old_generation = prior["references"]["pricing"][name]
+    envelope = offline["offline_ownership"]
     extents = []
     for loss in sorted(envelope["outcome"]["lost_scopes"], key=lambda item: item["row_start"]):
         if (
@@ -242,6 +251,28 @@ def restore(selection, context, *, progress=None):
         with storage.pricing_locks(store, group.members, known=index["symbols"]):
             sources = _current_sources(store, group.members, known=index["symbols"])
             group.accept_sources(group.members, {name: document_digest(sources[name])})
+            losses = offline.get("offline_ownership", {}).get("outcome", {}).get("lost_scopes", ())
+            if losses and min(loss["row_start"] for loss in losses) > 1:
+                from .retained_cash_distribution import prepare
+
+                approved = _accepted_source_checkpoint(group, offline, sources[name])
+                previous = storage.read_receipt(root, name, index)
+                prepared = prepare(
+                    context,
+                    root,
+                    group,
+                    sources[name],
+                    previous,
+                    losses,
+                    approved,
+                    group_policy=policy.semantic_sha256,
+                )
+                return publish_prepared(
+                    replace(selection, prepared=prepared),
+                    context,
+                    progress=progress,
+                    accepted_inputs=(root, index, sources, {}),
+                )
             pid, owner, extents, prior, accepted_size = _checkpoint(group, offline, sources[name])
             previous = storage.read_receipt(root, name, index)
             stop = extents[-1][1]
