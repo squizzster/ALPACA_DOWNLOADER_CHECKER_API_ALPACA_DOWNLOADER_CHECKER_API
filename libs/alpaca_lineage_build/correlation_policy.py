@@ -518,6 +518,7 @@ def _compile_schema_four(
         (103, 37),
         (104, 37),
         (105, 37),
+        (106, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -667,6 +668,7 @@ def _compile_schema_four(
                 (103, 37),
                 (104, 37),
                 (105, 37),
+                (106, 37),
                 (CORRELATION_VERSION, LINEAGE_VERSION),
             }
             else "published_reference"
@@ -865,6 +867,10 @@ def _compile_schema_four(
     if correlation_version >= 106:
         semantic["execution"]["established_fixed_point"]["cash_due_bill_continuations"] = (
             "observed_cash_distribution_before_replacement_v1"
+        )
+    if correlation_version >= 107:
+        semantic["execution"]["established_fixed_point"]["split_rename_occupation"] = (
+            "bounded_native_split_rename_occupation_v1"
         )
     if fallback_profile == CORRECTED_PROFILE:
         semantic.update(

@@ -571,6 +571,14 @@ relation onto newly owned continuing-label suffix rows without reconstructing it
 Changed relevant observations or generations select the owning work. Legacy research annotations are
 not evidence for this producer.
 
+For a previously published collision after a [split between two renames](#name-changes), run
+`alpaca-cli-eod lineage update --symbol TICKER --no-pricing-acquisition` at the stored cutoff.
+The selected group supplies its native events, accepted public membership, request mapping and dated
+source assignments. Where the successor source starts at the recorded departure and the old mapped
+source spans that date, the producer can close the retired route and correct the CUSIP, provider UUID
+and ticker on the affected assignments. The group keeps its selected numerical source in every view.
+Serving uses its accepted session dates to publish the corrected ticker ranges.
+
 Its existing dated-label serving handoff preserves numerical outcomes and accepted session dates while
 projecting labels. The rule's scope is existing collisions, not a claim that every unique historical label
 or unresolved owner is correct. Public online collision screening does not measure offline identities or
@@ -840,6 +848,16 @@ or component-arrival evidence leave disputed windows unresolved. Different UUIDs
 continuity proof: an accepted identity-preserving event or exact informative raw predecessor prefix through the
 boundary, with complete matching eight-view grids. Use selected group inputs, never decisions derived from the
 disputed edge. Divergent independent concurrent sources keep their histories.
+
+When a ticker changes on entry and exit, a forward or reverse split between those events can change its
+CUSIP and provider UUID while it keeps trading under the same ticker. The
+[split and rename rule](../libs/alpaca_end_of_day_security_correlation/split_rename_ownership.py) follows
+the native Alpaca events in date order. Each rename keeps the same issue at its endpoints, and each split
+connects the preceding issue to the next one. The resulting ticker intervals use the CUSIP and provider
+UUID applicable on each side of the split. A competing issue, a branch in the event chain or incompatible
+dates leave the existing evidence rules in control. Positive literal trading that contradicts the
+proposed dates in the same occupation also retains the existing assessment. A mapped price response can
+continue under a retired request symbol after its trading interval ends.
 
 An established acquiree interval ends on a cross-ticker stock merger's effective date when the dated
 provider action and exact inactive acquiree and distinct acquirer endpoints agree. A separate distribution or

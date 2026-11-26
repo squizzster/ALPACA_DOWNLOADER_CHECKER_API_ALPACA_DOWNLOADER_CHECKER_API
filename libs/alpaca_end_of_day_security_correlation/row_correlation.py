@@ -67,6 +67,7 @@ from .source_continuity import (
     same_symbol_continuation_ids,
 )
 from .sourced_succession import certify_sourced_successions
+from .split_rename_ownership import literal_source_conflict, occupation_conflict
 from .terminal_episode import (
     VACANT_TICKER_BRIDGE_REASON,
     DatedDeparturePrefix,
@@ -297,6 +298,7 @@ class CorrelationCache:
         active_successor_prefixes=True,
         split_adjusted_rename_prefixes=True,
         bounded_rename_prefixes=True,
+        bound_split_renames=True,
         closed_prior_action_anchored_suffixes=True,
         stable_phase_handoffs=True,
         sourced_succession_certificates=False,
@@ -378,6 +380,7 @@ class CorrelationCache:
         self.split_adjusted_rename_prefixes = split_adjusted_rename_prefixes
         self.bounded_rename_prefixes = bounded_rename_prefixes
         self.closed_prior_action_anchored_suffixes = closed_prior_action_anchored_suffixes
+        self.bound_split_renames = bound_split_renames
         self.stable_phase_handoffs = stable_phase_handoffs
         self.sourced_succession_certificates = sourced_succession_certificates
         self.sourced_rename_certificates = sourced_rename_certificates
@@ -408,6 +411,7 @@ class CorrelationCache:
         self._lineage = {}
         self._provider_evidence_acceptance = {}
         self._name_change_sources = {}
+        self._split_rename_conflicts = {}
         self._name_changes = {}
         self._continuity = {}
         self._uuid_candidates = {}
@@ -639,6 +643,7 @@ class CorrelationCache:
         self._provider_evidence_acceptance = dict(established._provider_evidence_acceptance)
         self._continuity = dict(established._continuity)
         self._uuid_candidates = dict(established._uuid_candidates)
+        self._split_rename_conflicts = established._split_rename_conflicts
         self._sourced_successions = dict(established._sourced_successions)
         self._source_work = dict(established._source_work)
         self._current_source_ownership = dict(established._current_source_ownership)
@@ -657,6 +662,20 @@ class CorrelationCache:
         self._name_change_sources[symbol] = tuple(
             (download, download.manifest, self.session_dates(download.rows)) for download in downloads
         )
+
+    def split_rename_conflict(self, occupation, lineage):
+        key = (occupation, None if self.selected_evidence else id(lineage))
+        if key not in self._split_rename_conflicts:
+            peers = (
+                {id(value): value for value in self.selected_evidence.values()}.values()
+                if self.selected_evidence
+                else (lineage,)
+            )
+            reason = next((issue for facts in peers if (issue := occupation_conflict(occupation, facts))), None)
+            if reason is None and literal_source_conflict(occupation, self._name_change_sources):
+                reason = "split_rename_contrary_literal_trading"
+            self._split_rename_conflicts[key] = reason
+        return self._split_rename_conflicts[key]
 
     def name_change_assessment(self, lineage, *, include_action_anchored_current_suffix=False):
         self.lineage_analysis(
@@ -733,6 +752,8 @@ class CorrelationCache:
                         allow_cross_label_stock_merger_occupation=self.cross_label_stock_merger_occupation,
                         allow_stock_merger_departure=self.stock_merger_departure,
                         sourced_successions=successions,
+                        bound_split_renames=self.bound_split_renames,
+                        split_rename_conflict=self.split_rename_conflict,
                     )
                 )
                 if shared is None and renames:
@@ -753,6 +774,8 @@ class CorrelationCache:
                     allow_cross_label_stock_merger_occupation=self.cross_label_stock_merger_occupation,
                     allow_stock_merger_departure=self.stock_merger_departure,
                     sourced_successions=successions,
+                    bound_split_renames=self.bound_split_renames,
+                    split_rename_conflict=self.split_rename_conflict,
                 )
                 phase_intervals = {include_action_anchored_current_suffix: (intervals, interval_issues)}
             assessment = (

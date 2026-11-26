@@ -28,6 +28,13 @@ def historical_bindings():
         {
             "debug": 28,
             "policy_lab": 27,
+            "correlation_runtime": 113,
+            "lineage_runtime": 132,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 28,
+            "policy_lab": 27,
             "correlation_runtime": 112,
             "lineage_runtime": 131,
             "membership_refinement": producer,
@@ -303,6 +310,23 @@ class ReportBindingCompatibilityTests(TestCase):
         self.assertFalse(policy_applies(frozen.as_report_object(), current))
         self.assertFalse(policy_applies(current.as_report_object(), frozen))
         published = {**versions(), "correlation": 105, "correlation_policy_sha256": frozen.semantic_sha256}
+        self.assertTrue(replayable_lineage_versions(published))
+        self.assertFalse(
+            replayable_lineage_versions({**published, "correlation_policy_sha256": current.semantic_sha256})
+        )
+
+    def test_v106_report_and_replay_keep_the_original_split_and_rename_policy(self):
+        from libs.alpaca_lineage_build.contract import versions
+        from libs.alpaca_lineage_build.correlation_policy_contract import RETAINED_V106_SEMANTIC_SHA256
+        from libs.alpaca_lineage_policy_lab.contract import replayable_lineage_versions
+
+        frozen = load_policy(DEFAULT_POLICY.with_name("alpaca_security_correlation_v106_legacy_policy.yaml"))
+        current = load_policy(DEFAULT_POLICY)
+        self.assertEqual(frozen.semantic_sha256, RETAINED_V106_SEMANTIC_SHA256)
+        self.assertTrue(policy_applies(frozen.as_report_object(), frozen))
+        self.assertFalse(policy_applies(frozen.as_report_object(), current))
+        self.assertFalse(policy_applies(current.as_report_object(), frozen))
+        published = {**versions(), "correlation": 106, "correlation_policy_sha256": frozen.semantic_sha256}
         self.assertTrue(replayable_lineage_versions(published))
         self.assertFalse(
             replayable_lineage_versions({**published, "correlation_policy_sha256": current.semantic_sha256})

@@ -323,6 +323,11 @@ new market assertions, numerical reselection nor UUID unions.
 source/assignment bindings, held request scopes, provider actions and accepted dated-label decision. Unknown or incomplete
 declared completion requires owning recovery. The [dated-label owner](lineage.md#dated-label-collisions)
 uses the same label-only serving contract above; it changes neither accepted numeric selections nor owners.
+For a split between native renames, the selected group's evidence generations also bind its assessment.
+Changed assignment partitions and their continuation routes publish together through the lineage journal.
+A clean serving checkpoint bound to the prior lineage and pricing generations can supply the session
+dates for a cut inside a selected segment. Whole segments already carry their timestamps. The serving
+consumer retains its numerical validation and publishes the revised dated labels.
 
 `numerical_source_revision_version: 1` or `2` declares the separate bounded source-choice result. It binds prior
 receipt/pricing generations, exact changed sessions, selected sources, contributing-source membership and

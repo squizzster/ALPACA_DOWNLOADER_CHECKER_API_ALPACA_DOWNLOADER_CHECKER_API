@@ -61,6 +61,7 @@ from libs.alpaca_end_of_day_security_correlation.row_correlation import Correlat
 from libs.alpaca_end_of_day_security_correlation.same_ticker_distribution import (
     CORRELATION_VERSION as SAME_TICKER_DISTRIBUTION_VERSION,
 )
+from libs.alpaca_end_of_day_security_correlation.split_rename_ownership import VERSION as SPLIT_RENAME_VERSION
 from libs.alpaca_end_of_day_security_correlation.stock_merger_occupation import (
     CORRELATION_VERSION as CROSS_LABEL_STOCK_MERGER_VERSION,
 )
@@ -356,6 +357,7 @@ def _correlation_cache(policy) -> CorrelationCache:
             policy.implementation_correlation_version >= SPLIT_ADJUSTED_RENAME_PREFIX_VERSION
         ),
         bounded_rename_prefixes=policy.implementation_correlation_version >= BOUNDED_RENAME_PREFIX_VERSION,
+        bound_split_renames=policy.implementation_correlation_version >= SPLIT_RENAME_VERSION,
         active_successor_prefixes=(
             policy.implementation_correlation_version >= ACTIVE_SUCCESSOR_PREFIX_HANDOFF_CORRELATION_VERSION
         ),
