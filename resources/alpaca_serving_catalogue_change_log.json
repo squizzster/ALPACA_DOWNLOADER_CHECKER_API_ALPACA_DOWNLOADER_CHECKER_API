@@ -267,5 +267,10 @@
     "modifications": [
       "Read the complete selected group's catalogue controls by indexed membership for accepted-owner recovery. Changed membership invalidates that scope before publication."
     ]
+  },
+  {
+    "modifications": [
+      "Reuse the selected serving group's session-date checkpoint after a dated ticker correction under its original decision generation."
+    ]
   }
 ]

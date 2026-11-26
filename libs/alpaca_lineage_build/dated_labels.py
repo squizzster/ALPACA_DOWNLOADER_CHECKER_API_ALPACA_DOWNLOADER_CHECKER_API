@@ -312,7 +312,9 @@ def project(inputs, reports, evidence, *, context=None, decision=None, date_cach
     return result, {"producer": NAME, "changes": changes, "reasons": reasons}
 
 
-def project_completed_group(previous, documents, evidence, receipt_generations, *, date_inputs=None):
+def project_completed_group(
+    previous, documents, evidence, receipt_generations, *, date_inputs=None, decision=None, session_cuts=None
+):
     """Build a selected historical label correction for normal journal publication.
 
     The caller owns complete-group selection and generation applicability. These
@@ -340,16 +342,30 @@ def project_completed_group(previous, documents, evidence, receipt_generations, 
                 if segment["branch"] == "correlated"
             ]
             context[source]["correlated"]["segments"].extend(segments)
+            if session_cuts is not None and previous[source].get("pricing_request", {}).get("asof") == "-":
+                context[source].setdefault("uncorrelated", {"segments": []})["segments"].extend(
+                    {**segment, "adjustment": "raw"}
+                    for entry in document["adjustments"]
+                    if entry["adjustment"] == "raw"
+                    for segment in entry["segments"]
+                    if segment["branch"] == "uncorrelated"
+                )
             partitions[kind][source] = {"correlated": {"segments": segments}}
     receipts = dict(previous)
     changed_documents = defaultdict(dict)
     trace = {"producer": NAME, "changes": [], "reasons": []}
-    planned = plan(context, evidence)
+    planned = plan(context, evidence) if decision is None else decision
+    occupations = ()
+    if session_cuts is not None:
+        from . import retained_split_renames
+
+        occupations, assessments = retained_split_renames.plan(previous, evidence, context)
+        planned = planned[0], [*planned[1], *({"split_rename_assessment": item} for item in assessments)]
     trace["plan"] = planned
     completed_reports = {}
     date_cache = {}
     for kind, reports in partitions.items():
-        projected, decision = project(
+        projected, label_trace = project(
             (date_inputs or {}).get(kind, {}),
             reports,
             evidence,
@@ -357,9 +373,19 @@ def project_completed_group(previous, documents, evidence, receipt_generations, 
             decision=planned,
             date_cache=date_cache,
         )
+        changes = label_trace["changes"]
+        if occupations:
+
+            def split_dates(source, segment, points):
+                return session_cuts.split(
+                    segment, points, lambda: date_inputs[kind][source].views[segment["adjustment"]]
+                )
+
+            projected, refined = retained_split_renames.project(projected, occupations, split_dates)
+            changes = [*changes, *refined]
         completed_reports[kind] = projected
-        trace["changes"].extend({**change, "partition": kind} for change in decision["changes"])
-        trace["reasons"] = decision["reasons"]
+        trace["changes"].extend({**change, "partition": kind} for change in changes)
+        trace["reasons"] = label_trace["reasons"]
         for source, report in projected.items():
             if report is reports[source]:
                 continue
@@ -424,6 +450,27 @@ def project_completed_group(previous, documents, evidence, receipt_generations, 
         # This is the existing label-only serving handoff: old numerical
         # acceptance and exact dates remain valid while labels are projected.
         affected_owners = {change["public_id"] for change in trace["changes"]}
+        for occupation in occupations:
+            name, pid = occupation.old, occupation.owner
+            routes = [
+                (segment["last_timestamp"], segment["ticker_ownership_interval"])
+                for kind, reports in completed_reports.items()
+                if name in reports
+                for segment in reports[name]["correlated"]["segments"]
+                if segment["adjustment"] == "raw"
+                and segment["security_identity"]["security_id"] == pid
+                and segment["historical_symbol"] == name
+                and segment.get("ticker_ownership_interval") in occupation.intervals
+                and (kind != "current_year" or segment["from"][:7] < previous[name]["anchor_month"])
+            ]
+            if routes:
+                receipts[name] = {
+                    **receipts[name],
+                    "observation_routes": {
+                        **receipts[name]["observation_routes"],
+                        pid: list(max(routes, key=lambda route: route[0])),
+                    },
+                }
         for source, prior in previous.items():
             if not affected_owners.intersection(
                 identity["security_id"] for identity in prior["identity_memberships"]

@@ -967,12 +967,26 @@ def process_group(
                 )
                 label_previous, label_boundaries = previous, {}
                 if context.accept_ruleset().dated_labels:
+                    from libs.alpaca_end_of_day_security_correlation.split_rename_ownership import (
+                        VERSION as SPLIT_RENAME_VERSION,
+                    )
+
                     from .label_updates import applicable as applicable_labels
                     from .label_updates import complete as complete_labels
                     from .label_updates import possible as possible_labels
+                    from .label_updates import split_rename_pending
 
-                    if not applicable_labels(previous) and possible_labels(
-                        previous, {name: prior["evidence"] for name, prior in previous.items()}
+                    labels_current = applicable_labels(previous)
+                    split_renames = (
+                        correlation_policy.implementation_correlation_version >= SPLIT_RENAME_VERSION
+                        and split_rename_pending(previous, labels_current=labels_current)
+                    )
+                    if (
+                        split_renames
+                        or not labels_current
+                        and possible_labels(
+                            previous, {name: prior["evidence"] for name, prior in previous.items()}
+                        )
                     ):
                         provider_evidence = {
                             name: evidence_client.provider_view(prior["evidence"])
@@ -987,6 +1001,9 @@ def process_group(
                             {name: index["symbols"].get(name, {}).get("sha256") for name in previous},
                             source_work_cache,
                             assignment_cache=assignment_boundaries,
+                            split_renames=split_renames,
+                            labels_current=labels_current,
+                            serving_groups=context.dated_label_serving_groups,
                         )
                 receipts = {
                     symbol: {

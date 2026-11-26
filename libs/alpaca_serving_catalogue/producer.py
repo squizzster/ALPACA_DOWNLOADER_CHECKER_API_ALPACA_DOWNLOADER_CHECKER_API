@@ -449,11 +449,26 @@ def maintain(
                             result["reused_groups"] += 1
                             result["published_components"] += 1
                     replaced = previous - retained
-                    prior_groups = (
-                        storage.read_groups(store, replaced, generation=controls["state"]["generation"])
-                        if replaced
+                    # A selected lineage producer may already have borrowed the
+                    # exact serving group to cut new metadata at its accepted
+                    # session dates. Unrelated groups retain the normal read path.
+                    borrowed = (
+                        getattr(context, "dated_label_serving_groups", {})
+                        if getattr(context, "store", None) == store
                         else {}
                     )
+                    prior_groups = {
+                        key: borrowed[key]
+                        for key in replaced
+                        if key in borrowed
+                        and borrowed[key]["decision_generation"]
+                        == controls["groups"][key]["decision_generation"]
+                    }
+                    missing = replaced - prior_groups.keys()
+                    if missing:
+                        prior_groups.update(
+                            storage.read_groups(store, missing, generation=controls["state"]["generation"])
+                        )
                     if "gap_suffix_reviews" in controls["state"]:
                         # The catalogue screen covers its own policy only. During
                         # an explicit policy migration the selected group can still

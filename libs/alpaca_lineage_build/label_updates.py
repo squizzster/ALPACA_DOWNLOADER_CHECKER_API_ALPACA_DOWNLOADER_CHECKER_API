@@ -74,7 +74,11 @@ def pending(previous, evidence, *, selected=None):
     if not all(previous.values()) or not possible(previous, evidence):
         return False
     selected = binding(previous, evidence) if selected is None else selected
-    return any(prior.get("dated_label_completion") != selected for prior in previous.values())
+    return any(
+        not (held := prior.get("dated_label_completion"))
+        or any(held.get(field) != value for field, value in selected.items())
+        for prior in previous.values()
+    )
 
 
 class _Dates:
@@ -113,12 +117,44 @@ class _Dates:
         return self.cache[payload_key]
 
 
-def complete(store, root, previous, sources, evidence, generations, cache, *, assignment_cache):
+def split_rename_pending(previous, *, labels_current):
+    from . import retained_split_renames
+
+    if len(previous) < 2 or not all(previous.values()):
+        return False
+    held = next(iter(previous.values())).get("dated_label_completion") or {}
+    if (
+        labels_current
+        and "split_rename_evidence" in held
+        and held["split_rename_evidence"] == retained_split_renames.evidence_binding(previous)
+    ):
+        return False
+    return retained_split_renames.possible(previous)
+
+
+def complete(
+    store,
+    root,
+    previous,
+    sources,
+    evidence,
+    generations,
+    cache,
+    *,
+    assignment_cache,
+    split_renames=False,
+    labels_current=False,
+    serving_groups=None,
+):
     """Finish once under already held group/pricing locks; retain through retry."""
     from .source_work import assignment_documents
 
     selected = binding(previous, evidence)
-    if not pending(previous, evidence, selected=selected):
+    if split_renames:
+        from .retained_split_renames import SessionCuts, evidence_binding
+
+        selected["split_rename_evidence"] = evidence_binding(previous)
+    elif not pending(previous, evidence, selected=selected):
         return previous, {}, None
     key = ("dated_labels", tuple(sorted(generations.items())), tuple(sorted(selected["sources"].items())))
     accepted = cache.get(key)
@@ -134,10 +170,27 @@ def complete(store, root, previous, sources, evidence, generations, cache, *, as
         }
         for kind in {kind for parts in documents.values() for kind in parts}
     }
-    receipts, changed, trace = project_completed_group(
-        previous, documents, evidence, generations, date_inputs=inputs
+    completed = next(iter(previous.values())).get("dated_label_plan") if labels_current else None
+    decision = (
+        None
+        if completed is None
+        else (
+            {(entry["public_id"], entry["alias"]): entry["periods"] for entry in completed["preferences"]},
+            [reason for reason in completed["reasons"] if "split_rename_assessment" not in reason],
+        )
     )
-    receipts = stamp(receipts, evidence, trace["plan"])
+    receipts, changed, trace = project_completed_group(
+        previous,
+        documents,
+        evidence,
+        generations,
+        date_inputs=inputs,
+        decision=decision,
+        session_cuts=SessionCuts(store, previous, generations, serving_groups) if split_renames else None,
+    )
+    receipts = stamp(
+        receipts, evidence, trace["plan"], split_rename_evidence=selected.get("split_rename_evidence")
+    )
     result = receipts, changed, trace
     cache[key] = selected, result
     return result
@@ -191,8 +244,12 @@ def continue_plan(previous, evidence, reports):
     return preferences, completed["reasons"]
 
 
-def stamp(receipts, evidence, decision):
+def stamp(receipts, evidence, decision, *, split_rename_evidence=None):
     selected = binding(receipts, evidence)
+    if split_rename_evidence is not None:
+        from copy import deepcopy
+
+        selected["split_rename_evidence"] = deepcopy(split_rename_evidence)
     encoded = encode_plan(decision)
     return {
         name: {**receipt, "dated_label_completion": selected, "dated_label_plan": encoded}
@@ -203,6 +260,7 @@ def stamp(receipts, evidence, decision):
 def validate_completion(receipt):
     """Accept a declared compact label handoff once at receipt ingress."""
     from .contract import LineageError, valid_sha256
+    from .retained_split_renames import valid_evidence_binding
 
     if "dated_label_completion" not in receipt and "dated_label_plan" not in receipt:
         return
@@ -210,8 +268,11 @@ def validate_completion(receipt):
     if (
         not isinstance(completion, dict)
         or completion.get("producer") != NAME
-        or set(completion) != {"producer", "sources", "assignments", "actions", "requests"}
+        or set(completion) - {"split_rename_evidence"}
+        != {"producer", "sources", "assignments", "actions", "requests"}
         or not isinstance(completion["sources"], dict)
+        or "split_rename_evidence" in completion
+        and not valid_evidence_binding(completion["split_rename_evidence"], completion["sources"].keys())
         or not all(valid_sha256(value) for value in completion["sources"].values())
         or completion["sources"].get(receipt["symbol"]) != receipt["source_sha256"]
         or not isinstance(completion["assignments"], dict)

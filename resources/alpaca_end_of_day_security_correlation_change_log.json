@@ -667,5 +667,10 @@
     "modifications": [
       "Attribute observed trades to their original security when native special-distribution terms match a reported cash merger and a later action identifies the departing CUSIP and a distinct recipient."
     ]
+  },
+  {
+    "modifications": [
+      "Bound the trading label across a native same-ticker split followed by a rename when the CUSIP and provider identity chain distinguishes the continuing security."
+    ]
   }
 ]

@@ -23,6 +23,11 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (28, 27, 114, 133):
+        # Frozen comparisons retain their own split and rename policy.
+        binding = {**binding, "correlation_runtime": 113, "lineage_runtime": 132}
+        bindings.append(binding)
+        current = (28, 27, 113, 132)
     if allow_previous and current == (28, 27, 113, 132):
         # Frozen comparisons retain the policy that produced their selected output.
         binding = {**binding, "correlation_runtime": 112, "lineage_runtime": 131}

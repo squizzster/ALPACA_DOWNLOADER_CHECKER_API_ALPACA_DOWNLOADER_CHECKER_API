@@ -60,6 +60,7 @@ class OperationContext:
         self.sourced_operations = {}
         self.completed_membership_plans = {}
         self.group_completions = {}
+        self.dated_label_serving_groups = {}
 
     def cache_history(self, kind, symbol, record, scope):
         cache = self.history_checks if kind == "check" else self.history_comparisons

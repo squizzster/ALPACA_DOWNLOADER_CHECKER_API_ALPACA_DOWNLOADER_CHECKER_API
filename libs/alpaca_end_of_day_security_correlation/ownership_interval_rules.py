@@ -16,6 +16,7 @@ from .occupancy_anchor import (
 )
 from .same_ticker_distribution import NAME as SAME_TICKER_DISTRIBUTION
 from .security_identity import security_identity_for_alpaca_assets
+from .split_rename_ownership import split_rename_occupations
 from .stock_merger_occupation import DEPARTURE_NAME, select_departure, select_occupation
 from .stock_merger_occupation import NAME as DISTINCT_STOCK_MERGER_OCCUPATION
 from .uuid_lineage import IDENTITY_PRESERVING_SPLIT_EDGE_TYPES, build_uuid_lineage_edges
@@ -96,6 +97,8 @@ class _OwnershipIntervalRuleContext:
     allow_closed_prior_action_anchored_suffix: bool = False
     closed_prior_terminal_conflicts: bool = True
     sourced_successions: tuple = ()
+    bound_split_renames: bool = False
+    split_rename_conflict: Callable | None = None
 
 
 @dataclass(frozen=True)
@@ -413,9 +416,62 @@ def _apply_name_change_rule(
                     }
                 )
 
+    if context.bound_split_renames and len(name_changes) > 1:
+        for occupation in split_rename_occupations(
+            context.lineage,
+            context.uuid_lineage_edges,
+            conflict_reason=context.split_rename_conflict,
+            issues=evidence_issues,
+        ):
+            _bound_split_rename(intervals, occupation, rule_order, rule_name)
     return _OwnershipIntervalRuleResult(
         intervals=_merge_exact_intervals(intervals),
         evidence_issues=tuple(evidence_issues),
+    )
+
+
+def _bound_split_rename(intervals, occupation, rule_order, rule_name):
+    """Refine only the two open constraints already placed by the name changes."""
+    arrival, departure = occupation.arrival, occupation.departure
+    symbol = arrival.successor_symbol
+    scoped = [
+        item
+        for item in intervals
+        if item.historical_symbol == symbol
+        and (item.end_date_exclusive is None or item.end_date_exclusive > arrival.effective_date)
+        and (item.start_date_inclusive is None or item.start_date_inclusive < departure.effective_date)
+    ]
+    if len(scoped) != 2:
+        return
+    entering = (symbol, arrival.successor_cusip, arrival.successor_asset_id, arrival.effective_date, None)
+    leaving = (
+        symbol,
+        departure.predecessor_cusip,
+        departure.predecessor_asset_id,
+        None,
+        departure.effective_date,
+    )
+    if {item.interval_key() for item in scoped} != {entering, leaving}:
+        return
+    for item in scoped:
+        intervals.remove(item)
+    intervals.extend(split_rename_intervals(occupation, rule_order, rule_name))
+
+
+def split_rename_intervals(occupation, rule_order, rule_name="name_change_ticker_transition"):
+    """The held split path supplies every transition and each issue's dated scope."""
+    path = occupation.edges
+    applied = AppliedOwnershipIntervalRule(rule_order, rule_name, tuple(edge.action_id for edge in path))
+    return tuple(
+        TickerOwnershipInterval(
+            left.successor_symbol,
+            left.successor_cusip,
+            left.successor_asset_id,
+            left.effective_date,
+            right.effective_date,
+            (applied,),
+        )
+        for left, right in zip(path, path[1:])
     )
 
 
@@ -1211,6 +1267,8 @@ def prepare_ticker_ownership(
     allow_cross_label_stock_merger_occupation: bool = False,
     allow_stock_merger_departure: bool = False,
     sourced_successions: tuple = (),
+    bound_split_renames: bool = True,
+    split_rename_conflict=None,
 ) -> PreparedTickerOwnership:
     # This owner translates dated evidence into ticker-ownership intervals.
     # Intervals constrain row allocation; they do not themselves merge provider
@@ -1239,6 +1297,8 @@ def prepare_ticker_ownership(
         allow_closed_prior_action_anchored_suffix=allow_closed_prior_action_anchored_suffix,
         closed_prior_terminal_conflicts=closed_prior_terminal_conflicts,
         sourced_successions=sourced_successions,
+        bound_split_renames=bound_split_renames,
+        split_rename_conflict=split_rename_conflict,
     )
     intervals: tuple[TickerOwnershipInterval, ...] = ()
     established = None
@@ -1297,6 +1357,8 @@ def build_ticker_ownership_intervals(
     allow_cross_label_stock_merger_occupation: bool = False,
     allow_stock_merger_departure: bool = False,
     sourced_successions: tuple = (),
+    bound_split_renames: bool = True,
+    split_rename_conflict=None,
 ) -> tuple[list[TickerOwnershipInterval], list[dict[str, Any]]]:
     prepared = prepare_ticker_ownership(
         lineage,
@@ -1308,5 +1370,7 @@ def build_ticker_ownership_intervals(
         allow_cross_label_stock_merger_occupation=allow_cross_label_stock_merger_occupation,
         allow_stock_merger_departure=allow_stock_merger_departure,
         sourced_successions=sourced_successions,
+        bound_split_renames=bound_split_renames,
+        split_rename_conflict=split_rename_conflict,
     )
     return list(prepared.complete), list(prepared.complete_issues)
