@@ -212,6 +212,24 @@ when the response identifies the requested ticker and has no continuation token.
 The network observation applies to that dated trade. Asset
 lookups separately retain the provider's current or terminal exchange snapshot.
 
+#### Changes of listing exchange
+
+During an ordinary update, lineage retains both dated Alpaca asset observations when the same US-equity
+UUID changes listing exchange. The source receipt's `listing_exchange_changes` records each symbol,
+exchange and observation time. A ticker reused by a different UUID cannot create a transfer. The first
+snapshot on a fresh store supplies a starting point. Earlier transfers require earlier evidence.
+
+For a stable ticker moving between NYSE and Nasdaq, the producer can narrow the date using literal
+SIP trades. It looks within the latest 15 eligible market sessions around the observations and retains
+the samples it uses. An old-network trade and a new-network trade on adjacent scheduled sessions
+establish `prior_session` and `effective_session`. Where the new snapshot arrives ahead of trading,
+an old-network print can select one follow-up on the next eligible session. The compact lineage index
+schedules that observation after the session closes and the data delay has elapsed. This also covers
+weekends and early closes. An unchanged update before then leaves the pending observation in place.
+When the networks cannot distinguish the exchanges, the ticker changes, or either trade is unavailable,
+the receipt can still publish both asset observations with an unknown effective session.
+The [metadata companion](exports.md#security-metadata-companion) exposes these changes by public ID.
+
 A fresh listed-equity history can have a zero-volume, zero-trade final SIP bar on the
 effective date of a cash merger. When the acquiree ticker and CUSIP resolve to the
 same inactive asset, lineage requests the last reported SIP trade from the most recent
@@ -1028,8 +1046,9 @@ A same-span price correction, even in older history, cannot select historical ac
 A backward history extension acquires the uncovered action prefix up to the day before the accepted query start,
 plus the ordinary current window; the accepted middle and unchanged mappings remain reusable. Missing retained
 query coverage requires explicit metadata refresh. Workflow
-refresh classifies accepted endpoint facts first: descriptive changes preserve the continuation window;
-changed identity/class/exchange facts or explicit historical refresh select their owning evidence scope.
+refresh classifies accepted endpoint facts first. A newly observed exchange can accompany a previously
+unknown rename or reorganization. A changed identity, class, or exchange and an explicit historical
+refresh select the owning action discovery window. Pricing reuse follows the resulting evidence.
 Fresh prefetched actions take precedence over a retained report covering the same dates, including at an
 unchanged cutoff. That completed current window can discover new dependencies without reopening older actions.
 An unchanged action's completed CUSIP→ID lookup, including a negative result, remains authoritative. Current
@@ -1109,6 +1128,10 @@ allowing only advancing observation/mapping cutoffs. Fresh mapping, action, disp
 still participate. A descriptive name/status/tradable change on the same provider UUID, symbol, class and exchange
 affects new-session projection but does not revoke accepted row owners; accepted continuation also excludes
 action-query bounds and the diagnostic maximum row count from historical equality.
+An exchange transfer can also preserve accepted rows for a single-source, single-UUID listed security
+whose rows are all resolved. Its other historical facts must agree and its actions must be limited to
+cash dividends and forward or reverse splits. A competing owner, structural event or OTC endpoint
+keeps the existing ownership review applicable.
 The workflow's metadata-refresh obligation uses this same classification before choosing historical pricing
 work; requesting a fresh description is not itself a request to recalculate historical ownership.
 

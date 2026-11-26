@@ -292,5 +292,10 @@
     "modifications": [
       "Publish a compact, generation-bound metadata companion for online identities and exact native pricing export selections through DataLibrary."
     ]
+  },
+  {
+    "modifications": [
+      "Write version-2 security metadata companions with attributable exchange changes, their observation times and available effective sessions. Advertise the new field when the selected publications support it."
+    ]
   }
 ]

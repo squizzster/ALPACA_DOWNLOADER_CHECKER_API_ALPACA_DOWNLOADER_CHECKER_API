@@ -27,6 +27,7 @@ from libs.alpaca_security_lineage.settings import ACTION_TYPE_BY_RESPONSE_KEY, M
 from libs.common.debug_trace import event
 
 from .contract import LineageError, document_digest
+from .exchange_changes import dating_due, next_dating_time, record_exchange_changes
 from .terminal_cash_trade import FIELD as TERMINAL_CASH_TRADE_FIELD
 from .terminal_cash_trade import carry_terminal_cash_trade
 from .trade_tape import record_samples
@@ -453,6 +454,10 @@ class EvidenceClient:
 
     def evidence_current(self, evidence):
         """New producer reports must use this operation's acquired observations."""
+        if self.observation and dating_due(
+            next_dating_time(evidence), self.observation["catalogue_observed_at_utc"]
+        ):
+            return False
         for lookup in evidence["asset_lookups"]:
             identifier = lookup["lookup"]
             if lookup["lookup_kind"] == "asset_id":
@@ -1120,6 +1125,9 @@ class WindowClient:
                 and prior.get("retained_symbol_lookup") == positive
                 and (conflict is None or prior.get("catalogue_conflict") == conflict)
             ):
+                if prior.get("source") == "asset_catalogue" and "observed_at_utc" not in prior:
+                    stamp = self.previous["evidence"].get("catalogue_observed_at_utc")
+                    return {**prior, "observed_at_utc": stamp}
                 return prior
             current = self.client.get_asset_lookup(identifier, lookup_kind="asset_id", reason="retired_symbol")
         asset = current.get("asset")
@@ -1140,6 +1148,9 @@ class WindowClient:
             )
             error.request_identifiers = [identifier]
             raise error
+        observed_at = current.get("observed_at_utc")
+        if observed_at is None and current.get("source") == "asset_catalogue":
+            observed_at = (self.client.observation or {}).get("catalogue_observed_at_utc")
         lookup = {
             "lookup_kind": "asset_id",
             "lookup": identifier,
@@ -1148,6 +1159,7 @@ class WindowClient:
             "asset": compact_asset(asset) if asset else None,
             "found": asset is not None,
             "source": current.get("source", "exact_uuid"),
+            **({"observed_at_utc": observed_at} if observed_at else {}),
             "retained_symbol_lookup": positive,
             **({"catalogue_conflict": conflict} if conflict else {}),
         }
@@ -1267,7 +1279,22 @@ def retained_metadata(view, client, previous, *, refresh=False):
     )
 
 
-def acquire(view, client, previous=None, *, refresh=False, query_dates=None, observe_new_tapes=True):
+def _exchange_predecessor(symbol, client, previous, auxiliary_evidence):
+    if previous is None and auxiliary_evidence:
+        return {"symbol": symbol, "evidence": client.provider_view(auxiliary_evidence)}
+    return previous
+
+
+def acquire(
+    view,
+    client,
+    previous=None,
+    *,
+    refresh=False,
+    query_dates=None,
+    observe_new_tapes=True,
+    previous_exchange_evidence=None,
+):
     if previous:
         evidence = client.provider_view(previous["evidence"], local_report=view.local)
         if evidence is not previous["evidence"]:
@@ -1301,6 +1328,8 @@ def acquire(view, client, previous=None, *, refresh=False, query_dates=None, obs
         evidence = _finish_evidence(evidence, window)
         if not window.evidence_current(evidence):
             continue  # A later symbol lookup changed an earlier retained dependency.
+        exchange_prior = _exchange_predecessor(view.symbol, client, previous, previous_exchange_evidence)
+        record_exchange_changes(evidence, exchange_prior, window.client, observe_new_tapes=observe_new_tapes)
         if observe_new_tapes:
             record_samples(view, evidence, window, refresh=refresh)
         return evidence
@@ -1358,7 +1387,7 @@ def _finish_evidence(evidence, window):
     return evidence
 
 
-def acquire_unpriced(symbol, request, client, *, previous=None):
+def acquire_unpriced(symbol, request, client, *, previous=None, previous_exchange_evidence=None):
     """Query metadata independently of bars, without fabricating a pricing input."""
     local = {
         "present": False,
@@ -1383,6 +1412,8 @@ def acquire_unpriced(symbol, request, client, *, previous=None):
             continue
         evidence = _finish_evidence(evidence, window)
         if window.evidence_current(evidence):
+            exchange_prior = _exchange_predecessor(symbol, client, retained, previous_exchange_evidence)
+            record_exchange_changes(evidence, exchange_prior, window.client)
             return evidence
     raise LineageError("metadata lookup changes exceeded the name-change traversal limit")
 

@@ -25,6 +25,7 @@ from . import storage, universe_state
 from .catalogue import DISCOVERY_EXCHANGES, by_symbol, discovery_labels
 from .comparison_route_review import select_reviews
 from .contract import LineageError, document_digest, reusable_decision
+from .exchange_changes import dating_due
 from .projection import require_complete
 from .work_contract import (
     acquisition_fingerprint,
@@ -230,7 +231,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
     changed, mapping, failures = changed_evidence(
         index, observation, evidence_client, excluded=excluded, work=state["work"]
     )
-    reconciled = set().union(*(graph.closure({s}) for s in changed)) if changed else set()
+    listing_dates = {}
     mapping_groups = set().union(*(graph.closure({s}) for s in mapping)) if mapping else set()
     reasons = {}
 
@@ -248,6 +249,11 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         add(symbol, "changed_rules")
     for symbol, entry in entries.items():
         if symbol not in excluded:
+            if (due := entry["projection"].get("listing_date_after_utc")) and dating_due(
+                due, observation["catalogue_observed_at_utc"]
+            ):
+                listing_dates[symbol] = due
+                changed.add(symbol)
             try:
                 if retired_lookup_due(symbol, entry.get("projection", {}), evidence_client):
                     add(symbol, "retired_uuid_resolution")
@@ -293,6 +299,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
             )
         elif symbol in summarized and entry["projection"]["processed_through"][:10] < end_date:
             add(symbol, "advance_summary_coverage")
+    reconciled = set().union(*(graph.closure({s}) for s in changed)) if changed else set()
     for symbol in reconciled:
         add(symbol, "changed_metadata")
     for symbol in mapping_groups:
@@ -376,6 +383,7 @@ def select_work(accepted, observation, evidence_client, end_date, *, retry_block
         )
         item = {
             "reasons": sorted(why | (set(prior.get("reasons", [])) if unfinished else set())),
+            **({"listing_date_after_utc": listing_dates[symbol]} if symbol in listing_dates else {}),
             "end_exclusive": end_date,
             "pricing_start": required_start,
             "pricing_end_exclusive": required_end,

@@ -1309,7 +1309,7 @@ def publish(
                 },
                 "pricing": journal["sources"],
             }
-            # Metadata projection v1 uses the same unchanged receipt inputs and,
+            # Metadata projections use the same unchanged receipt inputs and,
             # for competing owners, the observation choices on each boundary.
             # The boundary generations are already unchanged. Their accepted
             # choice capability suffices; do not traverse the runs again.
@@ -1322,7 +1322,7 @@ def publish(
                 for symbol, receipt in receipts.items()
                 for kind in receipt["boundaries"]
             ):
-                journal["serving_handoff"]["unchanged_metadata_projection_version"] = 1
+                journal["serving_handoff"]["unchanged_metadata_projection_version"] = 2
     if checks is not None:
         journal["checks"] = {
             "epoch": checks["epoch"],

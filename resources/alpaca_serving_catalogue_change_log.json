@@ -277,5 +277,10 @@
     "modifications": [
       "Publish identity-scoped asset snapshots, dated trades and native cash-merger terms in a transactional metadata projection. Support bounded preparation of legacy decisions from their selected lineage receipts."
     ]
+  },
+  {
+    "modifications": [
+      "Publish observed listing-exchange changes for unambiguous asset memberships, carrying effective sessions only from dated lineage evidence. Preserve generation-bound version-1 metadata with its original capabilities."
+    ]
   }
 ]

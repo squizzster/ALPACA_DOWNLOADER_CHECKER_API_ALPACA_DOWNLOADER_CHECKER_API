@@ -22,6 +22,7 @@ from libs.alpaca_lineage_build.metadata import (
     RetainedReportClient,
     WindowClient,
     acquire,
+    acquire_unpriced,
     dependencies,
 )
 from libs.alpaca_lineage_build.pipeline import run_lineage
@@ -98,6 +99,29 @@ class RetiredLabelTests(TestCase):
                             acquire(self.view, client, self.prior)
                 self.assertEqual(calls, [OLD, IDENTIFIER])
 
+    def test_renamed_assets_keep_the_exchange_and_observation_time_on_each_route(self):
+        changed = {**self.new, "exchange": "NYSE"}
+        stamp = "2026-10-22T08:00:00+00:00"
+        for records in ([changed], [asset("PEER")]):
+            with self.subTest(records=records):
+                native = IdentityClient({IDENTIFIER: changed})
+                original = native.get_asset_lookup
+
+                def dated(identifier):
+                    return {**original(identifier), "observed_at_utc": stamp}
+
+                catalogue = {**observation(records), "catalogue_observed_at_utc": stamp}
+                client = EvidenceClient(native, observation=catalogue)
+                with patch.object(native, "get_asset_lookup", side_effect=dated):
+                    evidence = acquire(self.view, client, self.prior)
+                (event,) = evidence["listing_exchange_changes"]
+                self.assertEqual(
+                    (event["from_symbol"], event["from_exchange"], event["to_symbol"], event["to_exchange"]),
+                    (OLD, self.old["exchange"], NEW, changed["exchange"]),
+                )
+                self.assertEqual(event["to_observed_at_utc"], stamp)
+                self.assertNotIn("effective_session", event)
+
     def test_reassembling_an_old_positive_does_not_extend_its_observation_date(self):
         next_catalogue = {**observation([self.new]), "catalogue_observed_at_utc": "2026-10-22T08:00:00+00:00"}
         bare = IdentityClient({})
@@ -114,6 +138,26 @@ class RetiredLabelTests(TestCase):
             valid_bars("2026-10-19", "2026-10-22"), correlation_source(OLD, asof="2026-10-22"), facts, []
         )
         self.assertEqual(report["uncorrelated"][0]["first_session_date"], "2026-10-21")
+
+    def test_unpriced_and_first_priced_source_carry_the_same_exchange_observations(self):
+        request = {"start": "2026-10-01", "end_exclusive": "2026-10-22", "asof": "2026-10-22"}
+        first = acquire_unpriced(
+            OLD, request, EvidenceClient(IdentityClient({}), observation=observation([self.old]))
+        )
+        row = {**self.old, "exchange": "AMEX"}
+        changed = {**observation([row]), "catalogue_observed_at_utc": "2026-10-21T19:00:00Z"}
+        second = acquire_unpriced(
+            OLD,
+            request,
+            EvidenceClient(IdentityClient({}), observation=changed),
+            previous_exchange_evidence=first,
+        )
+        self.assertEqual(len(second["listing_exchange_changes"]), 1)
+        priced = acquire(
+            self.view, EvidenceClient(IdentityClient({}), observation=changed), previous_exchange_evidence=second
+        )
+        self.assertEqual(priced["listing_exchange_changes"], second["listing_exchange_changes"])
+        self.assertEqual(priced["listing_exchange_changes"][0]["to_exchange"], "AMEX")
 
     def test_observations_bound_supported_dates_and_keep_conflicts_explicit(self):
         facts = acquire(

@@ -105,6 +105,15 @@ class CompletedGroupPublication:
     expanded_prefixes: tuple = ()
 
 
+def _prior_auxiliary_evidence(symbol, previous):
+    # A formerly unpriced member can be the new seed. Its accepted observations
+    # belong to the prior priced group, already held under the same lock.
+    for receipt in previous.values():
+        if member := unavailable_pricing(receipt).get(symbol):
+            return member.get("evidence")
+    return None
+
+
 def consume_membership_plan(context, completion):
     """Acknowledge only the exact transient plan this successful group consumed."""
     selected = completion.get("accepted_membership_plan")
@@ -1281,6 +1290,9 @@ def process_group(
                                         else evidence_client,
                                         prior,
                                         refresh=full,
+                                        previous_exchange_evidence=None
+                                        if prior
+                                        else _prior_auxiliary_evidence(symbol, previous),
                                     )
                                 evidence[symbol] = metadata_cache[key]
                             deps[symbol] = (
@@ -1303,6 +1315,7 @@ def process_group(
                                     missing["request"],
                                     evidence_client,
                                     previous=missing.get("evidence") if reuse_metadata else None,
+                                    previous_exchange_evidence=_prior_auxiliary_evidence(symbol, previous),
                                 )
                             auxiliary = missing["evidence"]
                             deps[symbol] = dependencies(auxiliary, symbol)
@@ -1770,6 +1783,9 @@ def process_group(
                                         else evidence_client,
                                         prior,
                                         refresh=full,
+                                        previous_exchange_evidence=None
+                                        if prior
+                                        else _prior_auxiliary_evidence(symbol, previous),
                                     )
                                 evidence[symbol] = metadata_cache[key]
                             deps[symbol] = (
@@ -1792,6 +1808,7 @@ def process_group(
                                     missing["request"],
                                     evidence_client,
                                     previous=missing.get("evidence") if reuse_metadata else None,
+                                    previous_exchange_evidence=_prior_auxiliary_evidence(symbol, previous),
                                 )
                             auxiliary = missing["evidence"]
                             deps[symbol] = dependencies(auxiliary, symbol)

@@ -80,6 +80,7 @@ line in ascending `public_id` order. Consume a run once its manifest is publishe
 | `asset_snapshots` | Attributable Alpaca asset observations, with the returned symbol, observation time and available descriptive or trading fields. |
 | `trade_observations` | Attributable historical prints with their actual session and timestamp, request and returned symbol, mapping date, feed, reporting tape and execution venue. |
 | `corporate_actions` | An identity-attributed terminal cash merger records the acquired security's role, symbol and CUSIP, provider action ID, effective date, optional process date and exact cash rate as a string. |
+| `listing_exchange_changes` | An earlier and later Alpaca asset observation show different listing exchanges for the same security. Each endpoint retains its observed ticker, exchange and UTC observation time. |
 
 For example, a security can have stored sessions under a former ticker, a later inactive OTC asset
 snapshot and an earlier trade on the Nasdaq UTP tape. These are three facts with different scopes.
@@ -87,6 +88,17 @@ The tape records one observed print. An exchange effective interval requires a p
 An asset snapshot retains fields observed together, including an explicit `tradable: false`.
 Only a positively observed trade can supply tape data. Acquisition errors and group-level events
 remain outside an individual security's record.
+
+For a listing change, `from_observed_at_utc` and `to_observed_at_utc` date the two asset snapshots.
+An adjacent-session tape comparison can establish `prior_session` and `effective_session`. The
+API may show the new exchange before trading starts there, so the effective session can follow the
+second snapshot. An unpriced group member can supply the snapshots when accepted UUID membership
+identifies the same online security.
+Both dates are omitted when the effective session is unknown. Separate source publications can
+describe the same observed endpoints. The companion retains one change and carries a uniquely
+supported session pair. If reported session pairs conflict, both exchange observations remain present
+and the effective date stays unknown.
+
 Check the manifest's extensions to determine which optional evidence was available to the exporter.
 An absent collection means the companion contains no values of that kind for this identity.
 
@@ -113,7 +125,10 @@ group. Preparation uses each selected pending group's accepted lineage evidence 
 Groups already prepared at the applicable generation are reused. Enriched export requires the published
 metadata for its selected groups. A lineage migration can carry a prepared result to the new generation
 when it preserves the metadata inputs, including the assignment evidence used for competing owners.
-A changed evidence capability requires preparation for the affected group.
+If the migration changes those inputs, only the affected group needs a new projection. Version-2 companions
+consume earlier generation-matched version-1 serving metadata with its original three extensions.
+The manifest advertises listing changes when the selection includes a version-2 projection. A mixed
+selection can therefore include identities whose prepared metadata predates listing-change collection.
 
 ## Per-identity CSV export
 

@@ -1,5 +1,5 @@
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from libs.alpaca_serving_catalogue.metadata_evidence import project_group_evidence
 
@@ -366,3 +366,99 @@ class MetadataEvidenceTests(TestCase):
         ]
         rows = project_group_evidence(self.records, self.receipts)["later"]["asset_snapshots"]
         self.assertEqual([(r["symbol"], r["tradable"]) for r in rows], [("NEW", True), ("NEW", False)])
+
+    def test_exchange_changes_preserve_observed_bracket_and_unique_effective_sessions(self):
+        bracket = {
+            "from_symbol": "FORMER",
+            "to_symbol": "ARCHIVED",
+            "from_exchange": "XNYS",
+            "to_exchange": "XNAS",
+            "from_observed_at_utc": "2020-02-28T20:00:00Z",
+            "to_observed_at_utc": "2020-03-03T22:00:00Z",
+        }
+        before = {**bracket, "asset_id": "old_uuid", "sample_details": {"internal": True}}
+        self.receipts["ARCHIVED"]["evidence"]["listing_exchange_changes"] = [before]
+        self.receipts["SHARED"]["evidence"]["listing_exchange_changes"] = [dict(before)]
+
+        def published():
+            facts = project_group_evidence(self.records, self.receipts)
+            self.assertNotIn("listing_exchange_changes", facts["later"])
+            return facts["former"].get("listing_exchange_changes")
+
+        self.assertEqual(published(), [bracket])
+        dates = {"prior_session": "2020-02-28", "effective_session": "2020-03-02"}
+        self.receipts["SHARED"]["evidence"]["listing_exchange_changes"][0].update(dates)
+        self.assertEqual(published(), [{**bracket, **dates}])
+        before.update(prior_session="2020-03-02", effective_session="2020-03-03")
+        self.assertEqual(published(), [bracket])
+        self.receipts["SHARED"]["identity_memberships"].append(
+            {"security_id": "offline", "member_alpaca_asset_ids": ["old_uuid"]}
+        )
+        self.assertIsNone(published())
+
+    def test_unbound_and_legacy_changes_do_not_become_online_metadata(self):
+        self.receipts["ARCHIVED"]["evidence"].update(
+            event_supplements=["archived provenance"], listing_exchange_changes=[{"asset_id": "old_uuid"}]
+        )
+        self.receipts["SHARED"]["evidence"]["listing_exchange_changes"] = [{"asset_id": "unrelated_uuid"}]
+        for record in project_group_evidence(self.records, self.receipts).values():
+            self.assertNotIn("listing_exchange_changes", record)
+
+    def test_unpriced_group_evidence_attributes_only_the_unique_native_listing_observation(self):
+        public = {
+            "from_symbol": "OLD",
+            "from_exchange": "NYSE",
+            "from_observed_at_utc": "2020-03-05T22:00:00Z",
+            "to_symbol": "OLD",
+            "to_exchange": "NASDAQ",
+            "to_observed_at_utc": "2020-03-08T14:00:00Z",
+            "prior_session": "2020-03-06",
+            "effective_session": "2020-03-09",
+        }
+        change = {**public, "asset_id": "old_uuid"}
+        auxiliary = {
+            "OLD": {
+                "evidence": {
+                    "listing_exchange_changes": [change],
+                    "historical_trade_tape": print_sample("SHARED", "2020-03-06"),
+                    "asset_lookups": [lookup("OLD", "old_uuid", status="active")],
+                }
+            },
+            "UNRELATED": {"evidence": {"listing_exchange_changes": [{"asset_id": "unowned"}]}},
+            "LEGACY": {
+                "evidence": {
+                    "event_supplements": ["authored"],
+                    "listing_exchange_changes": [{"asset_id": "old_uuid"}],
+                }
+            },
+            "ABSENT": {},
+        }
+        source = self.receipts["ARCHIVED"]
+        source["unavailable_pricing"] = auxiliary
+        other = self.receipts["SHARED"]
+        # The first native receipt already holds the group's complete union.
+        redundant = Mock(spec=dict)
+        redundant.values.side_effect = AssertionError("repeated group evidence")
+        other["unavailable_pricing"] = redundant
+        facts = project_group_evidence(self.records, self.receipts)
+        self.assertEqual(facts["former"]["listing_exchange_changes"], [public])
+        self.assertEqual([s["symbol"] for s in facts["former"]["asset_snapshots"]], ["ARCHIVED"])
+        self.assertEqual([s["session"] for s in facts["former"]["trade_observations"]], ["2020-03-02"])
+        self.assertNotIn("listing_exchange_changes", facts["later"])
+
+        change["asset_id"] = "new_uuid"
+        self.records.pop("later")
+        self.assertNotIn(
+            "listing_exchange_changes", project_group_evidence(self.records, self.receipts)["former"]
+        )
+        change["asset_id"] = "old_uuid"
+        other["identity_memberships"][0]["member_alpaca_asset_ids"].append("old_uuid")
+        self.assertNotIn(
+            "listing_exchange_changes", project_group_evidence(self.records, self.receipts)["former"]
+        )
+        other["identity_memberships"][0]["member_alpaca_asset_ids"].remove("old_uuid")
+        del other["unavailable_pricing"]
+        source["evidence"]["event_supplements"] = ["legacy"]
+        self.assertNotIn(
+            "listing_exchange_changes", project_group_evidence(self.records, self.receipts)["former"]
+        )

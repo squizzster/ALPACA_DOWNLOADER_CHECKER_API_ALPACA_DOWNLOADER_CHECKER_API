@@ -25,6 +25,7 @@ def obligation(item, previous=None):
         "required_pricing_acquisition",
         "invalidate_pricing",
         "refresh_metadata",
+        "listing_date_after_utc",
         "required_history_check",
         "correction_id",
         "pricing_correction",
@@ -172,7 +173,10 @@ def replacement_fingerprint(lookups):
 
 def evidence_requirement(item):
     """Approval/coverage changes do not renew an accepted evidence requirement."""
-    return item.get("evidence_fingerprint") or item["obligation_id"]
+    baseline = item.get("evidence_fingerprint") or item["obligation_id"]
+    if due := item.get("listing_date_after_utc"):
+        return document_digest({"evidence": baseline, "listing_date_after_utc": due})
+    return baseline
 
 
 def conditional_dependency(item):
@@ -282,6 +286,10 @@ def satisfied(item, entry, pending, *, approved=False):
     stamped = projection.get("update_obligation_id") == item["obligation_id"]
     return (
         not pending
+        and (
+            not item.get("listing_date_after_utc")
+            or projection.get("listing_date_after_utc") != item["listing_date_after_utc"]
+        )
         and numerical_satisfied(item, projection)
         and covers_pricing_start(item, projection.get("pricing_request"))
         and (

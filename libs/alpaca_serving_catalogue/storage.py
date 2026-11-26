@@ -300,15 +300,27 @@ def retarget_decision(store, key, handoff, accepted_state):
             "body=json_set(body, '$.references.lineage', json(?)) WHERE group_key=?",
             (new, new, key),
         )
-        if handoff.get("unchanged_metadata_projection_version") == 1:
-            # Preserve only the previously selected v1 result. An older journal,
-            # a changed evidence capability, or a missing legacy result still
-            # selects explicit preparation without repeating numerical work.
+        from . import metadata_projection
+
+        proof = handoff.get("unchanged_metadata_projection_version")
+        if (
+            type(proof) is int
+            and metadata_projection.OLDEST_READABLE_VERSION <= proof <= metadata_projection.VERSION
+        ):
+            # A v2 proof preserves the original capabilities of either stored
+            # projection. A frozen v1 proof covers only its original fields.
             try:
                 connection.execute(
-                    "UPDATE metadata_evidence SET lineage=? WHERE group_key=? AND version=1 AND lineage=? "
+                    "UPDATE metadata_evidence SET lineage=? WHERE group_key=? AND version BETWEEN ? AND ? AND lineage=? "
                     "AND decision_generation=(SELECT decision_generation FROM groups WHERE group_key=?)",
-                    (new, key, encoded(handoff["lineage_before"]), key),
+                    (
+                        new,
+                        key,
+                        metadata_projection.OLDEST_READABLE_VERSION,
+                        proof,
+                        encoded(handoff["lineage_before"]),
+                        key,
+                    ),
                 )
             except sqlite3.OperationalError as error:
                 if "no such table: metadata_evidence" not in str(error):

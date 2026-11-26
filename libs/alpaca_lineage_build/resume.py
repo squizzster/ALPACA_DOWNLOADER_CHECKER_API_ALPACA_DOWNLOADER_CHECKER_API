@@ -201,6 +201,7 @@ _NON_ASSIGNMENT_FIELDS = frozenset(
         "catalogue_observed_at_utc",
         "cusip_action_discovery",
         "historical_trade_tape",
+        "listing_exchange_changes",
         "mapped_historical_trade_tape",
         "mapping_endpoint_observations",
         "otc_historical_trade_tape",
@@ -229,6 +230,7 @@ def _evidence_facts(value, *, append=False, historical=False):
         if lookup.get("lookup_kind") == "symbol":
             lookup.pop("observed_at_utc", None)
         elif lookup.get("lookup_kind") == "asset_id":
+            lookup.pop("observed_at_utc", None)
             lookup.pop("catalogue_conflict", None)
     if append:
         # The accepted pricing handoff already covers this advancement.
@@ -247,7 +249,7 @@ def _evidence_facts(value, *, append=False, historical=False):
     return _historical_facts(result) if historical else result
 
 
-def _historical_facts(result):
+def _historical_facts(result, *, listed_asset=None):
     """Narrow an already prepared comparison to facts affecting historical ownership."""
     if "asset_lookups" in result:
         # A newly observed negative UUID lookup supplies no historical owner.
@@ -271,9 +273,48 @@ def _historical_facts(result):
         if {"id", "symbol", "class", "exchange"} <= projected.keys():
             for field in ("name", "status", "tradable"):
                 projected.pop(field, None)
+            if listed_asset == (projected["id"], projected["exchange"]):
+                projected.pop("exchange")
         return projected
 
     return without_descriptions(result)
+
+
+def _sole_listed_owner(prior, current):
+    """Scope a transfer to accepted rows having only one possible listed owner."""
+    if not current.get("listing_exchange_changes") or prior.get("unresolved_rows") != 0:
+        return None
+    left = prior["evidence"].get("identities", ())
+    right = current.get("identities", ())
+    members = prior.get("identity_memberships", ())
+    if len(left) != 1 or len(right) != 1 or len(members) != 1:
+        return None
+    before, after = left[0], right[0]
+    asset_id = before.get("id")
+    if (
+        not asset_id
+        or members[0]["member_alpaca_asset_ids"] != [asset_id]
+        or after.get("id") != asset_id
+        or any(
+            item.get("symbol") != prior["symbol"] or item.get("class") != "us_equity" for item in (before, after)
+        )
+        or any(item.get("exchange") in (None, "", "OTC") for item in (before, after))
+        or before["exchange"] == after["exchange"]
+        or any(
+            action.get("action_type") not in {"cash_dividend", "forward_split", "reverse_split"}
+            for action in current.get("corporate_actions", ())
+        )
+    ):
+        return None
+    if not any(
+        change["asset_id"] == asset_id
+        and change["from_exchange"] == before["exchange"]
+        and change["to_exchange"] == after["exchange"]
+        and change["from_symbol"] == change["to_symbol"] == prior["symbol"]
+        for change in reversed(current["listing_exchange_changes"])
+    ):
+        return None
+    return ((asset_id, before["exchange"]), (asset_id, after["exchange"]))
 
 
 def preserves_retired_prefix(prior, current):
@@ -312,15 +353,20 @@ def preserves_retired_prefix(prior, current):
     ) and all(lookup in current["asset_lookups"] for lookup in before["asset_lookups"] if lookup is not previous)
 
 
-def evidence_delta(previous, current, *, append=False):
+def evidence_delta(previous, current, *, append=False, sole_owner_receipt=None):
     """Classify held metadata facts by the narrowest lineage scope they can change."""
     before = _evidence_facts(previous, append=append)
     after = _evidence_facts(current, append=append)
     if before == after:
         return {"scope": "none", "changed_fields": []}
     changed = sorted(key for key in before.keys() | after.keys() if before.get(key) != after.get(key))
-    if append and _historical_facts(before) == _historical_facts(after):
-        return {"scope": "added_sessions", "changed_fields": changed}
+    if append:
+        listed = _sole_listed_owner(sole_owner_receipt, current) if sole_owner_receipt else None
+        old_listing, new_listing = listed or (None, None)
+        if _historical_facts(before, listed_asset=old_listing) == _historical_facts(
+            after, listed_asset=new_listing
+        ):
+            return {"scope": "added_sessions", "changed_fields": changed}
     return {"scope": "complete_group", "changed_fields": changed}
 
 
@@ -426,7 +472,12 @@ def requires_lineage(
             }
             if (append or completed_deltas is not None) and preserves_retired_prefix(prior, evidence[symbol])
             else evidence_delta(
-                prior["evidence"], evidence[symbol], append=append or completed_deltas is not None
+                prior["evidence"],
+                evidence[symbol],
+                append=append or completed_deltas is not None,
+                sole_owner_receipt=prior
+                if len(previous) == 1 and not (auxiliary_current or auxiliary_previous)
+                else None,
             )
         )
         if completed_deltas is not None:

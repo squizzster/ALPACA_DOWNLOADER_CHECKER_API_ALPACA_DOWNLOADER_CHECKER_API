@@ -26,24 +26,40 @@ def run(
             groups = {key: data._groups[key] for key in keys}
             all_online = len(groups) == len(data._groups)
             accept_export_inputs(data, groups)
+            versions = set()
             if destination is None:
                 ready = (
                     {}
                     if catalogue_only
-                    else metadata_projection.selected(data.store, groups, bodies=False, all_online=all_online)
+                    else metadata_projection.selected(
+                        data.store, groups, bodies=False, all_online=all_online, versions=versions
+                    )
                 )
                 return {
-                    **_metadata_export.plan(selection, len(groups), catalogue_only=catalogue_only),
+                    **_metadata_export.plan(
+                        selection,
+                        len(groups),
+                        catalogue_only=catalogue_only,
+                        extensions=_metadata_export.available_extensions(versions),
+                    ),
                     "groups_to_prepare": 0 if catalogue_only else len(groups) - len(ready),
                     "receipt_reads": 0,
                     "price_payload_reads": 0,
                     "provider_requests": 0,
                 }
             facts = (
-                {} if catalogue_only else metadata_projection.require(data.store, groups, all_online=all_online)
+                {}
+                if catalogue_only
+                else metadata_projection.require(data.store, groups, all_online=all_online, versions=versions)
             )
             return _metadata_export.write(
-                data, destination, selection, facts, catalogue_only=catalogue_only, progress=progress
+                data,
+                destination,
+                selection,
+                facts,
+                catalogue_only=catalogue_only,
+                extensions=_metadata_export.available_extensions(versions),
+                progress=progress,
             )
     except CatalogueError as error:
         raise DataLibraryError(str(error)) from error

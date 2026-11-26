@@ -153,6 +153,8 @@ offline. Both inherit `DataLibraryError`; malformed arguments raise `ValueError`
 `public_ids`, `symbols`, `csv_manifest` or `bloodhound_report`, plus `catalogue_only`. The writer also
 accepts `progress` and returns paths to the completed manifest and records. The
 [companion contract](exports.md#security-metadata-companion) defines the fields, selection and joins.
+Version-2 exports can include observed listing-exchange changes and effective session boundaries
+when supported by the selected serving publication.
 
 ## Pipeline execution
 

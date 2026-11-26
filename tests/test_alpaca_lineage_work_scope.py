@@ -16,6 +16,7 @@ from libs.alpaca_lineage_build import pipeline, policy_engine, storage, universe
 from libs.alpaca_lineage_build.assignment_handoff import selected
 from libs.alpaca_lineage_build.contract import LineageError
 from libs.alpaca_lineage_build.metadata import EvidenceClient
+from libs.alpaca_lineage_build.resume import evidence_delta
 from libs.alpaca_lineage_build.work_contract import WorkPolicy
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
 from libs.alpaca_serving_catalogue import policy
@@ -162,6 +163,42 @@ class LineageWorkScopeTests(unittest.TestCase):
         self.assertEqual(before["boundaries"], after["boundaries"])
         self.assertEqual(before["source_sha256"], after["source_sha256"])
         self.assertIn("Updated display name", repr(after["evidence"]))
+
+    def test_transfer_cannot_mask_a_competing_owner_or_material_action(self):
+        before = {**fixture.asset("FIRST"), "exchange": "NYSE"}
+        after = {**before, "exchange": "NASDAQ"}
+        event = {
+            "asset_id": before["id"],
+            "from_symbol": "FIRST",
+            "to_symbol": "FIRST",
+            "from_exchange": before["exchange"],
+            "to_exchange": after["exchange"],
+        }
+        baseline = {"identities": [before], "corporate_actions": []}
+        changed = {"identities": [after], "corporate_actions": [], "listing_exchange_changes": [event]}
+        receipt = {
+            "symbol": "FIRST",
+            "unresolved_rows": 0,
+            "evidence": baseline,
+            "identity_memberships": [{"member_alpaca_asset_ids": [before["id"]]}],
+        }
+
+        def scope(prior, facts):
+            return evidence_delta(prior["evidence"], facts, append=True, sole_owner_receipt=prior)["scope"]
+
+        self.assertEqual(scope(receipt, changed), "added_sessions")
+        self.assertEqual(scope({**receipt, "unresolved_rows": 1}, changed), "complete_group")
+        self.assertEqual(
+            scope(receipt, {**changed, "identities": [after, fixture.asset("SECOND")]}), "complete_group"
+        )
+        for kind in ("cash_merger", "spin_off"):
+            action = {"action_type": kind}
+            prior = {**receipt, "evidence": {**baseline, "corporate_actions": [action]}}
+            self.assertEqual(scope(prior, {**changed, "corporate_actions": [action]}), "complete_group")
+        self.assertEqual(
+            scope(receipt, {**changed, "corporate_actions": [{"action_type": "cash_dividend"}]}),
+            "complete_group",
+        )
 
     def test_singleton_and_alias_views_complete_one_allocation(self):
         case = self.case

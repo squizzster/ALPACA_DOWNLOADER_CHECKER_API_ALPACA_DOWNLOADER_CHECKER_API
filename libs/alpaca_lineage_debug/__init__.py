@@ -23,6 +23,11 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if (allow_previous or operation == "coverage") and current == (28, 27, 114, 135):
+        # New exchange observations do not change saved ownership or numerical reports.
+        binding = {**binding, "lineage_runtime": 134}
+        bindings.append(binding)
+        current = (28, 27, 114, 134)
     if (allow_previous or operation == "coverage") and current == (28, 27, 114, 134):
         # This added reader changes neither saved comparisons nor coverage details.
         binding = {**binding, "lineage_runtime": 133}

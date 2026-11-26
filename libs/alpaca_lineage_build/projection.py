@@ -42,6 +42,9 @@ def project_receipt(receipt):
     evidence.extend(
         item["evidence"] for item in receipt.get("unavailable_pricing", {}).values() if "evidence" in item
     )
+    from .exchange_changes import next_dating_time
+
+    next_dating = min((due for item in evidence if (due := next_dating_time(item))), default=None)
     retired = next(
         (item for item in receipt["evidence"]["asset_lookups"] if item.get("lookup_kind") == "asset_id"), None
     )
@@ -76,6 +79,7 @@ def project_receipt(receipt):
         "processed_through": receipt["processed_through"],
         "pricing_request": receipt.get("pricing_request"),
         "source_rows": receipt["source_rows"],
+        **({"listing_date_after_utc": next_dating} if next_dating else {}),
         **(
             {
                 "numerical_mapping_completed": {

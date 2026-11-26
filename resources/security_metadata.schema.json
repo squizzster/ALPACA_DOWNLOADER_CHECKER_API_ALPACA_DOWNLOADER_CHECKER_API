@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Alpaca security metadata companion v1",
+  "title": "Alpaca security metadata companion versions 1 and 2",
   "description": "Validate the manifest or one UTF-8 JSON Lines security record. The manifest selects the records and declares their capabilities.",
   "oneOf": [
     {
@@ -19,7 +19,7 @@
           "const": "alpaca.security_metadata"
         },
         "version": {
-          "const": 1
+          "enum": [1, 2]
         },
         "catalogue_generation": {
           "type": "string",
@@ -47,6 +47,7 @@
             "enum": [
               "asset_snapshots",
               "corporate_actions",
+              "listing_exchange_changes",
               "trade_observations"
             ]
           },
@@ -68,6 +69,14 @@
               "$ref": "#/$defs/publicIds"
             }
           ]
+        }
+      },
+      "if": {
+        "properties": {"version": {"const": 1}}
+      },
+      "then": {
+        "properties": {
+          "extensions": {"not": {"contains": {"const": "listing_exchange_changes"}}}
         }
       },
       "required": [
@@ -247,6 +256,13 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/corporateAction"
+          }
+        },
+        "listing_exchange_changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/listingExchangeChange"
           }
         }
       },
@@ -656,6 +672,29 @@
       ],
       "additionalProperties": false,
       "description": "Explicitly selected online identities, including all matches of a requested dated ticker. The records enumerate the selection."
+    },
+    "listingExchangeChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from_symbol": {"type": "string", "minLength": 1},
+        "from_exchange": {"type": "string", "minLength": 1},
+        "from_observed_at_utc": {"type": "string", "format": "date-time"},
+        "to_symbol": {"type": "string", "minLength": 1},
+        "to_exchange": {"type": "string", "minLength": 1},
+        "to_observed_at_utc": {"type": "string", "format": "date-time"},
+        "prior_session": {"type": "string", "format": "date"},
+        "effective_session": {"type": "string", "format": "date"}
+      },
+      "required": [
+        "from_symbol", "from_exchange", "from_observed_at_utc",
+        "to_symbol", "to_exchange", "to_observed_at_utc"
+      ],
+      "dependentRequired": {
+        "prior_session": ["effective_session"],
+        "effective_session": ["prior_session"]
+      },
+      "description": "Two dated Alpaca asset observations for the same accepted security. The optional session pair records an effective boundary supported by lineage. Trading on the new exchange can start after Alpaca first reports it."
     },
     "corporateAction": {
       "type": "object",

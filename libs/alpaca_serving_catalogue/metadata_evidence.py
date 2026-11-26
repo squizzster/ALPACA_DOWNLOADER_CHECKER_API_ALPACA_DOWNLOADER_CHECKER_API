@@ -8,6 +8,7 @@ cannot bind an observation to a security.
 
 import json
 from collections import defaultdict
+from itertools import chain
 
 from libs.alpaca_data_api_solver import instant
 from libs.alpaca_security_lineage.inference_evidence import ASSERTION_FIELDS
@@ -189,23 +190,61 @@ def _samples(evidence):
     yield retirement, retirement.get("observed_symbol_asset_id")
 
 
+_EXCHANGE_ENDPOINTS = (
+    "from_symbol",
+    "from_exchange",
+    "from_observed_at_utc",
+    "to_symbol",
+    "to_exchange",
+    "to_observed_at_utc",
+)
+
+
+def _native_market_evidence(evidence):
+    # Retired authored envelopes predate the native market evidence producers.
+    # Their raw-shaped extra fields have no provider provenance.
+    disposition = evidence.get("symbol_disposition") or {}
+    return not (
+        "provider_corporate_actions" in evidence
+        or any(evidence.get(field) for field in ASSERTION_FIELDS)
+        or disposition.get("classification") == "exchange_test_symbol"
+        or disposition.get("test_symbol_evidence")
+    )
+
+
+def _unpriced_exchange_changes(unavailable):
+    for item in unavailable.values():
+        evidence = item.get("evidence") or {}
+        changes = evidence.get("listing_exchange_changes")
+        if changes and _native_market_evidence(evidence):
+            yield from changes
+
+
 def _facts(records, receipts, members, source_owners, complete_members):
     literal_owners = {}
+    exchange_changes = defaultdict(set)
+    included_unpriced = False
     for receipt in receipts.values():
         evidence = receipt["evidence"]
         if complete_members:
             for owner, snapshot in _snapshots(evidence, members):
                 yield owner, "asset_snapshots", snapshot
-        # Retired authored envelopes predate the native tape and cash-retirement
-        # producers. Their raw-shaped extra fields have no provider provenance.
-        disposition = evidence.get("symbol_disposition") or {}
-        if (
-            "provider_corporate_actions" in evidence
-            or any(evidence.get(field) for field in ASSERTION_FIELDS)
-            or disposition.get("classification") == "exchange_test_symbol"
-            or disposition.get("test_symbol_evidence")
-        ):
+        if not _native_market_evidence(evidence):
             continue
+        if complete_members:
+            changes = evidence.get("listing_exchange_changes", ())
+            # The producer places the group's single unpriced roster in each
+            # member receipt. Only the held native listing observations join here.
+            if not included_unpriced and (unavailable := receipt.get("unavailable_pricing")):
+                changes = chain(changes, _unpriced_exchange_changes(unavailable))
+                included_unpriced = True
+            for change in changes:
+                owner = _single(members.get(change["asset_id"], ()))
+                if owner in records:
+                    endpoints = tuple(change[field] for field in _EXCHANGE_ENDPOINTS)
+                    dates = exchange_changes[owner, endpoints]
+                    if "effective_session" in change:
+                        dates.add((change["prior_session"], change["effective_session"]))
         for sample, asset_id in _samples(evidence):
             if sample.get("outcome") != "observed":
                 continue
@@ -259,12 +298,21 @@ def _facts(records, receipts, members, source_owners, complete_members):
                         "rate": str(terms["rate"]),
                     },
                 )
+    for (owner, endpoints), dates in exchange_changes.items():
+        # A peer can retain the original before/after observations after another
+        # source has dated the same transfer. Conflicting refinements retain the
+        # common observed change with an unknown effective session.
+        change = dict(zip(_EXCHANGE_ENDPOINTS, endpoints))
+        if len(dates) == 1:
+            change["prior_session"], change["effective_session"] = next(iter(dates))
+        yield owner, "listing_exchange_changes", change
 
 
 _SORT_FIELDS = {
     "asset_snapshots": ("observed_at", "symbol"),
     "trade_observations": ("trade_timestamp", "request_symbol"),
     "corporate_actions": ("effective_date", "action_id"),
+    "listing_exchange_changes": ("from_observed_at_utc", "to_observed_at_utc", "from_symbol", "to_symbol"),
 }
 
 

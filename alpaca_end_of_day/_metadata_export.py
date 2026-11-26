@@ -10,7 +10,7 @@ from pathlib import Path
 from . import ADJUSTMENTS, CatalogChangedError
 from .standalone import _date
 
-EXTENSIONS = ("asset_snapshots", "corporate_actions", "trade_observations")
+EXTENSIONS = ("asset_snapshots", "corporate_actions", "listing_exchange_changes", "trade_observations")
 RECORDS_FILE = "securities.jsonl.gz"
 MANIFEST_FILE = "manifest.json"
 HEX64 = re.compile("[0-9a-f]{64}")
@@ -146,13 +146,17 @@ def select(data, *, public_ids=None, symbols=None, csv_manifest=None, bloodhound
     return Selection(tuple(sorted(ids)), series_ids, scope, generation)
 
 
-def plan(selected, group_count, *, catalogue_only=False):
+def available_extensions(versions):
+    return EXTENSIONS if 2 in versions else tuple(key for key in EXTENSIONS if key != "listing_exchange_changes")
+
+
+def plan(selected, group_count, *, catalogue_only=False, extensions=EXTENSIONS):
     return {
         "catalogue_generation": selected.catalogue_generation,
         "selection": dict(selected.selection),
         "identities": len(selected.public_ids),
         "groups": group_count,
-        "extensions": [] if catalogue_only else list(EXTENSIONS),
+        "extensions": [] if catalogue_only else list(extensions),
     }
 
 
@@ -170,7 +174,7 @@ def _ordered(section, values):
     return sorted(values, key=lambda item: tuple(item[field] or "" for field in fields))
 
 
-def _record(data, public_id, selected, enrichments):
+def _record(data, public_id, selected, enrichments, extensions):
     # Project the catalogue's already-accepted public body; full coverage belongs to
     # the identity even when the parent price export selected only part of its history.
     public = data._records[public_id]["public"]
@@ -190,13 +194,15 @@ def _record(data, public_id, selected, enrichments):
         record["external_identifiers"] = _ordered("external_identifiers", identifiers)
     if selected.series_ids:
         record["ohlcv_series_id"] = selected.series_ids[public_id]
-    for extension in EXTENSIONS:
+    for extension in extensions:
         if values := enrichments.get(extension):
             record[extension] = values  # The enrichment publisher owns their canonical order.
     return record
 
 
-def write(data, destination, selected, enrichments, *, catalogue_only=False, progress=None):
+def write(
+    data, destination, selected, enrichments, *, catalogue_only=False, extensions=EXTENSIONS, progress=None
+):
     output = Path(destination).resolve()
     if output.is_relative_to(data.store.resolve()):
         raise ValueError("metadata export destination must be outside the source store")
@@ -207,12 +213,12 @@ def write(data, destination, selected, enrichments, *, catalogue_only=False, pro
             scope[field] = os.path.relpath(scope[field], output)
     manifest = {
         "schema": "alpaca.security_metadata",
-        "version": 1,
+        "version": 2,
         "catalogue_generation": selected.catalogue_generation,
         "records_file": RECORDS_FILE,
         "identity_count": len(selected.public_ids),
         "default_adjustments": list(ADJUSTMENTS),
-        "extensions": [] if catalogue_only else list(EXTENSIONS),
+        "extensions": [] if catalogue_only else list(extensions),
         "selection": scope,
     }
     records_path = output / RECORDS_FILE
@@ -222,7 +228,7 @@ def write(data, destination, selected, enrichments, *, catalogue_only=False, pro
     ):
         for position, public_id in enumerate(selected.public_ids, 1):
             sections = {} if catalogue_only else enrichments.get(public_id, {})
-            record = _record(data, public_id, selected, sections)
+            record = _record(data, public_id, selected, sections, manifest["extensions"])
             compressed.write((_json(record) + "\n").encode("utf-8"))
             if progress and position % 250 == 0:
                 progress("metadata_export_records", {"done": position, "total": manifest["identity_count"]})

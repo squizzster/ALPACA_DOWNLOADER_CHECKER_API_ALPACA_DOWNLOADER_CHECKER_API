@@ -792,5 +792,10 @@
     "modifications": [
       "Pin exact selected receipt generations for metadata preparation, carry applicable evidence projections across unchanged-decision migration and preserve completed diagnostic reports under their original bindings."
     ]
+  },
+  {
+    "modifications": [
+      "Retain dated changes between Alpaca listing-exchange observations on the same asset, identify supported session boundaries using SIP trades and carry the completed record through daily updates and serving."
+    ]
   }
 ]

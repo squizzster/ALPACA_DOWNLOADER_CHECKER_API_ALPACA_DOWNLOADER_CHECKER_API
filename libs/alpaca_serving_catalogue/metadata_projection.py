@@ -14,7 +14,8 @@ from libs.common.store_lock import exclusive_owned, operation_lock
 from . import export_inputs, storage
 from .contract import CatalogueError
 
-VERSION = 1
+VERSION = 2
+OLDEST_READABLE_VERSION = 1
 
 
 def initialize(connection):
@@ -62,7 +63,7 @@ def _group_selectors(db, keys=None, *, all_online=False):
     }
 
 
-def _selected(db, groups, *, bodies, all_online):
+def _selected(db, groups, *, bodies, all_online, versions=None):
     if not groups:
         return {}
     if not isinstance(groups, Mapping):
@@ -76,34 +77,37 @@ def _selected(db, groups, *, bodies, all_online):
     if all_online:
         # Visit table pages in row order on a universe export. A partial or obsolete
         # projection fails the binding predicate before SQLite returns its body.
-        source = """metadata_evidence AS m NOT INDEXED WHERE m.version=? AND (m.group_key,m.decision_generation,m.lineage)
+        source = """metadata_evidence AS m NOT INDEXED WHERE m.version BETWEEN ? AND ? AND (m.group_key,m.decision_generation,m.lineage)
                     IN (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?))"""
-        args = (VERSION, storage.encoded(bindings))
+        args = (OLDEST_READABLE_VERSION, VERSION, storage.encoded(bindings))
     else:
         source = """json_each(?) AS t CROSS JOIN metadata_evidence m ON m.group_key=json_extract(t.value,'$[0]')
-                    WHERE m.version=? AND m.decision_generation=json_extract(t.value,'$[1]') AND m.lineage=json_extract(t.value,'$[2]')"""
-        args = (storage.encoded(bindings), VERSION)
+                    WHERE m.version BETWEEN ? AND ? AND m.decision_generation=json_extract(t.value,'$[1]') AND m.lineage=json_extract(t.value,'$[2]')"""
+        args = (storage.encoded(bindings), OLDEST_READABLE_VERSION, VERSION)
     try:
-        return {
-            key: json.loads(value) if bodies else True
-            for key, value in db.execute(f"SELECT m.group_key,{column} FROM " + source, args)
-        }
+        rows = db.execute(f"SELECT m.group_key,m.version,{column} FROM " + source, args)
+        selected = {}
+        for key, version, value in rows:
+            selected[key] = json.loads(value) if bodies else True
+            if versions is not None:
+                versions.add(version)
+        return selected
     except sqlite3.OperationalError as error:
         if "no such table: metadata_evidence" not in str(error):
             raise
         return {}
 
 
-def selected(store, groups, *, bodies, all_online=False):
+def selected(store, groups, *, bodies, all_online=False, versions=None):
     """Consume applicable prepared rows using the held catalogue selectors."""
     if not groups:
         return {}
     with closing(connect_sqlite(storage.path(store), readonly=True)) as db:
-        return _selected(db, groups, bodies=bodies, all_online=all_online)
+        return _selected(db, groups, bodies=bodies, all_online=all_online, versions=versions)
 
 
-def require(store, groups, *, all_online=False):
-    results = selected(store, groups, bodies=True, all_online=all_online)
+def require(store, groups, *, all_online=False, versions=None):
+    results = selected(store, groups, bodies=True, all_online=all_online, versions=versions)
     if results.keys() != set(groups):
         raise CatalogueError(
             "selected metadata projection incomplete; run alpaca-cli-eod catalogue prepare-metadata for the selected groups"

@@ -822,6 +822,9 @@ requirements and retry state. Persist dependency/correction requirements before 
 The same transaction that accepts work records the latest catalogue observation ID and its UTC time.
 Each selected symbol carries the ID of that acceptance. An existing obligation keeps its originating
 observation ID across later acceptances. These IDs identify which acceptance selected the work.
+For a [dated listing change](lineage.md#changes-of-listing-exchange) awaiting its next eligible trading
+session, the selected source's compact lineage projection carries the earliest outstanding assessment time.
+The ordinary planner consumes that timestamp. Completion removes it through the lineage journal.
 Only the latest ID has a timestamp in the catalogue selector. The complete provider response travels with
 the operation's evidence client or its standalone Prepare handoff. Workflow stores only the evidence
 selected for individual obligations. A new operation that needs current catalogue evidence obtains its own observation.
