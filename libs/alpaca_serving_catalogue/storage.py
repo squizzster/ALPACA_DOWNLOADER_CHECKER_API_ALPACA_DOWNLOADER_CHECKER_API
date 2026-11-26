@@ -113,7 +113,7 @@ def initialize(store, *, rebuild=False):
 
 
 @traced("serving_controls_read")
-def controls(store, *, incomplete=False, recover=False, old_policy=False):
+def controls(store, *, incomplete=False, recover=False, old_policy=False, symbols=None):
     """One compact control-plane view; no ticker files or histories."""
     validate_version()
     try:
@@ -122,6 +122,22 @@ def controls(store, *, incomplete=False, recover=False, old_policy=False):
         with closing(connect_sqlite(path(store), readonly=not recover)) as connection:
             connection.execute("BEGIN")
             state = _state(connection, incomplete=incomplete, old_policy=old_policy)
+            if symbols is not None:
+                # Each selected catalogue group already carries its complete membership.
+                # Read the requested members through their index, then keep that whole group.
+                places = ",".join("?" for _ in symbols)
+                groups = {
+                    key: json.loads(selection)
+                    for key, selection in connection.execute(
+                        "SELECT group_key, selection FROM groups WHERE group_key IN "
+                        f"(SELECT group_key FROM members WHERE symbol IN ({places}))",
+                        tuple(symbols),
+                    )
+                }
+                members = {s: key for key, group in groups.items() for s in group["references"]["lineage"]}
+                if members.keys() - set(symbols):
+                    raise CatalogueError("accepted-owner recovery no longer selects the complete serving group")
+                return {"state": state, "groups": groups, "members": members}
             groups = {
                 key: json.loads(selection)
                 for key, selection in connection.execute("SELECT group_key, selection FROM groups")
@@ -331,14 +347,18 @@ def selector_state(store, *, recover=False, incomplete=False):
         return _state(connection, incomplete=incomplete)
 
 
-def refresh_controls(store, selected=None, *, recover=False):
+def refresh_controls(store, selected=None, *, recover=False, symbols=None):
     """Retain an accepted catalogue view until its transaction token changes."""
     if (
         selected is not None
         and selector_state(store, recover=recover)["generation"] == selected["state"]["generation"]
     ):
         return selected
-    return controls(store, recover=recover)
+    return (
+        controls(store, recover=recover)
+        if symbols is None
+        else controls(store, recover=recover, symbols=symbols)
+    )
 
 
 def price_review_group(store, public_id):

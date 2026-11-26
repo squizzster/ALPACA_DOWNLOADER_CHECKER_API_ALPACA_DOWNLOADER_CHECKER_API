@@ -262,5 +262,10 @@
     "modifications": [
       "Retain an identity's accepted serving checkpoint across a full numerical source substitution when the selected source positions and all eight published logical partition digests agree. Consume current labels and avoid opening accepted price payloads."
     ]
+  },
+  {
+    "modifications": [
+      "Read the complete selected group's catalogue controls by indexed membership for accepted-owner recovery. Changed membership invalidates that scope before publication."
+    ]
   }
 ]

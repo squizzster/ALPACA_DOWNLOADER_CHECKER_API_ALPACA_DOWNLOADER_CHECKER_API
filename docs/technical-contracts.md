@@ -67,6 +67,23 @@ action and source boundaries identify the disputed positions. The prior numerica
 then covers the complete restored grid. The journal carries the restored assignment to serving under the
 complete group selection.
 
+A previously accepted single-source suffix can also be restored when native cash
+actions conflict and a later action identifies the original CUSIP's departure.
+The [cash-distribution rule](lineage.md#cash-distributions-and-terminal-ownership) owns the
+interpretation. The selected pricing generation supplies dated trading activity
+from its completed comparison tail. The accepted summary lends that tail when
+applicable. An omitted source can use its selected pricing validator. Every
+lost position must qualify and all eight prior source and owner selections must
+remain applicable. Current and legacy serving checkpoints supply the same accepted
+contributor membership. The assignment publisher restores the matching positions in
+each affected partition, including overlapping year and month representations.
+Serving reuses the original numerical and calendar decision for the complete grid.
+
+Accepted-owner recovery restricts its lineage index read to the selected complete
+group and its catalogue read to that group's indexed membership. Subsequent lock
+scopes check the selector tokens. A changed component cannot inherit a narrower
+selection. Independent group selectors and pricing histories remain closed.
+
 The same recovery entrypoint also accepts a version-1 `alpaca_retained_candidate_handoff` after its semantic
 review completes. It binds the absolute store, complete members, original receipt/pricing generations,
 production policy and computation revision, and carries baseline receipts, completed candidate receipts,

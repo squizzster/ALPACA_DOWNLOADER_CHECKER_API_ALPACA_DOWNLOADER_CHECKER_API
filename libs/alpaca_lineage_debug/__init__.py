@@ -23,6 +23,11 @@ def accept_report(value, operation, *, allow_previous=False):
     binding = implementation_binding()
     bindings = [binding]
     current = tuple(binding[name] for name in ("debug", "policy_lab", "correlation_runtime", "lineage_runtime"))
+    if allow_previous and current == (28, 27, 113, 132):
+        # Frozen comparisons retain the policy that produced their selected output.
+        binding = {**binding, "correlation_runtime": 112, "lineage_runtime": 131}
+        bindings.append(binding)
+        current = (28, 27, 112, 131)
     if allow_previous and current == (28, 27, 112, 131):
         # The new bridge has a separate policy identity. Saved comparisons bind that identity independently.
         binding = {**binding, "correlation_runtime": 111, "lineage_runtime": 130}

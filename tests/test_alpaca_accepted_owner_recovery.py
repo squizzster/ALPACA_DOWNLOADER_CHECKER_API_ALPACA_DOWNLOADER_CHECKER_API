@@ -164,15 +164,15 @@ class AcceptedOwnerRecoveryTests(NativeCase):
         record = checkpoint["history_validation"]["prefix_records"][0]
         changed = {"history_changes": [{"source_sha256": old, "changed_from": record["validated_through"]}]}
         with self.assertRaisesRegex(LineageError, "selected pricing ancestry"):
-            owner._checkpoint(group, offline, changed)
+            owner._accepted_source_checkpoint(group, offline, changed)
         changed["history_changes"][0]["changed_from"] = None
-        owner._checkpoint(group, offline, changed)
+        owner._accepted_source_checkpoint(group, offline, changed)
         rival = deepcopy(offline)
         rival["offline_ownership"]["checkpoints"][0]["history_validation"]["identities"][pid]["all"][
             "sources"
         ].append("RIVAL")
         with self.assertRaisesRegex(LineageError, "clean all-view source and label grid"):
-            owner._checkpoint(group, rival, changed)
+            owner._accepted_source_checkpoint(group, rival, changed)
 
     def test_independent_retired_label_occupancy_rejects(self):
         symbol, pid, _, _, index = self.lose_prefix()

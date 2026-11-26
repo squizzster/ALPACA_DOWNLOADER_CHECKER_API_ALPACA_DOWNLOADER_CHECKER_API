@@ -25,9 +25,9 @@ VERSION = 104
 NAME = "native_action_anchored_former_ticker_occupation"
 
 
-def complete_source_scope(inputs):
+def complete_source_scope(inputs, *, minimum_sources=2):
     """Both observation and inference require the same unassigned, fully materialized inputs."""
-    return len(inputs) >= 2 and all(
+    return len(inputs) >= minimum_sources and all(
         getattr(view, "materialization_scope", None) == "complete_history"
         and getattr(view, "accepted_report", None) is None
         and getattr(view, "retained_split", None) is None

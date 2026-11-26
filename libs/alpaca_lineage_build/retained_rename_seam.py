@@ -12,7 +12,13 @@ from libs.alpaca_security_lineage.inference_evidence import provider_evidence
 from libs.common.us_equity_market_session_calendar import market_sessions_between, next_market_session_after
 
 from . import storage
-from .accepted_owner_recovery import COLD, _restore_prefix, approved_identity, restore_positions
+from .accepted_owner_recovery import (
+    COLD,
+    _restore_prefix,
+    approved_contributors,
+    approved_identity,
+    restore_positions,
+)
 from .assignment_handoff import selected
 from .contract import LineageError
 from .duplicate_assignments import UnsupportedOverlap, bind_retained_labels
@@ -61,9 +67,9 @@ def _lost_extents(group, offline, pid):
 def _expected_grid(group, prior, pid, labels, successor, stop):
     """Project the sole permitted difference from the already accepted full group."""
     history = prior["history_validation"]
-    if prior["references"]["pricing"] != group.pricing or history["identities"][pid] != {
-        view: {"version": 2, "sources": sorted(labels)} for view in ADJUSTMENTS
-    }:
+    if prior["references"]["pricing"] != group.pricing or not approved_contributors(
+        history["identities"][pid], set(labels)
+    ):
         raise LineageError("the selected pricing generations or numerical contributors changed")
     size = 0
     expected_views = {}

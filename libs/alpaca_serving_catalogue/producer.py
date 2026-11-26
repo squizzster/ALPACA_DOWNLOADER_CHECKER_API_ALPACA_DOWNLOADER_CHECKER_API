@@ -201,6 +201,9 @@ def maintain(
 
     store = Path(store).absolute()
     scope = None if symbols is None else set(symbols)
+    recovery_members = getattr(context, "owner_recovery_members", None)
+    if recovery_members is not None and scope != set(recovery_members):
+        raise CatalogueError("accepted-owner recovery must retain its selected serving scope")
     if scope is not None and (bootstrap or rebuild):
         raise ValueError("catalogue bootstrap and rebuild select all indexed groups")
     if selected_controls is not None and (

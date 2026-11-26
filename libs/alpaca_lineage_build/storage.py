@@ -442,7 +442,7 @@ def assert_index_current(root, index):
         raise LineageError("lineage changed during discovery; repeat update selection")
 
 
-def refresh_index(root, index=None):
+def refresh_index(root, index=None, *, symbol=None):
     """Retain accepted membership until its compact selector changes."""
     if (root / ".pending.json").exists():
         raise LineageError("pending lineage publication; recover it before selection")
@@ -450,7 +450,7 @@ def refresh_index(root, index=None):
         state = index_state(root)
         if state is not None and state == index.get("projection_state"):
             return index
-    return read_index(root)
+    return read_index(root) if symbol is None else read_index(root, symbol, group=True)
 
 
 def publish_membership_screens(root, index, updates):

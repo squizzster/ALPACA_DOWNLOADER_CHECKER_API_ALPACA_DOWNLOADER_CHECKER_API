@@ -9,7 +9,7 @@ from libs.common.debug_trace import event
 from libs.common.work_scope import selected_work
 
 from . import storage, universe_state
-from .context import accept_context
+from .context import OperationContext, accept_context
 from .contract import MAX_CLOSURE, LineageError, document_digest
 from .correlation_policy_contract import valid_sha256
 from .projection import require_complete
@@ -165,7 +165,11 @@ def recover(store, selection_path, *, plan=False, progress=None, selection=None)
     selection = load_selection(selection_path, store) if selection is None else selection
     if selection.store != store:
         raise LineageError("retained recovery selection belongs to another store")
-    context = accept_context(store)
+    context = (
+        OperationContext(store, owner_recovery_members=selection.groups[0].members)
+        if getattr(selection, "mode", None) == RESTORE_ACCEPTED_OWNER
+        else accept_context(store)
+    )
     universe_state.require_initialized(store)
     from .numerical_recovery import NumericalRecoverySelection, resume
 

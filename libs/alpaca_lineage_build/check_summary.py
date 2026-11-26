@@ -36,6 +36,10 @@ def project(store, receipt, *, source=_UNSELECTED, baseline=None):
     # project; reopening its validator cannot establish a new summary fact.
     if receipt["source_rows"] == 0 or not stored_active(receipt):
         return None
+    return _price_entry(store, receipt, source, baseline)
+
+
+def _price_entry(store, receipt, source, baseline):
     if baseline is not None:
         return baseline
     symbol = receipt["symbol"]
@@ -48,11 +52,27 @@ def project(store, receipt, *, source=_UNSELECTED, baseline=None):
 
 def refresh(store, receipts, *, sources=None, unchanged=False):
     """Caller owns the selected pricing locks and has installed the lineage receipt."""
-    selected = summary.selected_inputs(store, receipts)
+    entries = {}
+    captured_membership = sources is not None and not unchanged
+    if captured_membership:
+        # All selected pricing locks are still held. A retired or empty source
+        # has no endpoint to select, and its finalized membership is removal.
+        eligible = {}
+        for symbol, receipt in receipts.items():
+            if receipt["source_rows"] and stored_active(receipt):
+                eligible[symbol] = receipt
+            else:
+                entries[symbol] = None
+    else:
+        eligible = receipts
+    if not eligible:
+        if entries:
+            summary.replace_entries(store, entries)
+        return
+    selected = summary.selected_inputs(store, eligible)
     if selected is None:
         return
-    entries = {}
-    for symbol, receipt in receipts.items():
+    for symbol, receipt in eligible.items():
         pending = selected["pending"][symbol]
         if unchanged and selected["complete"] and not pending:
             continue  # Neither owner changed this completed membership or endpoint.
@@ -61,8 +81,11 @@ def refresh(store, receipts, *, sources=None, unchanged=False):
             if regular_path(root, ".pending.json").exists():
                 continue  # Recovery must select again after the interruption released locks.
         baseline = selected["entries"].get(symbol) if selected["complete"] and "pricing" not in pending else None
-        entries[symbol] = project(
-            store, receipt, source=_UNSELECTED if sources is None else sources[symbol], baseline=baseline
+        source = _UNSELECTED if sources is None else sources[symbol]
+        entries[symbol] = (
+            _price_entry(store, receipt, source, baseline)
+            if captured_membership
+            else project(store, receipt, source=source, baseline=baseline)
         )
     if entries:
         summary.replace_entries(store, entries)

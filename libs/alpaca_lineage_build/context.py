@@ -32,9 +32,16 @@ class OperationContext:
     # TRUST BOUNDARY: these are accepted producer selectors for one operation,
     # not a second source of truth. Refresh their compact revisions after a
     # publication; DO NOT authenticate all receipts/payloads to refresh a view.
-    def __init__(self, store):
+    # Ordinary pipeline handoffs restore their accepted fields without __init__.
+    # Only an explicit, process-local owner recovery supplies a group scope.
+    owner_recovery_members: tuple[str, ...] | None = None
+
+    def __init__(self, store, *, owner_recovery_members=None):
         validate_version()
         self.store = Path(store).absolute()
+        # Explicit accepted-owner recovery is bound to one fully priced group.
+        # Ordinary operations keep their existing complete selector.
+        self.owner_recovery_members = owner_recovery_members
         self._accepted_store = None
         self._ruleset = None
         self._correlation_policy = None
@@ -128,7 +135,10 @@ class OperationContext:
         # The caller holds the existing publication gate.
         if Path(root).absolute() != self.accept_store().root:
             raise LineageError("lineage context belongs to another store")
-        self.index = storage.refresh_index(root, self.index)
+        if self.owner_recovery_members:
+            self.index = storage.refresh_index(root, self.index, symbol=self.owner_recovery_members[0])
+        else:
+            self.index = storage.refresh_index(root, self.index)
         return self.index
 
     @traced("select_summary")
@@ -144,7 +154,12 @@ class OperationContext:
         from libs.alpaca_serving_catalogue.storage import refresh_controls
 
         self.accept_store()
-        self.serving = refresh_controls(self.store, self.serving, recover=recover)
+        if self.owner_recovery_members:
+            self.serving = refresh_controls(
+                self.store, self.serving, recover=recover, symbols=self.owner_recovery_members
+            )
+        else:
+            self.serving = refresh_controls(self.store, self.serving, recover=recover)
         return self.serving
 
 

@@ -340,7 +340,7 @@ def membership_policy_version(selected):
     version = selected.get("membership_version", 94)
     # Distribution can supply new completed ownership, but the membership
     # producer still consumes the same exact receipt and evidence bindings.
-    return 94 if version in (95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105) else version
+    return 94 if version in (95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106) else version
 
 
 def refine(reports, evidence, selected):

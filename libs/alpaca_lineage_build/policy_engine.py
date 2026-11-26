@@ -18,6 +18,7 @@ from libs.alpaca_end_of_day_security_correlation.closed_departure import (
 from libs.alpaca_end_of_day_security_correlation.correlation import (
     build_security_correlation_report,
 )
+from libs.alpaca_end_of_day_security_correlation.due_bill_cash import VERSION as DUE_BILL_CASH_VERSION
 from libs.alpaca_end_of_day_security_correlation.former_ticker import VERSION as FORMER_TICKER_VERSION
 from libs.alpaca_end_of_day_security_correlation.former_ticker import complete_source_scope
 from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
@@ -287,6 +288,7 @@ def _correlation_cache(policy) -> CorrelationCache:
         ),
         stock_merger_departure=policy.implementation_correlation_version >= STOCK_MERGER_DEPARTURE_VERSION,
         former_ticker_occupation=policy.implementation_correlation_version >= FORMER_TICKER_VERSION,
+        cash_due_bill_continuations=policy.implementation_correlation_version >= DUE_BILL_CASH_VERSION,
         main_component_arrivals=(
             policy.implementation_correlation_version >= MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION
         ),
@@ -395,12 +397,14 @@ def _selected_group_cache(
             and not auxiliary.intersection(inputs)
             and set(selected_group) == inputs.keys() | auxiliary
         )
-        cache.former_ticker_occupation = (
-            cache.former_ticker_occupation
+        fresh_scope = (
+            (cache.former_ticker_occupation or cache.cash_due_bill_continuations)
             and not closed_sources
             and cache.rename_scope_complete
-            and complete_source_scope(inputs)
+            and complete_source_scope(inputs, minimum_sources=1 if cache.cash_due_bill_continuations else 2)
         )
+        cache.former_ticker_occupation &= fresh_scope and len(inputs) >= 2
+        cache.cash_due_bill_continuations &= fresh_scope
         if cache.former_ticker_occupation:
             cache.former_source_generations = {name: view.source_sha256 for name, view in inputs.items()}
         cache.closed_departure_current_sources &= set(selected_group) == set(inputs) and not unavailable_pricing

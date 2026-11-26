@@ -817,6 +817,18 @@ choices survive construction/publication interruption under their actual generat
 bindings. Missing or incomparable component capabilities require owning recovery, never a union inferred
 from shared UUIDs or a repeated completed calculation.
 
+### Cash distributions and terminal ownership
+
+Alpaca can report both a cash merger and a special cash distribution for the same
+security and amount, with the merger effective on the dividend ex-date. Due-bill
+terms or a payment before the ex-date can support the distribution interpretation.
+A later action must still name the original ticker and CUSIP as departing and identify
+a distinct replacement security. When the source shows positive volume and trade count
+after the ex-date, the rule can assign the original shares on the observed, actively
+traded sessions before the later action. The source records and dates of both cash
+actions stay available. A competing issuer or incompatible payment terms keep the
+affected dates under their existing assessment.
+
 ### Name changes
 
 The following certificate routes describe current mechanisms. Their absence is not a global negative

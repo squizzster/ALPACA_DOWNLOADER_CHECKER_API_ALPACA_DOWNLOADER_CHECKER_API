@@ -776,5 +776,11 @@
     "modifications": [
       "Restore a previously accepted trading label and owner across a processing-date discrepancy when the complete group's native name changes and unchanged numerical selections support the original published history."
     ]
+  },
+  {
+    "modifications": [
+      "Restore a previously accepted suffix under matching cash-distribution evidence, using the pricing owner's completed activity tail and the prior serving decision across all eight views.",
+      "Select accepted-owner recovery through the named group's indexed lineage and serving controls, retaining the selected boundaries across publication and retry."
+    ]
   }
 ]

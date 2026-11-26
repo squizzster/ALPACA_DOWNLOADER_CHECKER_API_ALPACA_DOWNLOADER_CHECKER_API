@@ -662,5 +662,10 @@
     "modifications": [
       "Date observed trading under an intermediate ticker before a processing-only name change when successive Alpaca changes preserve the security and a terminal price source agrees across the disputed sessions."
     ]
+  },
+  {
+    "modifications": [
+      "Attribute observed trades to their original security when native special-distribution terms match a reported cash merger and a later action identifies the departing CUSIP and a distinct recipient."
+    ]
   }
 ]

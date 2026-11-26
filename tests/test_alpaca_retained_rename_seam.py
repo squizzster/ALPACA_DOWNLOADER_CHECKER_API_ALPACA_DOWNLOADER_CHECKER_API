@@ -1,8 +1,9 @@
 """Recover a closed native rename's accepted successor positions and numerical checkpoint."""
 
+import sqlite3
 import unittest
 from collections import Counter
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from unittest.mock import patch
@@ -140,6 +141,34 @@ class RetainedRenameSeamTests(unittest.TestCase):
             ):
                 stack.enter_context(patch.object(module, function, side_effect=AssertionError(function)))
             yield
+
+    def test_plan_and_publication_skip_unrelated_index_rows_and_group_selectors(self):
+        self.lose_group()
+        # An unrelated selector must not even be decoded. The selected group
+        # and its generation remain fully usable on either side of publication.
+        with closing(sqlite3.connect(self.case.root / "index.sqlite3")) as db, db:
+            db.execute("INSERT INTO symbols VALUES (?, ?)", ("UNRELATED", "unselected lineage sentinel"))
+        with closing(sqlite3.connect(catalogue.path(self.store))) as db, db:
+            db.execute(
+                "INSERT INTO groups VALUES (?, ?, ?, ?)", ("peer", "peer", "unselected catalogue sentinel", "{}")
+            )
+            db.execute("INSERT INTO members VALUES (?, ?)", ("UNRELATED", "peer"))
+        with self.forbid_history_work():
+            self.assertEqual(recover(self.store, None, selection=self.selection, plan=True)["pending_groups"], 1)
+            result = recover(self.store, None, selection=self.selection)
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["serving_catalogue"]["checked_bars"], 0)
+            self.assertEqual(
+                recover(self.store, None, selection=self.selection)["previously_completed_groups"], 1
+            )
+
+    def test_selected_controls_refuse_a_partial_component_or_wider_request(self):
+        self.lose_group()
+        with self.assertRaisesRegex(catalogue.CatalogueError, "complete serving group"):
+            catalogue.controls(self.store, symbols=(MIDDLE,))
+        context = OperationContext(self.store, owner_recovery_members=tuple(sorted(NAMES)))
+        with self.assertRaisesRegex(catalogue.CatalogueError, "selected serving scope"):
+            producer.maintain(self.store, context=context)
 
     def test_complete_group_recovers_exact_sources_and_all_price_views(self):
         self.lose_group()

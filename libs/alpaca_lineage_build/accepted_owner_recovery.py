@@ -1,7 +1,8 @@
-"""Restore a selected same-source prefix from its completed serving checkpoint."""
+"""Restore selected owner positions from their completed serving checkpoint."""
 
 from dataclasses import replace
 
+from alpaca_end_of_day._history_coverage import coverage_sources
 from libs.alpaca_end_of_day_security_correlation.action_identity import (
     exact_cusip_lookup_asset,
     exact_symbol_lookup_asset,
@@ -20,6 +21,13 @@ from .recovery_handoffs import remember
 COLD = "completed_years"
 LOSS = "outside_supported_name_change_history"
 RULE = "retained_same_source_accepted_owner"
+
+
+def approved_contributors(coverage, sources):
+    """Read the source membership carried by either completed checkpoint format."""
+    return set(coverage) == set(ADJUSTMENTS) and all(
+        coverage_sources(view) == sources for view in coverage.values()
+    )
 
 
 def approved_identity(group, offline):
@@ -51,10 +59,9 @@ def approved_identity(group, offline):
     return pid, prior
 
 
-def _checkpoint(group, offline, source):
+def _accepted_source_checkpoint(group, offline, source):
     name = group.seed
     pid, prior = approved_identity(group, offline)
-    envelope = offline["offline_ownership"]
     history = prior["history_validation"]
     inputs = history["inputs"]
     record = history["prefix_records"][0]
@@ -72,7 +79,7 @@ def _checkpoint(group, offline, source):
         or record["ticker_ranges"] != [{"ticker": name, "first_session": first, "last_session": last}]
         or record["price_reasons"]
         or record["missing_sessions"]
-        or history["identities"][pid] != {view: {"version": 2, "sources": [name]} for view in ADJUSTMENTS}
+        or not approved_contributors(history["identities"][pid], {name})
         or inputs[name]["views"]
         != {
             view: {"rows": size, "last_session": last, "ownership": [{"rows": size, "owner": owner}]}
@@ -81,8 +88,17 @@ def _checkpoint(group, offline, source):
     ):
         raise LineageError("accepted owner does not cover a clean all-view source and label grid")
 
+    return pid, owner, prior, size
+
+
+def _cold_prefix(group, losses, approved):
+    pid, _, prior, size = approved
+    name = group.seed
+    record = prior["history_validation"]["prefix_records"][0]
+    first, last = record["first_session"], record["validated_through"]
+    old_generation = prior["references"]["pricing"][name]
     extents = []
-    for loss in sorted(envelope["outcome"]["lost_scopes"], key=lambda item: item["row_start"]):
+    for loss in sorted(losses, key=lambda item: item["row_start"]):
         if (
             loss["source"] != name
             or loss["public_id"] != pid
@@ -98,7 +114,7 @@ def _checkpoint(group, offline, source):
         extents.append((loss["row_start"], loss["row_end"], loss["segment_from"], loss["segment_to"]))
     if not extents or extents[0][2] != first:
         raise LineageError("accepted owner loss lacks the original first position")
-    return pid, owner, tuple(extents), prior, size
+    return tuple(extents)
 
 
 def _require_current_owner(previous, pid, owner, stop, accepted_size):
@@ -267,6 +283,37 @@ def restore_positions(previous, document, pid, extents, prior):
     return receipt
 
 
+def _prepare_single(context, root, group, offline, source, index, policy):
+    from libs.alpaca_end_of_day_security_correlation.due_bill_cash import VERSION as DUE_BILL_CASH_VERSION
+
+    approved = _accepted_source_checkpoint(group, offline, source)
+    losses = offline["offline_ownership"]["outcome"]["lost_scopes"]
+    if losses and min(loss["row_start"] for loss in losses) > 1:
+        from .retained_cash_distribution import prepare
+
+        if policy.implementation_correlation_version < DUE_BILL_CASH_VERSION:
+            raise LineageError("selected policy does not support retained cash-distribution ownership")
+        previous = storage.read_receipt(root, group.seed, index)
+        return prepare(
+            context, root, group, source, previous, losses, approved, group_policy=policy.semantic_sha256
+        )
+    pid, owner, prior, size = approved
+    extents = _cold_prefix(group, losses, approved)
+    name = group.seed
+    previous = storage.read_receipt(root, name, index)
+    _require_current_owner(previous, pid, owner, extents[-1][1], size)
+    old = storage.read_boundaries(root, previous, kinds={COLD})[COLD]
+    document = _restore_prefix(old, pid, name, extents)
+    receipt = restore_positions(previous, document, pid, extents, prior)
+    return PreparedCandidate(
+        {name: receipt},
+        {name: {COLD: document}},
+        {name: previous},
+        previous["correlation_policy"],
+        {name: {COLD: document}},
+    )
+
+
 def restore(selection, context, *, progress=None):
     """Publish the exact accepted positions while retaining their owning locks."""
     from .pipeline import _current_sources
@@ -310,26 +357,8 @@ def restore(selection, context, *, progress=None):
             if seam is not None:
                 previous = {symbol: storage.read_receipt(root, symbol, index) for symbol in group.members}
                 prepared = retained_rename_seam.prepare(seam, previous, root)
-                return publish_prepared(
-                    replace(selection, prepared=prepared),
-                    context,
-                    progress=progress,
-                    accepted_inputs=(root, index, sources, {}),
-                )
-            pid, owner, extents, prior, accepted_size = _checkpoint(group, offline, sources[name])
-            previous = storage.read_receipt(root, name, index)
-            stop = extents[-1][1]
-            _require_current_owner(previous, pid, owner, stop, accepted_size)
-            old = storage.read_boundaries(root, previous, kinds={COLD})[COLD]
-            document = _restore_prefix(old, pid, name, extents)
-            receipt = restore_positions(previous, document, pid, extents, prior)
-            prepared = PreparedCandidate(
-                {name: receipt},
-                {name: {COLD: document}},
-                {name: previous},
-                previous["correlation_policy"],
-                {name: {COLD: document}},
-            )
+            else:
+                prepared = _prepare_single(context, root, group, offline, sources[name], index, policy)
             return publish_prepared(
                 replace(selection, prepared=prepared),
                 context,
