@@ -7,7 +7,8 @@ from unittest.mock import patch
 from test_alpaca_durable_maintenance import fixture
 from test_alpaca_lineage_build import IdentityClient, asset
 
-from libs.alpaca_lineage_build import pipeline, storage
+from libs.alpaca_lineage_build import pipeline, storage, universe_plan
+from libs.alpaca_lineage_build.context import OperationContext
 from libs.alpaca_lineage_build.contract import document_digest, reusable_decision
 from libs.alpaca_lineage_build.correlation_policy import load_policy
 from libs.alpaca_lineage_build.correlation_policy_contract import (
@@ -31,6 +32,7 @@ from libs.alpaca_lineage_build.correlation_policy_contract import (
     RETAINED_V100_SEMANTIC_SHA256,
     RETAINED_V101_SEMANTIC_SHA256,
     RETAINED_V103_SEMANTIC_SHA256,
+    RETAINED_V104_SEMANTIC_SHA256,
 )
 
 
@@ -95,6 +97,9 @@ class MarketPolicyCompatibilityTests(TestCase):
     def test_unchanged_v103_publication_keeps_provenance_without_upstream_replay(self):
         self.unchanged(103, RETAINED_V103_SEMANTIC_SHA256)
 
+    def test_unchanged_v104_publication_keeps_provenance_without_upstream_replay(self):
+        self.unchanged(104, RETAINED_V104_SEMANTIC_SHA256)
+
     def unchanged(self, version, semantic):
         with fixture() as case:
             root = case.store / "end_of_day/lineage"
@@ -117,6 +122,19 @@ class MarketPolicyCompatibilityTests(TestCase):
             storage.atomic_json(root / "AAA/lineage.manifest.json", receipt)
             storage._update_index(root, {"AAA": entry})
             self.assertTrue(reusable_decision(receipt))
+            with (
+                patch.object(
+                    storage, "read_receipt", side_effect=AssertionError("receipt reopened to select work")
+                ),
+                patch.object(
+                    storage, "read_boundaries", side_effect=AssertionError("assignments reopened to select work")
+                ),
+            ):
+                planned = universe_plan.boundaries(
+                    case.store, case.registry, context=OperationContext(case.store)
+                )
+            self.assertEqual(set(), planned["changed_rules"])
+            self.assertEqual({}, planned["legacy_memberships"])
             with (
                 patch.object(pipeline, "load_pricing", side_effect=AssertionError("old prices opened")),
                 patch.object(pipeline, "correlate", side_effect=AssertionError("old correlation replayed")),

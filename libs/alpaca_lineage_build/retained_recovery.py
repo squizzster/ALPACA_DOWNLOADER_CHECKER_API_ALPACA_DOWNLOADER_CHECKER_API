@@ -152,8 +152,10 @@ def accept_selection(value, store):
         )
         groups.append(RecoveryGroup(tuple(members), pricing, receipts, operation_id))
     mode = value.get("mode")
-    if mode == RESTORE_ACCEPTED_OWNER and (len(groups) != 1 or len(groups[0].members) != 1):
-        raise LineageError("accepted-owner restoration requires one single-source group")
+    if mode == RESTORE_ACCEPTED_OWNER and (
+        len(groups) != 1 or set(groups[0].members) != groups[0].receipts.keys()
+    ):
+        raise LineageError("accepted-owner restoration requires one completely priced and published group")
     return RecoverySelection(store, value["correlation_policy_sha256"], tuple(groups), mode=mode)
 
 

@@ -37,6 +37,8 @@ COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION = 77
 COMPLETED_EVENT_SCOPE_CORRELATION_VERSION = 78
 PROCESSING_DATE_SUCCESSOR_SEAM_CORRELATION_VERSION = 96
 MAIN_COMPONENT_ARRIVAL_CORRELATION_VERSION = 97
+CLOSED_SUCCESSOR_PROCESSING_DATE_VERSION = 105
+CLOSED_SUCCESSOR_RENAME_METHOD = "observed_closed_successor_before_rename_processing"
 
 PRE_ENTRY_CARRY_FORWARD_REASON = "certified_pre_entry_carry_forward_non_observation"
 
@@ -78,6 +80,17 @@ class NameChangeHistory:
     last: date
     interval: "TickerOwnershipInterval"
     action_id: str
+    method: str | None = None
+
+
+@dataclass(frozen=True)
+class ClosedSuccessorRename:
+    asset_id: str
+    cusip: str
+    terminal_symbol: str
+    arrival_action_id: str
+    departure_action_id: str
+    departure_date: date
 
 
 @dataclass(frozen=True)
@@ -388,6 +401,242 @@ def _non_observation_conflict(lineage, symbol, first, last, allowed_owners, allo
         if not dates or any(first <= day <= last for day in dates):
             return True
     return False
+
+
+def closed_successor_rename(lineage, predecessor_symbol, successor_symbol, predecessor_last, process_date):
+    """Resolve the native identity of a retired intermediate label at a processing-only rename."""
+    if predecessor_last >= process_date or predecessor_symbol == successor_symbol:
+        return None
+    labels = {predecessor_symbol, successor_symbol}
+    actions = lineage.get("corporate_actions", ())
+    renames = [
+        action
+        for action in actions
+        if action.get("action_type") == "name_change"
+        and (action.get("old_symbol") in labels or action.get("new_symbol") in labels)
+    ]
+    arrivals = [action for action in renames if action.get("old_symbol") == predecessor_symbol]
+    departures = [action for action in renames if action.get("old_symbol") == successor_symbol]
+    if len(arrivals) != 1 or len(departures) != 1:
+        return None
+    arrival, departure = arrivals[0], departures[0]
+    cusip = arrival.get("old_cusip")
+    terminal_symbol = departure.get("new_symbol")
+    departure_date, issue = name_change_date(departure, actions)
+    if (
+        arrival.get("new_symbol") != successor_symbol
+        or not arrival.get("id")
+        or not departure.get("id")
+        or arrival["id"] == departure["id"]
+        or arrival.get("process_date") != process_date.isoformat()
+        or arrival.get("ex_date") is not None
+        or arrival.get("effective_date") is not None
+        or not cusip
+        or (arrival.get("new_cusip"), departure.get("old_cusip"), departure.get("new_cusip")) != (cusip,) * 3
+        or not terminal_symbol
+        or terminal_symbol in labels
+        or issue
+        or departure_date <= process_date
+        or not _complete_action_query_covers(lineage, predecessor_symbol, process_date)
+        or not _complete_action_query_covers(lineage, successor_symbol, departure_date)
+    ):
+        return None
+    terminal = exact_cusip_lookup_asset(lineage, cusip)
+    if terminal is None or not terminal.get("id") or terminal.get("symbol") != terminal_symbol:
+        return None
+    asset_id = terminal["id"]
+    route = ClosedSuccessorRename(
+        asset_id, cusip, terminal_symbol, arrival["id"], departure["id"], departure_date
+    )
+    if any(
+        not _earlier_entry_to_predecessor(action, predecessor_symbol, successor_symbol, route, predecessor_last)
+        for action in renames
+        if action is not arrival and action is not departure
+    ) or _closed_successor_occupancy_conflict(
+        lineage, predecessor_symbol, successor_symbol, route, predecessor_last, process_date
+    ):
+        return None
+    return route
+
+
+def _earlier_entry_to_predecessor(action, predecessor_symbol, successor_symbol, route, predecessor_last):
+    """An earlier spelling can enter the same issue before this independently observed handoff."""
+    if (
+        action.get("new_symbol") != predecessor_symbol
+        or not action.get("old_symbol")
+        or action["old_symbol"] in {predecessor_symbol, successor_symbol, route.terminal_symbol}
+        or (action.get("old_cusip"), action.get("new_cusip")) != (route.cusip, route.cusip)
+    ):
+        return False
+    dates, issue = name_change_dates(action)
+    return not issue and dates[0] < predecessor_last and action.get("ex_date") in (None, dates[0].isoformat())
+
+
+def closed_successor_rename_conflict(
+    lineage, predecessor_symbol, successor_symbol, route, predecessor_last, process_date
+):
+    """A peer can contradict the dated native route without having a complete query of its own."""
+    terminal = exact_cusip_lookup_asset(lineage, route.cusip)
+    if terminal is not None and (terminal.get("id"), terminal.get("symbol")) != (
+        route.asset_id,
+        route.terminal_symbol,
+    ):
+        return True
+    for action in lineage.get("corporate_actions", ()):
+        if action.get("action_type") != "name_change":
+            continue
+        endpoints = (
+            action.get("old_symbol"),
+            action.get("new_symbol"),
+            action.get("old_cusip"),
+            action.get("new_cusip"),
+        )
+        if action.get("id") == route.arrival_action_id:
+            if (
+                endpoints != (predecessor_symbol, successor_symbol, route.cusip, route.cusip)
+                or action.get("process_date") != process_date.isoformat()
+                or action.get("effective_date") is not None
+                or action.get("ex_date") is not None
+            ):
+                return True
+        elif action.get("id") == route.departure_action_id:
+            if endpoints != (
+                successor_symbol,
+                route.terminal_symbol,
+                route.cusip,
+                route.cusip,
+            ) or name_change_date(action) != (route.departure_date, None):
+                return True
+        elif {predecessor_symbol, successor_symbol}.intersection(
+            endpoints[:2]
+        ) and not _earlier_entry_to_predecessor(
+            action, predecessor_symbol, successor_symbol, route, predecessor_last
+        ):
+            return True
+    return _closed_successor_occupancy_conflict(
+        lineage, predecessor_symbol, successor_symbol, route, predecessor_last, process_date
+    )
+
+
+def _closed_successor_occupancy_conflict(
+    lineage, predecessor_symbol, successor_symbol, route, predecessor_last, process_date
+):
+    if any(
+        _known_owners(lineage, label) - {route.asset_id} for label in (successor_symbol, route.terminal_symbol)
+    ):
+        return True
+    old_rivals = _known_owners(lineage, predecessor_symbol) - {route.asset_id}
+    if old_rivals:
+        old = exact_symbol_lookup_asset(lineage, predecessor_symbol)
+        if (
+            old is None
+            or old_rivals != {old["id"]}
+            or old.get("status") != "inactive"
+            or old.get("tradable") is True
+        ):
+            return True
+    # An undated inactive lookup can describe the earlier spelling. A conflicting dated
+    # occupant or structural event at the handoff still needs its own allocation.
+    labels = {predecessor_symbol, successor_symbol, route.terminal_symbol}
+    return _bridge_structural_conflict(
+        lineage, labels, predecessor_last, process_date, route.arrival_action_id
+    ) or any(
+        _non_observation_conflict(
+            lineage,
+            label,
+            predecessor_last,
+            process_date,
+            {(route.asset_id, route.cusip)},
+            {route.arrival_action_id},
+        )
+        for label in labels
+    )
+
+
+def _closed_successor_source_bridge_history(lineage, intervals, grids, edge, old, new, fields, peer_evidence):
+    """Date only the observed handoff, using the later issue's independently mapped raw trades."""
+    old_rows, old_source, old_sessions = old
+    new_rows, new_source, new_sessions = new
+    previous, first, process = old_sessions[-1], new_sessions[0], edge.effective_date
+    if not previous < first < process or edge.predecessor_asset_id != edge.successor_asset_id:
+        return None
+    # Empty dates matter only inside a request which actually included them.
+    try:
+        old_end = date.fromisoformat(old_source["request_to"][:10])
+        new_start = date.fromisoformat(new_source["request_from"][:10])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if old_end < process or new_start > previous:
+        return None
+    route = closed_successor_rename(lineage, edge.predecessor_symbol, edge.successor_symbol, previous, process)
+    if route is None or (route.arrival_action_id, route.asset_id, route.cusip) != (
+        edge.action_id,
+        edge.successor_asset_id,
+        edge.successor_cusip,
+    ):
+        return None
+    successors = [interval for interval in intervals if interval.historical_symbol == edge.successor_symbol]
+    if len(successors) != 1 or new_sessions[-1] >= route.departure_date:
+        return None
+    successor = successors[0]
+    if successor.identity_key() != (edge.successor_symbol, route.cusip, route.asset_id) or (
+        successor.start_date_inclusive,
+        successor.end_date_exclusive,
+    ) != (process, route.departure_date):
+        return None
+    peers = {id(item): item for item in peer_evidence if item is not lineage}
+    if any(
+        closed_successor_rename_conflict(
+            peer, edge.predecessor_symbol, edge.successor_symbol, route, previous, process
+        )
+        for peer in peers.values()
+    ):
+        return None
+    bridge = grids.get(route.terminal_symbol)
+    if bridge is None:
+        return None
+    bridge_rows, bridge_source, bridge_sessions = bridge
+    if (bridge_source["feed"], bridge_source["timeframe"]) != (new_source["feed"], new_source["timeframe"]):
+        return None
+    try:
+        terminal_mapping = date.fromisoformat(bridge_source["asof"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if terminal_mapping < route.departure_date:
+        return None
+    end = bisect_left(new_sessions, process)
+    if end == len(new_sessions) or new_sessions[end] != process:
+        return None
+    sessions = (previous, *new_sessions[: end + 1])
+    try:
+        expected = expected_market_session_coverage(
+            previous.isoformat(), (process + timedelta(days=1)).isoformat()
+        )
+    except MarketCalendarError:
+        return None
+    start = bisect_left(bridge_sessions, previous)
+    stop = start + len(sessions)
+    if (
+        tuple(day.isoformat() for day in sessions) != expected.session_dates
+        or tuple(bridge_sessions[start:stop]) != sessions
+    ):
+        return None
+    # Periods outside this observed handoff have no bearing on these ownership
+    # dates. Adjusted prices remain with the numerical observation selector.
+    observed = [old_rows[-1], *new_rows[: end + 1]]
+    if any(_traded_price(row) is None for row in observed) or not _rows_equal(
+        observed, bridge_rows[start:stop], fields
+    ):
+        return None
+    interval = replace(successor, start_date_inclusive=first, end_date_exclusive=process)
+    return NameChangeHistory(
+        edge.successor_symbol,
+        first,
+        new_sessions[end - 1],
+        interval,
+        edge.action_id,
+        CLOSED_SUCCESSOR_RENAME_METHOD,
+    )
 
 
 def _terminal_carry_forward_exclusion(
@@ -1299,8 +1548,6 @@ def _early_successor_source_bridge_history(
         or not new_sessions
         or (old_source["feed"], old_source["timeframe"]) != (new_source["feed"], new_source["timeframe"])
         or (old_source["feed"], old_source["timeframe"]) != (bridge_source["feed"], bridge_source["timeframe"])
-        or bridge_sessions != (*old_sessions, *new_sessions)
-        or not _rows_equal([*old_rows, *new_rows], bridge_rows, fields)
     ):
         return None
 
@@ -1349,6 +1596,10 @@ def _early_successor_source_bridge_history(
         or _bridge_structural_conflict(
             lineage, certificate_symbols, old_sessions[0], early_sessions[-1], edge.action_id
         )
+    ):
+        return None
+    if bridge_sessions != (*old_sessions, *new_sessions) or not _rows_equal(
+        [*old_rows, *new_rows], bridge_rows, fields
     ):
         return None
     observed = replace(successor, start_date_inclusive=early_sessions[0])
@@ -1985,6 +2236,7 @@ def assess_name_change_history(
     completed_event_scope=True,
     processing_date_successor_seams=False,
     main_component_arrivals=False,
+    closed_successor_evidence=None,
 ):
     """Certify source bounds without reading reports produced by these edges."""
     component_actions = _main_component_arrival_actions(lineage) if main_component_arrivals else ()
@@ -2044,6 +2296,17 @@ def assess_name_change_history(
         owner = _own_interval(lineage, intervals, edge, old_sessions)
         if owner is None:
             continue
+        # This history only allocates the intermediate source. Its selected
+        # metadata owns the assessment, and dated conflicts can come from any peer.
+        if (
+            closed_successor_evidence is not None
+            and closed_successor_evidence.get(edge.successor_symbol) is lineage
+        ):
+            closed_history = _closed_successor_source_bridge_history(
+                lineage, intervals, grids, edge, old, new, fields, closed_successor_evidence.values()
+            )
+            if closed_history is not None:
+                histories.append(closed_history)
         prefix = [(day, row) for day, row in zip(old_sessions, old_rows) if owner.contains(day)]
         if not prefix:
             continue

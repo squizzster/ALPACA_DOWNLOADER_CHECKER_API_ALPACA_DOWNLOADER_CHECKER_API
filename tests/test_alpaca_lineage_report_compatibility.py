@@ -26,6 +26,13 @@ def historical_bindings():
     producer = "accepted_same_security_containing_component_v1"
     return [
         {
+            "debug": 28,
+            "policy_lab": 27,
+            "correlation_runtime": 111,
+            "lineage_runtime": 130,
+            "membership_refinement": producer,
+        },
+        {
             "debug": 27,
             "policy_lab": 27,
             "correlation_runtime": 110,
@@ -233,6 +240,36 @@ class ReportBindingCompatibilityTests(TestCase):
         self.assertFalse(_correlation_cache(frozen).retired_label_observations)
         self.assertTrue(_correlation_cache(current).retired_label_observations)
         self.assertFalse(policy_applies(frozen.as_report_object(), current))
+
+    def test_v104_control_keeps_original_successor_rules_and_provenance(self):
+        from libs.alpaca_end_of_day_security_correlation.component_refinement import membership_policy_version
+        from libs.alpaca_lineage_build.contract import versions
+        from libs.alpaca_lineage_build.correlation_policy_contract import RETAINED_V104_SEMANTIC_SHA256
+        from libs.alpaca_lineage_build.policy_engine import _correlation_cache
+        from libs.alpaca_lineage_policy_lab.contract import replayable_lineage_versions
+
+        frozen = load_policy(DEFAULT_POLICY.with_name("alpaca_security_correlation_v104_legacy_policy.yaml"))
+        current = load_policy(DEFAULT_POLICY)
+        self.assertEqual(RETAINED_V104_SEMANTIC_SHA256, frozen.semantic_sha256)
+        self.assertEqual(frozen.row_rules, current.row_rules)
+        self.assertEqual(frozen.dated_labels, current.dated_labels)
+        self.assertEqual(frozen.membership_refinement, current.membership_refinement)
+        for policy, closed_successor_bridge in ((frozen, False), (current, True)):
+            with self.subTest(policy=policy.execution_profile):
+                cache = _correlation_cache(policy)
+                self.assertTrue(cache.processing_date_successor_seams)
+                self.assertTrue(cache.former_ticker_occupation)
+                self.assertEqual(closed_successor_bridge, cache.closed_successor_processing_date_bridges)
+                self.assertEqual(
+                    94,
+                    membership_policy_version({"membership_version": policy.implementation_correlation_version}),
+                )
+        self.assertTrue(policy_applies(frozen.as_report_object(), frozen))
+        self.assertFalse(policy_applies(frozen.as_report_object(), current))
+        self.assertFalse(policy_applies(current.as_report_object(), frozen))
+        published = {**versions(), "correlation": 104, "correlation_policy_sha256": frozen.semantic_sha256}
+        self.assertTrue(replayable_lineage_versions(published))
+        self.assertFalse(replayable_lineage_versions({**published, "correlation_policy_sha256": "a" * 64}))
 
     def test_empty_control_research_options_match_absence_without_erasing_candidates(self):
         control = replace(

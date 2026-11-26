@@ -7,6 +7,7 @@ from libs.alpaca_end_of_day_security_correlation.action_identity import (
     exact_symbol_lookup_asset,
 )
 from libs.alpaca_pricing_download.contract import ADJUSTMENTS
+from libs.alpaca_security_lineage.inference_evidence import provider_evidence
 from libs.alpaca_serving_catalogue import storage as catalogue
 from libs.alpaca_serving_catalogue.offline import REASON
 
@@ -21,8 +22,7 @@ LOSS = "outside_supported_name_change_history"
 RULE = "retained_same_source_accepted_owner"
 
 
-def _checkpoint(group, offline, source):
-    name = group.seed
+def approved_identity(group, offline):
     envelope = offline.get("offline_ownership", {})
     checkpoints = envelope.get("checkpoints", ())
     if (
@@ -44,11 +44,20 @@ def _checkpoint(group, offline, source):
         or prior["decisions"][0]["eligible"] is not True
         or len(records) != 1
         or records[0]["public_id"] != pid
-        or inputs.keys() != {name}
-        or prior["references"]["pricing"] != {name: inputs[name]["pricing_generation"]}
+        or inputs.keys() != group.receipts.keys()
+        or prior["references"]["pricing"] != {name: item["pricing_generation"] for name, item in inputs.items()}
     ):
-        raise LineageError("selected accepted owner has no sole-source approved checkpoint")
-    record = records[0]
+        raise LineageError("selected accepted owner has no applicable approved checkpoint")
+    return pid, prior
+
+
+def _checkpoint(group, offline, source):
+    name = group.seed
+    pid, prior = approved_identity(group, offline)
+    envelope = offline["offline_ownership"]
+    history = prior["history_validation"]
+    inputs = history["inputs"]
+    record = history["prefix_records"][0]
     first, last = record["first_session"], record["validated_through"]
     old_generation = inputs[name]["pricing_generation"]
     if old_generation != group.pricing[name] and not any(
@@ -113,7 +122,7 @@ def _require_current_owner(previous, pid, owner, stop, accepted_size):
         )
     ):
         raise LineageError("current ownership differs from the retained same-source identity and label")
-    evidence = previous["evidence"]
+    evidence = provider_evidence(previous["evidence"])
     actions = [action for action in evidence["corporate_actions"] if action.get("action_type") == "name_change"]
     if len(actions) != 1 or actions[0].get("new_symbol") != name:
         raise LineageError("selected ownership loss lacks one continuing same-class name change")
@@ -157,10 +166,13 @@ def _require_current_owner(previous, pid, owner, stop, accepted_size):
             raise LineageError("retained name change endpoints do not establish the surviving own-label asset")
 
 
-def _restore_prefix(document, pid, name, extents):
-    entries = []
+def _restore_prefix(document, pid, name, extents, *, interval=None, rule=RULE):
+    entries, restored_views = [], {}
     for entry in document["adjustments"]:
         segments = entry["segments"]
+        if id(segments) in restored_views:
+            entries.append({**entry, "segments": restored_views[id(segments)]})
+            continue
         prefix = segments[: len(extents)]
         suffix = segments[len(extents) :]
         if (
@@ -178,6 +190,17 @@ def _restore_prefix(document, pid, name, extents):
             )
         ):
             raise LineageError("an adjustment view differs from the selected candidate-free ownership loss")
+        if interval is not None:
+            following = suffix[0]
+            canonical = following["canonical_security"]
+            if (
+                following["from"] != interval["end_date_exclusive"]
+                or canonical.get("alpaca_asset_id") != interval["asset_id"]
+                or canonical.get("cusip") != interval["cusip"]
+                or following.get("observation_selection") != "selected"
+                or following.get("observation_tickers") != [name]
+            ):
+                raise LineageError("the first surviving observation differs from the native successor")
         restored = [
             {
                 **{
@@ -196,17 +219,52 @@ def _restore_prefix(document, pid, name, extents):
                 "historical_symbol": name,
                 "canonical_security": suffix[0]["canonical_security"],
                 "security_identity": suffix[0]["security_identity"],
-                "identity_confidence": RULE,
-                "correlation_method": RULE,
-                "correlation_rule": {"order": None, "name": RULE},
-                "ticker_ownership_interval": None,
+                "identity_confidence": rule,
+                "correlation_method": rule,
+                "correlation_rule": {"order": None, "name": rule},
+                "ticker_ownership_interval": interval,
                 "observation_selection": "selected",
                 "observation_tickers": [name],
             }
             for seg in prefix
         ]
-        entries.append({**entry, "segments": [*restored, *suffix]})
+        restored_views[id(segments)] = [*restored, *suffix]
+        entries.append({**entry, "segments": restored_views[id(segments)]})
     return {**document, "adjustments": entries}
+
+
+def restore_positions(previous, document, pid, extents, prior):
+    generation = document_digest(document)
+    stop = extents[-1][1]
+    restored_rows = stop * len(ADJUSTMENTS)
+    if previous["unresolved_rows"] != restored_rows:
+        raise LineageError("selected accepted owner does not exhaust the reported unresolved prefix")
+    receipt = {
+        **previous,
+        "correlated_rows": previous["correlated_rows"] + restored_rows,
+        "unresolved_rows": 0,
+        "boundaries": {
+            **previous["boundaries"],
+            COLD: {**previous["boundaries"][COLD], "sha256": generation},
+        },
+        "assignment_handoffs": {**previous["assignment_handoffs"], COLD: produce(document, generation)},
+        "identity_intervals": [
+            *({"from": left, "to": right, "security_id": pid} for _, _, left, right in extents),
+            *previous["identity_intervals"],
+        ],
+        "retained_owner_restoration": {
+            "version": 1,
+            "decision_generation": prior["decision_generation"],
+            "references": prior["references"],
+            "boundary": COLD,
+            "public_id": pid,
+            "row_start": 1,
+            "row_end": stop,
+            "former_reason": LOSS,
+        },
+    }
+    receipt["serving_ownership"] = serving_ownership(receipt)
+    return receipt
 
 
 def restore(selection, context, *, progress=None):
@@ -234,49 +292,37 @@ def restore(selection, context, *, progress=None):
             }
         selected = context.select_serving()
         locator = selected["members"].get(name)
-        if locator is None:
+        if locator is None or any(selected["members"].get(symbol) != locator for symbol in group.members):
             raise LineageError("selected accepted owner has no serving group")
         serving_generation = selected["state"]["generation"]
         offline = catalogue.read_groups(store, [locator], generation=serving_generation)[locator]
         remember(store, "serving_group", (serving_generation, locator), offline)
+        seam = None
+        if len(group.members) > 1:
+            from . import retained_rename_seam
+
+            seam = retained_rename_seam.select(group, offline)
         with storage.pricing_locks(store, group.members, known=index["symbols"]):
             sources = _current_sources(store, group.members, known=index["symbols"])
-            group.accept_sources(group.members, {name: document_digest(sources[name])})
+            group.accept_sources(
+                group.members, {symbol: document_digest(source) for symbol, source in sources.items()}
+            )
+            if seam is not None:
+                previous = {symbol: storage.read_receipt(root, symbol, index) for symbol in group.members}
+                prepared = retained_rename_seam.prepare(seam, previous, root)
+                return publish_prepared(
+                    replace(selection, prepared=prepared),
+                    context,
+                    progress=progress,
+                    accepted_inputs=(root, index, sources, {}),
+                )
             pid, owner, extents, prior, accepted_size = _checkpoint(group, offline, sources[name])
             previous = storage.read_receipt(root, name, index)
             stop = extents[-1][1]
             _require_current_owner(previous, pid, owner, stop, accepted_size)
             old = storage.read_boundaries(root, previous, kinds={COLD})[COLD]
             document = _restore_prefix(old, pid, name, extents)
-            generation = document_digest(document)
-            restored_rows = stop * len(ADJUSTMENTS)
-            if previous["unresolved_rows"] != restored_rows:
-                raise LineageError("selected accepted owner does not exhaust the reported unresolved prefix")
-            receipt = {
-                **previous,
-                "correlated_rows": previous["correlated_rows"] + restored_rows,
-                "unresolved_rows": 0,
-                "boundaries": {
-                    **previous["boundaries"],
-                    COLD: {**previous["boundaries"][COLD], "sha256": generation},
-                },
-                "assignment_handoffs": {**previous["assignment_handoffs"], COLD: produce(document, generation)},
-                "identity_intervals": [
-                    *({"from": left, "to": right, "security_id": pid} for _, _, left, right in extents),
-                    *previous["identity_intervals"],
-                ],
-                "retained_owner_restoration": {
-                    "version": 1,
-                    "decision_generation": prior["decision_generation"],
-                    "references": prior["references"],
-                    "boundary": COLD,
-                    "public_id": pid,
-                    "row_start": 1,
-                    "row_end": stop,
-                    "former_reason": LOSS,
-                },
-            }
-            receipt["serving_ownership"] = serving_ownership(receipt)
+            receipt = restore_positions(previous, document, pid, extents, prior)
             prepared = PreparedCandidate(
                 {name: receipt},
                 {name: {COLD: document}},

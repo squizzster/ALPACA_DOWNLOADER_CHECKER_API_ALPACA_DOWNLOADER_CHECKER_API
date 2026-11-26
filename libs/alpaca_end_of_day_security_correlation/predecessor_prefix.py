@@ -51,6 +51,7 @@ class IndependentHistoricalInterval:
     first: date
     last: date
     interval: TickerOwnershipInterval
+    method: str | None = None
 
 
 def _mapped_donor_positions(report, descriptor, edge, source):

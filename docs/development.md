@@ -70,7 +70,7 @@ on those complete groups, run
 
 ```bash
 xargs -a tests/fixtures/lineage_symbols.txt ./alpaca-lineage-debug run --store data_pricing \
-  --control-policy resources/alpaca_security_correlation_v103_legacy_policy.yaml \
+  --control-policy resources/alpaca_security_correlation_v104_legacy_policy.yaml \
   --policy resources/alpaca_security_correlation_policy.yaml --tickers
 ```
 

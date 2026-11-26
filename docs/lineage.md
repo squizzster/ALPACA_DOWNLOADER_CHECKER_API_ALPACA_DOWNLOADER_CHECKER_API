@@ -883,6 +883,15 @@ The certificate moves no endpoint, extends no unseen history and joins no UUIDs.
 owners, related structural actions, ticker recurrence, gaps, overlaps, incomplete sources and divergent raw rows
 retain their existing vetoes.
 
+A ticker can also be the middle of two name changes. The first action can give only a processing date
+even though trading under the middle ticker began earlier. When both actions preserve the same provider
+UUID and CUSIP, the later departure identifies the terminal ticker that Alpaca uses for the combined
+price history. The producer compares the predecessor's last traded session and the middle ticker's
+first traded sessions through the processing date against that terminal source. Adjacent market sessions,
+matching raw observations and the absence of a competing occupant support the middle ticker on the
+observed dates. The action keeps its reported processing date. A conflicting owner or a disagreement
+in those observations leaves the ordinary assessment in place.
+
 For a processing-date-only rename, a complete predecessor request can establish an earlier handoff when
 the retained source ends on the market session immediately before the successor source begins. One direct
 unchanged-UUID/CUSIP route and agreeing active CUSIP and successor lookups must identify the same security.

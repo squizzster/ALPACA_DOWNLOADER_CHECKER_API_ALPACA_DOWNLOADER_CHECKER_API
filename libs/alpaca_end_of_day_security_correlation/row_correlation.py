@@ -33,6 +33,7 @@ from .former_ticker import FormerTickerPeriods
 from .identity_partition import OneSessionDistinctUuidTransition
 from .mapped_rename_chain import SPLIT_ADJUSTED_RENAME_TAPE
 from .name_change import (
+    CLOSED_SUCCESSOR_RENAME_METHOD,
     PRE_ENTRY_CARRY_FORWARD_REASON,
     NameChangeAssessment,
     NameChangeHistory,
@@ -310,6 +311,7 @@ class CorrelationCache:
         stock_merger_departure=False,
         former_ticker_occupation=False,
         main_component_arrivals=False,
+        closed_successor_processing_date_bridges=False,
     ):
         if any(
             (
@@ -341,6 +343,7 @@ class CorrelationCache:
         self._former_occupations = None
         self.former_source_generations = {}
         self.main_component_arrivals = main_component_arrivals
+        self.closed_successor_processing_date_bridges = closed_successor_processing_date_bridges
         self._retired_labels = {}
         self.row_correlation_rules = row_correlation_rules
         self.exact_same_symbol_handoffs = exact_same_symbol_handoffs
@@ -749,6 +752,11 @@ class CorrelationCache:
                     internal_component_handoffs=self.internal_component_handoffs,
                     processing_date_successor_seams=self.processing_date_successor_seams,
                     main_component_arrivals=self.main_component_arrivals,
+                    closed_successor_evidence=(
+                        self.selected_evidence
+                        if self.closed_successor_processing_date_bridges and self.rename_scope_complete
+                        else None
+                    ),
                 )
             )
             if shared is None:
@@ -910,17 +918,19 @@ def _certified_predecessor_intervals(context: _RowRuleContext):
 
 
 def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | None:
-    matches = _certified_predecessor_intervals(context)
-    independent = {
-        item.interval for item in context.independent_history if item.first <= context.session_date <= item.last
-    }
-    matches.update(independent)
+    matches = {item.interval for item in context.predecessor_prefixes if item.contains(context.session_date)}
+    independent = [
+        item for item in context.independent_history if item.first <= context.session_date <= item.last
+    ]
+    matches.update(item.interval for item in independent)
     mapped = [item for item in context.mapped_continuations if item.contains(context.session_date)]
     matches.update(item.interval for item in mapped)
     if len(matches) != 1:
         return None
     interval = next(iter(matches))
     mapped_match = bool(mapped)
+    processing_seam = any(item.method == CLOSED_SUCCESSOR_RENAME_METHOD for item in independent)
+    method = CLOSED_SUCCESSOR_RENAME_METHOD if processing_seam else None
     return _RowDecision(
         branch=CORRELATED_BRANCH,
         asset_id=interval.asset_id,
@@ -933,11 +943,12 @@ def _apply_predecessor_prefix_rule(context: _RowRuleContext) -> _RowDecision | N
         warning_codes=(
             *(("inferred_lower_ownership_boundary",) if interval.start_date_inclusive is None else ()),
             *((INDEPENDENT_HISTORY_WARNING,) if independent else ()),
+            *(("observed_trading_dates_only", "effective_rename_date_unknown") if processing_seam else ()),
             *((MAPPED_CONTINUATION_WARNING,) if mapped_match else ()),
             *((SPLIT_ADJUSTED_RENAME_TAPE,) if any(item.split_adjusted_rename for item in mapped) else ()),
             *dict.fromkeys(item.scope_reason for item in mapped if item.scope_reason),
         ),
-        correlation_method=MAPPED_CONTINUATION_RULE_NAME if mapped_match else None,
+        correlation_method=MAPPED_CONTINUATION_RULE_NAME if mapped_match else method,
     )
 
 
@@ -1980,7 +1991,7 @@ def correlate_download_rows(
     independent_history = (
         *independent_history,
         *(
-            IndependentHistoricalInterval(item.first, item.last, item.interval)
+            IndependentHistoricalInterval(item.first, item.last, item.interval, item.method)
             for item in (*name_change_assessment.histories, *sourced_rename_histories)
             if item.symbol == requested_symbol
         ),

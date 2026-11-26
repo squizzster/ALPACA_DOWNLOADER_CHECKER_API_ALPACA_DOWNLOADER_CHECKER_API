@@ -146,9 +146,11 @@ do not replace the frozen selection with a fresh snapshot merely to bypass a rej
 a journaled completion marker and are skipped before receipt or pricing reads on retry. Ordinary update does
 not select this recovery implicitly, and the all-published computation rebuild does not select current decisions.
 
-When the serving report has an applicable `accepted_ownership_recovery_required` checkpoint for a single source,
-set the selection file's `mode` to `restore_accepted_owner`. The [recovery contract](technical-contracts.md#targeted-retained-lineage-recovery)
-defines the accepted scope and generation guards. Both commands use the same selection file format and journal.
+When a serving group reports `accepted_ownership_recovery_required`, its checkpoint can support recovery
+of a single source's former assignment or a processing-date discrepancy between successive ticker names.
+Set the selection file's `mode` to `restore_accepted_owner` and select the complete group. The
+[recovery contract](technical-contracts.md#targeted-retained-lineage-recovery) defines the required
+observations and generation bindings for each case. Both use the same selection file format and journal.
 
 When the comparison already produced complete candidate artifacts, pass its reviewed
 `alpaca_retained_candidate_handoff` as `--selection` using the same commands. Recovery consumes that completed

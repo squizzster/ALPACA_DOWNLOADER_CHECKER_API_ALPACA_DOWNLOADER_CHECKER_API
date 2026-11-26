@@ -657,5 +657,10 @@
     "modifications": [
       "Apply a source's dated accepted identity membership when resolving a continuing observation and preserve its earlier frozen identity assignments."
     ]
+  },
+  {
+    "modifications": [
+      "Date observed trading under an intermediate ticker before a processing-only name change when successive Alpaca changes preserve the security and a terminal price source agrees across the disputed sessions."
+    ]
   }
 ]

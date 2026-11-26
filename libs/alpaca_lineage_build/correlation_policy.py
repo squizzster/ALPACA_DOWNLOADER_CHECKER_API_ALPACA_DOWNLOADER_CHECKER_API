@@ -516,6 +516,7 @@ def _compile_schema_four(
         (101, 37),
         (102, 37),
         (103, 37),
+        (104, 37),
         (CORRELATION_VERSION, LINEAGE_VERSION),
     }:
         raise CorrelationPolicyError(
@@ -663,6 +664,7 @@ def _compile_schema_four(
                 (101, 37),
                 (102, 37),
                 (103, 37),
+                (104, 37),
                 (CORRELATION_VERSION, LINEAGE_VERSION),
             }
             else "published_reference"
@@ -853,6 +855,10 @@ def _compile_schema_four(
     if correlation_version >= 104:
         semantic["execution"]["established_fixed_point"]["former_ticker_occupation"] = (
             "dividend_anchored_reused_ticker_tape_v1"
+        )
+    if correlation_version >= 105:
+        semantic["execution"]["established_fixed_point"]["closed_successor_processing_date_bridge"] = (
+            "same_issue_closed_successor_v1"
         )
     if fallback_profile == CORRECTED_PROFILE:
         semantic.update(

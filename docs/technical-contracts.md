@@ -52,12 +52,20 @@ Independent completed groups survive peer failure, and journal interruption reta
 Selected serving maintenance follows successful lineage completion; its ownership and numerical gates remain
 unchanged. A successful lineage calculation alone does not establish online availability.
 
-The optional `restore_accepted_owner` mode selects one single-source group whose current serving result retains
-an accepted ownership checkpoint. The checkpoint must approve the same identity and label for all eight views,
+The optional `restore_accepted_owner` mode selects one complete group whose current serving result retains
+an accepted ownership checkpoint. For a single source, the checkpoint must approve the same identity and label for all eight views,
 and the selected pricing ancestry must preserve its positions. The lineage owner restores only the candidate-free
 contiguous cold prefix named in the ownership-loss decision. A different owner, competing source or changed
 ancestry leaves the selection unresolved. The journal installs the changed assignment boundary without replaying
 the accepted pricing or ownership. Serving carries the approved prefix and checks the newly added sessions.
+
+For successive changes of ticker on the same UUID and CUSIP, the group can retain a previously selected
+owner and middle ticker across the first action's processing-date discrepancy. The prior serving checkpoint
+must select the same pricing generations. Restoring the candidate-free positions in the middle source must
+reproduce the entire prior selection of owners, source rows and labels in all eight views. Current native
+action and source boundaries identify the disputed positions. The prior numerical and calendar decision
+then covers the complete restored grid. The journal carries the restored assignment to serving under the
+complete group selection.
 
 The same recovery entrypoint also accepts a version-1 `alpaca_retained_candidate_handoff` after its semantic
 review completes. It binds the absolute store, complete members, original receipt/pricing generations,

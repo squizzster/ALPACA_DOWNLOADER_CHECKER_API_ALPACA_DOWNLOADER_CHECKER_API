@@ -26,6 +26,7 @@ from libs.alpaca_end_of_day_security_correlation.mapped_rename_chain import (
 )
 from libs.alpaca_end_of_day_security_correlation.name_change import (
     BOUNDED_ENTRY_SAME_SYMBOL_HANDOFF_CORRELATION_VERSION,
+    CLOSED_SUCCESSOR_PROCESSING_DATE_VERSION,
     COMPLETE_CERTIFICATE_CONFLICT_CORRELATION_VERSION,
     COMPLETED_EVENT_SCOPE_CORRELATION_VERSION,
     EARLY_SUCCESSOR_SOURCE_BRIDGE_CORRELATION_VERSION,
@@ -270,6 +271,9 @@ def _correlation_cache(policy) -> CorrelationCache:
         ),
         processing_date_successor_seams=(
             policy.implementation_correlation_version >= PROCESSING_DATE_SUCCESSOR_SEAM_CORRELATION_VERSION
+        ),
+        closed_successor_processing_date_bridges=(
+            policy.implementation_correlation_version >= CLOSED_SUCCESSOR_PROCESSING_DATE_VERSION
         ),
         closed_terminal_departures=policy.implementation_correlation_version >= TERMINAL_DEPARTURE_VERSION,
         prior_claim_current_sources=policy.implementation_correlation_version >= PRIOR_CLAIM_VERSION,
