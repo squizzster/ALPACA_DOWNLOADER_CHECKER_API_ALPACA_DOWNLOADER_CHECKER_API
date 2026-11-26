@@ -170,21 +170,25 @@ class CatalogueExport:
                         )
 
 
+def accept_export_inputs(data, groups):
+    try:
+        export_inputs.select(
+            data.store,
+            data.catalog_generation(),
+            {symbol for key in groups for symbol in data._groups[key]["references"]["lineage"]},
+        )
+    except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
+        raise CatalogChangedError(
+            "selected serving catalogue or export inputs changed; finish maintenance and open a new DataLibrary"
+        ) from error
+
+
 @contextmanager
 def open_export(data, *, public_ids=None, start=None, end=None, full_histories=False):
     try:
         with operation_lock(data.store, exclusive=False):
             selected, groups, start, end = selection(data, public_ids, start, end)
-            try:
-                export_inputs.select(
-                    data.store,
-                    data.catalog_generation(),
-                    {symbol for key in groups for symbol in data._groups[key]["references"]["lineage"]},
-                )
-            except (CatalogueError, OSError, ValueError, KeyError, TypeError) as error:
-                raise CatalogChangedError(
-                    "selected serving catalogue or export inputs changed; finish maintenance and open a new DataLibrary"
-                ) from error
+            accept_export_inputs(data, groups)
             exported = CatalogueExport(
                 data, selected, groups, None if full_histories else start, None if full_histories else end
             )

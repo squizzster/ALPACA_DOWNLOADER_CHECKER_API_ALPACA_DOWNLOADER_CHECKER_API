@@ -272,5 +272,10 @@
     "modifications": [
       "Reuse the selected serving group's session-date checkpoint after a dated ticker correction under its original decision generation."
     ]
+  },
+  {
+    "modifications": [
+      "Publish identity-scoped asset snapshots, dated trades and native cash-merger terms in a transactional metadata projection. Support bounded preparation of legacy decisions from their selected lineage receipts."
+    ]
   }
 ]

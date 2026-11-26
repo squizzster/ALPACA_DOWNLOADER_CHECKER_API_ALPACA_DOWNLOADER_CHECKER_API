@@ -149,6 +149,11 @@ offline. Both inherit `DataLibraryError`; malformed arguments raise `ValueError`
 `open_history_export()` exposes the shared, pinned online history stream used by CSV, Bloodhound Parquet, and EOD events. Its optional `full_histories=True` setting applies date bounds to identity selection and yields the full online span of each selected identity.
 [Exports](exports.md) owns selection, one-read source assembly, snapshot scope and output publication.
 
+`plan_metadata_export()` and `write_metadata_export(destination)` accept keyword selectors
+`public_ids`, `symbols`, `csv_manifest` or `bloodhound_report`, plus `catalogue_only`. The writer also
+accepts `progress` and returns paths to the completed manifest and records. The
+[companion contract](exports.md#security-metadata-companion) defines the fields, selection and joins.
+
 ## Pipeline execution
 
 `prepare_pipeline(request_json: bytes) -> bytes` performs daily-update preparation

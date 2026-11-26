@@ -170,6 +170,7 @@ def adopt_supported_gap_suffixes(store, symbols):
                     report["skipped"].append({"symbols": sorted(names), "reason": "no_supported_gap_suffix"})
                     continue
                 updated, records = adopted
+                updated["metadata_evidence"] = group.metadata_evidence(updated["securities"])
                 state = storage.publish_supported_gap_ranges(
                     store, controls["groups"][key], updated, records, state, names
                 )
@@ -509,6 +510,7 @@ def maintain(
                             tuple(prior_groups.values()),
                             **({"rebuild_projection": True} if rebuild else {}),
                         )
+                        evaluated["metadata_evidence"] = group.metadata_evidence(evaluated["securities"])
                         for counter, count in evaluated["validation_work"].items():
                             result[counter] += count
                         groups.append(evaluated)

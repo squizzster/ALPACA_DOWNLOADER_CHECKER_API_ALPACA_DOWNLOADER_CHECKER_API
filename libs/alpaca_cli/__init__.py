@@ -5,7 +5,7 @@ import csv
 import json
 import os
 from contextlib import ExitStack, nullcontext
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 53
+VERSION = 54
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -251,6 +251,24 @@ def build_parser():
     p.add_argument(
         "--plan", action="store_true", help="offline catalogue scope preview; no payload reads or writes"
     )
+    p = export.add_parser("metadata", help="export online security metadata keyed by public ID")
+    _store(p)
+    p.add_argument("--output", type=Path, help="new run directory (default: exports/metadata/<UTC timestamp>)")
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument("--public-id", action="append", help="select an online public ID (repeatable)")
+    selection.add_argument(
+        "--symbol", action="append", help="select every online match for a ticker (repeatable)"
+    )
+    selection.add_argument("--csv-manifest", type=Path, help="pair with a completed per-identity CSV manifest")
+    selection.add_argument(
+        "--bloodhound-report", type=Path, help="pair with a native Bloodhound conversion report"
+    )
+    p.add_argument(
+        "--catalogue-only", action="store_true", help="export catalogue fields without lineage enrichment"
+    )
+    p.add_argument(
+        "--plan", action="store_true", help="preview selection without opening receipts or writing output"
+    )
     for name, help_text in (
         ("bloodhound", "export online catalogue histories directly to Bloodhound Parquet"),
         ("eod_stream", "export date-ordered Bloodhound events to gzip JSON Lines"),
@@ -377,6 +395,16 @@ def build_parser():
     catalogue = commands.add_parser(
         "catalogue", help="published serving catalogue over the standalone store"
     ).add_subparsers(dest="operation", required=True, parser_class=Parser)
+    prepare = catalogue.add_parser(
+        "prepare-metadata", help="publish missing identity metadata from selected lineage receipts"
+    )
+    _store(prepare)
+    prepare.add_argument(
+        "--plan", action="store_true", help="read only compact selectors and report missing work"
+    )
+    scope = prepare.add_mutually_exclusive_group()
+    scope.add_argument("--symbol", action="append")
+    scope.add_argument("--public-id", action="append")
     for name in ("bootstrap", "rebuild", "update", "status", "list", "search", "resolve", "read", "export"):
         p = catalogue.add_parser(name)
         _store(p)
@@ -482,7 +510,11 @@ def _store_operation_mode(args):
         )
         or (command == "universe" and operation in {"reconcile", "rebuild"})
         or (command == "summary" and operation == "rebuild")
-        or (command == "catalogue" and operation in {"bootstrap", "rebuild", "update"} and not args.plan)
+        or (
+            command == "catalogue"
+            and operation in {"bootstrap", "rebuild", "update", "prepare-metadata"}
+            and not args.plan
+        )
     )
     if not writes:
         return None
@@ -542,6 +574,23 @@ def dispatch(args):
             progress=lambda message: diagnostic(reporter, message),
         )
     if command == "export":
+        if operation == "metadata":
+            from alpaca_end_of_day import DataLibrary
+
+            options = {
+                "public_ids": args.public_id,
+                "symbols": args.symbol,
+                "csv_manifest": args.csv_manifest,
+                "bloodhound_report": args.bloodhound_report,
+                "catalogue_only": args.catalogue_only,
+            }
+            data = DataLibrary(store=args.store)
+            if args.plan:
+                return data.plan_metadata_export(**options)
+            destination = args.output or REPOSITORY / "exports" / "metadata" / datetime.now(
+                timezone.utc
+            ).strftime("%Y%m%dT%H%M%S.%fZ")
+            return data.write_metadata_export(destination, **options, progress=reported_progress)
         if operation == "csv":
             from alpaca_end_of_day import DataLibrary
 
@@ -857,6 +906,16 @@ def dispatch(args):
 def catalogue_command(args):
     from .command_progress import progress_callback
 
+    if args.operation == "prepare-metadata":
+        from libs.alpaca_serving_catalogue.metadata_projection import prepare
+
+        return prepare(
+            args.store,
+            public_ids=args.public_id,
+            symbols=args.symbol,
+            plan=args.plan,
+            progress=progress_callback(getattr(args, "_lifecycle", None)),
+        )
     if args.operation in {"read", "export"}:
         from alpaca_end_of_day.catalogue_cli import run_end_of_day_reader_command
 

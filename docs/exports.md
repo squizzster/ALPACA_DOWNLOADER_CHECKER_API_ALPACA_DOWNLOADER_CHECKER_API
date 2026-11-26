@@ -11,6 +11,7 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 | `read --symbol TICKER --format csv` | One resolved source-group identity; multiple views add `adjustment`. | [standalone_cli.py](../alpaca_end_of_day/standalone_cli.py): `run_arguments` |
 | `catalogue export --output PATH` | Flat online CSV ordered date → public ID. | [DataLibrary](../alpaca_end_of_day/__init__.py): `write_flat_online_csv` |
 | `export csv` | Online identities; one timestamped run with CSV/digest pairs and final manifest. | [_csv_export.py](../alpaca_end_of_day/_csv_export.py): `plan_export`, `write_export` |
+| `export metadata` | One compact JSON Lines record per selected online public ID, optionally paired with a CSV or Bloodhound run. | [Security metadata companion](#security-metadata-companion) |
 | `export bloodhound --output PATH` | Online identities; one Bloodhound Parquet file and conversion report. | [command_line.py](../libs/alpaca_bloodhound_export/command_line.py): `export` |
 | `audit bloodhound --parquet FILE` | A completed online-catalogue Parquet export and its adjacent conversion report. | [Bloodhound integrity audit](#bloodhound-integrity-audit) |
 | `export eod_stream` | Full online histories or an inclusive date window, written as daily Bloodhound event batches in one gzip JSON Lines file per run. | [eod_stream.py](../bloodhound_app/eod_stream.py) |
@@ -34,6 +35,85 @@ format adapters. With `full_histories=True`, the requested dates select identiti
 rows for all eight views, and the completed inclusive ticker ranges. Keep the context open through publication
 and treat held values as read-only. `on_error="record"` retains completed peers and reports unreadable selected
 identities without retrying their group; initial selector and operation-lock failures still stop the export.
+
+## Security metadata companion
+
+```bash
+./alpaca-cli-eod export metadata --plan
+./alpaca-cli-eod export metadata --symbol BBBY --output exports/metadata/bbby
+./alpaca-cli-eod export metadata --csv-manifest "$CSV_EXPORT_MANIFEST"
+./alpaca-cli-eod export metadata --bloodhound-report exports/bloodhound.parquet.report.json
+```
+
+Set `CSV_EXPORT_MANIFEST` to a completed run's `final_manifest.json`. The default selection includes
+all online public IDs. Repeat `--public-id` for specific securities or
+`--symbol` for every online identity with a matching published ticker range. Each command accepts one
+selection method. Historical prices can remain online after an asset becomes inactive. The independent
+[business-equity baseline](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md) covers the broader roster of
+resolved standalone lineage and includes source-group evidence.
+
+Pairing consumes the completed price export's own membership decision. A CSV `final_manifest.json`
+names the public IDs that actually received files. A native Bloodhound report with a published complete
+or partial output supplies the IDs of histories marked `exported` and their `ohlcv_series_id` values.
+This series ID is a decimal **string** in the companion so readers preserve its full signed 64-bit
+precision. Join CSV by `public_id` and Parquet by `ohlcv_series_id`. Both pairings require the same
+catalogue generation. The parent's date filter applies to its prices. Companion coverage always describes
+the full online history of each included identity.
+
+`--output` names a new directory outside the source store. The default is
+`exports/metadata/<UTC timestamp>/`. Open its `manifest.json` to find the records file, protocol version,
+catalogue generation, selection, extensions, identity count and default adjustment views. A paired
+manifest references its pricing manifest or report. A Bloodhound pair also carries the Parquet checksum
+from the conversion report. Reading the named `securities.jsonl.gz` yields one UTF-8 JSON object per
+line in ascending `public_id` order. Consume a run once its manifest is published. The
+[versioned JSON Schema](../resources/security_metadata.schema.json) defines both document types.
+
+| Record field | Meaning |
+|---|---|
+| `public_id` | Full 64-hex security identity shared with the price catalogue. Reused symbols may identify multiple securities. |
+| `coverage` | First and last approved stored sessions and session count. Optional explained gaps and adjustment views describe exceptions to the defaults. |
+| `ticker_ranges` | Labels observed on the stored history. First and last sessions are inclusive. Multiple or overlapping ranges survive publication. |
+| `ticker_ownership_intervals` | Dated ticker claims with optional CUSIP, inclusive start and exclusive end. A null endpoint means unknown. |
+| `observations` | Published field/value observations for names, exchanges, asset classes and CUSIPs. Lookup time and inclusive effective dates have separate fields. Conflicting values can coexist. |
+| `external_identifiers` | Typed string identifiers when supplied. Strings preserve leading zeros. |
+| `ohlcv_series_id` | Series key copied from the paired Bloodhound report, when applicable. |
+| `asset_snapshots` | Attributable Alpaca asset observations, with the returned symbol, observation time and available descriptive or trading fields. |
+| `trade_observations` | Attributable historical prints with their actual session and timestamp, request and returned symbol, mapping date, feed, reporting tape and execution venue. |
+| `corporate_actions` | An identity-attributed terminal cash merger records the acquired security's role, symbol and CUSIP, provider action ID, effective date, optional process date and exact cash rate as a string. |
+
+For example, a security can have stored sessions under a former ticker, a later inactive OTC asset
+snapshot and an earlier trade on the Nasdaq UTP tape. These are three facts with different scopes.
+The tape records one observed print. An exchange effective interval requires a published dated claim.
+An asset snapshot retains fields observed together, including an explicit `tradable: false`.
+Only a positively observed trade can supply tape data. Acquisition errors and group-level events
+remain outside an individual security's record.
+Check the manifest's extensions to determine which optional evidence was available to the exporter.
+An absent collection means the companion contains no values of that kind for this identity.
+
+The asset snapshot contract publishes name, class, exchange, status and tradability when observed.
+Other trading flags such as marginability and shortability need an identity-attributed asset publication
+that retains those fields. A dated listing transfer needs evidence for its effective date. Dividends,
+splits and other group-level actions need a published association with a specific public ID and role
+before they can appear as that security's events.
+
+`--plan` previews work without writing output. `--catalogue-only` selects the public catalogue fields
+without the optional lineage enrichment. Export uses completed metadata publications. It reads zero price
+payloads, opens zero lineage receipts and makes zero provider requests.
+
+Serving publishes identity-attributed evidence for its evaluated groups. For a store with older
+publications, preview then prepare the missing metadata for the intended selection.
+
+```bash
+./alpaca-cli-eod catalogue prepare-metadata --symbol BBBY --plan
+./alpaca-cli-eod catalogue prepare-metadata --symbol BBBY
+```
+
+Use either repeatable `--symbol` or `--public-id` to select groups. Omitting both selects every online
+group. Preparation uses each selected pending group's accepted lineage evidence and reads no prices.
+Groups already prepared at the applicable generation are reused. Enriched export requires the published
+metadata for its selected groups. A lineage migration can carry a prepared result to the new generation
+when it preserves the metadata inputs, including the assignment evidence used for competing owners.
+A changed evidence capability requires preparation for the affected group.
 
 ## Per-identity CSV export
 

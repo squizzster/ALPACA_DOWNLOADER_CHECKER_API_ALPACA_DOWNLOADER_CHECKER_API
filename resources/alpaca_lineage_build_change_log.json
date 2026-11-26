@@ -787,5 +787,10 @@
     "modifications": [
       "Correct a selected split and rename group's dated ticker assignments from its native provider observations while preserving the accepted numerical sources and public identity."
     ]
+  },
+  {
+    "modifications": [
+      "Pin exact selected receipt generations for metadata preparation, carry applicable evidence projections across unchanged-decision migration and preserve completed diagnostic reports under their original bindings."
+    ]
   }
 ]

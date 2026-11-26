@@ -135,6 +135,12 @@ class GroupSnapshot:
         # selectors subsequently passed to serving/export consumers.
         return deepcopy(self._summary)
 
+    def metadata_evidence(self, securities):
+        """Project accepted online records with the group receipts already held by serving."""
+        from libs.alpaca_serving_catalogue.metadata_evidence import project_group_evidence
+
+        return project_group_evidence({row["public_id"]: row for row in securities}, self._receipts)
+
     def close(self):
         self._assignments = self._sources = self._cache = None
         self._all_assignments = self._receipts = None

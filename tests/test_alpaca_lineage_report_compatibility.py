@@ -28,6 +28,13 @@ def historical_bindings():
         {
             "debug": 28,
             "policy_lab": 27,
+            "correlation_runtime": 114,
+            "lineage_runtime": 133,
+            "membership_refinement": producer,
+        },
+        {
+            "debug": 28,
+            "policy_lab": 27,
             "correlation_runtime": 113,
             "lineage_runtime": 132,
             "membership_refinement": producer,

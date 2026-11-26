@@ -244,7 +244,7 @@ def publish_projection(store, key, selection, group, accepted_state, *, retain_b
 
 def publish_supported_gap_ranges(store, selection, group, records, state, symbols):
     """Install only newly derived public ranges while carrying their accepted history."""
-    from . import export_inputs
+    from . import export_inputs, metadata_projection
 
     key = group["locator"]
     token = group["decision_generation"]
@@ -263,10 +263,18 @@ def publish_supported_gap_ranges(store, selection, group, records, state, symbol
             raise CatalogueError("catalogue changed before supported range publication")
         changed = connection.execute(
             "UPDATE groups SET decision_generation=?, selection=?, body=? WHERE group_key=? AND decision_generation=?",
-            (token, encoded(revised), encoded(group), key, selection["decision_generation"]),
+            (
+                token,
+                encoded(revised),
+                encoded({k: v for k, v in group.items() if k != "metadata_evidence"}),
+                key,
+                selection["decision_generation"],
+            ),
         )
         if changed.rowcount != 1:
             raise CatalogueError("serving decision changed before supported range publication")
+        if "metadata_evidence" in group:
+            metadata_projection.install(connection, key, group, group["metadata_evidence"])
         connection.executemany(
             "INSERT INTO securities VALUES(?, ?, ?)",
             [(record["public_id"], key, encoded(record)) for record in records],
@@ -292,6 +300,19 @@ def retarget_decision(store, key, handoff, accepted_state):
             "body=json_set(body, '$.references.lineage', json(?)) WHERE group_key=?",
             (new, new, key),
         )
+        if handoff.get("unchanged_metadata_projection_version") == 1:
+            # Preserve only the previously selected v1 result. An older journal,
+            # a changed evidence capability, or a missing legacy result still
+            # selects explicit preparation without repeating numerical work.
+            try:
+                connection.execute(
+                    "UPDATE metadata_evidence SET lineage=? WHERE group_key=? AND version=1 AND lineage=? "
+                    "AND decision_generation=(SELECT decision_generation FROM groups WHERE group_key=?)",
+                    (new, key, encoded(handoff["lineage_before"]), key),
+                )
+            except sqlite3.OperationalError as error:
+                if "no such table: metadata_evidence" not in str(error):
+                    raise
         from . import export_inputs
 
         export_inputs.accept(connection, {"lineage": handoff["lineage_after"], "pricing": handoff["pricing"]})
@@ -435,11 +456,15 @@ def commit(store, previous, groups, *, held_lineage=None):
     # transaction installs bodies, public projections and its new selector.
     # Consumers trust that commit; DO NOT move validation to every catalogue read
     # or authenticate the already accepted lineage/pricing inputs again here.
+    from . import metadata_projection
+
     for group in groups:
         validate_group(group)
     with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
         state = _state(connection, incomplete=True)
+        metadata_projection.initialize(connection)
         for key in sorted(previous):
+            connection.execute("DELETE FROM metadata_evidence WHERE group_key=?", (key,))
             connection.execute("DELETE FROM securities WHERE group_key=?", (key,))
             connection.execute("DELETE FROM members WHERE group_key=?", (key,))
             connection.execute("DELETE FROM groups WHERE group_key=?", (key,))
@@ -468,8 +493,15 @@ def commit(store, previous, groups, *, held_lineage=None):
                     selection["offline_ownership"] = offline
                 connection.execute(
                     "INSERT INTO groups VALUES(?, ?, ?, ?)",
-                    (key, group["decision_generation"], encoded(selection), encoded(group)),
+                    (
+                        key,
+                        group["decision_generation"],
+                        encoded(selection),
+                        encoded({k: v for k, v in group.items() if k != "metadata_evidence"}),
+                    ),
                 )
+                if "metadata_evidence" in group:
+                    metadata_projection.install(connection, key, group, group["metadata_evidence"])
                 connection.executemany(
                     "INSERT INTO members VALUES(?, ?)", [(name, key) for name in group["references"]["lineage"]]
                 )

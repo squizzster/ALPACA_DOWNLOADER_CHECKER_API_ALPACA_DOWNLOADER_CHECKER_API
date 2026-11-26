@@ -108,6 +108,7 @@ PHASES = {
         "RESOLVE": "Resolving dated security identities.",
         "AUDIT": "Checking the published Bloodhound export.",
         "EXPORT": "Converting and publishing selected histories.",
+        "METADATA": "Exporting metadata for selected online securities.",
         "COMMIT": "Committing the completed update's recovery registry changes.",
         "PUSH": "Pushing the recovery registry commit to its upstream branch.",
     }.items()
@@ -118,6 +119,8 @@ def operation_phase(args):
     command, operation = args.command, getattr(args, "operation", None)
     if getattr(args, "plan", False):
         return "PLAN"
+    if command == "export" and operation == "metadata":
+        return "METADATA"
     if command == "lineage" and operation.startswith("migrate-"):
         return "MIGRATE"
     return command.upper()
@@ -175,6 +178,7 @@ def progress_callback(reporter, *, estimate=None):
                 ("serving", "CATALOGUE"),
                 ("catalogue", "CATALOGUE"),
                 ("lineage", "LINEAGE"),
+                ("metadata_export", "METADATA"),
                 ("metadata", "LINEAGE"),
                 ("migration", "MIGRATE"),
                 ("summary", "SUMMARY"),

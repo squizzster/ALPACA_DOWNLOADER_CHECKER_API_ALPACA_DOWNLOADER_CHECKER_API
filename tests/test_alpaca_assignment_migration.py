@@ -7,7 +7,7 @@ from test_alpaca_end_of_day_api import NativeCase
 from libs.alpaca_lineage_build import storage
 from libs.alpaca_lineage_build.assignment_migration import migrate
 from libs.alpaca_lineage_build.contract import LineageError
-from libs.alpaca_serving_catalogue import policy, producer
+from libs.alpaca_serving_catalogue import metadata_projection, policy, producer
 
 
 class AssignmentMigrationTests(NativeCase):
@@ -101,6 +101,7 @@ class AssignmentMigrationTests(NativeCase):
     def test_selected_migration_preserves_serving_decision_and_skips_completed_bodies(self):
         self.legacy()
         before = self.catalogue_groups("TEST")["TEST"]
+        self.assertEqual(metadata_projection.selected(self.store, {"TEST"}, bodies=False), {"TEST": True})
         read = storage.read_boundaries
         reads = []
 
@@ -141,6 +142,9 @@ class AssignmentMigrationTests(NativeCase):
             served = producer.maintain(self.store)
         self.assertTrue(served["complete"], served)
         self.assertEqual(self.catalogue_groups("TEST")["TEST"]["decisions"], before["decisions"])
+        # The migration added a choice capability used to attribute tape prints
+        # among competing owners. The previous evidence row has no such approval.
+        self.assertEqual(metadata_projection.selected(self.store, {"TEST"}, bodies=False), {})
 
     def test_interrupted_migration_recovers_journal_without_assembling_again(self):
         self.legacy()

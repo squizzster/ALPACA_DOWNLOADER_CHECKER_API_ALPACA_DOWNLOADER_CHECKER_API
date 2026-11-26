@@ -408,6 +408,40 @@ def read_index(root: Path, symbol: str | None = None, *, group=False) -> dict:
     return index
 
 
+@contextmanager
+def selected_metadata_receipts(root, references):
+    """Pin exact published receipt generations for a selected metadata migration.
+
+    Price-export applicability covers numerical and label changes. A descriptive
+    publication can replace a receipt without invalidating that price contract.
+    Check this separate binding once, then load only the requested receipt bodies.
+    """
+    with publication_lock(root):
+        if (root / ".pending.json").exists():
+            raise LineageError("lineage publication incomplete; resume lineage recovery")
+        with closing(connect_sqlite(path_at(root, "index.sqlite3"), readonly=True)) as db:
+            if db.execute("PRAGMA user_version").fetchone()[0] not in SUPPORTED_VERSIONS:
+                raise LineageError("unsupported lineage index")
+            actual = dict(
+                db.execute(
+                    "SELECT symbol,json_extract(receipt,'$.sha256') FROM symbols "
+                    "WHERE symbol IN (SELECT value FROM json_each(?))",
+                    (json.dumps(sorted(references)),),
+                )
+            )
+        if actual != {symbol: token for symbol, token in references.items() if token is not None}:
+            raise LineageError(
+                "selected lineage metadata changed; finish catalogue update before preparing metadata"
+            )
+
+        def read(symbol):
+            return selected_document(
+                path_at(root, f"{symbol}/lineage.manifest.json", published=True), references[symbol]
+            )
+
+        yield read
+
+
 def _projection_state(connection):
     if connection.execute("SELECT 1 FROM sqlite_master WHERE name='projection_state'").fetchone():
         row = connection.execute(
@@ -1275,6 +1309,20 @@ def publish(
                 },
                 "pricing": journal["sources"],
             }
+            # Metadata projection v1 uses the same unchanged receipt inputs and,
+            # for competing owners, the observation choices on each boundary.
+            # The boundary generations are already unchanged. Their accepted
+            # choice capability suffices; do not traverse the runs again.
+            if not application_inventory_recovery and all(
+                receipt.get("assignment_handoffs", {}).get(kind, {}).get("observation_choices_version")
+                == previous[symbol]
+                .get("assignment_handoffs", {})
+                .get(kind, {})
+                .get("observation_choices_version")
+                for symbol, receipt in receipts.items()
+                for kind in receipt["boundaries"]
+            ):
+                journal["serving_handoff"]["unchanged_metadata_projection_version"] = 1
     if checks is not None:
         journal["checks"] = {
             "epoch": checks["epoch"],

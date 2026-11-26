@@ -69,6 +69,22 @@ published Parquet, its adjacent conversion report and the repository calendar. I
 a new directory. Pricing acquisition, lineage, serving and export do not invoke it. Its
 <a href="../tests/test_bloodhound_integrity_audit.py">CLI regressions</a> forbid opening the store operation
 gate and cover structural failures, filtered exports and reviewable price transitions.</p>
+<p>The <a href="exports.md#security-metadata-companion">security metadata companion</a> consumes the
+accepted catalogue selection and optional serving metadata projection. Serving binds each projection to
+the complete decision and lineage references and publishes it in the decision transaction. Explicit
+preparation selects only missing groups. Before reading their receipts it pins the exact lineage
+generations, including descriptive revisions that pricing export applicability need not track. Each
+completed group survives interruption. An unchanged-decision migration with compatible metadata inputs
+carries its completed projection. A changed capability requires the owning preparation.
+The writer reads the selected projection, skips receipts and prices, and installs the output manifest
+last. The parent CSV manifest or Bloodhound report supplies emitted membership for paired runs.</p>
+<p class="tests">Owning regressions cover <a href="../tests/test_alpaca_serving_metadata_evidence.py">dated
+attribution and competing owners</a>, <a href="../tests/test_security_metadata_projection.py">publication,
+migration and invalidation</a>, <a href="../tests/test_metadata_export_format.py">joins and immutable
+outputs</a>, <a href="../tests/test_metadata_preparation_selection.py">bounded preparation selection</a>,
+<a href="../tests/test_alpaca_cli.py">CLI selection</a>,
+<a href="../tests/test_alpaca_assignment_migration.py">changed assignment capabilities</a> and
+<a href="../tests/test_alpaca_certificate_migration.py">unchanged decision migration</a>.</p>
 <p>The <a href="exports.md#eod-streaming-protocol">EOD stream export</a> consumes the same selected catalogue
 handoff and Bloodhound numerical projection. Date bounds prune identities at catalogue selection; each selected identity retains its full factor input span. The selected group lends pricing sources and row assignments without reconstructing catalogue membership, a group summary, or its digest. Read-only views share exact row and label selections and their converted frames. Full-history and one-sided-window regressions cover alias reuse and excluded groups. It orders the completed projections once in Arrow by date and series ID, gathers bounded blocks, and
 installs a single completed gzip file under the source gate. The default destination uses a fresh UTC

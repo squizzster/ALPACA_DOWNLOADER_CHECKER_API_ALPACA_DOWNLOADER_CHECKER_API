@@ -57,6 +57,7 @@ to make numbers agree.
 - [Policy provenance](libs/alpaca_lineage_build/correlation_policy_contract.py): serialized identity of the
   [canonical YAML](resources/alpaca_security_correlation_policy.yaml).
 - Independent schemas remain with their owners: [CSV](alpaca_end_of_day/_csv_export.py) `SCHEMA_VERSION`,
+  [security metadata companion](resources/security_metadata.schema.json) manifest `version`,
   [lifecycle](libs/alpaca_heartbeat/__init__.py) `SCHEMA_VERSION`,
   [identity evidence](libs/alpaca_security_lineage/settings.py) `REPORT_VERSION`,
   [sourced event input](libs/alpaca_security_lineage/event_supplements.py) `SCHEMA_VERSION` (lineage runtime owner).

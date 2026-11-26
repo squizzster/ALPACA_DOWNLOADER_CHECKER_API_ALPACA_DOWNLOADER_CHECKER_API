@@ -218,18 +218,21 @@ def select(store, generation, symbols, *, recover_lineage=False):
             connection.execute("BEGIN")
             if _state(connection)["generation"] != generation:
                 raise CatalogueError("selected serving catalogue changed")
-            if not complete(connection):
-                raise CatalogueError("export input applicability incomplete; run catalogue rebuild")
-            selected = (json.dumps(sorted(symbols)),)
-            scope = " FROM export_inputs WHERE symbol IN (SELECT value FROM json_each(?))"
-            if recover_lineage:
-                dirty = connection.execute("SELECT symbol,kind,generation" + scope, selected).fetchall()
-                if all(kind == "lineage" for _, kind, _ in dirty):
-                    return {symbol: observed for symbol, _, observed in dirty}
-            elif connection.execute("SELECT 1" + scope + " LIMIT 1", selected).fetchone() is None:
-                return
-            raise CatalogueError(
-                "selected export inputs changed; finish pricing, lineage and catalogue maintenance"
-            )
+            return select_held(connection, symbols, recover_lineage=recover_lineage)
     except sqlite3.Error as error:
         raise CatalogueError("export input applicability unavailable; finish owning recovery") from error
+
+
+def select_held(connection, symbols, *, recover_lineage=False):
+    """Check input applicability in the caller's already accepted catalogue transaction."""
+    if not complete(connection):
+        raise CatalogueError("export input applicability incomplete; run catalogue rebuild")
+    selected = (json.dumps(sorted(symbols)),)
+    scope = " FROM export_inputs WHERE symbol IN (SELECT value FROM json_each(?))"
+    if recover_lineage:
+        dirty = connection.execute("SELECT symbol,kind,generation" + scope, selected).fetchall()
+        if all(kind == "lineage" for _, kind, _ in dirty):
+            return {symbol: observed for symbol, _, observed in dirty}
+    elif connection.execute("SELECT 1" + scope + " LIMIT 1", selected).fetchone() is None:
+        return
+    raise CatalogueError("selected export inputs changed; finish pricing, lineage and catalogue maintenance")

@@ -159,6 +159,22 @@ class CoverageTests(unittest.TestCase):
             patch.object(storage, "read_boundaries", side_effect=AssertionError("completed explanations")),
         ):
             carried = request(reuse_report=str(saved))
+            self.assertEqual(carried["reads"]["reused_sources"], 1)
+            # The metadata-only reader did not change this completed coverage decision.
+            old = {
+                **first,
+                "implementation_binding": {**first["implementation_binding"], "lineage_runtime": 133},
+            }
+            saved.write_text(json.dumps(old))
+            carried = request(reuse_report=str(saved))
+            unrelated = {
+                **old,
+                "implementation_binding": {**old["implementation_binding"], "lineage_runtime": 132},
+            }
+            saved.write_text(json.dumps(unrelated))
+            with self.assertRaisesRegex(LineageDebugError, "incompatible contract"):
+                request(reuse_report=str(saved))
+            saved.write_text(json.dumps(old))
         self.assertEqual(carried["reads"]["reused_sources"], 1)
         self.assertEqual(carried["expected_io"]["receipt_reads"], 0)
         self.assertEqual(carried["pending_work"], {})

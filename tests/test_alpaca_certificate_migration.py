@@ -2,6 +2,7 @@
 
 import copy
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,8 +14,9 @@ from libs.alpaca_lineage_build import certificate_migration, pipeline, storage
 from libs.alpaca_lineage_build.contract import versions
 from libs.alpaca_lineage_build.correlation_policy import load_policy
 from libs.alpaca_pricing_download.update_checks import complete_checks, read_checks
-from libs.alpaca_serving_catalogue import producer, work
+from libs.alpaca_serving_catalogue import metadata_evidence, metadata_projection, producer, work
 from libs.alpaca_serving_catalogue import storage as catalogue
+from libs.common.sqlite_connections import connect_sqlite
 
 
 def install_v76(case, *, serving=True, correlation=76):
@@ -115,7 +117,17 @@ class CertificateMigrationTests(unittest.TestCase):
 
     def test_exact_header_promotion_retargets_completed_serving_without_payloads(self):
         before = self.case.catalogue_groups("TEST")["TEST"]
+        metadata_projection.prepare(self.case.store, symbols=["TEST"])
+        facts = metadata_projection.require(self.case.store, {"TEST"})
+        self.assertTrue(facts)
         self.forbidden_work()
+        self.enterContext(
+            patch.object(
+                metadata_evidence,
+                "project_group_evidence",
+                side_effect=AssertionError("accepted metadata recalculated"),
+            )
+        )
         preview = certificate_migration.preview(self.case.store)
         self.assertEqual(preview["promotable_groups"], 1)
         self.assertEqual(preview["metadata_receipts"], 0)
@@ -127,13 +139,24 @@ class CertificateMigrationTests(unittest.TestCase):
         self.assertEqual(maintained["reused_groups"], 1)
         self.assertEqual(maintained["checked_bars"], 0)
         self.assertEqual(work.read(self.case.store), {})
+        self.assertEqual(metadata_projection.require(self.case.store, {"TEST"}), facts)
         self.assertEqual(
             catalogue.controls(self.case.store)["groups"]["TEST"]["decision_generation"],
             before["decision_generation"],
         )
         self.assertEqual(certificate_migration.migrate(self.case.store)["promoted_groups"], 0)
 
+    def test_header_promotion_leaves_legacy_metadata_unprepared(self):
+        with closing(connect_sqlite(catalogue.path(self.case.store))) as connection, connection:
+            connection.execute("DROP TABLE metadata_evidence")
+        self.forbidden_work()
+        self.assertEqual(certificate_migration.migrate(self.case.store)["promoted_groups"], 1)
+        self.assertTrue(producer.maintain(self.case.store)["complete"])
+        self.assertEqual(metadata_projection.selected(self.case.store, {"TEST"}, bodies=False), {})
+
     def test_interruption_after_lineage_and_serving_commits_keeps_exact_handoff(self):
+        metadata_projection.prepare(self.case.store, symbols=["TEST"])
+        facts = metadata_projection.require(self.case.store, {"TEST"})
         self.forbidden_work()
         with patch.object(storage, "_acknowledge", side_effect=RuntimeError("stopped after lineage commit")):
             with self.assertRaisesRegex(RuntimeError, "lineage commit"):
@@ -149,6 +172,7 @@ class CertificateMigrationTests(unittest.TestCase):
             repeated = producer.maintain(self.case.store)
         self.assertTrue(repeated["complete"])
         self.assertEqual(work.read(self.case.store), {})
+        self.assertEqual(metadata_projection.require(self.case.store, {"TEST"}), facts)
 
     def test_changed_evidence_cannot_issue_unchanged_publication_handoff(self):
         index = storage.read_index(self.case.root)

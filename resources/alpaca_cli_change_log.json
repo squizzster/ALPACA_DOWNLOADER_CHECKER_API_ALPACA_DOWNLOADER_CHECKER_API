@@ -275,5 +275,10 @@
     "modifications": [
       "Retire a rejected auxiliary pricing request from the heartbeat's unresolved count when its lineage group completes that exact request scope."
     ]
+  },
+  {
+    "modifications": [
+      "Add export metadata for online securities, including selection by public ID, ticker or a completed native pricing export. Add catalogue prepare-metadata for existing serving publications."
+    ]
   }
 ]

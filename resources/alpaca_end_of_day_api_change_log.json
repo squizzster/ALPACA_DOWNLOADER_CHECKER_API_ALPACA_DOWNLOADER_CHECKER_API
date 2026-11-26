@@ -287,5 +287,10 @@
     "modifications": [
       "Carry completed observation bundles into selected serving revisions and resolve equivalent whole-source replacements from the pricing producer's per-view logical digests."
     ]
+  },
+  {
+    "modifications": [
+      "Publish a compact, generation-bound metadata companion for online identities and exact native pricing export selections through DataLibrary."
+    ]
   }
 ]

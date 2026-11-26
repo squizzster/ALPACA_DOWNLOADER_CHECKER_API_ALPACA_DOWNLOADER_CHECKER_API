@@ -29,7 +29,7 @@ from libs.alpaca_serving_catalogue.contract import CatalogueError
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-API_VERSION = 53
+API_VERSION = 54
 API_CHANGE_LOG_PATH = _REPOSITORY_ROOT / "resources" / "alpaca_end_of_day_api_change_log.json"
 FLAT_ONLINE_CSV_COLUMNS = (
     "date",
@@ -668,6 +668,49 @@ class DataLibrary:
         from ._catalogue_export import open_export
 
         return open_export(self, public_ids=public_ids, start=start, end=end, full_histories=full_histories)
+
+    def plan_metadata_export(
+        self, *, public_ids=None, symbols=None, csv_manifest=None, bloodhound_report=None, catalogue_only=False
+    ):
+        """Describe the metadata selection and any missing producer projections."""
+        from ._metadata_job import run
+
+        return run(
+            self,
+            None,
+            public_ids=public_ids,
+            symbols=symbols,
+            csv_manifest=csv_manifest,
+            bloodhound_report=bloodhound_report,
+            catalogue_only=catalogue_only,
+        )
+
+    def write_metadata_export(
+        self,
+        destination,
+        *,
+        public_ids=None,
+        symbols=None,
+        csv_manifest=None,
+        bloodhound_report=None,
+        catalogue_only=False,
+        progress=None,
+    ):
+        """Publish one immutable JSON Lines companion at the supplied new directory."""
+        from ._metadata_job import run
+
+        if destination is None:
+            raise ValueError("a metadata export destination is required")
+        return run(
+            self,
+            destination,
+            public_ids=public_ids,
+            symbols=symbols,
+            csv_manifest=csv_manifest,
+            bloodhound_report=bloodhound_report,
+            catalogue_only=catalogue_only,
+            progress=progress,
+        )
 
     def plan_csv_export(self, *, public_ids=None, start=None, end=None, workers=2, memory_bytes=None):
         """Describe a per-identity CSV export using only this catalogue snapshot."""

@@ -1,0 +1,708 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Alpaca security metadata companion v1",
+  "description": "Validate the manifest or one UTF-8 JSON Lines security record. The manifest selects the records and declares their capabilities.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/manifest"
+    },
+    {
+      "$ref": "#/$defs/security"
+    }
+  ],
+  "$defs": {
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alpaca.security_metadata"
+        },
+        "version": {
+          "const": 1
+        },
+        "catalogue_generation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "records_file": {
+          "const": "securities.jsonl.gz"
+        },
+        "identity_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "default_adjustments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/adjustment"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "asset_snapshots",
+              "corporate_actions",
+              "trade_observations"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Capabilities in the selected publication. An advertised extension may have no attributable entries for a security."
+        },
+        "selection": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/allOnline"
+            },
+            {
+              "$ref": "#/$defs/csvRun"
+            },
+            {
+              "$ref": "#/$defs/bloodhoundRun"
+            },
+            {
+              "$ref": "#/$defs/publicIds"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "catalogue_generation",
+        "records_file",
+        "identity_count",
+        "default_adjustments",
+        "extensions",
+        "selection"
+      ]
+    },
+    "allOnline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "all_online"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "dateFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_inclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_inclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "start_inclusive",
+        "end_inclusive"
+      ],
+      "description": "Null means the caller supplied no bound on that side. Applies to prices in the paired run."
+    },
+    "csvRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "csv"
+        },
+        "manifest_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_filter": {
+          "$ref": "#/$defs/dateFilter"
+        },
+        "status": {
+          "const": "complete"
+        }
+      },
+      "required": [
+        "kind",
+        "manifest_ref",
+        "date_filter",
+        "status"
+      ],
+      "description": "Reference the immutable run's final_manifest.json, relative to the companion manifest. Its identities keys are the membership authority."
+    },
+    "bloodhoundRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "bloodhound"
+        },
+        "report_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "date_filter": {
+          "$ref": "#/$defs/dateFilter"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "report_ref",
+        "output_sha256",
+        "date_filter",
+        "status"
+      ],
+      "description": "Reference the completed conversion report and carry its output_sha256. Use histories with status exported. The report owns omissions and their reasons."
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "ohlcv_series_id": {
+          "type": "string",
+          "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$",
+          "description": "Bloodhound pairing only. Copy the report's positive signed int64 losslessly to a decimal string. Maximum 9223372036854775807."
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "ticker_ranges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tickerRange"
+          }
+        },
+        "ticker_ownership_intervals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ownership"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        },
+        "external_identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1
+        },
+        "asset_snapshots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assetSnapshot"
+          },
+          "minItems": 1
+        },
+        "trade_observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tradeObservation"
+          },
+          "minItems": 1
+        },
+        "corporate_actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/corporateAction"
+          }
+        }
+      },
+      "required": [
+        "public_id",
+        "coverage",
+        "ticker_ranges",
+        "ticker_ownership_intervals",
+        "observations"
+      ],
+      "description": "One record per included online security. Historical prices can remain online after an asset becomes inactive."
+    },
+    "adjustment": {
+      "type": "string",
+      "enum": [
+        "raw",
+        "split",
+        "dividend",
+        "spin-off",
+        "split,dividend",
+        "split,spin-off",
+        "dividend,spin-off",
+        "all"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "first_session": {
+          "type": "string",
+          "format": "date"
+        },
+        "last_session": {
+          "type": "string",
+          "format": "date"
+        },
+        "session_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "explained_missing_sessions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "date"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "adjustments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/adjustment"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "first_session",
+        "last_session",
+        "session_count"
+      ],
+      "description": "Full published online span, regardless of the price file's date filter. session_count is the catalogue's approved stored-session count. Omit empty explained gaps and omit adjustments when equal to the manifest default."
+    },
+    "tickerRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "first_session": {
+          "type": "string",
+          "format": "date"
+        },
+        "last_session": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "ticker",
+        "first_session",
+        "last_session"
+      ],
+      "description": "Inclusive endpoints of a producer-published observed label range. Multiple ranges and overlaps are valid. Use the price file's session when joining."
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_inclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_exclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cusip": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ticker",
+        "start_inclusive",
+        "end_exclusive",
+        "cusip"
+      ],
+      "description": "Independent ownership evidence. A null endpoint has unknown extent. Multiple claims are retained, including overlaps allowed by the authority."
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string",
+          "enum": [
+            "name",
+            "exchange",
+            "asset_class",
+            "cusip"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_through": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "field",
+        "value",
+        "observed_at",
+        "effective_from",
+        "effective_through"
+      ],
+      "description": "Published descriptions and CUSIP observations. observed_at is lookup time when known. Populated effective bounds apply inclusively to supported sessions. Competing values may coexist.",
+      "oneOf": [
+        {
+          "properties": {
+            "effective_from": {
+              "type": "null"
+            },
+            "effective_through": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "effective_from": {
+              "type": "string",
+              "format": "date"
+            },
+            "effective_through": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        }
+      ]
+    },
+    "identifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "description": "Published typed external identifier when supplied. Identifier values are strings to preserve leading zeros."
+    },
+    "assetSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exchange": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asset_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tradable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "symbol",
+        "observed_at"
+      ],
+      "description": "Identity-scoped Alpaca asset observation. Fields in one record came from one matching Alpaca asset observation. No effective listing bounds. Absent optional properties indicate missing values. An observed false is retained.",
+      "anyOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "exchange"
+          ]
+        },
+        {
+          "required": [
+            "asset_class"
+          ]
+        },
+        {
+          "required": [
+            "status"
+          ]
+        },
+        {
+          "required": [
+            "tradable"
+          ]
+        }
+      ]
+    },
+    "tradeObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "date"
+        },
+        "trade_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "feed": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asof": {
+          "oneOf": [
+            {
+              "const": "-"
+            },
+            {
+              "type": "string",
+              "format": "date"
+            }
+          ]
+        },
+        "returned_symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tape_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tape_network": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution_venue": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "trade_timestamp",
+        "feed",
+        "request_symbol",
+        "asof",
+        "returned_symbol",
+        "tape_code",
+        "tape_network",
+        "execution_venue"
+      ],
+      "description": "Published positively observed, identity-attributed prints. session is the actual New York trade date. Preserve the provider's route and mapping separately from the price ticker. A tape network or execution venue has point scope."
+    },
+    "publicIds": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "public_ids"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "Explicitly selected online identities, including all matches of a requested dated ticker. The records enumerate the selection."
+    },
+    "corporateAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action_type": {
+          "const": "cash_merger"
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "const": "acquiree"
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cusip": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "process_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "rate": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "action_type",
+        "action_id",
+        "role",
+        "symbol",
+        "cusip",
+        "effective_date",
+        "rate"
+      ],
+      "description": "Native terminal cash-merger terms already attributed to the acquiree. Rate retains the provider cash amount per share as a decimal string."
+    }
+  },
+  "$comment": "The export guide defines cross-record and publication requirements. Missing optional sections indicate no published facts of that kind. Range endpoints explicitly identify their inclusivity. Each public ID occurs once. Manifest extensions identify the available sets of identity-attributed facts."
+}

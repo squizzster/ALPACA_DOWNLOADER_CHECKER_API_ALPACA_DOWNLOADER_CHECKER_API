@@ -38,9 +38,13 @@ class CanonicalCliTests(unittest.TestCase):
             ("catalogue", "rebuild", False, "exclusive"),
             ("catalogue", "update", False, "exclusive"),
             ("catalogue", "status", False, None),
+            ("catalogue", "prepare-metadata", True, None),
+            ("catalogue", "prepare-metadata", False, "exclusive"),
             ("export", "csv", False, "shared"),
             ("export", "csv", True, None),
             ("export", "bloodhound", False, None),
+            ("export", "metadata", False, None),
+            ("export", "metadata", True, None),
             ("read", None, False, None),
             ("status", None, False, None),
         ]
@@ -48,6 +52,77 @@ class CanonicalCliTests(unittest.TestCase):
             with self.subTest(command=command, operation=operation, plan=plan):
                 args = SimpleNamespace(command=command, operation=operation, plan=plan)
                 self.assertEqual(_store_operation_mode(args), expected)
+
+    def test_metadata_export_passes_one_selector_to_the_public_owner(self):
+        parser = build_parser()
+        prefix = ["export", "metadata", "--store", "/unused/store"]
+        with patch("alpaca_end_of_day.DataLibrary") as library:
+            data = library.return_value
+            plan = dispatch(parser.parse_args([*prefix, "--plan", "--symbol", "FIRST", "--symbol", "REUSED"]))
+            library.assert_called_once_with(store=Path("/unused/store"))
+            self.assertIs(plan, data.plan_metadata_export.return_value)
+            data.plan_metadata_export.assert_called_once_with(
+                public_ids=None,
+                symbols=["FIRST", "REUSED"],
+                csv_manifest=None,
+                bloodhound_report=None,
+                catalogue_only=False,
+            )
+            data.write_metadata_export.assert_not_called()
+            data.plan_metadata_export.reset_mock()
+            report = dispatch(
+                parser.parse_args(
+                    [
+                        *prefix,
+                        "--output",
+                        "new-run",
+                        "--bloodhound-report",
+                        "prices.report.json",
+                        "--catalogue-only",
+                    ]
+                )
+            )
+            data.plan_metadata_export.assert_not_called()
+            data.write_metadata_export.assert_called_once_with(
+                Path("new-run"),
+                public_ids=None,
+                symbols=None,
+                csv_manifest=None,
+                bloodhound_report=Path("prices.report.json"),
+                catalogue_only=True,
+                progress=None,
+            )
+            self.assertIs(report, data.write_metadata_export.return_value)
+
+    def test_metadata_export_defaults_and_exclusive_selectors(self):
+        parser = build_parser()
+        prefix = ["export", "metadata"]
+        with patch("alpaca_end_of_day.DataLibrary") as library:
+            dispatch(parser.parse_args(prefix))
+            args, kwargs = library.return_value.write_metadata_export.call_args
+            self.assertEqual(args[0].parent.parts[-2:], ("exports", "metadata"))
+            self.assertRegex(args[0].name, r"^\d{8}T\d{6}\.\d{6}Z$")
+            self.assertEqual(
+                kwargs,
+                dict(
+                    public_ids=None,
+                    symbols=None,
+                    csv_manifest=None,
+                    bloodhound_report=None,
+                    catalogue_only=False,
+                    progress=None,
+                ),
+            )
+        arguments = ["--public-id", "--symbol", "--csv-manifest", "--bloodhound-report"]
+        for index, first in enumerate(arguments):
+            for second in arguments[index + 1 :]:
+                with (
+                    self.subTest(first=first, second=second),
+                    redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit) as error,
+                ):
+                    parser.parse_args([*prefix, first, "a", second, "b"])
+                self.assertEqual(error.exception.code, 2)
 
     def test_writer_reports_waiting_before_work_and_restores_operation_after_acquisition(self):
         errors, output = io.StringIO(), io.StringIO()
