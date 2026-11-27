@@ -4,7 +4,7 @@
 and guarantees; destinations must be outside the source store.
 
 The separate [standalone Bloodhound converter](../bloodhound_app/README.md) consumes completed per-identity
-CSV exports or legacy histories. Its README owns its invocation, dependencies and known publication limits.
+CSV exports, online catalogue histories or legacy histories. Its README owns its invocation, dependencies and known publication limits.
 
 | Command | Selection/output | Authority |
 |---|---|---|
@@ -18,23 +18,11 @@ CSV exports or legacy histories. Its README owns its invocation, dependencies an
 
 ## Shared catalogue input
 
-`export csv`, `export bloodhound`, and `export eod_stream` consume the same online catalogue through
-[_catalogue_export.py](../alpaca_end_of_day/_catalogue_export.py). The opened catalogue owns eligibility,
-selected groups, source generations and dated ticker ranges. Under the shared operation gate, its token and
-selected export-input applicability are accepted once. Dirty selected inputs fail before history reads;
-unrelated changed groups do not block a selected export. Missing capabilities require owning catalogue
-maintenance, never an implicit store census.
+`export csv`, `export bloodhound` and `export eod_stream` share the [catalogue export context](../alpaca_end_of_day/_catalogue_export.py). Under the shared operation gate, accept one catalogue token and applicable inputs: eligible IDs, groups, generations and dated ticker ranges. Dirty selected inputs fail before history reads. Unrelated dirty groups do not block export. Missing capabilities require owning catalogue maintenance.
 
-Each selected group is opened once. Its named receipts and pricing manifests are retained, and decoded
-payloads are shared across identities and adjustment aliases. Consumers assemble the accepted online span;
-they do not reopen the lineage index, authenticate upstream hashes, repeat compatibility checks or replay
-ownership and eligibility decisions. The operation gate remains held through output publication.
+Open each selected group once. Retain named receipts and pricing manifests, and share decoded payloads across IDs and adjustment aliases. Assemble the approved online span without reopening the lineage index, hashing upstream files, repeating compatibility checks or replaying ownership/eligibility. Hold the gate through publication.
 
-`DataLibrary.open_history_export(*, public_ids=None, start=None, end=None, full_histories=False)` exposes this same context to
-format adapters. With `full_histories=True`, the requested dates select identities with overlapping published coverage and the reader yields their complete online spans. `iter_histories()` is single-use and yields public security metadata, exact decimal-string
-rows for all eight views, and the completed inclusive ticker ranges. Keep the context open through publication
-and treat held values as read-only. `on_error="record"` retains completed peers and reports unreadable selected
-identities without retrying their group; initial selector and operation-lock failures still stop the export.
+`DataLibrary.open_history_export(*, public_ids=None, start=None, end=None, full_histories=False)` exposes this context to adapters. With `full_histories=True`, dates select overlapping IDs and return their full online spans. Single-use `iter_histories()` yields public metadata, eight exact decimal-string views and inclusive ticker ranges. Treat held values as read-only through publication. `on_error="record"` retains successful peers and reports unreadable identities without group retries. Initial selector or operation-lock failure aborts.
 
 ## Security metadata companion
 
@@ -45,28 +33,11 @@ identities without retrying their group; initial selector and operation-lock fai
 ./alpaca-cli-eod export metadata --bloodhound-report exports/bloodhound.parquet.report.json
 ```
 
-Set `CSV_EXPORT_MANIFEST` to a completed run's `final_manifest.json`. The default selection includes
-all online public IDs. Repeat `--public-id` for specific securities or
-`--symbol` for every online identity with a matching published ticker range. Each command accepts one
-selection method. Historical prices can remain online after an asset becomes inactive. The independent
-[business-equity baseline](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md) covers the broader roster of
-resolved standalone lineage and includes source-group evidence.
+Choose one selection: all online public IDs (default), repeated `--public-id`, repeated `--symbol` (every online match by dated ticker), or a completed CSV/Bloodhound export. An inactive asset may retain online history. The independent [business-equity baseline](../IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md) covers the broader resolved lineage roster and group evidence.
 
-Pairing consumes the completed price export's own membership decision. A CSV `final_manifest.json`
-names the public IDs that actually received files. A native Bloodhound report with a published complete
-or partial output supplies the IDs of histories marked `exported` and their `ohlcv_series_id` values.
-This series ID is a decimal **string** in the companion so readers preserve its full signed 64-bit
-precision. Join CSV by `public_id` and Parquet by `ohlcv_series_id`. Both pairings require the same
-catalogue generation. The parent's date filter applies to its prices. Companion coverage always describes
-the full online history of each included identity.
+Pair CSV using its `final_manifest.json` (`CSV_EXPORT_MANIFEST` above). It selects IDs with files. A published complete or partial native Bloodhound report selects histories marked `exported`. Join CSV by `public_id` and Parquet by `ohlcv_series_id`, a decimal **string** preserving signed 64-bit precision. Both pairings require matching catalogue generations. Parent date filters limit prices. Companion coverage spans each included ID's full online history.
 
-`--output` names a new directory outside the source store. The default is
-`exports/metadata/<UTC timestamp>/`. Open its `manifest.json` to find the records file, protocol version,
-catalogue generation, selection, extensions, identity count and default adjustment views. A paired
-manifest references its pricing manifest or report. A Bloodhound pair also carries the Parquet checksum
-from the conversion report. Reading the named `securities.jsonl.gz` yields one UTF-8 JSON object per
-line in ascending `public_id` order. Consume a run once its manifest is published. The
-[versioned JSON Schema](../resources/security_metadata.schema.json) defines both document types.
+`--output` selects a new directory outside the store, default `exports/metadata/<UTC timestamp>/`. Consume the run after `manifest.json` publishes. It names the records file, protocol version, catalogue generation, selection, extensions, identity count and default adjustment views. Paired manifests reference the source manifest/report. A Bloodhound pair also carries the reported Parquet checksum. `securities.jsonl.gz` contains one UTF-8 JSON object per line, sorted by `public_id`. [Schema for both documents](../resources/security_metadata.schema.json)
 
 | Record field | Meaning |
 |---|---|
@@ -81,6 +52,8 @@ line in ascending `public_id` order. Consume a run once its manifest is publishe
 | `trade_observations` | Attributable historical prints with their actual session and timestamp, request and returned symbol, mapping date, feed, reporting tape and execution venue. |
 | `corporate_actions` | An identity-attributed terminal cash merger records the acquired security's role, symbol and CUSIP, provider action ID, effective date, optional process date and exact cash rate as a string. |
 | `listing_exchange_changes` | An earlier and later Alpaca asset observation show different listing exchanges for the same security. Each endpoint retains its observed ticker, exchange and UTC observation time. |
+| `historical_listings` | Completed assessments of the security's published ticker ranges. Each range carries its sampled SIP prints, observed tape changes and limits on exchange attribution or coverage. |
+| `cross_ticker_listing_changes` | A tape change at a ticker change for the same public ID. Each entry names both tickers, both directly observed market sessions, their reporting tapes and the effective session. |
 
 For example, a security can have stored sessions under a former ticker, a later inactive OTC asset
 snapshot and an earlier trade on the Nasdaq UTP tape. These are three facts with different scopes.
@@ -98,6 +71,27 @@ Both dates are omitted when the effective session is unknown. Separate source pu
 describe the same observed endpoints. The companion retains one change and carries a uniquely
 supported session pair. If reported session pairs conflict, both exchange observations remain present
 and the effective date stays unknown.
+
+Within `historical_listings`, `symbol`, `first_session` and `last_session` identify the inclusive
+range assessed for this ID. Each `observations` entry gives the market session, the print's actual
+`trade_at` timestamp and its reporting tape. Tapes A and C identify NYSE and Nasdaq respectively.
+Tape B serves multiple listings, so a B observation carries only the tape. A `changes` entry
+names the earlier and later sampled sessions and tapes. An `effective_session` dates the transition
+when the two observed sessions were consecutive. Wider bounds leave the effective session open.
+When separate assessments cover consecutive sessions of the same ticker, the later range carries
+an optional `entry_change` if direct prints on both sides showed different tapes. Its
+`effective_session` is the range's first session. The range's `changes` and `status` describe
+observations inside that range.
+A producer-confirmed move between consecutive owned ticker ranges appears in
+`cross_ticker_listing_changes` when trades under the old and new symbols reported different tapes
+on the adjacent endpoint sessions.
+
+Range `status` is `changes_observed`, `sampled` or `unresolved`. An unresolved range is a completed
+assessment and can have empty observation and change arrays. An absent range has no published
+assessment. The `limits` array records the applicable restrictions. For example,
+`sampled_sessions_only` leaves intervening sessions unobserved, `change_date_bounded` identifies
+an undated transition, and `multiple_listings_on_tape_b` limits the exchange attribution.
+`competing_published_owners` records a range where ownership ambiguity prevented attributed sampling.
 
 Check the manifest's extensions to determine which optional evidence was available to the exporter.
 An absent collection means the companion contains no values of that kind for this identity.
@@ -125,10 +119,12 @@ group. Preparation uses each selected pending group's accepted lineage evidence 
 Groups already prepared at the applicable generation are reused. Enriched export requires the published
 metadata for its selected groups. A lineage migration can carry a prepared result to the new generation
 when it preserves the metadata inputs, including the assignment evidence used for competing owners.
-If the migration changes those inputs, only the affected group needs a new projection. Version-2 companions
-consume earlier generation-matched version-1 serving metadata with its original three extensions.
-The manifest advertises listing changes when the selection includes a version-2 projection. A mixed
-selection can therefore include identities whose prepared metadata predates listing-change collection.
+If the migration changes those inputs, only the affected group needs a new projection. Version-3
+companions consume earlier generation-matched serving metadata with its original capabilities.
+Publishing a historical assessment adds that section to an existing projection independently of
+the snapshot-based listing changes. The manifest advertises each extension supported by at least
+one selected group. A mixed selection can therefore contain identities whose prepared metadata
+predates a particular extension.
 
 ## Per-identity CSV export
 
@@ -186,47 +182,17 @@ export when it is required rather than filling an old digest from a different ca
 
 ### Publication and concurrency
 
-The final manifest defines all eight views and references identity files relative to its timestamp directory.
-It is atomically installed only after every CSV/digest succeeds. Consume the returned manifest and its named
-digests directly. An unfinished run has no `final_manifest.json`; exports neither discover nor resume runs by
-crawling output directories. A stable destination lock serializes exporters. Completed runs are self-contained
-and independently retainable/removable.
+After every CSV/digest succeeds, install `final_manifest.json` atomically. It defines all eight views and names identity files relative to the timestamped directory. Consume its named digests directly. Incomplete runs have no manifest and are never discovered or resumed by crawling outputs. A stable destination lock serializes exporters. Completed runs can be retained or removed independently.
 
-The [shared catalogue input](#shared-catalogue-input) owns source consumption. Each identity's complete CSV is encoded in a memory buffer,
-with its checksum accumulated during encoding, then passed to the destination stream in one write call.
-Completed CSV and digest bytes accumulate in a batch. One coordinator owns source and destination I/O:
-source iteration pauses while it writes the batch, then resumes using the same selected group and payload memo.
-No source reads run in background workers. CSV/digest bytes are released as their files are written; the final
-manifest still publishes only after every batch succeeds. The operating system may split or defer physical I/O;
-application phases introduce no `fsync` or forced writeback.
+One coordinator owns source and destination I/O using the [shared catalogue input](#shared-catalogue-input). Workers encode complete identities in memory and accumulate CSV checksums. The coordinator batches finished CSV/digest bytes, pauses source iteration to write each encoded file in one stream call, releases its buffer, then resumes with the same group and payload memo. The OS may split or defer physical writes. No background source reads, `fsync` or forced writeback.
 
-`--memory-mib` (1–5120) overrides the pending-output budget; the library accepts positive `memory_bytes`.
-The automatic budget is half Linux `MemAvailable`, with a 1 GiB minimum and 5 GiB maximum, sampled once at
-entry. It bounds completed CSV/digest bytes held in the batch, not total process RSS. One active group's decoded
-sources, up to `workers` in-flight identity histories/CSV buffers, Python object overhead and the catalogue/run
-manifest are additional working memory. A single CSV/digest exceeding the budget aborts without a final manifest;
-there is no spill, reread or automatic retry. The 1 GiB floor applies even when available memory is below 1 GiB.
-Small explicit budgets are useful for constrained runs; the default can retain the whole output when it fits.
+`--memory-mib` accepts 1–5120. Library `memory_bytes` accepts positive values. Default pending-output budget: half Linux `MemAvailable` at entry, clamped to 1–5 GiB even below 1 GiB available. It bounds completed CSV/digest buffers only. Additional RSS includes the current group's decoded sources, up to `workers` active identity histories/CSV buffers, Python overhead and catalogue/run manifest. A single oversized CSV/digest aborts without a manifest, spill, reread or automatic retry. Explicit small budgets suit constrained runs. The default may retain all output if it fits.
 
-Groups are consumed under reader locks. A store-wide shared operation lock spans the current catalogue-token
-check through final publication; a previously opened `DataLibrary` must still match that token. Store-writing
-CLI commands take the exclusive side, excluding update/writer overlap. [Lock ownership](technical-contracts.md#publication-and-recovery).
-Internal producers invoked outside the CLI must also respect this gate when exports can run.
+`workers` accepts integers 1–4 (default 2), for in-memory encoding only. One group at a time, at most one outstanding job per worker. Group members share decoded payloads across flushes. Encoding completion order never changes output or manifest order. Coordinator callbacks distinguish prepared identities/buffered bytes from written CSV/digest pairs. Only final writes estimate completion, from their own rate. Identities with no rows advance the count without files.
 
-`workers`: integer 1–4, default 2; workers only encode in-memory identities. The coordinator opens one group
-at a time and bounds outstanding encoding jobs by worker count. Group identities share decoded payloads even
-when a batch flush splits a group. Encoding completion order does not change output or manifest order.
-Progress callbacks run on the coordinator and distinguish prepared identities/buffered bytes from completed
-CSV/digest pairs. Read/build phases report no time estimate; the final write phase estimates from its own write
-rate. Failure/interruption cancels queued encoding, waits for active jobs and releases their buffers before
-returning. Publication waits for every group and all worker resources. No-row identities advance processed count
-without files.
+Source, destination and store locks fail immediately with `ReaderBusyError`, even under `DataLibrary(wait=True)`. CSV CLI has no `--wait` and exits 3 if busy. Other reads retain configured waiting. Hold group reader locks and a shared store operation lock from the current catalogue-token check through publication. Previously opened libraries must still match. Writers, including internal producers invoked outside the CLI, must respect the exclusive gate. [Lock ownership](technical-contracts.md#publication-and-recovery)
 
-Source/destination/store locks fail immediately with `ReaderBusyError`, even if `DataLibrary(wait=True)`;
-CLI has no CSV `--wait` and exits 3 when busy. Other reads retain configured waiting. Failure/interruption stops
-dispatch and closes active work before reaching the caller. Cancellation occurs between group/identity
-operations; an OS read/write already running must return. Completed runs remain intact; incomplete directories
-remain unselected. Kernel process exit releases locks.
+Failure or interruption stops dispatch, cancels queued work, waits for active jobs and releases buffers. Cancellation occurs between group/identity operations. An active OS read or write must return. Publish only after every group succeeds and workers finish. Completed runs survive, incomplete directories stay unselected, and process exit releases kernel locks.
 
 ## Flat online CSV
 

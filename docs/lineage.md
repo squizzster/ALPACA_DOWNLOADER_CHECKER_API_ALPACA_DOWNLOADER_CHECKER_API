@@ -1,1200 +1,1020 @@
 # Lineage contracts
 
-[Architecture](ARCHITECTURE.md#lineage-and-identity) maps owners; [policy lab](policy-lab.md) defines executable
-profiles and read-only comparisons. These contracts govern completed-group reuse and evidence limits.
+| Question | Where to look |
+|---|---|
+| Could the same ticker refer to two securities? | [Reused labels](#reused-trading-labels), [dated-label collisions](#dated-label-collisions) and [limits of ownership evidence](#ownership-evidence-limits) |
+| Did an exchange change, and on which session? | [Observed changes during updates](#changes-of-listing-exchange) and [historical listing assessments](#historical-listing-assessments) |
+| Which prices or corporate actions belong to this ID? | [Dated numerical mapping](#dated-numerical-mapping), [sourced event facts](#sourced-event-facts) and [terminal ownership](#cash-distributions-and-terminal-ownership) |
+| What can a later update reuse? | [Group reuse](#lineage-reuse), [membership and metadata](#membership-and-metadata-continuation) and [assignment continuation](#assignment-continuation) |
 
 ## Ownership allocation criterion
 
-Every decision asks which outcome is most likely to be correct given the available API evidence.
-Explicitly compare plausible connections and leaving history unconnected; choose the best supported
-interpretation. Both outcomes can be correct, but neither is an automatic default.
+Evaluate the complete affected group. Compare each plausible owner with leaving the history unconnected. Weigh
+accepted prior ownership, dated API observations, security class, identifiers, mappings, continuity and competitors
+together. Ticker, issuer name or price equality alone cannot establish security identity.
 
-Use generic rules to choose the most likely ownership, historical labels, identity membership,
-continuity and numerical source authority supported by provider observations and applicable completed
-producer decisions. Absolute proof or a particular certificate is not required when the combined
-admissible evidence reasonably favors an owner over its alternatives.
+Publish the reasonably supported most likely connection despite uncertainty. Otherwise record the unresolved
+disposition and limits, leave those rows unpublished and acknowledge completed processing so peers can continue.
+Record reasons, material weaknesses, applicable confidence and plausible alternatives without invented
+probabilities.
 
-Research establishes an external reference for improving and testing those generic rules. It may
-corroborate a connection or show that the API evidence cannot reasonably establish ownership; both
-findings can improve or validate a generic rule. It must not
-supply runtime facts, ticker-specific exceptions, factual applications, event supplements, assertion
-overlays or research certificates. This restriction applies to production, debug, lab and fresh recovery
-decisions. YAML selects registered generic rules and generic parameters only. The same admissible
-evidence conditions select the same inference logic regardless of ticker spelling.
+The [generic inference instructions](../AGENTS.md#generic-lineage-inference) apply in production, debug, lab and
+fresh recovery. Research may expose a missed or unrecoverable connection. Runtime uses provider observations,
+applicable completed decisions and YAML-selected generic rules/parameters. Frozen journals retain original
+provenance. Legacy research assertions cannot authorize new rows.
 
-The objective is the best supported interpretation of the available admissible source evidence.
-Connect and publish when a connection is reasonably supported; leave history ownerless when it cannot
-reasonably be connected. Both outcomes can be correct. Do not force an allocation because history must
-belong somewhere, or withhold a reasonably supported connection because absolute proof is unavailable.
-An ownerless outcome is completed, processed lineage: persist its unresolved disposition and evidence
-limits, keep that history unpublished to consumers, acknowledge processing and let independent work
-continue. It is not a workflow failure or blocker.
-
-Evaluate the complete affected group. Weigh prior accepted ownership, dated provider observations,
-security class and identifiers, provider mappings, continuity and competing owners together. Research
-can corroborate an expected result and expose a missing generic rule; the rule must establish its result
-from admissible runtime inputs. Record reasons, applicable confidence, material weaknesses and genuine
-alternatives without inventing numerical probabilities. Ticker spelling, issuer identity or price
-equality alone does not establish security identity.
-
-Keep technical publication integrity separate from ownership inference. Selected generations, readable
-handoffs, coherent numerical bundles and interruption recovery remain required. Missing technical
-capabilities select their owning recovery path while preserving applicable completed decisions; they
-do not prove that history has no owner or authorize repeated historical checks. Frozen journals install
-completed outputs under their recorded provenance; retained research assertions cannot be extended to
-justify new rows.
-
-Fresh inference rejects authored assertions and selects provider observations separately from retained
-legacy provenance. [F67](trust-boundary-handoff.html#f67) records the implementation review and its remaining
-limits. Existing certificate gates can still withhold reasonably supported ownership;
-[F64](trust-boundary-handoff.html#f64) remains open. Mechanism tests do not establish correct ownership in every case.
+Readable publications, coherent numerical inputs and matching generations remain prerequisites. Missing capabilities
+select owning recovery and preserve applicable decisions. See
+[legacy-provenance safeguards](trust-boundary-handoff.html#f67) and
+[open certificate gates that can still withhold supported ownership](trust-boundary-handoff.html#f64).
 
 ### Duplicate traded histories
 
-`alpaca-cli-eod lineage repair-overlap --group-key KEY --store PATH` selects one published serving group.
-A strict subset of a later split-linked provider UUID component can yield to the complete existing owner when
-both have the same dated labels and every raw traded session matches. An explicitly dated ticker change in a
-split can instead bound two existing identities. Exact old and new CUSIP lookups select the endpoints, and
-matching raw OHLCV, VWAP and trade counts identify the duplicated prefix. Each existing ID keeps its valid
-dates. The standalone group's `provider_split_relations` reports the endpoint IDs, CUSIPs, terms and date.
-Distinct classes, carry-only overlap, conflicting routes and incomplete coverage retain their prior decisions.
-Only raw price histories supply the new cross-owner evidence. Serving consumes slices of the prior accepted
-history checkpoints and their existing numerical selections. A retry resumes the selected group's journal.
+`alpaca-cli-eod lineage repair-overlap --group-key KEY --store PATH` selects one published serving group. A strict
+subset of a later split-linked provider UUID component can yield to its complete existing owner when dated labels
+and every raw traded session match. An explicitly dated ticker change in a split can instead bound two existing IDs.
+Exact old/new CUSIP lookups select endpoints. Matching raw OHLCV, VWAP and trade counts identify the duplicate
+prefix. Each ID keeps its valid dates. Standalone `provider_split_relations` reports endpoint IDs, CUSIPs, terms and
+date.
+
+Distinct classes, carry-only overlap, conflicting routes or incomplete coverage retain prior decisions. Only raw
+histories supply new cross-owner evidence. Serving uses slices of accepted history checkpoints and their numerical
+choices. Retry resumes the group journal.
 
 ### Reused trading labels
 
-`alpaca-cli-eod lineage repair-occupation --public-id ID --store PATH` assesses one selected online
-identity. A flat, zero-trade interval identifies a possible boundary between two periods of real trading.
-The literal ticker and date-mapped issuer routes must distinguish those periods. A prior route that keeps
-trading against the frozen literal price and then supplies a distinct concurrent tape supports separate
-occupations. When the prior route ends instead, the current route must exclude the older trades, the
-prior route must exclude the later trades, and the intervening carry must span at least 21 sessions.
-A contemporary CUSIP identifying the accepted owner on an older trade date protects its prior scope.
-A later corporate action can identify its own endpoint without establishing retroactive ownership.
+`alpaca-cli-eod lineage repair-occupation --public-id ID --store PATH` assesses one online identity. A flat
+zero-trade interval between traded periods marks a possible reuse boundary. Literal ticker and date-mapped issuer
+routes must distinguish the periods. A prior route trading against the frozen literal price and then supplying a
+distinct concurrent tape supports separate occupations. If that route ends, the current route must exclude older
+trades, the prior route must exclude later trades and the carry must span ≥21 sessions. A contemporary CUSIP
+identifying the accepted owner on the older trade date protects its scope. Later corporate actions can identify
+their endpoints without retroactive ownership.
 
-For units whose own mappings span both offerings, a common-stock component can distinguish two separate
-unit issues. Each unit starts trading before its common stock. The common tape stops with the earlier unit
-and its two dated issuer routes supply distinct trades. A dated common rename plus its successor's matching
-trade history corroborates the later issue. A unit separation whose exact CUSIP resolves to the accepted old
-issuer, with both named components merging on that date, keeps the older scope instead. Later assignments
-to that retired unit become ownerless. A material change in its native terminal evidence or historical
-pricing selects owning recovery.
+When a unit’s own mappings span both offerings, a common-stock component can distinguish two issues. Each unit
+trades before its common. The common tape stops with the earlier unit and its two dated issuer routes contain
+distinct trades. A dated common rename and matching successor history corroborate the later issue. A separation
+whose exact CUSIP resolves to the accepted old issuer, with both named components merging that day, preserves the
+older scope instead. Later retired-unit assignments become ownerless. Materially changed native terminal evidence or
+historical pricing selects owning recovery.
 
-After a terminal unit decision, `pricing repair-retired-unit --public-id ID --session YYYY-MM-DD`
-can remove a later split factor from the old unit's adjusted prices. The session selects the
-reported post-retirement split. Its exact reported terms must explain the affected fields across
-the whole owned interval. Raw and independently selected cash and spin views supply the comparison.
-The producer consumes the completed terminal decision and preserves every raw trade. A full lineage
-rebuild carries the accepted price interval when the same retirement, group and action terms still apply
-and each member's pricing generation is unchanged or its mapped price history changed only after the
-last witnessed session. An overlapping change or missing binding requires selected recovery before publication.
+After a terminal unit decision, `pricing repair-retired-unit --public-id ID --session YYYY-MM-DD` can remove a
+post-retirement split factor from adjusted prices. The session selects the reported split. Its exact terms must
+explain affected fields throughout the owned interval against raw and independently selected cash/spin views.
+Consume the completed terminal decision and preserve all raw trades. Full lineage rebuild carries the accepted
+interval if retirement, group and terms still apply and each member’s generation is unchanged or its mapped history
+changed only after the last witnessed session. Overlap or missing binding requires selected recovery before
+publication.
 
-The journal binds completed route responses and unresolved outcomes to the selected group's original
-generations. Publication retains the existing ID, its supported dates and the existing numerical
-observations. The lineage owner also retains the displaced literal observations and registers their last
-traded date for independent attribution to another issuer with a matching traded history.
+The journal binds completed route responses and unresolved outcomes to original group generations. Publication
+retains the ID, supported dates and numerical observations. Lineage keeps displaced literal observations and
+registers their last trade date for independent attribution to another issuer with matching traded history.
 
 #### Former tickers identified by corporate actions
 
-For a fresh OTC equity with a five-letter ticker ending in Q, Alpaca may report a
-historical SIP trade on a listed tape under the mapped terminal ticker. When the ordinary
-traversal and native CUSIP paths have supplied no former ticker or usable identifier, the
-metadata producer can use the four-letter root for one corporate-action query. It first
-uses any completed portions of that symbol's action coverage. A native positive cash dividend
-must name the queried symbol on an ex-date inside the raw price span and no later than the
-observed listed-tape trade. With fresh daily rows in memory, the ex-date needs positive volume
-or trade count, or a directly observed mapped trade on that date. An exact lookup
-of that dividend's CUSIP must return the terminal US equity's UUID and ticker before the
-returned symbol enters normal metadata and pricing discovery. The source receipt records the
-filter, coverage, supporting dividend, lookup and outcome in `otc_status_symbol_query`.
-An empty response, unavailable lookup or different returned issuer leaves the spelling
-unconfirmed. Applicable published assignments keep their existing scope.
+For a fresh OTC equity with a five-letter ticker ending in Q, Alpaca may return a listed-tape historical SIP trade
+under the mapped terminal label. If ordinary traversal and native CUSIP paths find neither a former ticker nor a
+usable identifier, metadata may query corporate actions once by four-letter root, reusing completed coverage. A
+positive native cash dividend must name that root on an ex-date within the raw span and no later than the
+listed-tape trade. With fresh daily rows in memory, require positive ex-date volume or trade count, or a directly
+observed mapped trade that day. Exact dividend-CUSIP lookup must return the terminal US equity’s UUID and ticker
+before the returned symbol enters ordinary metadata/pricing discovery. `otc_status_symbol_query` records filter,
+coverage, supporting dividend, lookup and outcome. Empty response, unavailable lookup or different issuer leaves
+spelling unconfirmed. Preserve applicable published assignments.
 
-For a selected inactive or OTC equity, metadata can discover a former label starting with the
-terminal ticker. The asset API may supply a licensed CUSIP. A dated corporate action can also name
-the terminal ticker and CUSIP on the same participant when its completed exact CUSIP lookup identifies
-the terminal equity's UUID. The licensed snapshot takes precedence. Among independently resolved
-action CUSIPs, the most recent processing date selects the query. A same-day reverse split or name
-change can explicitly order an old and new CUSIP. Equally supported alternatives remain recorded
-without selecting a filter.
+A selected inactive/OTC equity can yield a former label via its terminal ticker. Prefer the asset API’s licensed
+CUSIP. Alternatively, a dated action must name the terminal ticker and CUSIP on the same participant and its
+completed exact CUSIP lookup must identify the terminal UUID. Among independently resolved action CUSIPs select the
+latest processing date. A same-day reverse split or rename can explicitly order old/new CUSIPs. Record equally
+supported alternatives without selecting a filter.
 
-After ordinary symbol actions have been traversed, the producer queries complete US actions by
-the selected CUSIP over the selected dates if existing native endpoints have not identified another
-label. The source evidence records the CUSIP's origin, query bounds, outcome, action IDs, process dates and matching
-participant fields in `cusip_action_discovery`. Only the documented participant carrying the
-requested CUSIP can name a ticker for ordinary symbol acquisition. A returned action with one
-named ticker joins its normal action evidence even when the symbol query omitted it. A transaction
-with distinct parties keeps its full record and the matching role in the CUSIP evidence.
-An already observed action and exact CUSIP mapping can name the ticker directly when its terminal
-asset is selected later. The asset CUSIP remains a snapshot. Empty responses, unmatched actions and access denials supply no dated label. Selected
-extensions request only uncovered intervals and legacy receipts keep their completed scope.
+After ordinary symbol-action traversal, if native endpoints revealed no other label, query complete US actions by
+selected CUSIP over selected dates. `cusip_action_discovery` records origin, bounds, outcome, action IDs, process
+dates and matching participant fields. Only the documented participant carrying that CUSIP can supply a ticker for
+ordinary acquisition. A returned single-ticker action joins its normal evidence even if the symbol query omitted it.
+For distinct parties retain the full transaction and matching role in CUSIP evidence. An already observed action and
+exact CUSIP mapping may name the ticker when its terminal asset is later selected. Asset CUSIP remains a snapshot.
+Empty responses, unmatched actions and denied access supply no dated label. Extensions request only uncovered
+intervals. Legacy receipts keep completed scope.
 
-On fresh group work, a positive cash dividend can identify the trading ticker on its ex-date. A stock
-or stock-and-cash merger can identify the acquirer's ticker on its effective date when Alpaca names
-both parties with distinct tickers and CUSIPs and supplies positive consideration. The acquirer's
-observation applies to its own security. The acquiree keeps its own price history.
-An exact CUSIP lookup must resolve the dated participant to an inactive or OTC equity under another
-ticker. The terminal ticker's own asset lookup must identify the same equity.
-The group compares the two already selected daily SIP raw histories. The terminal route
-must be mapped after the traded period. Literal symbol requests directly support the trading label.
-Alpaca also uses literal semantics when a ticker is absent on the mapping date. A contemporaneous
-exact 404 can support absence. A dated subsequent occupant's entry and departure, complete action
-coverage, and an exact 404 can also support absence after that departure.
+In fresh group work, a positive cash dividend can identify its ex-date trading ticker. A stock or stock-and-cash
+merger can identify the effective-date acquirer ticker if Alpaca supplies both parties with distinct tickers/CUSIPs
+and positive consideration. The observation concerns the acquirer. The acquiree keeps its history. An exact
+participant CUSIP lookup must resolve to an inactive/OTC equity under another ticker, confirmed by that terminal
+ticker’s own asset lookup.
 
-The dated label covers the supported portion of the shared trading period. Varying prices and matching
-activity support continuity. An interior mapped aggregate can contain fewer trades when its open and
-close agree and its price range fits inside the former ticker's range. Matching full aggregates on both
-sides distinguish this from merely sharing a close. When the API supplies matching raw trades and a
-dated event but cannot date the surrounding spelling, an individual event date can stand on its own. A successful
-empty literal trade observation on that date contradicts the mapped trades. Competing spellings retain
-their ordinary disposition on disputed dates. The source receipt records the material limit.
+Compare the two already selected daily raw SIP histories. The terminal route’s mapping must postdate the traded
+period. Literal requests directly support the trading label. Alpaca also treats an absent ticker as literal on the
+mapping date. Absence can be supported by a contemporaneous exact 404, or after a subsequent occupant’s dated entry
+and departure by complete action coverage and an exact 404.
 
-The existing public ID, CUSIP, supporting action IDs and observed endpoints accompany the dated label.
-The first and last observed sessions bound the price assignment. A formal rename date or an OTC trade
-requires its own evidence. The group cache carries the assessment across views and passes. Applicable
-published groups and accepted prefixes continue through their existing handoffs.
+Apply the dated label to the supported shared period. Varying prices and matching activity support continuity. An
+interior mapped aggregate may contain fewer trades when opens/closes agree and its range fits within the former
+ticker’s range. Matching full aggregates on both sides distinguish continuous trading from merely sharing a close.
+Matching raw trades plus a dated event may support the event date alone when surrounding spelling is unknown. A
+successful empty literal trade observation that day contradicts mapped trades. Disputed spellings keep their
+ordinary disposition. Record the material limit in the source receipt.
 
-Independently stored labels can have adjacent trading dates even when Alpaca supplies no connecting
-action, CUSIP or shared UUID. A dated bar query can bridge such a boundary after both labels are known.
-That response identifies the requested route. Its bars can use a different adjustment basis from the
-independently acquired generations. Fresh lineage discovers candidate labels through its provider
-dependencies and preserves each numerical generation until its mapping is established.
+Carry existing public ID, CUSIP, supporting action IDs and observed endpoints with the label. First/last observed
+sessions bound price assignment. Formal rename dates and OTC trades need separate evidence. Cache assessment across
+views/passes. Published groups and accepted prefixes keep applicable handoffs.
 
-When both fresh source histories use symbol mapping, their shared prices can come from an
-even earlier ticker. The group can request the former ticker's literal daily SIP raw bar on the
-first and last eligible sessions. Each singleton uses `asof=-`. The source receipt stores
-`former_ticker_literal_bars` with each exact request, the returned OHLC, volume, trade count
-and VWAP, and the two selected pricing generations and mappings. A successful empty result
-records `no_bars`. An explicit provider rejection records `unavailable`. Direct symbol lookups
-record when Alpaca returned the asset snapshot or a 404. An asset selected from the catalogue
-uses that catalogue's observation time. An existing literal route or a supported current mapping can resolve this
-question without additional bar requests. Completed literal observations survive peer failures
-under the same store, former pricing generation and former mapping. A changed terminal generation
-selects a new pair assessment that can consume that same literal observation.
+Adjacent independently stored labels may lack a connecting action, CUSIP or shared UUID. Once both are known, a
+dated bar query can bridge their boundary. Its response identifies the requested route but may use a different
+adjustment basis from independent generations. Fresh lineage discovers candidates through provider dependencies and
+preserves each numerical generation until its mapping is established.
+
+Both mapped fresh histories can share prices from an earlier ticker. The group may query the former ticker’s literal
+daily SIP raw bar on the first and last eligible sessions, each a singleton with `asof=-`.
+`former_ticker_literal_bars` retains exact requests, returned OHLC, volume, count, VWAP and both pricing
+generations/mappings. Successful emptiness records `no_bars`, explicit provider rejection `unavailable`. Direct
+lookups record the time of asset snapshot or 404. Catalogue-selected assets use catalogue observation time. An
+existing literal route or supported current mapping can suffice. Completed literal observations survive peer
+failures for the same store, former generation and mapping. A changed terminal generation selects a new pair
+assessment that can reuse them.
 
 #### Dated trade tape evidence
 
-On a priced source, the producer requests the first chronological Alpaca SIP trade
-under the literal event ticker (`asof=-`) on its earliest qualifying dividend ex-date or acquirer effective date
-whose entire New York date falls in the source span. The standalone group's source evidence
-exposes this observation in `historical_trade_tape`. With the
-[standalone reader](public-api.md#standalone-reader), inspect
-`group.evidence["sources"][source_symbol]["evidence"]` for the selected source's dated samples.
+On a priced source, select the earliest qualifying dividend ex-date or acquirer effective date whose entire New York
+date lies in the source span. Request its first chronological SIP trade under the literal event ticker (`asof=-`).
+`historical_trade_tape` appears in the selected source’s `group.evidence["sources"][source_symbol]["evidence"]`.
+[Standalone reader](public-api.md#standalone-reader)
 
-An OTC asset with a historical gap after its last stored raw SIP session selects a mapped sample
-on that raw date, using the pricing request's ticker and `asof`. A week of elapsed coverage
-establishes eligibility. A shorter gap requires a known subsequent market session inside the
-request. With the same raw date and provider UUID, an advancing current-label mapping keeps
-the original dated observation. A changed pinned mapping or provider UUID selects its own route.
-The source receipt exposes it in `mapped_historical_trade_tape`. Its returned symbol identifies the provider's
-mapped response. The pricing-route binding records the UUID seen in the symbol's asset
-lookup. Establishing the historical ticker on that date requires separate evidence.
+An OTC asset with a gap after its last stored raw SIP session selects a sample on that date with the pricing ticker
+and `asof`. A week of elapsed coverage qualifies. A shorter gap requires a known subsequent session within the
+request. For the same raw date and provider UUID, an advancing current-label mapping keeps the original sample. A
+changed pinned mapping or UUID selects its own route. `mapped_historical_trade_tape` identifies the provider’s
+returned mapped symbol. The pricing route binds the UUID from its asset lookup. A historical ticker requires
+separate evidence.
 
-When that mapped raw-end day returns HTTP 200 with no trades, a complete archived source can
-look for its latest earlier SIP print. The first search covers the earliest complete New York
-date within the selected raw span through the day before the empty endpoint, using the same
-symbol and mapping, descending time order and a one-trade limit. The endpoint response remains
-in place. Its `last_trade_search` records the raw and request bounds, pricing generation,
-provider UUID, mapping, actual request and response, and the dates of established absence.
-A subsequent empty interval can retain the earlier positive response alongside the new request.
-Applicable pricing ancestry carries the completed intervals forward. Newly admitted dates select
-only uncovered portions, newest first. A selected metadata refresh can extend an older empty
-point receipt through this rule. A normal unchanged update leaves its completed scope intact.
+After HTTP 200 with no trades on the mapped raw-end date, a complete archived source may seek its latest earlier SIP
+print. Query from the first complete New York date of the selected raw span through the preceding day, same
+symbol/mapping, descending, limit one. Retain the endpoint response. `last_trade_search` records raw/request bounds,
+pricing generation, UUID, mapping, actual request/response and proven absence dates. A subsequent empty interval may
+retain an earlier positive response with the new request. Applicable pricing ancestry carries completed intervals.
+Request only newly uncovered dates, newest first. A selected metadata refresh can extend an older empty point
+receipt. An unchanged ordinary update preserves completed scope.
 
-Each point sample covers one New York date and one trade. Its receipt records the requested ticker,
-session, request bounds, feed, mapping and HTTP outcome. A returned trade records its
-timestamp `t`, SIP tape code `z`, execution venue `x`, price `p`, size `s` and sale conditions `c` when present.
-A trade can be reported on a day whose daily bar shows zero eligible volume and trades.
-Tape C identifies the
-Nasdaq UTP network, while A and B identify their respective CTA networks. Other or missing tape
-codes are recorded as unknown. An explicitly null or empty trade collection records `no_trades`
-when the response identifies the requested ticker and has no continuation token.
-The network observation applies to that dated trade. Asset
-lookups separately retain the provider's current or terminal exchange snapshot.
+Each one-trade New York date sample records requested ticker, session, bounds, feed, mapping and HTTP outcome.
+Returned trade fields, when present, are timestamp `t`, tape `z`, execution venue `x`, price `p`, size `s` and sale
+conditions `c`. A print can coexist with zero eligible daily volume/trades. C denotes Nasdaq UTP, A/B their
+respective CTA networks, other/missing codes unknown. An explicitly null/empty trade collection for the requested
+ticker with no continuation records `no_trades`. Tape dates only the observed trade. Asset lookups retain separate
+current/terminal exchange snapshots.
+
+A fresh listed equity can have a zero-volume, zero-trade final SIP bar on a cash merger’s effective date. If
+acquiree ticker and CUSIP resolve to the same inactive asset, request the last reported SIP trade from the latest
+preceding positive daily bar through merger date. `terminal_cash_merger_trade` retains the mapped request/result,
+target UUID, native action ID and cash rate. A print may fall after regular close. Daily prices, eligible activity,
+public coverage and cash consideration retain separate producer records. Accepted histories do not trigger
+retrospective searches.
+
+An earlier listed-tape print selects the next market session by its actual New York date. An empty/unavailable
+backward search supplies no date. If that session falls wholly within the source request’s New York dates, sample up
+to one literal terminal-ticker trade with `feed=otc`. `otc_historical_trade_tape` records the actual response
+separately. A print dates OTC trading to its timestamp. Successful emptiness records `no_trades`, HTTP 403/404
+`unavailable`. Reuse an explicit OTC subscription denial within the operation for the same credentials. Record its
+HTTP result only on the requested route. Unchanged sources retain the original outcome. A new route or explicit
+metadata refresh can observe current access. Listing intervals and transfer dates need additional evidence.
+
+Given a listed mapped SIP print and a complete empty first literal OTC page, `following_trade_search` can locate the
+first later OTC print. Query once, ascending, limit one, from the next calendar day to the last complete selected
+New York date. A dated departure, different observed occupant or accepted corporate-action departure may shorten the
+search. Retain pricing generation, mapping UUID, contiguous empty coverage, latest physical request/response and,
+for a print, literal symbol, New York date and original timestamp. Extend emptiness only beyond covered dates. A
+completed first print stays bound to its original search. Ownership and OTC pricing require separate evidence.
 
 #### Changes of listing exchange
 
-During an ordinary update, lineage retains both dated Alpaca asset observations when the same US-equity
-UUID changes listing exchange. The source receipt's `listing_exchange_changes` records each symbol,
-exchange and observation time. A ticker reused by a different UUID cannot create a transfer. The first
-snapshot on a fresh store supplies a starting point. Earlier transfers require earlier evidence.
+Ordinary update retains both dated Alpaca asset observations when the same US-equity UUID changes listing exchange.
+Source receipt `listing_exchange_changes` records each symbol, exchange and observation time. Ticker reuse by
+another UUID cannot establish a transfer. A fresh store starts with its first snapshot. Earlier transfers need
+earlier evidence.
 
-For a stable ticker moving between NYSE and Nasdaq, the producer can narrow the date using literal
-SIP trades. It looks within the latest 15 eligible market sessions around the observations and retains
-the samples it uses. An old-network trade and a new-network trade on adjacent scheduled sessions
-establish `prior_session` and `effective_session`. Where the new snapshot arrives ahead of trading,
-an old-network print can select one follow-up on the next eligible session. The compact lineage index
-schedules that observation after the session closes and the data delay has elapsed. This also covers
-weekends and early closes. An unchanged update before then leaves the pending observation in place.
-When the networks cannot distinguish the exchanges, the ticker changes, or either trade is unavailable,
-the receipt can still publish both asset observations with an unknown effective session.
-The [metadata companion](exports.md#security-metadata-companion) exposes these changes by public ID.
+For a stable ticker moving between NYSE and Nasdaq, retain literal SIP samples within the latest 15 eligible
+sessions around the observations. Old/new network trades on consecutive scheduled sessions establish `prior_session`
+and `effective_session`. If the new snapshot precedes trading, an old-network print can select one follow-up next
+eligible session. The compact index schedules it after session close plus data delay, including weekends and early
+closes. An intervening unchanged update leaves it pending. Indistinguishable networks, changed ticker or missing
+trade can leave the effective session unknown while both asset observations publish.
+[Metadata companion by public ID](exports.md#security-metadata-companion)
 
-A fresh listed-equity history can have a zero-volume, zero-trade final SIP bar on the
-effective date of a cash merger. When the acquiree ticker and CUSIP resolve to the
-same inactive asset, lineage requests the last reported SIP trade from the most recent
-preceding positive daily bar through the merger date. The source evidence field
-`terminal_cash_merger_trade` retains the mapped request, its result, the target UUID,
-native action ID and cash rate. A reported trade may fall after the regular close.
-Daily prices, eligible trading activity, public coverage and cash consideration keep
-their respective producer records. Accepted histories do not select a retrospective search.
+#### Historical listing assessments
 
-After an earlier listed-tape print is found, its actual New York date selects the next OTC session.
-An empty or unavailable backward search supplies no such date. When the first market session
-following the selected historical SIP date falls entirely within the source
-request's New York dates, lineage can sample one trade for the terminal ticker with `feed=otc` and literal
-mapping. An actual response is recorded separately in `otc_historical_trade_tape`. A returned
-trade establishes an OTC print on its timestamp. A successful empty response records
-`no_trades`. HTTP 403 and 404 record `unavailable`. When the provider explicitly denies
-OTC subscription access, the operation reuses the denial for the same credentials and
-records that HTTP result only on the route actually requested. An unchanged source carries
-its original outcome. A newly selected route or explicit metadata refresh can observe
-current access. A listing interval or market transition date requires additional evidence.
+The [historical listing migration](operations.md#backfill-historical-listings) requests literal-symbol Alpaca SIP
+auctions and trades within a public ID’s accepted ticker dates. Reuse its attributed literal observations. Sample
+endpoints and market-centre opening/closing auction venue changes. Auctions select candidate dates. Dated trade tape
+A identifies NYSE, C Nasdaq, B multiple possible primary listings. The terminal asset exchange remains a separately
+dated observation.
 
-If a mapped SIP trade has a listed tape and this first literal OTC date returns a complete, empty page,
-`following_trade_search` can locate the first later OTC print. One ascending, one-trade query spans
-the next calendar day through the last complete New York date in selected coverage. A dated departure,
-different observed occupant or accepted corporate-action departure can shorten that search. The result records
-its pricing generation, mapping UUID, contiguous empty coverage and the latest physical request and
-response. A positive result identifies the literal symbol, actual New York date and original timestamp.
-An extension of an empty result starts after the covered dates. A completed first print stays bound
-to its original search. Ownership and OTC price acquisition require separate evidence.
+Opposing confirmed tapes select additional sessions within the bracket. On adjacent scheduled sessions the later
+date is the supported effective date. Otherwise retain both bounds. Adjacent ticker endpoints may establish a
+transfer across a rename for the same ID. Sampling may miss temporary moves or transfers within one network. Record
+limits for unavailable prints, conflicting tapes and overlapping published owners.
+
+Lineage owns durable observations and completed assessments. A changed competition interval selects only its
+affected scope for correction. Other confirmed points retain their original identity. The catalogue and
+[metadata companion](exports.md#security-metadata-companion) consume the completed decision.
 
 ## Lineage reuse
 
-[contract.py](../libs/alpaca_lineage_build/contract.py), `reusable_decision`, and
-[group_engine.py](../libs/alpaca_lineage_build/group_engine.py), `process_group`, require matching complete-group inputs,
-dependency/recorded-absence sets, compatible versions, no pending pricing work and no explicit metadata refresh.
-Receipts/index entries bind authorized policy ID, role, implementation tuple and semantic digest. File digest
-records exact YAML bytes; formatting is not reuse identity.
+[`reusable_decision`](../libs/alpaca_lineage_build/contract.py) and
+[`process_group`](../libs/alpaca_lineage_build/group_engine.py) require matching complete-group inputs, dependencies
+and recorded absences, compatible versions, no pending pricing work and no explicit metadata refresh. Receipt/index
+bind authorized policy ID, role, implementation tuple and semantic digest. The file digest identifies exact YAML
+bytes. Formatting has no effect on reuse.
 
-Authorize the canonical policy once after journal recovery, before new selection/evaluation/network work.
-Recovery validates frozen journal provenance without reinterpreting it through newly installed policy.
-The [ruleset loader](../libs/alpaca_lineage_build/ruleset.py) accepts the schema-2 canonical YAML's registered
-generic policy and optional generic producers as one operation configuration. Their identities remain separate:
-a container or formatting change does not establish new ownership or invalidate an applicable prior policy.
-Its [completed value contract](../libs/alpaca_lineage_build/ruleset_contract.py) crosses stage JSON without
-reopening YAML or compiling rules again. It carries no active factual applications or supplements.
-Evidence fingerprints are independent of history approval. [Workflow completion](technical-contracts.md#universe-observation-and-work-state)
-consumes fresh source-bound approval without republishing an unchanged decision. A completed producer handoff
-does not need its group reopened merely to acknowledge that approval. Rule-only changes reuse approved evidence.
+Recover the frozen journal under recorded provenance, then authorize canonical policy once before new selection,
+evaluation or network work. The [loader](../libs/alpaca_lineage_build/ruleset.py) accepts schema-2 registered
+generic policy and optional generic producers as one configuration with separate identities. Container/format
+changes neither establish ownership nor invalidate applicable policy. Its
+[completed value](../libs/alpaca_lineage_build/ruleset_contract.py) crosses stage JSON without reopening YAML,
+recompilation, active factual applications or supplements.
 
-[policy_engine.py](../libs/alpaca_lineage_build/policy_engine.py), `evaluate_policy`, constructs detailed row traces,
-pass digests and audit summaries only when requested. Mandatory phase/certificate checks still run; published
-and explicitly traced digest semantics remain unchanged.
-Each fixed-point result records the counterpart reports it actually consulted, including unavailable reports.
-Only a changed consulted counterpart selects another pass for that source. Exact alias views share completed
-row allocations and bind their own file/adjustment provenance without traversing the same rows again.
+Evidence fingerprints and history approval are independent.
+[Workflow completion](technical-contracts.md#universe-observation-and-work-state) acknowledges fresh source-bound
+approval without reopening its group or republishing an unchanged decision. Rule-only changes reuse approved
+evidence.
 
-The correlation owner prepares dated occupancy and name-change continuity once before freezing the first
-allocation. Chronology that places a later unrelated occupant may disambiguate an earlier rename, but its
-fallback interval is not exposed to baseline row allocation. Both phases consume the same completed continuity
-certificate. The second phase reserves established correlated segments before invoking row rules, including
-their UUID membership, provenance and bounds; completed source reports remain closed. Newly produced fallback
-intervals must not contradict those assignments. Only unresolved rows enter the existing cascade, and terminal
-fallback still receives the complete source partition. The original phase integrity guard remains mandatory.
+[`evaluate_policy`](../libs/alpaca_lineage_build/policy_engine.py) builds row traces, pass digests and audit
+summaries only on request. Mandatory phase/certificate checks and published/explicit trace digest semantics remain.
+Each fixed-point result records consulted counterpart reports, including unavailable ones. Rerun a source only when
+a consulted counterpart changes. Exact aliases share row allocations, each binding its own file/adjustment
+provenance without retraversal.
 
-Incremental continuation carries accepted UUID membership separately from each dated provider UUID. Version-1 continuation handoffs publish compact membership, all-view identity/date contributions and own-label observation routes. Receipt ingress validates the declared handoff once; missing required new fields fail into owning recovery. Unmarked selected legacy assignments supply the bounded compatibility projection, including the named last-session boundary when the hot partition is empty. A corrected date includes unchanged competing contributors and their accepted dated labels, with their ownership decisions frozen. Earlier assignments remain closed. The effective request mapping is compared by the owning continuation gate; a changed pinned mapping cannot inherit old ownership. Fresh already-acquired metadata invalidates decision reuse independently of whether retained metadata can still supply acquisition inputs.
+Prepare dated occupancy and name-change continuity once before freezing first allocation. Later unrelated occupancy
+can disambiguate an earlier rename. Keep its fallback interval out of baseline allocation. Both phases consume the
+same continuity certificate. Before phase-two row rules, reserve established correlated segments, UUID membership,
+provenance and bounds. Keep completed source reports closed. New fallback intervals must respect those assignments.
+Only unresolved rows enter the cascade. Terminal fallback receives the full source partition. Preserve the phase
+integrity guard.
 
-A separate `computation_revision` identifies completed lineage calculation semantics. Revision 2 requires full retained-input reconstruction of earlier completed outputs, including revision-1 decisions under correlation-78 or correlation-79. It is carried by receipts and compact index entries; metadata compatibility, pricing generations and authorized rule policy remain independent. An obsolete computation must enter full owning evaluation and cannot acquire the new revision through header-only promotion. The explicit retained-input rebuild and its retry/publication scope are described in [Operations](operations.md#rebuild-published-lineage-after-a-computation-repair).
+Continuation retains accepted UUID membership apart from each dated provider UUID. Version-1 handoffs publish
+compact membership, all-view identity/date contributions and own-label routes. Receipt ingress validates declared
+handoffs once. Missing required new fields select owning recovery. Unmarked selected legacy assignments supply
+bounded compatibility, including the named last-session boundary if the hot partition is empty. For a corrected
+date, include unchanged competing contributors with accepted labels and frozen owners. Earlier assignments stay
+closed. The continuation owner compares effective request mapping. Changed pinned mapping cannot inherit ownership.
+Fresh acquired metadata can invalidate reuse even if retained acquisition inputs remain usable.
 
-Explicit [targeted retained recovery](technical-contracts.md#targeted-retained-lineage-recovery) can select
-known defective current-revision decisions without invalidating unrelated groups. It carries the accepted
-comparison's exact membership, receipt and pricing generations into full owning evaluation and journaled
-publication. Its completion handoff is independent of computation revision and of ownership certificates.
-[Operations](operations.md#recover-selected-current-revision-lineage) owns invocation and retry behavior.
+Receipt/index `computation_revision` identifies completed calculation semantics independently of metadata
+compatibility, pricing generation and authorized policy. Revision 2 requires full retained-input reconstruction of
+earlier calculations, including revision-1 decisions under correlation-78 or correlation-79. Only full owning
+evaluation, never header-only promotion, can advance an obsolete revision.
+[Rebuild scope, publication and retry](operations.md#rebuild-published-lineage-after-a-computation-repair)
+
+Explicit [targeted retained recovery](technical-contracts.md#targeted-retained-lineage-recovery) can reopen
+defective current-revision decisions alone. Full owning evaluation and journaled publication retain accepted
+comparison membership and exact receipt/pricing generations. Its completion handoff is independent of computation
+revision and ownership certificates. [Invocation and retry](operations.md#recover-selected-current-revision-lineage)
 
 ## Policy migration
 
-Publication compatibility and executable runtime behavior are distinct. Removing fact-injection inputs
-does not change the canonical ordered rule-policy identity or revoke completed assignments, membership,
-labels or numerical choices. Supported earlier publication formats and policy identities remain readable
-under their recorded provenance. They authorize reuse within their accepted scope, never new inference from
-legacy assertions or a promotion obtained by rewriting a header. Runtime changes and exact compatibility
-identities belong to the [version contracts](../VERSION_TRACKER.md#compatibility).
+Removing fact injection changes neither canonical ordered rule-policy identity nor completed assignments,
+membership, labels or numerical choices. Earlier supported publications/policies remain readable under recorded
+provenance and reusable only within accepted scope. Legacy assertions and rewritten headers cannot authorize new
+inference or promotion. [Runtime and compatibility authorities](../VERSION_TRACKER.md#compatibility)
 
-The explicit computation-revision rebuild remains the owner of obsolete calculations. It does not make
-a retained research assertion admissible, select a store-wide migration implicitly or authorize repeating
-applicable completed work. Fresh evaluation uses retained provider observations and current generic rules.
+Explicit computation-revision rebuild owns obsolete calculations. Fresh evaluation uses retained provider
+observations and current generic rules. No implicit store-wide migration, admission of retained research assertions
+or replay of applicable work.
 
-[Migration](../libs/alpaca_lineage_build/certificate_migration.py) retains the exact 34/76 or 34/77 applicability
-proof under its recorded target and prerequisites. It tests changed-rule prerequisites and concrete mapping-dependency conflicts using accepted complete-group
-metadata, including unavailable auxiliaries. This is an applicability decision, never a prediction of row
-ownership. A complete singleton group with at most one accepted UUID cannot invoke the changed certificates.
-Affected or unproved groups use the existing evaluator; unchanged groups keep their evidence, assignment
-references and pricing generations. Migration requires an empty completed pricing-work boundary before selection.
+[Migration](../libs/alpaca_lineage_build/certificate_migration.py) retains the exact 34/76 or 34/77 proof for its
+recorded target/prerequisites. Accepted complete-group metadata, including unavailable auxiliaries, tests
+changed-rule prerequisites and concrete mapping-dependency conflicts. This determines applicability only. A complete
+singleton with ≤1 accepted UUID cannot invoke the changed certificates. Affected/unproved groups use the existing
+evaluator. Unchanged groups retain evidence, assignment references and pricing generations. Selection requires an
+empty completed pricing-work boundary.
 
-`lineage migrate-policy` publishes compatible headers through the existing journal and reports the remaining
-affected labels for `lineage update --symbols-file FILE`. Its durable exact-generation handoff lets serving
-retarget matching completed decisions without reopening assignments or prices, or repeating numerical checks.
-Catalogue commit precedes acknowledgement; interruption preserves the handoff and cannot consume a newer
-obligation. Run `catalogue rebuild` first to convert older scheduling/work projections, then `catalogue update`
-to consume compatible header handoffs. This transition does not authorize any other policy promotion.
+`lineage migrate-policy` journals compatible headers and lists remaining affected labels for
+`lineage update --symbols-file FILE`. Exact-generation durable handoffs retarget matching serving decisions without
+reopening assignments/prices or repeating numerical checks. Commit catalogue before acknowledgement. Interruption
+preserves the handoff and cannot consume newer work. Run `catalogue rebuild` to convert older scheduling/work
+projections, then `catalogue update` for compatible header handoffs. No other promotion follows.
 
 ## Observation selection
 
-[observations.py](../libs/alpaca_lineage_build/observations.py), `select_observations`, owns numerical selection
-separately from identity assignment. Each identity/session takes all numerical views from one complete eight-view
-bundle. Applicable completed market and source decisions keep their accepted scope. For fresh selection,
-the latest independently observed own-label source normally wins. This selects observations, not historical completeness.
-Complete bundles with equal exact decimal values can collapse regardless of the provider's spelling of a
-number. The selected rows retain their original precision and spelling. Unresolved authority stays explicit.
-Numerical selection preserves dated labels independently, including ambiguity. The dated-label producer can resolve supported
-collisions without changing that numerical choice. Readers/exports consume completed decisions without
-repeating selection/activity checks.
+[`select_observations`](../libs/alpaca_lineage_build/observations.py) chooses one complete eight-view numerical
+bundle per identity/session independently of ownership and dated labels. Retain applicable completed market/source
+decisions within scope. Fresh selection normally favors the latest independently observed own-label source, without
+asserting historical completeness. Exact-decimal-equal complete bundles may collapse across different provider
+spellings. Preserve selected rows’ original precision/spelling. Keep unresolved numerical authority and label
+ambiguity explicit. Dated-label resolution may settle a supported collision without changing prices. Readers/exports
+reuse completed decisions without repeating selection/activity checks.
 
-When a dated dividend or qualifying acquirer observation establishes a former ticker, the terminal route
-normally keeps its complete numerical bundle for that identity and session. If raw values agree but
-dividend, split or other adjusted views differ, the assignment records `former_ticker_numerical_basis_unconfirmed`.
-The same limit applies when the dated label is better supported than a numerical source switch.
-The former route supplies all eight views when the raw producer found a strictly fuller aggregate and
-the adjusted opens and closes match, the former price range contains the mapped range and VWAP, and
-the split volumes admit the same share scale within one reported share per route. The observed data
-establish the common basis only at the provider's precision. This comparison uses the selected pair
-and its completed raw result. Its scope ends at that session.
+When a dated dividend or qualifying acquirer establishes a former ticker, that identity/session normally retains the
+terminal bundle. Mark `former_ticker_numerical_basis_unconfirmed` when raw values agree but adjusted views differ,
+or label evidence exceeds support for switching numerical source. Use the former route’s eight views if its raw
+aggregate was strictly fuller, adjusted opens/closes match, its range contains mapped range and VWAP, and split
+volumes admit a common scale within one reported share per route. Compare the selected pair using the completed raw
+result. Common basis extends only to that session and provider precision.
 
-When overlapping bundles disagree in any field and request mapping `asof` lies outside accepted occupancy, lineage
-requests only that source's full retained span at an observed own-label mapping date. Accepted departures across
-CUSIP/UUID changes within one public identity also bound this route. Equal bundles, disjoint histories and
-superseded sources do not trigger acquisition. A multi-identity source cannot be globally remapped to one occupant.
-Pricing publishes correction before lineage selection; failure leaves the new selection unpublished.
+If overlapping bundles differ in any field and request `asof` falls outside accepted occupancy, request only that
+source’s full retained span at an observed own-label mapping date. Accepted departures across CUSIP/UUID changes
+within one public ID also bound this route. Equal bundles, disjoint histories and superseded sources trigger no
+acquisition. Never globally remap a multi-identity source to one occupant. Pricing publishes correction first.
+Failure withholds new lineage selection. Closure of an older occupant alone cannot disprove source-wide mapping if
+the source independently observes a later own-label occupant. Per-identity selection remains valid without
+replacement.
 
-An older occupant's closure does not disprove source-wide mapping when the same source independently observes a
-later own-label occupant. Per-identity selection remains valid without replacement.
+Completed dated-market labels and bounded numerical revisions carry their accepted generation, exact dates and
+source bindings into serving without ownership replay, price comparison or assignment reconstruction. Completed
+unpublished projections can survive interruption under the same bindings. Only invalidated numerical scope reenters
+selection. Unknown choice flags or missing declared capabilities select owning recovery without historical audit.
+Closed results cannot authorize new market assertions or extend old chronology to new rows.
 
-Completed dated-market label projections and bounded numerical-source revisions remain consumable
-producer decisions. Their accepted generation, exact sessions and selected source bindings carry into
-serving without replaying ownership, comparing accepted prices or reconstructing assignment artifacts.
-A completed unpublished projection can carry through interruption under those same bindings. Only a
-genuinely invalidated numerical scope enters owning selection; unknown choice flags or missing declared
-capabilities require owning recovery, never an audit of the remaining accepted history. These closed
-results do not authorize accepting new market assertions or extending legacy chronology to new rows.
+Ordinary source work retains its first completed equal-bundle result and explicit previously selected donors
+independently of public-component changes. Equality supports numerical continuity only.
+[Generation/date binding and serving reuse](technical-contracts.md#standalone-artifacts)
 
-Ordinary source work also retains its first completed equal-bundle result with explicit previously selected
-donors, independently of public-component changes. The [source-equivalence contract](technical-contracts.md#standalone-artifacts)
-defines its generation/date binding and serving reuse; equality supplies numerical continuity, not ownership evidence.
+Legacy local `selected` flags and completed assignment projections cannot establish group-wide numerical coherence.
+Two sources may select the same identity/session despite an earlier eligible serving checkpoint.
+[Numerical-only completion](technical-contracts.md#numerical-only-completion) selects diagnosed boundary-local row
+intervals under exact receipt/pricing generations. The shared numerical owner retains owners/labels, chooses only
+that scope and hands the result through publication without ownership replay or price checks. Outside selections,
+independent IDs and completed ownerless outcomes remain accepted. Applicable completed source equivalence selects
+its direct carry owner before numerical reads and precludes rerunning its contest.
 
-Legacy source-local `selected` flags and assignment-projection completion do not establish one coherent
-numerical bundle for the complete group. Two retained sources can select the same identity and session
-even while serving retains an earlier eligible-history checkpoint. The explicit
-[numerical-only completion contract](technical-contracts.md#numerical-only-completion) selects those diagnosed
-boundary-local row intervals under their exact receipt and pricing generations. The shared numerical owner
-consumes the accepted owners and labels, chooses only that selected scope, and carries its completed result
-through publication. It neither reruns ownership rules nor rechecks accepted pricing. Outside selections,
-independent identities and completed ownerless outcomes remain accepted.
-An already completed applicable source-equivalence decision selects its direct carry owner before
-numerical reads; this completion mode cannot run its old contest again.
-
-Complete eight-view equality retains the corresponding serving numerical outcome; genuinely different
-selected values require only their dated serving assessment. A completed unchanged-label projection also
-retains the accepted session dates and ticker ranges without constructing them again. Missing required
-capabilities, a newly required pricing-mapping correction or an unresolved source contest select their owning
-work. Ordinary update consumes explicitly enrolled numerical-only work; it does not scan the universe for
-legacy overlaps or interpret every absent optional capability as a defective history. Readers continue to
-consume the published numerical decisions and reject competing selected observations.
+Eight-view equality retains the corresponding serving numerical outcome. Changed selected values require only their
+dated serving assessment. A completed unchanged-label projection carries accepted sessions/ranges without
+reconstruction. Missing required capabilities, a newly required mapping correction or an unresolved source contest
+selects owning work. Ordinary update consumes explicitly enrolled numerical-only work without universe scans for
+legacy overlap or treating absent optional capabilities as defects. Readers consume published choices and reject
+competing selected observations.
 
 ### Dated numerical mapping
 
-For a selected published rename, `alpaca-cli-eod pricing repair-rename --public-id ID --session YYYY-MM-DD`
-acquires the earlier eight-view interval under the successor’s dated mapping. Repeat the ID and session
-options in matching order. If a batch selects a group twice, serving publishes the first correction before
-the next selection uses that group. The public ID and date select work.
-The accepted ticker history determines the provider route. Traded successor sessions must match in every
-view, every earlier session must be present, and independently dated original-label observations must
-corroborate revised raw bars. The pricing owner stages completed requests and comparisons, then commits
-immutable prices. The lineage journal selects their token for the complete group under its original
-ownership provenance. Standalone reads and online exports consume that decision. Applicable closed
-assignments retain the selection on continuation. Changed inputs invalidate their affected scope.
+`alpaca-cli-eod pricing repair-rename --public-id ID --session YYYY-MM-DD` acquires a published rename’s earlier
+eight-view interval under the successor’s dated mapping. Repeat ID/session pairs in matching order. If a batch
+selects a group twice, serving publishes the first correction before reselection. ID/date select work. Accepted
+ticker history selects the route. Require matching traded successor sessions in every view, all earlier sessions
+present and independently dated original-label observations corroborating revised raw bars. Pricing stages completed
+requests/comparisons, then commits immutable prices. The lineage journal selects their token for the complete group
+under original ownership provenance. Standalone reads, online exports and applicable closed assignments on
+continuation retain that decision. Changed inputs invalidate affected scope.
 
-Use `alpaca-cli-eod pricing repair-carried-rename --public-id ID --session YYYY-MM-DD` when a published
-ticker carries a stale close across a provider name change. Traded witnesses on both sides, complete
-successor coverage, literal ticker observations and competing dated ownership determine which prices
-and labels the producer can replace. The catalogue projects the accepted dates through ticker lookup
-and the public history.
+`alpaca-cli-eod pricing repair-carried-rename --public-id ID --session YYYY-MM-DD` addresses a stale close across a
+provider rename. Traded witnesses on both sides, complete successor coverage, literal ticker observations and
+competing dated ownership determine replaceable prices/labels. The catalogue projects accepted dates through ticker
+lookup and public history.
 
-Use `alpaca-cli-eod pricing repair-same-label-basis --public-id ID --session YYYY-MM-DD` for a
-price-basis change inside the opening ticker range. The dated route must reproduce the entire opening raw
-tape and the successor witnesses in all eight views. Traded prices must support comparable raw units
-across the step. The producer replaces only the earlier numerical basis and preserves dated ownership.
+`alpaca-cli-eod pricing repair-same-label-basis --public-id ID --session YYYY-MM-DD` addresses a basis change within
+the opening ticker range. The dated route must reproduce the entire opening raw tape and all eight views of
+successor witnesses. Traded prices must support comparable raw units across the step. Replace only the earlier
+numerical basis. Preserve dated ownership.
 
-Use `alpaca-cli-eod pricing repair-rename-split-basis --public-id ID --session YYYY-MM-DD` when a
-rename joins disjoint price routes or Alpaca’s successor mapping uses a different later adjustment
-basis. The producer uses the accepted public ID and the predecessor’s raw bars. Later provider split
-terms must reproduce the traded successor witnesses at provider precision, including volume and VWAP.
-The earlier views must isolate split adjustments and support any earlier splits. Competing traded
-occupations, unresolved share conversion terms and a split at the rename select an unsupported result.
-The accepted fragment preserves the share basis on the successor, historical ticker labels and raw
-observations. Changes to supporting share terms or overlapping ownership invalidate the selection.
+`alpaca-cli-eod pricing repair-rename-split-basis --public-id ID --session YYYY-MM-DD` addresses a rename joining
+disjoint routes or a successor mapping using a different later adjustment basis. Use accepted ID and predecessor raw
+bars. Later provider split terms must reproduce traded successor witnesses, including volume/VWAP, at provider
+precision. Earlier views must isolate split adjustments and support earlier splits. Competing traded occupations,
+unresolved share conversion or a split at rename are unsupported. Preserve successor share basis, historical labels
+and raw observations. Changed supporting terms or overlapping ownership invalidate selection.
 
-Use `alpaca-cli-eod pricing review-split-basis --public-id ID --session YYYY-MM-DD` to assess whether
-a reported share split can price the earlier online history. The producer compares its native terms,
-the eight adjustment views on the boundary, nearby traded daily opens and the literal ticker's regular
-session close and opening trades. When a material reported share change conflicts with those observations
-and the other adjustment views lack independent economic terms, serving starts the complete history on
-the selected event date. The receipt preserves ownership, source prices, the witness window and the
-reason for restricting the online range. Applicable continuations retain that decision. Changed witness
-prices, terms or numerical selection require a new assessment. Repeating the command can restore the
-earlier online range once observations positively resolve the share units. Completed checkpoints survive
-interruption. The command accepts repeated ID/session pairs in matching order.
+`alpaca-cli-eod pricing review-split-basis --public-id ID --session YYYY-MM-DD` assesses a reported split against
+native terms, eight boundary views, nearby traded daily opens and literal regular-session closing/opening trades. If
+a material reported share change conflicts and other views lack independent economic terms, serving starts complete
+public history on the selected event date. The receipt preserves ownership, source prices, witness window and
+restriction reason. Applicable continuation retains the decision. Changed witness prices, terms or numerical
+selection require reassessment. Repetition can restore earlier online history once observations positively resolve
+share units. Completed checkpoints survive interruption. Repeat ID/session pairs in matching order.
 
-Use `alpaca-cli-eod pricing repair-split-timing --public-id ID --session YYYY-MM-DD` to review
-a factor change bracketed by traded sessions. The pricing producer compares the preceding, selected and
-following exchange sessions. Dated provider actions, share units at the open and the eight published views
-must support the same timing correction. It reconstructs only the split-containing views on the affected
-session when the observed price and volume precision determines the corrected values. A single flat session
-with zero trading activity can carry each adjusted view’s own previous close when the raw tape and corporate
-action establish a change of units on the next session. The receipt selects this bounded fragment. A completed
-assessment with insufficient support records the reason. Changed relevant actions or a changed price
-window invalidate the affected selection. A full rebuild carries the accepted one-session correction
-when witness contributors retain their prices, owner, trading label, selection and action terms.
-A changed peer source can still carry the correction when the completed choices exclude it on every
-affected witness before and after the change. A legacy partition's complete ownership handoff can
-establish absence of the identity throughout that partition. Incompatible or unknown witness bindings
-select pricing recovery before publication.
+`alpaca-cli-eod pricing repair-split-timing --public-id ID --session YYYY-MM-DD` compares preceding, selected and
+following exchange sessions for a factor change bracketed by trades. Dated actions, opening share units and all
+eight views must support one timing correction. Reconstruct only the affected session’s split-containing views when
+observed price/volume precision determines their values. A single flat zero-activity session may carry each adjusted
+view’s previous close if raw tape and action establish a unit change next session. The receipt selects the bounded
+fragment or records insufficient support. Changed relevant actions/price window invalidate that scope. Full rebuild
+carries a one-session correction when witness contributors retain prices, owner, trading label, selection and terms.
+Changed peers can carry when completed choices exclude them on every affected witness both before and after change.
+A complete legacy ownership handoff can establish absence throughout its partition. Incompatible/unknown witness
+bindings require pricing recovery before publication.
 
-Use `pricing review-historical-split-basis` for a flagged day before the published ticker traded
-under its own name. A single-session market action request selects candidate terms. Literal raw
-observations must identify one historical ticker across the full traded window, including OHLC,
-VWAP, volume and trade count. Its regular-session trades then supply the ordinary price eligibility
-assessment. The prior ticker is evidence for the selected window. A whole-occupation label assignment
-requires its own dated evidence.
+`pricing review-historical-split-basis` reviews a flagged day before the published ticker traded under its name.
+Single-session market actions select candidate terms. Literal raw OHLC, VWAP, volume and trade count must identify
+one historical ticker throughout the traded window. Its regular-session trades supply ordinary price eligibility.
+The ticker identifies only the selected window. Whole-occupation labelling needs dated evidence.
 
-A completed historical review can select the actual trading label for further dated projection.
-Run `alpaca-cli-eod pricing project-historical-label --public-id ID --session YYYY-MM-DD` with its
-original pivot. The label producer consumes the completed literal witness and extends its dated scope
-using the actual former and successor routes on additional sessions. A unique traded match across all
-raw fields, supported successor observations and dated occupations of other selected owners determine
-the interval. The lineage journal selects the resulting labels independently of prices. Each online
-view and export exposes only eligible sessions. Standalone history exposes the dates on the original
-resolved source. A change to supporting ownership, source prices, relevant actions or the original
-historical review can revoke the dependent labels.
+`alpaca-cli-eod pricing project-historical-label --public-id ID --session YYYY-MM-DD` uses the completed historical
+review’s original pivot. Extend its literal trading-label witness on additional sessions using actual
+former/successor routes. A unique traded match in every raw field, supported successor observations and other
+selected owners’ dated occupations determine the interval. Journal labels independently of prices. Online
+views/exports expose only eligible sessions. Standalone history exposes dates on the original resolved source.
+Changed supporting ownership, source prices, relevant actions or original review can revoke labels.
 
-Use `alpaca-cli-eod pricing project-displaced-label --public-id ID --session YYYY-MM-DD` for an
-existing owner's first session under its present ticker when another completed lineage decision has
-displaced an earlier occupation. The preceding exchange session selects candidate former tickers
-from the lineage index. The candidate's recorded literal raw observations must match the existing
-owner's earlier tape. Its current ticker must have no competing earlier trades and must match the
-following traded observations. Only a unique supported occupation supplies an earlier label. The
-dated label and ownership interval retain the original public ID and all prices. Existing CUSIP
-evidence keeps its scope, with a null CUSIP where the earlier label has no independent CUSIP evidence.
-The same ticker can resolve to unrelated identities in later periods.
+`alpaca-cli-eod pricing project-displaced-label --public-id ID --session YYYY-MM-DD` selects the existing owner’s
+first session under its present ticker after another completed lineage decision displaced an earlier occupation.
+Select former tickers from the preceding exchange session in the index. Recorded literal raw observations must match
+the earlier tape. The current ticker must lack competing earlier trades and match following traded observations.
+Only a unique supported occupation supplies the former label. Preserve public ID, all prices and prior CUSIP scope.
+Use null without independent earlier-label CUSIP evidence. Later unrelated securities may use the same ticker.
 
-For `pricing repair-former-label-basis`, select the first published session after the rename.
-The producer checks whether share terms for the future ticker explain a price step during the prior
-ticker’s tenure. The earlier ticker’s dated route must cover the entire prefix and agree with traded
-witnesses on both sides of the actual rename in every view. Literal raw observations corroborate any
-revisions. A simultaneous genuine split retains its documented units and requires matching adjusted
-witnesses before the rename.
+`pricing repair-former-label-basis` selects the first published session after rename. Test whether future-ticker
+terms explain a price step during predecessor tenure. The earlier dated route must cover the prefix and match traded
+witnesses in all views on both sides of the actual rename. Literal raw observations corroborate revisions. A
+simultaneous genuine split retains documented units and requires matching pre-rename adjusted witnesses.
 
-`pricing repair-split-carry` takes a selected public ID and session, with `--from` and `--through`
-selecting the two bracketing traded dates. Intervening zero-activity bars can carry a last traded value
-in the corrected units when the observed closes, volume-weighted prices, provider endpoints and
-complete sequence of bars support that interpretation. `pricing repair-duplicate-split` checks whether
-two reported split factors describe one observed change of share units. A supported correction
-removes the extra application only within the affected prefix. The producer preserves independently
+`pricing repair-split-carry` selects an ID/session with traded bounds `--from` and `--through`. Intervening
+zero-activity bars may carry the last traded value in corrected units if closes, VWAP, provider endpoints and the
+full bar sequence support it. `pricing repair-duplicate-split` tests whether two reported factors explain one
+observed unit change. Remove a supported extra application only on the affected prefix. Preserve independently
 witnessed cash adjustments and the actual trading-date transition.
 
-`pricing repair-conversion-timing` selects the first session where a reported split
-changed the adjusted basis. A later same-ticker conversion must identify the destination CUSIP,
-agree on the exchange ratio, and coincide with a traded change in close and VWAP. When the
-intervening sessions still trade in the earlier units, the producer corrects their split-adjusted
-views. The raw trades and the conversion session retain their published values.
+`pricing repair-conversion-timing` selects the first session where a reported split changed adjusted basis. A later
+same-ticker conversion must identify destination CUSIP, agree on the ratio and coincide with a traded change in
+close and VWAP. If intervening sessions still trade in old units, correct their split-adjusted views. Preserve raw
+trades and published conversion-session values.
 
-`pricing review-untraded-split` uses the last traded session and the next traded session or the
-stored endpoint to bound a review. When a native split changes share units and the literal tape
-continues to repeat the old price without trades, the public history omits the unsupported marks
-from the split date. The review preserves earlier prices and subsequent supported trades. An
-observed reopening compatible with a numerical carry correction selects that separate assessment.
-The source bars remain accessible through the standalone reader.
+`pricing review-untraded-split` reviews the last traded session through the next trade or stored endpoint. If a
+native split changes share units and the literal tape repeats the old price without trades, omit unsupported public
+marks from the split date. Retain prior prices and supported later trades. A reopening compatible with numerical
+carry correction selects its separate assessment. Standalone source bars remain accessible.
 
-`pricing review-product-quote` checks whether the provider's product metadata and traded quote
-convention support dollar prices. A Nasdaq NextShares fund with a NAV-relative price near 100
-on both sides of a corroborated share change supplies a quoted premium or discount. Without a
-dollar NAV, the entire identity is ineligible for public dollar-price history. The retained
-source and eligibility decision remain available for diagnosis.
+`pricing review-product-quote` checks provider product metadata and traded quote convention for dollar-price
+support. A Nasdaq NextShares fund quoting relative to NAV near 100 on both sides of a corroborated share change
+supplies a premium/discount. Without dollar NAV the whole ID is ineligible for public dollar-price history. Source
+and eligibility decision remain inspectable.
 
-Selected retained-source work can request a dated continuing-label mapping for a direct rename with disjoint
-source histories. A shared UUID/CUSIP and a post-transition cash distribution support a request using the
-continuing label's accepted observation date. A documented chain of same-label splits with a split under the
-successor can support a request as of the rename itself. The latter uses the predecessor's last observed
-session as its witness. Both source reports must select one public membership, with dated ownership and
-provider CUSIP lookups that support the route. An older outside UUID can qualify only as a predecessor's
-retired split endpoint before the witness. It acquires no ownership from this decision.
-The [planner](../libs/alpaca_lineage_build/numerical_mapping.py) runs after the unchanged-work shortcut and
-before selected acquisition or numerical materialization.
-Fresh sources without applicable completed ownership routes remain outside this retained-source rule.
-Mapped acquisition requires the existing durable work policy so an interrupted installation retains its
-exact selected request. Pending mapping work resumes before ordinary pricing maintenance advances its sources.
+For a direct rename with disjoint histories, selected retained-source work may request the continuing label at its
+accepted observation date, supported by shared UUID/CUSIP and post-transition cash distribution. A documented
+same-label split chain including a successor split can support mapping at rename, witnessed by the predecessor’s
+last observed session. Both reports must select one public membership with supporting dated ownership and provider
+CUSIP lookups. An older outside UUID qualifies only as a retired predecessor split endpoint before that witness and
+gains no ownership.
 
-The pricing owner first requests one exact fully adjusted predecessor session. An empty response records the
-mapping limitation in the receipt's existing evidence issues. For a split-chain trial, the owner next requests
-the last accepted successor session under the same mapping. If that date is absent, it records insufficient
-coverage before assembling the contribution grid or fetching the history. Positive witnesses supply their
-rows to the remaining acquisition and endpoint checks, including after interruption. Neither outcome changes identity membership,
-fills missing sessions or derives prices from cash distributions. A missing internal contribution-grid
-capability requires owning recovery. An acquired history that omits known required contributions completes
-a provider-coverage assessment without replacing accepted pricing. Provider request failures retain their
-ordinary execution/retry meaning.
+The [planner](../libs/alpaca_lineage_build/numerical_mapping.py) runs after the unchanged-work shortcut, before
+selected acquisition/numerical materialization. Exclude fresh sources without applicable completed ownership routes.
+Durable work policy retains exact selected requests across interruption. Resume pending mapping before ordinary
+maintenance advances those sources.
 
-An unmarked legacy serving checkpoint may lack the optional session-date projection. For the selected
-mapping only, its serving owner constructs that projection from accepted raw row positions under exact
-pricing and lineage bindings. It preserves numerical outcomes and ownership, carries the raw rows and
-their selected manifest into subsequent assembly, and persists the dates before mapped acquisition.
-A declared but missing projection still requires owning recovery. Such internal recovery prerequisites
-use the existing blocked work state without a transient-request retry timer.
-The journal owner restores the most advanced selected stage. Missing bindings, malformed observation
-envelopes and unreadable acquisition state enter blocked recovery with the original decoding cause. A selected serving-control failure preserves its original exception as the
-cause of the recovery requirement rather than becoming an absent date capability.
+First request one exact fully adjusted predecessor session. Empty response records the mapping limit in existing
+receipt evidence issues. For a split chain, next request the last accepted successor session under the same mapping.
+If absent, record insufficient coverage before contribution-grid assembly or history acquisition. Positive witness
+rows carry into remaining acquisition/endpoint checks across interruption. Neither outcome changes membership, fills
+gaps or derives prices from distributions. A missing internal contribution-grid capability requires owning recovery.
+Missing known required contributions in an acquired history complete a provider-coverage assessment without
+replacing accepted prices. Provider failures retain ordinary execution/retry handling.
 
-Applicable completed assessments survive receipt publication and acknowledgement. Actual changed source,
-mapping, provider facts or selected scope require owning work; older receipts without this optional capability
-do not select a historical scan or automatic repair. Historical adoption uses explicitly selected work, and
-the existing numerical-only recovery keeps its zero-provider contract. Readers and exports consume the
-resulting provider-view source decisions; this does not declare an absolute corporate-action horizon.
-The [pricing handoff contract](technical-contracts.md#dated-mapping-acquisition) owns observation carry,
-coverage, installation and interruption behavior.
+For the selected mapping only, a serving owner may construct an unmarked legacy checkpoint’s optional session-date
+projection from accepted raw positions under exact pricing/lineage bindings. Preserve numerical outcomes and
+ownership. Lend raw rows and selected manifest to subsequent assembly. Persist dates before acquisition. Declared
+missing projection requires owning recovery. Internal recovery uses blocked work without transient-request retry
+timers. Restore the most advanced journal stage. Missing bindings, malformed observation envelopes and unreadable
+acquisition state block recovery with original decoding cause. Preserve selected serving-control exceptions as
+causes instead of inferring an absent date capability.
+
+Applicable assessments survive receipt publication/acknowledgement. Changed source, mapping, provider facts or scope
+select owning work. Older receipts lacking the optional capability trigger no scan or automatic repair. Historical
+adoption is explicit. Numerical-only recovery keeps its zero-provider contract. Readers/exports consume resulting
+provider-view choices without asserting an absolute corporate-action horizon.
+[Pricing handoff, coverage and interruption](technical-contracts.md#dated-mapping-acquisition)
 
 ## Dated-label collisions
 
-The canonical YAML selects `observed_rename_periods_over_mapped_alias_v1`, implemented by
-[dated_labels.py](../libs/alpaca_lineage_build/dated_labels.py). Within one accepted public owner, a provider
-name-change observation and disjoint old/new own-label source periods can make those dated labels more
-likely than a mapped alias whose source spans both periods. The producer removes that broad alias only
-from an existing collision that already contains exactly one supported chain label. It does not invent
-labels, alter a unique label, choose prices or change ownership/membership. Source periods supply the
-observed dates; the provider processing date is not treated as the trading transition. Missing or
-inconsistent CUSIPs remain recorded evidence limits rather than an absolute veto. Competing rename
-routes, overlapping direct periods and a contrary dated alias action preserve ambiguity. A uniquely
-directed round-trip label route can instead prefer its temporary label inside an observed contained
-source interval when a provider split is effective at that interval's start and the return follows its
-end. This only resolves existing collisions; it does not extend the temporary label beyond that interval.
+Canonical `observed_rename_periods_over_mapped_alias_v1` uses a provider rename and disjoint old/new own-label
+source periods within one accepted public owner. These dated labels can outweigh a mapped alias spanning both
+periods. Remove the broad alias only from an existing collision containing exactly one supported chain label.
+Preserve unique labels, prices, owners and membership. Never invent labels. Source periods date the observations.
+Provider processing date cannot alone date the trading transition. Record missing/inconsistent CUSIPs as limits.
+Competing rename routes, overlapping direct periods or contrary dated alias actions preserve ambiguity. A uniquely
+directed round trip may prefer its temporary label within an observed contained interval if a provider split is
+effective at its start and return follows its end. Never extend the temporary label beyond that collision interval.
+[Dated-label rule](../libs/alpaca_lineage_build/dated_labels.py)
 
-[label_updates.py](../libs/alpaca_lineage_build/label_updates.py) completes selected historical collisions
-automatically through normal lineage processing and its existing journal. For exactly two coextensive
-same-owner sources, the sole label named by provider actions inside their shared span is preferred over
-an alias with no competing dated actions or rename route, when both accepted latest requests began
-after the shared history ended. This distinguishes stopped histories from ongoing mapped histories;
-empty or manual request scopes remain an inference limit. Ex-dividend/effective dates take precedence
-over processing dates. This inference does not establish a rename date or extend into future alias-only
-history. Groups lacking either a three-source rename pattern or a two-source named dated action require
-no assignment traversal. Selected accepted assignment
-metadata supplies the remaining conditions. Whole-segment relabelling opens no prices; an interior split
-assembles only its required timestamps from manifest-selected physical views, sharing actual file aliases.
-No price comparison, ownership replay, provider request or whole-store scan is part of this correction.
-The receipt binds completion to source/assignment generations, accepted request scopes and held provider
-actions. Owning source work invalidates a completion when it changes those bindings while preserving
-its produced labels; consumers never clear or reconstruct a stale handoff. Applicable
-completion survives retry and journal recovery. An accepted prefix can carry the generic archive/rename
-relation onto newly owned continuing-label suffix rows without reconstructing its historical decision.
-Changed relevant observations or generations select the owning work. Legacy research annotations are
-not evidence for this producer.
+[Normal lineage processing](../libs/alpaca_lineage_build/label_updates.py) journals selected historical collisions.
+For exactly two coextensive same-owner sources, prefer the only label named by provider actions within their span if
+its alias has no competing dated action/rename route and both accepted latest requests began after that history
+ended. This distinguishes stopped from ongoing mapped histories. Empty/manual request scopes limit inference.
+Ex-dividend/effective dates precede processing dates in priority. This cannot date a rename or extend into future
+alias-only history.
 
-For a previously published collision after a [split between two renames](#name-changes), run
-`alpaca-cli-eod lineage update --symbol TICKER --no-pricing-acquisition` at the stored cutoff.
-The selected group supplies its native events, accepted public membership, request mapping and dated
-source assignments. Where the successor source starts at the recorded departure and the old mapped
-source spans that date, the producer can close the retired route and correct the CUSIP, provider UUID
-and ticker on the affected assignments. The group keeps its selected numerical source in every view.
-Serving uses its accepted session dates to publish the corrected ticker ranges.
+Without a three-source rename pattern or two-source named dated action, skip assignment traversal. Otherwise
+accepted assignment metadata supplies remaining conditions. Whole-segment relabelling reads no prices. Interior
+splits assemble only required timestamps from manifest-selected physical views, sharing file aliases. No price
+comparison, ownership replay, provider requests or store scan. Receipt completion binds source/assignment
+generations, accepted request scopes and held actions. Owning source work invalidates changed bindings while
+preserving produced labels. Consumers never clear or reconstruct stale handoffs. Applicable completion survives
+retry and journal recovery. An accepted prefix can carry the archive/rename relation onto newly owned
+continuing-label suffix rows without reconstructing historical decisions. Changed relevant observations/generations
+select owning work. Legacy research annotations supply no evidence.
 
-Its existing dated-label serving handoff preserves numerical outcomes and accepted session dates while
-projecting labels. The rule's scope is existing collisions, not a claim that every unique historical label
-or unresolved owner is correct. Public online collision screening does not measure offline identities or
-superseded source-label records. [F62/F64](trust-boundary-handoff.html#f62) retain these verification limits.
+For a published collision following a [split between two renames](#name-changes), run
+`alpaca-cli-eod lineage update --symbol TICKER --no-pricing-acquisition` at stored cutoff. Use group native events,
+accepted public membership, request mapping and dated assignments. If the successor starts at recorded departure and
+the old mapped source spans it, close the retired route and correct affected CUSIP, UUID and ticker when supported.
+Preserve selected numerical source in every view. Serving projects corrected ticker ranges from accepted session
+dates and the existing dated-label handoff without changing numerical outcomes.
+
+Resolving an existing collision establishes neither all unique labels nor all unresolved owners. Public online
+screening excludes offline identities and superseded source-label records.
+[F62/F64 limits](trust-boundary-handoff.html#f62)
 
 ## Ownership evidence limits
 
-Complete established correlation precedes occupancy fallbacks. A still-unresolved reused active label may be
-bounded from its first positive provider action after every competing UUID's actions, with exact active
-symbol/CUSIP agreement; unsupported prefix stays ambiguous. A separately closed prior label interval does not
-veto that later suffix, while any open or overlapping interval still does. The later dated interval likewise
-cannot retroactively invalidate the closed interval's already-supported rows. A foreign-label distribution may be ignored for
-occupancy only if the same completed group contains its exact own-label action, whose source assigns that session
-to the exact UUID in all eight views, with bracketing current-label actions and no related structural action.
-Provider evidence is retained; equal prices, returned-bar timing and external research do not establish identity.
-Authorities: [occupancy.py](../libs/alpaca_lineage_build/occupancy.py),
-[ownership rules](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py).
+Complete established correlation before occupancy fallbacks. An unresolved reused active ticker may start at its
+first positive provider action after every rival UUID’s actions, with exact active symbol/CUSIP agreement. Earlier
+unsupported rows stay ambiguous. A closed earlier label interval permits the later suffix and retains its own
+supported rows. Open/overlapping intervals veto. Ignore a foreign-label distribution for occupancy only if the
+completed group contains its exact own-label action, that source assigns the session to the exact UUID in all eight
+views, current-label actions bracket it and no related structural action exists. Retain provider evidence. Equal
+prices, bar timing and research cannot establish identity. [Occupancy](../libs/alpaca_lineage_build/occupancy.py)
+and [ownership rules](../libs/alpaca_end_of_day_security_correlation/ownership_interval_rules.py)
 
-- **Same-ticker distribution:** An isolated one-for-one `unit_split` can join a continuing listed
-  security's old and new UUIDs when exact provider lookups identify both CUSIPs, agree with the active
-  ticker lookup and identify the distribution recipient separately. The trading boundary uses the ex-date,
-  or a processing date corroborated by the effective or payment date. Rows before the boundary carry the
-  old UUID and rows from the boundary carry the new UUID. Both use the same public identity. Established
-  owners, competing actions and conflicting lookup evidence retain their precedence. The recipient retains
-  its own identity. The [distribution rule](../libs/alpaca_end_of_day_security_correlation/same_ticker_distribution.py)
-  consumes provider evidence once per source in fresh correlation. An applicable retained prefix carries the
-  completed cutover into append and correction. Existing completed receipts remain applicable on unchanged
-  inputs. Applying the rule to a previously completed unresolved group at the same
-  cutoff uses [targeted retained recovery](technical-contracts.md#targeted-retained-lineage-recovery).
-
-- **Cash terminal:** a terminal date alone cannot establish unbounded prior ownership across a distinct occupant
-  with positive dated evidence on both sides, or across an established closed earlier owner of that label.
-  The latter veto applies only to a newly inferred unbounded interval. A separate positive own-CUSIP dividend
-  or component action may still bound a later suffix, including an inactive issue, when closed prior intervals
-  and no rival or unresolved occupancy overlap it. Its first accepted positive action supplies the lower bound;
-  a prior departure or the terminal payment never invents the start.
-  Existing dated intervals/accepted split continuity remain
-  authoritative; provider actions/candidate relations remain evidence.
-- **Stock merger with distinct securities:** a dated merger can close a former issue's interval on the requested
-  ticker and start the current issue's interval. The inactive acquiree must match the former interval, and the
-  active acquirer must match both the exact symbol and exact CUSIP observations. Agreed event dates establish the
-  boundary. Transfers into the same acquirer can preserve that boundary. Competing dated ownership retains its
-  own assessment. The [occupation rule](../libs/alpaca_end_of_day_security_correlation/stock_merger_occupation.py)
-  keeps the two provider UUID memberships separate.
-- **Ticker-reuse gap:** request cutoff is not ownership evidence. A complete current active suffix remains bounded
-  to its last observed session when a later request adds no contradictory owner. Requires one exact active-symbol
-  lookup, complete agreeing view grids, no interior missing session, no current UUID in the earlier episode and
-  no conflicting suffix UUID. Assess a closed earlier episode independently; incomplete later requests do not
-  revoke it. [ticker_reuse_gap.py](../libs/alpaca_end_of_day_security_correlation/ticker_reuse_gap.py).
-- **Historical mapping:** `asof` is not a general observation cutoff. Preserve a complete informative eight-view
-  prefix when mapping date is its last session, a market-session gap follows immediately, and complete later
-  provider evidence names one inactive predecessor plus a distinct-symbol/CUSIP/UUID successor. Stop as-of
-  ownership inference at the gap. Later rows before the provider endpoint stay unresolved unless ordinary
-  independent mapped-continuation proof owns those exact sessions. This establishes no transition date or
-  ownership from bar timing/external research. [predecessor_prefix.py](../libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py).
-- **Current source after a closed departure:** the existing unique-candidate rule may consume a bounded
-  certificate for a complete informative current-mapped source wholly after an accepted direct unchanged-UUID,
-  unchanged-CUSIP rename to another label. Its retained request scope must begin on or before the departure, all eight
-  views must agree on a complete session grid through accepted coverage, and an exact active/tradable own-label
-  lookup must identify the distinct current UUID. The selected group must contain exactly those two labels and
-  two UUIDs. Additional relevant occupants, conflicting actions or ownership,
-  incomplete evidence and historical/mapped-alias selection retain the existing rejection. No current CUSIP,
-  dividend or minimum vacancy is inferred or required. The complete renamed source must cover the observed
-  sessions; an exact raw copy of that source vetoes certification, while differing prices do not establish identity.
-  Only actual observed rows gain ownership; the certificate
-  creates no global interval, IPO date or UUID edge. Existing prepared source and chronology facts produce it once;
-  the lineage receipt carries applicable completion through continuation and unresolved-peer reconciliation.
-  A separately identified current occupant can also own a complete later source when retained actions
-  identify each competing occupant and establish that it ended before the source begins. A terminal exit
-  needs a dated cash merger or worthless removal supported by the former occupant's own endpoint. The
-  existing exact current lookup and complete-source requirements still apply, and any competing claim
-  on the source's dates leaves the history unresolved. This allocates the observed source without a UUID link.
-  A complete current-mapped tape can also support its exact own-label identity when the group's sole inactive
-  rival is independently resolved by CUSIP, every retained action is a dividend, and all of that activity predates
-  the observed tape. The decision keeps the owners separate and records the limits of the observed dates. A
-  rival claim inside the tape, a structural action or incomplete source scope requires the ordinary assessment.
-  When an all-view inert interval separates earlier dividend claims from resumed trading, the separately
-  observed current episode can supply its own lower bound. The earlier episode and the inert observations
-  retain their own disposition.
-  For a single-label source with an exact active ticker lookup and one inactive competing UUID, a recorded
-  same-ticker split can establish a lower bound for current observations. The raw and split-adjusted rows
-  must corroborate the reported change in units, and the later source must cover its session grid in all views.
-  If several split actions identify the same inactive CUSIP, the latest corroborated date bounds the public
-  range. With one corroborated split and matching equity endpoints, the rule also connects the preceding
-  continuous trading episode to the active security. Missing sessions, prolonged flat carry-forward and
-  competing ownership evidence bound that extension. The completed split comparison and post-split
-  assignments carry into this assessment. Public identity membership is preserved, and the exact vendor
-  UUID cutover remains unknown.
-  A contemporaneous active catalogue observation can support the single latest traded session when its ordinary
-  pricing mapping agrees, the eight views align, and corporate-action coverage through the observation finds no
-  competing claim. The observation must fall on that session date or before the following regular market open.
-  Compatible continuation can extend the accepted scope without reevaluating its earlier observations.
-  A completed same-symbol split into the exact active UUID or two dated dividends for its exact CUSIP can
-  also support a current-mapped span beginning at the first dated witness. The decision requires agreeing
-  views and a complete traded span. Earlier ambiguity stays in its own date scope. A competing owner or
-  overlapping peer blocks the assignment when the evidence leaves its claim open. A dated unit separation
-  may establish that a separately identified unit or warrant trading alongside the current security is independent.
-  The selected span inherits existing UUID links and supplies no new ones.
-  [closed_departure.py](../libs/alpaca_end_of_day_security_correlation/closed_departure.py) owns the certificate.
-- **Vacant reused ticker:** a complete prolonged source bridge may be certified as non-observation only between
-  accepted direct same-identity renames belonging to two distinct UUID/CUSIP occupants. The label must have no
-  intervening owner; all eight views must contain the exact complete market-session grid with flat zero-activity
-  rows and zero VWAP; raw must carry the departing close; adjacent rows must trade; and both independent successor
-  and predecessor-label sources must own and trade every bridge session. Adjusted padding may step only on exact
-  positive dividend ex-dates, which do not establish tenure. The producer leaves every bridge row unassigned and
-  changes no edge, interval or action date. Incomplete evidence, raw changes, any genuine activity, third occupant
-  or structural conflict retains ordinary unresolved coverage. [terminal_episode.py](../libs/alpaca_end_of_day_security_correlation/terminal_episode.py).
-  The same non-observation disposition may consume a closed departure interval and a later exact action-anchored
-  unit-component suffix when those producer handoffs leave a complete inert gap. Every eight-view, calendar,
-  carry, adjacent-trade, occupant and conflict veto remains; an unresolved CUSIP is admissible only when its dated
-  evidence lies outside the certified gap. This assigns neither endpoint identity to the gap and joins no UUIDs.
-- **Pre-entry carry-forward:** when one direct unchanged-UUID/CUSIP rename has a complete action query, exact
-  endpoint ownership and complete aligned sources, the destination label's prolonged flat zero-activity tail may
-  be certified as non-observation only if it repeats its last traded close through the boundary and the independently
-  owned predecessor source overlaps that tail and reaches the immediately preceding market session. The earlier
-  traded destination-label issue remains anonymous; the producer assigns no tail row and changes no action, interval
-  or membership. Missing overlap, competing ownership, incomplete views or any changed/positive tail row retains
-  ordinary unresolved coverage. [name_change.py](../libs/alpaca_end_of_day_security_correlation/name_change.py).
-- **Terminal continuous ticker:** preserve accepted components; a new two-component UUID union additionally needs
-  complete informative history without prolonged carry-forward and retained structural-action evidence.
-  Three or more disconnected components stay unresolved. Independently certified closed-history departures keep
-  narrower rules; ordinary inactive sessions neither create nor invalidate components.
-  [terminal_fallback.py](../libs/alpaca_end_of_day_security_correlation/terminal_fallback.py).
-- **Mapped predecessor tail:** successor ownership needs an accepted cross-UUID provider edge, as-of inside the
-  predecessor interval, unique incoming/outgoing branches and an independently correlated successor source for
-  exact sessions. Every field in all eight views must match. Correlation assigns successor rows; observation
-  selection marks predecessor copies superseded. Equality alone, incomplete views, reused labels, competing
-  branches or differing values leave rows unresolved.
-- **Mapped successor prefix:** when a successor-labelled source begins inside a leading prolonged inert donor run
-  and reaches an informative traded donor tail, one accepted shared-UUID, unchanged-CUSIP rename may transfer the
-  exact owner of that complete prefix from the completed predecessor report. The prefix must end on the market
-  session immediately before the retained boundary, every timestamp and nonsplit-view field must match, and every
-  donor position in all eight complete aligned views must already be correlated to that exact predecessor-label
-  owner. Ordinary active overlaps retain their existing stricter producers. A later extra UUID on the successor
-  label is noncompeting only when
-  accepted same-label identity-preserving split edges form one complete, nonbranching chain after the rename;
-  unrelated, pre-handoff or branched occupants remain vetoes. Only that chain permits split-bearing numerical
-  vintages to differ; it does not make adjusted values identity evidence. This producer rejects recursive mapped
-  donors, incomplete sources, changed acquisition context, competing current owners or rename branches, gaps and
-  any mismatch as a whole. It reuses the donor assignment; it does not infer identity from equal prices, move the
-  action boundary or change UUID membership.
-  [predecessor_prefix.py](../libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py).
-- A successor request can also carry actively traded history through multiple dated renames and intervening
-  splits. Each original-label donor must independently own the corresponding dates across all eight views.
-  The producer checks its raw trade fields against the mapped prefix, rejects competing routes and carries
-  the dated owner forward. The continuing request supplies the numerical observations on the common basis.
-  If it starts later than a donor, the selector tests the first two overlapping sessions for a consistent
-  change of scale in the split-adjusted open, high, low and close. When the change is established, the
-  public eight-view history starts at the overlap. The contiguous earlier donor-only positions retain their
-  ownership and prices internally and carry the reason `incompatible_split_adjustment_basis`.
-  A dated terminal traded episode can limit the matched prefix even when the mapped request also contains an
-  earlier ticker episode. The selection requires the actual donor's complete assignments for that interval and
-  one complete later source. It supersedes earlier donor-only prices only when the first two traded matches
-  establish the incompatible split basis. A single dated same-label CUSIP change can also bound entry to the
-  donor's accepted share-class route. That scope must cover the start of the public history and cannot move a
-  discontinuity to an earlier published session. Both paths preserve dated labels and assignments outside
-  their scope. Ordinary continuation carries completed numerical choices and compares only reopened positions.
+- **Same-ticker distribution.** An isolated one-for-one `unit_split` can join continuing listed old/new UUIDs if
+  exact provider lookups identify both CUSIPs, agree with active ticker lookup and separately identify the
+  recipient. Use ex-date or processing date corroborated by effective/payment date. Earlier rows use old UUID, rows
+  from cutover use new UUID, both under one public ID. Recipient keeps its own ID. Established owners, competing
+  actions and conflicting lookups retain precedence. The
+  [distribution rule](../libs/alpaca_end_of_day_security_correlation/same_ticker_distribution.py) consumes evidence
+  once per fresh source. An applicable prefix carries cutover into append/correction. Unchanged inputs preserve
+  completed receipts. At unchanged cutoff reopen a previously completed unresolved group through
+  [targeted retained recovery](technical-contracts.md#targeted-retained-lineage-recovery).
+- **Cash terminal.** A terminal date alone cannot establish unbounded prior ownership across a distinct occupant
+  with positive claims on both sides or an established closed earlier owner of that label. The closed-owner veto
+  concerns only newly inferred unbounded intervals. A positive own-CUSIP dividend/component action may bound a later
+  suffix, including an inactive issue, after closed prior intervals and without rival/unresolved occupancy overlap.
+  Start at first accepted positive action, never inferred from prior departure or terminal payment. Accepted dated
+  intervals/split continuity remain authoritative. Provider actions/candidate relations remain evidence.
+- **Distinct-security stock merger.** A dated merger may end a former issue’s interval and start the current issue’s
+  on the requested ticker. Require inactive acquiree matching former interval, active acquirer matching both exact
+  symbol/CUSIP observations and agreeing event dates. Same-acquirer transfers may preserve the boundary. Assess
+  competing dated owners separately.
+  [Preserve both UUID memberships](../libs/alpaca_end_of_day_security_correlation/stock_merger_occupation.py).
+- **Ticker-reuse gap.** A complete active suffix ends at its last observed session if a later request adds no
+  contrary owner. Cutoff confers no ownership. Require one exact active-symbol lookup, complete agreeing grids
+  without internal missing sessions, no current UUID in the earlier episode and no conflicting suffix UUID. An
+  incomplete later request cannot revoke an independently assessed closed earlier episode.
+  [Gap rule](../libs/alpaca_end_of_day_security_correlation/ticker_reuse_gap.py)
+- **Historical mapping.** `asof` selects mapping, never a general observation cutoff. Preserve a complete
+  informative eight-view prefix if its last session is the mapping date, an immediate market-session gap follows,
+  and complete later provider evidence names one inactive predecessor and a distinct-symbol/CUSIP/UUID successor.
+  Stop mapped ownership at the gap. Subsequent pre-endpoint rows stay unresolved absent ordinary independent
+  mapped-continuation proof for those exact sessions. Bar timing/research supplies neither ownership nor a transfer
+  date. [Predecessor prefix](../libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py)
+- **Closed departure and current source.** Unique-candidate ownership can cover a complete informative
+  current-mapped source wholly after a direct accepted unchanged-UUID/CUSIP rename. The retained request starts by
+  departure, all eight views share a complete session grid through accepted coverage, and exact active/tradable
+  own-label lookup identifies the distinct current UUID. The group must contain exactly those two labels and UUIDs.
+  Additional relevant occupants, conflicting actions/owners, incomplete evidence or historical/mapped-alias
+  selection veto. Neither infer nor require current CUSIP, dividend or minimum vacancy. The complete renamed source
+  must cover observed sessions. An exact raw copy vetoes, and differing prices cannot establish identity. Certify
+  observed rows only. No global interval, IPO date or UUID edge. Produce once from prepared source and chronology.
+  Receipt carries applicable result through continuation/unresolved-peer reconciliation.
+  - A separately identified current occupant may own a complete later source if retained actions identify all rivals
+    and establish their exit before its start. Terminal exit requires dated cash merger or worthless removal
+    supported by the former occupant’s own endpoint. Retain exact current-lookup/complete-source requirements. Any
+    competing claim on source dates leaves history unresolved. No UUID link.
+  - A complete current-mapped tape can support its exact own-label ID when the sole inactive rival resolves
+    independently by CUSIP and all retained actions are dividends predating the tape. Keep owners separate and
+    record observed date limits. Rival claims within the tape, structural actions or incomplete scope select
+    ordinary assessment. If all-view inert rows separate older dividend claims from resumed trading, the separately
+    observed current episode can bound its own start. Earlier episode/inert rows retain their dispositions.
+  - For a single-label source, exact active ticker and one inactive competing UUID, a same-ticker split may bound
+    current observations. Require corroborating raw/split-adjusted units and complete later grid in all views. For
+    several splits naming the same inactive CUSIP use latest corroborated date. For one corroborated split and
+    matching equity endpoints, connect the preceding continuous traded episode, bounded by missing sessions,
+    prolonged flat carry or competing ownership. Carry completed split comparison and post-split assignments.
+    Preserve public membership. Exact vendor UUID cutover remains unknown.
+  - A contemporaneous active catalogue observation can support only the latest traded session if ordinary mapping
+    agrees, eight views align and action coverage through observation finds no competing claim. Observe on the
+    session date or before the following regular open. Compatible continuation can extend without rechecking prior
+    observations.
+  - A completed same-symbol split to the exact active UUID or two dated dividends for its exact CUSIP can support a
+    complete traded current-mapped span with agreeing views from its first dated witness. Earlier ambiguity keeps
+    its scope. An open claim by a competing owner/overlapping peer blocks assignment. Dated unit separation can
+    distinguish an independent, separately identified unit/warrant trading alongside the current security. Inherit
+    existing UUID links only.
+    [Closed-departure certificate](../libs/alpaca_end_of_day_security_correlation/closed_departure.py)
+- **Vacant reused ticker.** Certify a complete prolonged bridge as non-observation only between accepted direct
+  same-identity renames of distinct UUID/CUSIP occupants. Require no intervening owner, exact full session grid of
+  flat zero-activity/zero-VWAP rows in eight views, raw carry of departing close, traded adjacent rows and
+  independent predecessor/successor-label sources owning and trading every bridge session. Adjusted padding may step
+  only on exact positive dividend ex-dates, which cannot establish tenure. Leave bridge rows unassigned and retain
+  edges, intervals and action dates. Incomplete evidence, raw change, actual activity, third occupant or structural
+  conflict leaves ordinary unresolved coverage. The same disposition may consume a closed departure and a later
+  exact action-anchored unit-component suffix separated by a complete inert gap. All eight-view, calendar, carry,
+  adjacent-trade, occupant and conflict vetoes apply. Unresolved CUSIP evidence must lie outside the gap. Assign
+  neither endpoint and join no UUIDs.
+  [Terminal episode](../libs/alpaca_end_of_day_security_correlation/terminal_episode.py)
+- **Pre-entry carry-forward.** For a direct unchanged-UUID/CUSIP rename with a complete action query, exact endpoint
+  ownership and complete aligned sources, a prolonged flat inactive destination tail may be non-observation if it
+  repeats its last traded close through boundary and an independently owned predecessor overlaps it through the
+  immediately preceding market session. Keep earlier traded destination issue anonymous and tail unassigned.
+  Preserve actions, intervals and membership. Missing overlap, competing owner, incomplete views or any
+  changed/positive tail row preserve ordinary unresolved coverage.
+  [Name-change rule](../libs/alpaca_end_of_day_security_correlation/name_change.py)
+- **Terminal continuous ticker.** Preserve accepted components. Joining two UUID components additionally requires
+  complete informative history without prolonged carry and retained structural-action evidence. ≥3 disconnected
+  components stay unresolved. Independently certified closed departures retain narrower rules. Ordinary inactive
+  sessions neither create nor invalidate components.
+  [Terminal fallback](../libs/alpaca_end_of_day_security_correlation/terminal_fallback.py)
+- **Mapped predecessor tail.** Successor ownership requires an accepted cross-UUID provider edge, mapping date
+  inside predecessor interval, unique incoming/outgoing branches and an independent correlated successor for those
+  exact sessions. Match every field in all eight views. Correlation assigns successor rows. Numerical selection
+  supersedes predecessor copies. Equality alone, incomplete views, reused labels, competing branches or differing
+  values leave rows unresolved.
+- **Mapped successor prefix.** A successor starting inside a leading prolonged inert donor run and reaching an
+  informative traded tail may inherit exact owner of that complete prefix from a completed predecessor report
+  through one accepted shared-UUID/unchanged-CUSIP rename. End immediately before the retained boundary. Require
+  matching timestamps and all nonsplit fields, complete aligned views and accepted predecessor-label ownership of
+  every donor position across eight views. Ordinary active overlaps retain stricter producers. A later extra UUID on
+  the successor label is noncompeting only on one complete unbranched post-rename chain of accepted same-label,
+  identity-preserving splits. Unrelated, pre-handoff or branched occupants veto. Only this chain permits differing
+  split-bearing vintages. Adjusted values supply no identity evidence. Reject the whole candidate for recursive
+  mapped donor, incomplete source, changed acquisition context, competing current owner/rename branch, gap or
+  mismatch. Reuse donor assignment. Equal prices alone cannot supply identity. Preserve the action boundary and UUID
+  membership. [Predecessor prefix](../libs/alpaca_end_of_day_security_correlation/predecessor_prefix.py)
+- **Multiple dated renames and intervening splits.** An actively traded successor request may carry each
+  original-label donor’s independently owned dates across all eight views. Match donor raw trade fields to mapped
+  prefix, reject competing routes and carry dated ownership. The continuing request supplies common-basis prices. If
+  it starts later, test first two overlapping sessions for consistent scale change in split-adjusted OHLC. Once
+  established, public eight-view history starts at overlap. Contiguous earlier donor-only positions retain internal
+  owners/prices and `incompatible_split_adjustment_basis`. A terminal traded episode can bound the matched prefix
+  despite an earlier mapped ticker episode. Require actual donor’s complete interval assignments and one complete
+  later source. Supersede earlier donor-only prices only if first two traded matches establish incompatible split
+  basis. Alternatively a single dated same-label CUSIP change can bound entry to the donor’s accepted share-class
+  route. This scope must cover the start of public history and cannot move a discontinuity to an earlier public
+  session. Preserve outside labels/assignments on both paths. Ordinary continuation carries completed choices and
+  compares only reopened positions.
   [Mapped ownership](../libs/alpaca_end_of_day_security_correlation/mapped_rename_chain.py) and
-  [numerical selection](../libs/alpaca_lineage_build/adjustment_basis.py).
+  [numerical selection](../libs/alpaca_lineage_build/adjustment_basis.py)
 
-Corporate-action dates retain provider field semantics and exact supported endpoints. Do not rewrite them from
-earliest or next-session dates, bar boundaries, researched marketplace dates or ticker exceptions. A separately
-certified source span may date only its own observed rows; it does not replace the action endpoint. The current
-certificate paths can leave missing or conflicting inputs unresolved; their applicability limits are not a
-general preference for nonallocation over the [most likely owner](#ownership-allocation-criterion).
-Research can improve and test a generic rule when retained provider observations reasonably support its
-result. It cannot supply event assertions, establish an opaque provider UUID, move provider dates or assign rows.
+Preserve provider action-date field semantics and supported endpoints. Earliest/next-session dates, bar boundaries,
+external marketplace dates and ticker exceptions cannot rewrite them. A separately certified source span dates only
+its observed rows. Missing/conflicting inputs can remain unresolved under current certificates without preferring
+nonallocation over the [most likely owner](#ownership-allocation-criterion). Research may improve/test a generic
+rule supported by retained provider observations. It cannot supply event assertions, identify opaque provider UUIDs,
+move action dates or assign rows.
 
 ### Sourced event facts
 
-Fresh classification also excludes hardcoded ticker snapshots as evidence. Reserved-looking labels and names
-receive the same provider-evidence rules as other labels; no pattern substitute is used. The legacy exchange-test
-classification remains readable within completed publications, but is inadmissible as fresh inference evidence.
+Fresh classification applies identical provider-evidence rules to reserved-looking labels/names. No hardcoded ticker
+snapshots or pattern substitutes. Completed legacy exchange-test classifications remain readable only within their
+publication scope.
 
-Authored factual applications, event supplements, assertion overlays and research certificates are rejected
-in production, debug, lab and fresh recovery decisions. The schema-2 canonical YAML contains generic policy
-and producer selection only; no JSON fact import or legacy configuration fallback is an inference authority.
-The removed `--event-supplements` input cannot select a repair. Research remains external to runtime under
-the [generic research loop](development.md#lineage-research-and-rule-improvement-loop).
+Production, debug, lab and fresh recovery reject authored factual applications, event supplements, assertion
+overlays and research certificates. Schema-2 canonical YAML selects only generic policy/producers. JSON fact
+imports, legacy configuration fallbacks and removed `--event-supplements` provide no inference or repair authority.
+[External research loop](development.md#lineage-research-and-rule-improvement-loop)
 
-The [provider-evidence owner](../libs/alpaca_security_lineage/inference_evidence.py) selects retained raw
-provider actions and exact observations for new inference. Where a legacy receipt retains a separate raw
-provider union, it rebuilds only the derived provider projection, preserving accepted query coverage and
-local-market evidence. Missing required raw observations select owning metadata recovery. A completed
-`ProviderEvidence` result is accepted once and lent to all downstream consumers without another traversal,
-projection, store read or provider request. Fresh externally supplied assertions are rejected rather than
-silently converted into evidence.
+The [provider-evidence owner](../libs/alpaca_security_lineage/inference_evidence.py) selects retained raw provider
+actions and exact observations for fresh inference. From a legacy receipt’s separate raw provider union, rebuild
+only the derived projection, preserving accepted query coverage and local-market evidence. Missing required raw
+observations select owning metadata recovery. Lend the once-accepted `ProviderEvidence` downstream without
+retraversal, reprojection, store reads or provider calls. Reject external assertions without converting them to
+evidence.
 
-Published assignments, component membership, dated labels, descriptions, numerical states and applicable
-completed handoffs remain authoritative in their accepted scope. Legacy research provenance may be inspected;
-it does not become active assertions, supply new generic-rule predicates or extend an old certificate into
-new rows. Frozen journals install their completed artifacts under their recorded provenance. Removing an
-injection input neither rolls back those publications nor selects historical replay or a storage crawl.
+Published assignments, membership, labels, descriptions, numerical states and applicable handoffs retain authority
+in accepted scope. Legacy research provenance remains inspectable and supplies neither assertions, rule predicates
+nor certificates for new rows. Frozen journals install completed artifacts under original provenance. Removing
+injection authorizes no rollback, historical replay or storage crawl.
 
-An unresolved legacy fact-application obligation without an applicable completed output requires explicit
-owning generic recovery. It cannot be satisfied by rebinding the old research fact, copying a new assertion
-or treating a missing handoff as permission to reconstruct accepted history. Independent completed work
-continues. A new generic assessment may connect reasonably supported ownership or complete ownerless lineage;
-its reasons, evidence limits and competing interpretations remain recorded.
+An unresolved legacy factual obligation lacking applicable completed output requires explicit owning generic
+recovery. Never rebind the old fact, supply another assertion or reconstruct accepted history to fill a missing
+handoff. Completed peers continue. New generic assessments may connect supported owners or complete ownerless
+lineage. Record reasons, limitations and alternatives.
 
-The optional `accepted_same_security_containing_component_v1` producer starts from an accepted predecessor
-assignment. Within the same current component it compares that assignment with the donor's completed
-membership, directed split edges, dated UUID, CUSIP and sessions. A same-UUID, same-CUSIP label change can
-support the dated route. Distinct competing transitions and conflicting dated owners retain their
-dispositions. Coverage can span several assignment runs. A hole limits the transfer to the supported
-positions. Newly joined numerical contests select one source across adjustment views. Unrelated
-assignments and applicable numerical selections carry forward.
+Optional `accepted_same_security_containing_component_v1` compares an accepted predecessor assignment within the
+same current component to the donor’s completed membership, directed split edges, dated UUID, CUSIP and sessions. A
+same-UUID/CUSIP label change can support the route. Competing transitions or conflicting owners keep their
+dispositions. Coverage may span runs. A hole limits transfer to supported positions. Choose one source across views
+for newly joined contests and carry unrelated assignments and applicable numerical choices.
 
-A fresh correlation report lends its completed edges to membership refinement and publication. For an
-already selected legacy group with unchanged inputs and containing memberships, the owner can recover
-missing split and same-UUID alias edges from retained provider metadata. A donor that requires historical
-continuity evidence uses explicit complete-group retained recovery. At an unchanged cutoff, ordinary
-update can select a group with applicable pre-v94 decisions when two published identities have overlapping
-dates under the same ticker.
-The planner examines dated label ranges for legacy groups with multiple sources and identities, including
-accepted ranges held by an ineligible identity. The compact lineage index retains the screening result.
-The overlap selects the complete group for assessment. Its lineage producer decides ownership using the
-dated source evidence and records completion for the applicable group. Each source keeps its accepted
-coverage cutoff unless pricing has a separate obligation to advance it.
-[Membership updates](../libs/alpaca_lineage_build/membership_updates.py) can also consume a completed
-internal plan under its store, component, pricing, metadata and assignment bindings. The plan carries its
-selected donor identity and exact positions through stage transport. Completed negative decisions bind all
-selected receipt generations, including potential competing owners, and the metadata used for fresh
-correlation. A changed binding selects new owner work. A one-way label transition between two sources does not select the round-trip label rule.
-Setting `producers.membership_refinement` to null disables the membership producer.
+Fresh correlation lends completed edges to refinement and publication. For a selected legacy group with unchanged
+inputs and containing memberships, retained provider metadata can recover missing split and same-UUID alias edges.
+Donors needing historical continuity evidence require explicit complete-group retained recovery. At unchanged
+cutoff, ordinary update can select applicable pre-v94 legacy groups with multiple sources/IDs whose published
+identities overlap under one ticker. Screen dated label ranges, including accepted ranges of ineligible IDs, and
+retain results in the compact index. Overlap selects the whole group. Lineage assesses dated source evidence and
+records completion. Preserve each source’s accepted cutoff unless pricing independently owes advancement.
 
-An exact 404 for a source's own label and its retained last positive UUID select a metadata assessment.
-The metadata producer uses the held UUID catalogue or exact observation first and requests the UUID only
-when required. New conflicts in the catalogue select one exact UUID lookup. Reordering the same conflicting
-entries preserves that completed result. The old-label 404 and the current spelling remain separate
-observations. Completed UUID
-responses for unfinished update work survive interruption. The compact lineage projection lets an ordinary
-update select an outstanding retirement or changed UUID observation without opening receipts. The
-correlation owner uses the prior observation date, source mapping, dated claims and competing owners to
-determine the supported sessions. The UUID observation supplies no effective rename date. Missing identity
-evidence can yield completed ownerless history. A failed provider request retains its workflow obligation.
+[Membership updates](../libs/alpaca_lineage_build/membership_updates.py) can consume a completed internal plan bound
+to store, component, pricing, metadata and assignments. Stage transport carries selected donor ID and exact
+positions. Negative decisions bind every selected receipt generation, potential competitors included, and
+fresh-correlation metadata. Changed binding selects owning work. A one-way transition cannot trigger the round-trip
+rule. Setting `producers.membership_refinement` to null disables refinement.
 
+An exact own-label 404 plus retained last positive UUID selects metadata assessment. Use a held UUID catalogue or
+exact observation first. Request the UUID only as required. New catalogue conflicts select one exact UUID lookup.
+Reordering unchanged conflicts reuses it. Keep old-label 404 distinct from current spelling. Completed UUID
+responses for unfinished work survive interruption. The compact projection selects pending retirement/changed UUID
+observation without opening receipts. Correlation uses prior observation date, mapping, dated claims and competitors
+to establish supported sessions. A UUID observation cannot date a rename. Missing identity evidence may complete
+ownerless history. Request failure retains its workflow obligation.
 
-Closed source-work and publication mechanics remain separate from fresh inference. Applicable accepted owners
-and numerical choices stay closed; only selected new rows, newly joined overlap or genuinely changed bindings
-open their owning work. Entirely superseded histories whose accepted runs need no interior timestamp assembly
-remain closed to prices. Completed source projections, timestamp keys, assignment artifacts and numerical
-choices survive construction/publication interruption under their actual generation, metadata and policy
-bindings. Missing or incomparable component capabilities require owning recovery, never a union inferred
-from shared UUIDs or a repeated completed calculation.
+Fresh inference, closed source work and publication have distinct authority. Accepted owners/numerical choices stay
+closed. Only new selected rows, newly joined overlap or changed bindings reopen work. Entirely superseded histories
+requiring no interior timestamps stay closed to prices. Completed projections, timestamp keys, assignments and
+numerical choices survive construction/publication interruption under actual generation, metadata and policy
+bindings. Missing/incomparable component capabilities require owning recovery. Shared UUIDs or recalculating
+completed work cannot supply them.
 
 ### Cash distributions and terminal ownership
 
-Alpaca can report both a cash merger and a special cash distribution for the same
-security and amount, with the merger effective on the dividend ex-date. Due-bill
-terms or a payment before the ex-date can support the distribution interpretation.
-A later action must still name the original ticker and CUSIP as departing and identify
-a distinct replacement security. When the source shows positive volume and trade count
-after the ex-date, the rule can assign the original shares on the observed, actively
-traded sessions before the later action. The source records and dates of both cash
-actions stay available. A competing issuer or incompatible payment terms keep the
-affected dates under their existing assessment.
+Alpaca may report a cash merger and special cash distribution with identical security/amount and merger effective on
+dividend ex-date. Due-bill terms or pre-ex-date payment can support a distribution. A later action must name the
+original ticker/CUSIP as departing and identify a distinct replacement. With positive volume and count after
+ex-date, original shares may own observed active sessions before that later action. Retain both cash records and
+their dates. Competing issuer or incompatible payment terms preserve existing assessment for affected dates.
 
 ### Name changes
 
-The following certificate routes describe current mechanisms. Their absence is not a global negative
-ownership finding; the [allocation criterion](#ownership-allocation-criterion) governs the choice among
-plausible explanations.
+These certificate routes bound specific inferences. Their absence leaves the
+[allocation criterion](#ownership-allocation-criterion) in control.
 
-Name changes establish dated endpoints, not unlimited predecessor history. Conflicting effective/process dates
-or component-arrival evidence leave disputed windows unresolved. Different UUIDs join only through independent
-continuity proof: an accepted identity-preserving event or exact informative raw predecessor prefix through the
-boundary, with complete matching eight-view grids. Use selected group inputs, never decisions derived from the
-disputed edge. Divergent independent concurrent sources keep their histories.
+Renames establish dated endpoints. Conflicting effective/processing dates or component-arrival evidence leave
+disputed windows unresolved. Join distinct UUIDs only with independent continuity, either an accepted
+identity-preserving event or an exact informative raw predecessor prefix through the boundary with complete matching
+eight-view grids. Use selected group inputs and exclude decisions derived from the disputed edge. Divergent
+independent concurrent sources keep their histories.
 
-When a ticker changes on entry and exit, a forward or reverse split between those events can change its
-CUSIP and provider UUID while it keeps trading under the same ticker. The
-[split and rename rule](../libs/alpaca_end_of_day_security_correlation/split_rename_ownership.py) follows
-the native Alpaca events in date order. Each rename keeps the same issue at its endpoints, and each split
-connects the preceding issue to the next one. The resulting ticker intervals use the CUSIP and provider
-UUID applicable on each side of the split. A competing issue, a branch in the event chain or incompatible
-dates leave the existing evidence rules in control. Positive literal trading that contradicts the
-proposed dates in the same occupation also retains the existing assessment. A mapped price response can
-continue under a retired request symbol after its trading interval ends.
+A forward/reverse split between entry and exit renames can change CUSIP/UUID under a continuing ticker. Follow
+native Alpaca events chronologically. Each rename preserves the issue and each split connects successive issues.
+Apply the split’s respective UUID/CUSIP to each side. Competing issues, branches, incompatible dates or
+contradictory positive literal trading in the same occupation retain ordinary assessment. A mapped response may
+continue under a retired request symbol past tenure.
+[Split and rename rule](../libs/alpaca_end_of_day_security_correlation/split_rename_ownership.py)
 
-An established acquiree interval ends on a cross-ticker stock merger's effective date when the dated
-provider action and exact inactive acquiree and distinct acquirer endpoints agree. A separate distribution or
-later competing evidence keeps the old boundary undecided. A same-day one-for-one record with the same
-source and destination ticker and CUSIP supplies no distinct claimant by itself. The terminal action closes
-the supported interval and records its provenance. The later traded session can use the existing
-contemporaneous current-label observation when no other interval covers it, including when only that writable
-suffix is materialized. The historical identities retain their existing memberships and assignments.
+A cross-ticker stock merger closes an established acquiree interval on its effective date if the dated action agrees
+with exact inactive acquiree and distinct acquirer endpoints. A separate distribution or later competing evidence
+leaves the boundary undecided. A same-day one-for-one record with identical source/destination ticker and CUSIP adds
+no claimant alone. Record terminal provenance. A later traded session may use an existing contemporaneous
+current-label observation if no other interval covers it, including when only the writable suffix is materialized.
+Preserve historical membership/assignments.
 [Stock merger ownership](../libs/alpaca_end_of_day_security_correlation/stock_merger_occupation.py) and
-[bounded current source](../libs/alpaca_end_of_day_security_correlation/closed_departure.py).
+[bounded current source](../libs/alpaca_end_of_day_security_correlation/closed_departure.py)
 
-Shared UUID still requires bounded historical-label evidence: own source plus informative exact matching suffix,
-existing independent-history proof, or accepted bounded round trip. Exact matching historical spans can establish
-row ownership without certifying a UUID join; unmatched spans remain unresolved. No source extends proof into an
-earlier unobserved prefix. [name_change.py](../libs/alpaca_end_of_day_security_correlation/name_change.py) and
-[source_continuity.py](../libs/alpaca_end_of_day_security_correlation/source_continuity.py).
+Even shared UUIDs need bounded historical-label evidence from an own source plus informative exact matching suffix,
+independent-history proof or accepted bounded round trip. Exact matches can establish row ownership without
+certifying UUID membership. Unmatched spans stay unresolved. Never extend proof into an unobserved earlier prefix.
+[Name changes](../libs/alpaca_end_of_day_security_correlation/name_change.py) and
+[source continuity](../libs/alpaca_end_of_day_security_correlation/source_continuity.py)
 
-When a destination source starts inside the independently owned predecessor interval, its observed dates must be
-one complete contiguous suffix through that interval's end. Only a shared-UUID rename may consume an informative
-exact raw suffix in that shape, and its historical-label certificate starts at the destination source's first
-observed session. Distinct-UUID joins continue to require the complete predecessor grid.
+A destination beginning inside an independently owned predecessor interval must cover one contiguous suffix through
+its end. Only a shared-UUID rename can use its informative exact raw suffix. Begin historical-label certification on
+the destination’s first observed session. Distinct-UUID joins require the complete predecessor grid.
 
-Earlier prolonged provider padding remains neither trading-absence nor ownership evidence. It does not invalidate
-that bounded suffix only when one complete aligned prolonged padding run follows a traded observation and ends
-immediately before the destination source begins; the rename preserves one nonempty CUSIP; a complete action query
-and unique active non-OTC current-symbol/CUSIP lookups identify the same UUID; the destination prefix is the complete
-exact raw predecessor-source suffix through the market session immediately before the retained action boundary; and
-the overlap has informative traded endpoints. The padding is only a shape gate. The certificate assigns those
-observed source rows to the already-dated predecessor label, not to early destination-label tenure. It does not
-consume the padding, move the action boundary, join UUIDs or extend unseen history. Adjustment-view inert values
-may change only on an accepted same-symbol split date within the separator; every row remains flat and inactive.
-A complete later stock merger does not veto the earlier certificate only when the successor is the continuing
-acquirer on the unchanged CUSIP, both effective and processing dates exist, every recorded action date is strictly
-after the retained rename boundary, and the acquiree is a distinct label/CUSIP. This neither assigns acquiree
-history nor adds identity membership. Ticker reuse, unrelated occupants on or before the boundary, any other or
-incomplete structural action, incomplete grids, detached padding, gaps and raw differences preserve the veto.
+Earlier prolonged padding proves neither trading absence nor ownership. It permits the bounded suffix only if all
+conditions hold:
 
-A complete predecessor source containing exactly one session may use the same certificate only for one unique
-direct shared-UUID rename with unchanged nonempty CUSIP, when the session is the last market session before the
-provider boundary and the destination source contains the exact same positive-volume, positive-trade raw
-transaction. All eight selected views must be complete and session-aligned; their adjusted values remain numerical
-vintages and are not repeated identity evidence. Certify only that observed session. Different UUID/CUSIP,
-additional structural edges, nonadjacent dates, incomplete sources, inert or divergent raw rows and multi-session
-non-informative histories remain unresolved.
+- One complete aligned prolonged padding run follows a trade and ends immediately before destination history begins.
+  All rows stay flat and inactive. Adjusted padding values may change only on an accepted same-symbol split date
+  within the separator.
+- Rename preserves one nonempty CUSIP. The complete action query and unique active non-OTC current-symbol/CUSIP
+  lookups identify one UUID.
+- Destination prefix exactly matches the complete raw predecessor suffix through the session immediately preceding
+  the retained boundary. Both overlap endpoints trade informatively.
 
-A retained name-change processing date may follow an observed successor-label handoff without being rewritten.
-Date only that bounded early successor span when one complete action query and unique direct shared-UUID,
-unchanged-provider-CUSIP edge have exactly one predecessor and one successor interval; the complete predecessor
-source ends on the market session immediately before the complete successor source begins; and the independently
-resolved current-CUSIP source is the exact raw concatenation of both complete histories. All selected views must
-be complete and session-aligned, and the early raw span must be informative and free of prolonged carry-forward.
-The certificate moves no endpoint, extends no unseen history and joins no UUIDs. Missing or ambiguous current
-owners, related structural actions, ticker recurrence, gaps, overlaps, incomplete sources and divergent raw rows
-retain their existing vetoes.
+This dates only observed source rows under the established predecessor label. It neither establishes early
+destination tenure nor consumes padding, moves the action, joins UUIDs or extends unseen history. A complete later
+stock merger avoids veto only if the unchanged-CUSIP successor is continuing acquirer, effective and process dates
+exist, all recorded dates strictly follow the rename, and acquiree label and CUSIP are distinct. It adds no acquiree
+history or identity membership. Ticker reuse, unrelated occupants on/before boundary, other or incomplete structural
+actions, incomplete grids, detached padding, gaps or raw differences veto.
 
-A ticker can also be the middle of two name changes. The first action can give only a processing date
-even though trading under the middle ticker began earlier. When both actions preserve the same provider
-UUID and CUSIP, the later departure identifies the terminal ticker that Alpaca uses for the combined
-price history. The producer compares the predecessor's last traded session and the middle ticker's
-first traded sessions through the processing date against that terminal source. Adjacent market sessions,
-matching raw observations and the absence of a competing occupant support the middle ticker on the
-observed dates. The action keeps its reported processing date. A conflicting owner or a disagreement
-in those observations leaves the ordinary assessment in place.
+A complete one-session predecessor may use that certificate only for a unique direct shared-UUID rename preserving a
+nonempty CUSIP. The session must immediately precede the provider boundary and the destination must contain the
+exact same positive-volume, positive-trade raw transaction. All eight views must be complete and aligned. Adjusted
+values remain numerical vintages. Certify only that session. Different UUID/CUSIP, additional structural edges,
+nonadjacent dates, incomplete sources, inert/divergent raw rows and noninformative multiday histories remain
+unresolved.
 
-For a processing-date-only rename, a complete predecessor request can establish an earlier handoff when
-the retained source ends on the market session immediately before the successor source begins. One direct
-unchanged-UUID/CUSIP route and agreeing active CUSIP and successor lookups must identify the same security.
-All eight views must cover the early successor sessions, and their raw rows must show trades. The producer
-dates only these observed sessions and retains the provider processing date. A competing occupant, structural
-action or explicit earlier boundary retains the ordinary ownership assessment.
+A processing date may follow the observed handoff. Date only the bounded early successor span when a complete action
+query and unique direct shared-UUID/unchanged-CUSIP edge have exactly one predecessor and one successor interval.
+Require complete predecessor/successor sources on adjacent sessions, an independently resolved current-CUSIP source
+exactly concatenating both complete raw histories, complete aligned views and informative early raw span without
+prolonged carry. Retain the action date and UUIDs. No unseen extension. Missing/ambiguous current owners, related
+structural actions, ticker recurrence, gaps, overlap, incomplete sources and divergent raw rows veto.
 
-When a dated unit separation identifies an exact one-for-one main component, its own traded observations can
-establish a bounded arrival before a later processing-only rename. The provider dates and other component
-assignments remain part of the original chronology. A second applicable rename conflict or an intervening route
-does not authorize ownership from this observation alone.
+For a middle ticker between two renames, trading can precede the first action’s sole processing date. If both
+renames preserve UUID/CUSIP, later departure identifies Alpaca’s combined-history terminal ticker. Compare
+predecessor’s last traded and middle ticker’s first traded sessions through processing date with the terminal
+source. Adjacent sessions, matching raw observations and no competing occupant support the middle label on observed
+dates. Conflicting owners/observations preserve ordinary assessment and the action retains its processing date.
 
-A provider component-separation action may independently date that same bounded early-successor shape when it is
-the unique positive unit split naming the predecessor as an exact output component on the adjacent source-handoff
-session. Its dated occupancy and, when identified, exact component-CUSIP endpoint must agree; undated symbol
-lookups do not become historical occupants. The direct rename must preserve one UUID/CUSIP, the predecessor and
-successor sources must be complete and adjacent, and the early successor span must be the exact informative
-market-session prefix before the retained rename date. An older predecessor source containing prolonged padding
-is admissible only when its final five observations are actively traded and nonconstant. A later exit must be
-either a linear same-identity rename or one exact positive-rate cash merger whose successor symbol/CUSIP, ownership
-interval end and next-market-session boundary all agree. This dates only observed component rows; it does not
-rewrite an action, infer an issuer-wide boundary, join UUIDs or admit missing endpoints, third dated occupants,
-gaps, inert endpoints, competing events or structurally ambiguous evidence.
+A processing-date-only rename can also use a complete predecessor request ending immediately before successor
+history begins. Require one direct unchanged-UUID/CUSIP route, agreeing active CUSIP and successor lookups
+identifying the security, complete coverage of early successor sessions in eight views and traded raw rows. Date
+only observed sessions and preserve processing date. A competing occupant, structural action or explicit earlier
+boundary retains ordinary assessment.
 
-When the successor source instead retains the predecessor's complete history, the same component producer may
-date only the internal sessions after the unique component event and before the unchanged-UUID/CUSIP rename. Every
-field in all eight inherited prefixes must match through a traded event-day observation; the predecessor-label
-rows in the internal span must be one exact zero-activity carry while every successor-label row trades, and the
-calendar span must be complete. A later reused predecessor label is noncompeting only through its already accepted,
-strictly later action-anchored interval. Missing endpoints, prefix differences, overlapping or undated occupants,
-positive predecessor activity, inert successor rows, incomplete views and intervening structural actions veto the
-certificate. It changes neither provider date nor UUID membership.
+An exact one-for-one main component of a dated unit separation can establish bounded arrival from its own trades
+before a later processing-only rename. Keep provider dates and other component assignments. A second applicable
+rename conflict or intervening route prevents ownership based on this observation alone.
 
-A predecessor-labelled suffix after that dated endpoint may be identified as terminal non-trading carry-forward,
-not assigned history, only when a complete action query contains one exact stock-merger acquiree with a distinct
-inactive, nontradable, non-OTC UUID and exact current-symbol/CUSIP lookups; the ordinary-share name-change series
-has the same UUID/CUSIP on both sides; every complete aligned adjustment view begins the suffix at the boundary
-and exactly repeats its own final supported close with zero volume, trades and VWAP; and the independently owned
-successor source trades informatively on every suffix session. The completed producer records the retired UUID as
-the uncorrelated suffix's sole candidate so serving can scope the unresolved rows to the identity they may affect.
-It does not assign or delete a row, join UUIDs, move an action date or relax serving policy. Recurrence, competing
-occupants/actions, active or OTC acquirees, incomplete/gapped views, divergent or positive tail activity and
-absent/uninformative successor trading preserve the anonymous unresolved conflict.
+A component separation can independently date that bounded early successor span only if it is the unique positive
+unit split naming the predecessor as an exact output on the adjacent source-handoff session. Require agreeing dated
+occupancy and component-CUSIP endpoint when identified. Undated symbol lookups confer no historical occupancy.
+Direct rename preserves UUID/CUSIP. Sources must be complete and adjacent. Early successor span must be the exact
+informative session prefix before retained rename date. An older predecessor with prolonged padding requires its
+final five observations actively traded and nonconstant. Later exit must be a linear same-identity rename or one
+exact positive-rate cash merger with agreeing successor symbol/CUSIP, interval end and next-session boundary. Date
+observed component rows only. No rewritten action, issuer-wide boundary, UUID join, missing endpoints, third dated
+occupant, gap, inert endpoints, competing events or structurally ambiguous evidence.
 
-One exact same-symbol, distinct-UUID provider substitution can also certify the handoff without price comparison.
-The direct form has exactly one related action and candidate and an unbounded predecessor interval. The bounded form
-permits exactly one strictly earlier incoming different-label rename that preserves the exact predecessor CUSIP and
-UUID and supplies that interval's lower bound; rows before the entry remain unresolved. In both forms the action
-query must be complete and cover the handoff; unique exact CUSIP lookups must identify the inactive/nontradable
-predecessor and active/tradable successor; the unique current-symbol lookup must identify that successor; both
-endpoints must share one non-OTC exchange; exactly those two occupants may be known; and exactly two same-label
-ownership intervals must meet at the handoff. Missing, duplicated, additional, recurrent or conflicting evidence
-vetoes the certificate. The continuity owner publishes one accepted action ID; UUID membership and dated row
-chronology consume that same certificate without repeating endpoint authentication. Existing ticker-reuse
-ambiguity guards remain in force.
+If successor history retains the predecessor’s complete history, the same producer may date internal sessions only
+after the unique component event and before the unchanged-UUID/CUSIP rename. Require all fields equal across eight
+inherited prefixes through the traded event day, complete calendar, one exact zero-activity predecessor carry
+internally and trading on every successor row. Predecessor reuse is noncompeting only through an accepted strictly
+later action-anchored interval. Missing endpoints, prefix differences, overlapping/undated occupants, positive
+predecessor activity, inert successor rows, incomplete views or intervening structural actions veto. Preserve action
+date and membership.
 
-An earlier stock acquisition does not count as an additional conflicting action for this certificate only when
-the predecessor is its exact continuing acquirer on the same CUSIP; the target has a distinct nonempty label and
-CUSIP outside both endpoints; both exchange ratios are positive finite numbers; effective and process dates are
-present; and every recorded action date lies strictly before the handoff and within any bounded predecessor
-interval. Target history never joins the acquirer. Incomplete evidence, acquiree roles, same-day/later acquisitions
-and other structural actions retain the veto.
+A predecessor-labelled suffix after that endpoint may be terminal nontrading carry only if a complete action query
+yields one exact stock-merger acquiree with distinct inactive, nontradable, non-OTC UUID and exact
+current-symbol/CUSIP lookups. Ordinary-share rename must preserve UUID/CUSIP. Every complete aligned adjustment view
+must start its suffix at the boundary and repeat its own last supported close with zero volume, trades and VWAP.
+Independently owned successor must trade informatively every suffix session. Record retired UUID as sole candidate
+for the uncorrelated suffix so serving scopes unresolved rows to affected identity. Preserve rows unassigned, UUIDs,
+action dates and serving policy. Recurrence, competing occupants/actions, active/OTC acquirees, gaps/incomplete
+views, divergent/positive tail activity or absent/uninformative successor trading retain anonymous unresolved
+conflict.
 
-Complete action coverage applies to every exact label in the producer's completed `queried_symbols` set, as well
-as the original query label, only within its recorded date window. Partial queries and unqueried labels provide no
-coverage. Certificates consume this completed acquisition guarantee without fetching the same actions again.
+One exact same-symbol, distinct-UUID provider substitution may certify a handoff without price comparison. Direct
+form requires exactly one related action/candidate and unbounded predecessor interval. Bounded form allows exactly
+one strictly earlier incoming different-label rename preserving predecessor CUSIP/UUID and supplying its lower
+bound. Pre-entry rows remain unresolved. Both require complete action coverage of the handoff, unique exact CUSIP
+lookups for inactive/nontradable predecessor and active/tradable successor, unique current-symbol lookup identifying
+successor, one shared non-OTC exchange, exactly two known occupants and exactly two same-label intervals meeting at
+handoff. Missing, duplicate, additional, recurrent or conflicting evidence vetoes. Continuity publishes one accepted
+action ID. UUID membership and row chronology reuse its certificate without endpoint reauthentication. Ticker-reuse
+guards still apply.
 
-Unresolved positive occupancy remains a conflict within the asserted label/date scope for same-symbol,
-component-history and current-source bridge certificates. A validated unit-component anchor permits only its
-exact supported unresolved component evidence. Unrelated or out-of-span uncertainty does not erase supported
-history. The current-source bridge also considers dated raw structural actions, including nested recipient
-labels and incomplete actions that produced no UUID candidate. Chronology and membership trust the resulting
-single producer certificate; downstream consumers do not repeat these checks.
+Disregard an earlier stock acquisition as a conflicting action here only if the predecessor is its exact continuing
+acquirer on the same CUSIP, the target has a distinct nonempty label and CUSIP outside both endpoints, both ratios
+are positive finite, effective and process dates exist and all recorded dates strictly precede handoff within any
+bounded predecessor interval. Target history never joins acquirer. Incomplete evidence, acquiree roles,
+same-day/later acquisitions and other structural actions veto.
+
+Complete action coverage applies only within recorded dates to the original query label and each exact label in
+completed `queried_symbols`. Partial queries and unqueried labels supply no coverage. Certificates consume that
+guarantee without refetching actions.
+
+Unresolved positive occupancy conflicts only within the asserted label/date scope for same-symbol, component-history
+and current-source bridge certificates. A validated unit-component anchor admits only its exact supported unresolved
+evidence. Unrelated/out-of-span uncertainty preserves supported history. Current-source bridge also considers dated
+raw structural actions, including nested recipients and incomplete actions without UUID candidates.
+Chronology/membership consume one producer certificate without repeating its checks.
 
 ## Membership and metadata continuation
 
-[DependencyGraph](../libs/alpaca_lineage_build/selection.py) retains published membership until retirement.
-Disappearing evidence links cause separate replacement-component correlation and one journal publishing all
-replacements. Consumers neither repair groups nor infer replacement membership. Missing indexed membership needs
-explicit `lineage migrate-index`, never an implicit receipt crawl.
+[DependencyGraph](../libs/alpaca_lineage_build/selection.py) preserves published membership until retirement.
+Disappearing evidence links select separate replacement-component correlation and one journal for all replacements.
+Consumers neither repair groups nor infer replacements. Missing indexed membership requires explicit
+`lineage migrate-index`, never a receipt crawl.
 
-Completed scheduling hints are authoritative. Lost coverage permits one explicit source-generation census,
-without receipt reads for matching sources. [pipeline.py](../libs/alpaca_lineage_build/pipeline.py) plans metadata
-from completed pricing results—including accepted ranges/effective pending changes for covered requests—and
-accepted index ranges. Covered acquisition consumes its source boundary without reopening endpoint validators.
-After interruption, only selected pending source receipts supply missing planning facts, in bounded cohorts;
-publication reselects under its own locks.
+Completed scheduling hints are authoritative. Lost coverage permits one explicit source-generation census with no
+receipt reads for matching sources. [Pipeline planning](../libs/alpaca_lineage_build/pipeline.py) uses completed
+pricing results, including accepted ranges/effective pending changes for covered requests, and accepted index
+ranges. Covered acquisition uses its source boundary without reopening endpoint validators. After interruption, read
+only selected pending source receipts for missing planning facts in bounded cohorts. Publication reselects under its
+own locks.
 
-Prefetch opens selected lineage receipts for evidence queries. [EvidenceClient](../libs/alpaca_lineage_build/metadata.py)
-reuses containing completed action intervals within an invocation. During a rule-only retained-mapping repair,
-its metadata adapter also consumes the prior report's completed action coverage and symbol observations; only
-a changed mapping or genuinely uncovered label/interval acquires evidence. Failed/incomplete responses prove no
-coverage; ordinary wider requests/new observation work retain their existing acquisition path. Conflicting action IDs block only evidence containing
-those IDs, including cached intervals; unrelated symbols in fully acquired/routed batches remain usable.
-Transport/routing failure leaves affected requests incomplete. Conflicts remain blocking for the invocation;
-no winner is chosen.
+Prefetch opens selected receipts for evidence queries. [EvidenceClient](../libs/alpaca_lineage_build/metadata.py)
+reuses containing completed action intervals within an invocation. For rule-only retained-mapping repairs also reuse
+prior completed action coverage and symbol observations. Acquire only changed mappings or uncovered
+labels/intervals. Failed/incomplete responses establish no coverage. Ordinary wider requests/new observation work
+retain their acquisition paths. Conflicting action IDs block only evidence containing them, cached intervals
+included, for the entire invocation without choosing a winner. Unrelated fully acquired/routed batch results remain
+usable. Transport/routing failures leave affected requests incomplete.
 
-A prefetch plan selects maximal requested intervals per symbol so nested needs share their containing
-response. All pagination and routing must complete before that response establishes subset coverage;
-overlapping intervals and gaps do not acquire invented coverage.
+Plan maximal intervals per symbol. Nested requests share their containing response only after pagination/routing
+complete. Never infer extra coverage from overlap or gaps.
 
-Ordinary action continuation starts at the prior active month; older action corrections require explicit refresh.
-A same-span price correction, even in older history, cannot select historical action or CUSIP acquisition.
-A backward history extension acquires the uncovered action prefix up to the day before the accepted query start,
-plus the ordinary current window; the accepted middle and unchanged mappings remain reusable. Missing retained
-query coverage requires explicit metadata refresh. Workflow
-refresh classifies accepted endpoint facts first. A newly observed exchange can accompany a previously
-unknown rename or reorganization. A changed identity, class, or exchange and an explicit historical
-refresh select the owning action discovery window. Pricing reuse follows the resulting evidence.
-Fresh prefetched actions take precedence over a retained report covering the same dates, including at an
-unchanged cutoff. That completed current window can discover new dependencies without reopening older actions.
-An unchanged action's completed CUSIP→ID lookup, including a negative result, remains authoritative. Current
-catalogue facts may join an already accepted UUID; name/status changes or absence from the catalogue do not
-invalidate the historical mapping. This never infers CUSIP from ticker. New/changed actions, a changed current
-endpoint UUID or explicit refresh require exact acquisition. Replacing an already consumed lookup during traversal
-restarts metadata assembly from the authoritative exact cache. Known dependencies retain continuation/refresh
-obligations; new ones need full evidence.
-Expanded groups reselect under sorted enlarged locks. The operation retains decoded partitions by store,
-boundary kind and selected boundary generation; an envelope-only publication does not discard them. Changed
-partitions invalidate only their entries. Selected assignment bodies likewise survive unchanged generations.
-Exact and catalogue endpoint observations have the same invalidation authority, including canonical endpoints
-recorded by retained CUSIP lookups. A late observation refreshes
-affected reports already assembled in the selected group from the operation's in-memory acquisition cache before
-publication. This also applies when a later symbol in one traversal changes an earlier retained dependency.
-Dependency baselines use the explicit symbol observation recorded with the mapping, falling back to the CUSIP's
-canonical UUID only when that observation is absent. A fresh exact mapping remains authoritative even if it
-returns an older occupant. The metadata producer records the endpoint observations used for that acquisition
-so the same unchanged dependency does not trigger another lookup. Selected pre-77 receipts reconcile these
-dependencies once before new publication, including already-published stale mappings.
-Rebuilt reports restore those accepted baselines before their coherence check. Historical mappings that differ
-from current ticker occupants therefore remain usable; changed endpoint/action facts still invalidate them.
+Ordinary action continuation starts at the prior active month. Older action corrections need explicit refresh.
+Same-span price corrections, however old, cannot select historical actions/CUSIPs. For a backward extension acquire
+the uncovered action prefix through the day before accepted query start, plus the ordinary current window. Reuse
+accepted middle and unchanged mappings. Missing retained coverage needs explicit metadata refresh.
+
+Workflow refresh first classifies accepted endpoints. A new exchange may accompany an unknown rename/reorganization.
+Changed identity, class, exchange or explicit historical refresh selects the owning action discovery window.
+Resulting evidence governs pricing reuse. Fresh prefetched actions outrank retained reports for the same dates, even
+at unchanged cutoff. Their completed current window can discover dependencies without reopening older actions.
+
+Retain unchanged actions’ completed CUSIP→ID lookups, including negative results. Current catalogue facts may join
+an accepted UUID. Name/status changes or catalogue absence do not invalidate historical mapping. Never infer CUSIP
+from ticker. New/changed action, changed current endpoint UUID or explicit refresh requires exact acquisition.
+Replacing a consumed lookup during traversal restarts assembly from the authoritative exact cache. Known
+dependencies keep continuation/refresh obligations. New dependencies need full evidence.
+
+Expanded groups reselect under sorted enlarged locks. Cache decoded partitions by store, boundary kind and
+generation. Envelope-only publication retains decoded partitions. Invalidate only changed entries. Selected
+assignment bodies survive unchanged generations. Exact and catalogue endpoints have equal invalidation authority,
+including canonical endpoints from retained CUSIP lookups. A late observation, including a later symbol changing an
+earlier retained dependency during traversal, refreshes affected assembled reports from the operation’s in-memory
+acquisition cache before publication.
+
+Dependency baselines use the mapping’s explicit symbol observation, falling back to canonical CUSIP UUID only if
+absent. A fresh exact mapping remains authoritative even for an older occupant. Metadata records the endpoint
+observations used, preventing repeat lookups for unchanged dependencies. Selected pre-77 receipts reconcile these
+dependencies once before new publication, including stale published mappings. Rebuilt reports restore accepted
+baselines before checking coherence. Historical mappings differing from current occupants remain usable until
+changed endpoint/action facts invalidate them.
 
 ## Assignment continuation
 
-[resume.py](../libs/alpaca_lineage_build/resume.py) is a yes/no input boundary. It does not map ownership rules,
-predict assignments or execute an alternate lineage algorithm. Completed pricing generations/ancestry establish
-row equality; the accepted pricing request (including mapping `asof`, range, feed and timeframe), complete evidence,
-group membership and policy establish the remaining inputs. Only acquisition counters, catalogue observation
-wall time, lookup transport provenance and metadata-owned mapping dependency baselines are excluded from evidence
-equality. Metadata uses those baselines to invalidate retained lookups before the handoff; changed lookup results
-still participate. Adding or updating the baselines alone does not reopen lineage. New evidence fields participate
-automatically, including disposition changes.
+[Continuation selection](../libs/alpaca_lineage_build/resume.py) decides whether inputs permit reuse. It does not
+map rules, predict assignments or execute another algorithm. Completed pricing generations/ancestry establish row
+equality. Remaining inputs are accepted request (mapping `asof`, range, feed, timeframe), complete evidence,
+membership and policy. Evidence equality excludes only acquisition counters, catalogue observation wall time, lookup
+transport provenance and metadata-owned mapping dependency baselines. Metadata invalidates lookups against these
+baselines before handoff. Changed lookup results and new evidence fields, including dispositions, automatically
+participate. Baseline bookkeeping alone cannot reopen lineage.
 
-When the accepted inputs are unchanged, `lineage_required=false` carries completed decisions forward without
-pricing payload reads or rule execution, including linked groups, ambiguity and empty histories. Producer-proven
-unchanged observations remain reusable when only coverage and its normal current-label mapping cutoff advance.
-Pinned mappings must stay identical. Changed actual metadata still selects reconciliation; action-query bounds
-and diagnostic row counts alone are acquisition bookkeeping within this accepted continuation scope.
-The latest HTTP window's `start` is transport bookkeeping; the source's `history_start` supplies the retained start.
-The previous receipt's `processed_through` also carries accepted empty coverage. Append-grid checks begin at
-that covered boundary, rather than the last physical bar. A genuinely missing session inside the new interval
-still selects owning work; an old accepted empty interval cannot become a reason to reopen earlier choices.
+Unchanged accepted inputs yield `lineage_required=false` without price payload reads or rule execution, including
+linked groups, ambiguity and empty histories. Reuse producer-proven unchanged observations when only coverage and
+normal current-label mapping cutoff advance. Pinned mappings must match. Changed metadata selects reconciliation.
+Within accepted continuation, action-query bounds and diagnostic row counts alone are bookkeeping. HTTP-window
+`start` describes transport. `history_start` supplies retained start. Begin append-grid checks at the previous
+receipt’s `processed_through`, including accepted empty coverage. Genuinely missing new sessions select owning work.
+Old accepted empty intervals cannot reopen earlier choices.
 
-Accepted UUID membership retains each source's request scope. Two peers may carry different completed public
-components containing the same UUID; group connectivity does not merge those components or invalidate either
-source's historical owner. Only unambiguous peer membership may fill a missing local entry. When one
-source has published different public IDs containing the same UUID, its accepted contribution dates distinguish
-their scopes. Frozen rows and closed-source metadata carry their own published IDs directly. Newly evaluated
-rows consult a dated membership only after their provider UUID is resolved. The final component can continue
-along its own observed ticker route through any dated departure. Source dates outside these scopes use the
-ordinary row evidence. An empty suffix skips the dated membership projection. A source requiring that projection
-selects technical recovery when its accepted dates overlap across owners or omit a competing ID.
-When a peer selects complete-group work, applicable sources
-carry their positive dated row decisions in full-source positions; new and unresolved rows enter the cascade.
-Explicit numerical states remain separate from row ownership. A dated market with zero new rows across all of its episode
-sources retains its accepted public binding even though suffix reports contain no segments. This supplies no row
-template or new allocation; fresh unresolved rows and conflicting memberships still select owning resolution.
+UUID membership retains each source’s request scope. Connected peers may have distinct completed public components
+containing the same UUID. Preserve their historical owners and memberships. Only unambiguous peer membership can
+fill a missing local entry. Within a source, accepted contribution dates distinguish different IDs sharing a UUID.
+Frozen rows and closed-source metadata carry their IDs directly. Newly evaluated rows consult dated membership only
+after UUID resolution. Final component can continue on its own observed ticker route through dated departure. Other
+dates use ordinary row evidence. Empty suffix skips membership projection. Required projection with overlapping
+accepted ownership dates or an omitted competing ID selects technical recovery.
 
-Retained legacy envelopes and publication bodies remain readable as completed provenance. Their known
-transport spellings do not authorize fresh fact applications or repeat their old proofs. Unknown or conflicting
-required handoffs fail into owning recovery. Within an operation, recovery consumes the accepted
-catalogue records held by the evidence client. The [workflow database](technical-contracts.md#universe-observation-and-work-state)
-records the acceptance reference.
-The owning post-correlation consumer can finish from held source inputs, reports and retained-choice scope
-under normal writer/pricing locks. Applicability checks do not repeat acquisition, materialization or correlation.
+During peer-selected complete-group work, applicable sources carry positive dated decisions in full-source
+positions. New/unresolved rows enter the cascade. Numerical states remain separate from ownership. Zero new rows
+across all sources in a dated market episode preserve its accepted public binding despite empty suffix reports. This
+creates no row template/allocation. New unresolved rows and conflicting memberships need owning resolution.
 
-Selected retained-input recovery can carry completed action-query coverage when it covers every admitted
-market date in the selected pricing request. It retains the actual query bounds. A later admitted date or
-explicit refresh cannot inherit that scope. New metadata projections consume retained provider observations
-only; old research provenance cannot expand the source scope or become a new continuity assertion.
+Read legacy envelopes/publication bodies as completed provenance. Recognized transport spellings cannot authorize
+fresh fact applications or repeat old proofs. Unknown/conflicting required handoffs select owning recovery. Within
+an operation recovery consumes evidence-client-held accepted catalogue records. The
+[workflow database](technical-contracts.md#universe-observation-and-work-state) records their acceptance reference.
+The post-correlation owner can finish under normal writer/pricing locks from held source inputs, reports and
+retained-choice scope. Applicability checks repeat no acquisition, materialization or correlation.
 
-Any compatible completed group may retain its accepted prefix when pricing ancestry proves that prefix unchanged.
-Group size, cross-label membership, structural events and an initially empty history describe the completed
-decision; they are not evidence that retained prices or assignments changed. Effective source context must match,
-allowing only advancing observation/mapping cutoffs. Fresh mapping, action, disposition and coverage-quality facts
-still participate. A descriptive name/status/tradable change on the same provider UUID, symbol, class and exchange
-affects new-session projection but does not revoke accepted row owners; accepted continuation also excludes
-action-query bounds and the diagnostic maximum row count from historical equality.
-An exchange transfer can also preserve accepted rows for a single-source, single-UUID listed security
-whose rows are all resolved. Its other historical facts must agree and its actions must be limited to
-cash dividends and forward or reverse splits. A competing owner, structural event or OTC endpoint
-keeps the existing ownership review applicable.
-The workflow's metadata-refresh obligation uses this same classification before choosing historical pricing
-work; requesting a fresh description is not itself a request to recalculate historical ownership.
+Selected retained-input recovery can carry completed action coverage under actual query bounds if every admitted
+market date is covered. Later admitted dates and explicit refresh cannot inherit it. New metadata projections use
+retained provider observations only. Legacy research cannot extend scope or establish new continuity.
 
-Validate each new session grid and its accepted seam, then send only added rows from every group member through
-the same compiled policy evaluator. An empty accepted prefix has no seam; the pricing producer validates its first
-rows. An empty append with applicable ownership and numerical decisions skips both evaluations. A newly
-supported membership or retired-label identity selects just its affected assignments and any newly joined
-numerical contest. An uncompleted dated-label collision can select its metadata-only producer. An ordinary
-rollover or an older receipt without a summary can require retained assignment bodies for publication. The
-active pricing partition supplies the added rows. A completed unresolved or incomplete prior row partition is
-explicitly conditional on later group facts: new rows in that group select complete-group work until an owning
-producer can certify a narrower affected interval. Resolved completed assignments remain closed.
+Any compatible complete group may retain its prefix with unchanged pricing ancestry. Size, cross-label membership,
+structural events and initially empty history alone cannot show retained prices or assignments changed. Require
+matching effective source context allowing advancing observation/mapping cutoffs. Fresh mappings, actions,
+dispositions and coverage quality participate. Changed name/status/tradability on unchanged UUID, symbol, class and
+exchange affects new-session projection only. Historical equality excludes action-query bounds and diagnostic
+maximum row count.
 
-A pricing producer's latest-session correction certificate permits retaining resolved assignments before that
-session when mapping and ownership evidence remain applicable. The same evaluator processes the corrected row
-and any appended rows in all eight views. At an unchanged cutoff, the corrected session is the entire new input;
-the empty append interval requires no calendar calculation. Assignment summaries and affected boundary metadata
-supply the retained prefix; older pricing is not reopened to authenticate it. Correction scope and ancestry travel through metadata
-prefetch as well as execution, so a sparse correction before the current month does not reacquire historical
-actions merely because its notice begins earlier. [correction_prefix.py](../libs/alpaca_lineage_build/correction_prefix.py)
-owns this projection; the [pricing and serving contracts](technical-contracts.md#pricing-acquisition-and-continuation)
-own its publication and downstream guarantees.
+A listed single-source, single-UUID security with fully resolved rows can retain them across an exchange transfer if
+other historical facts agree and actions comprise only cash dividends or forward/reverse splits. Competing owner,
+structural event or OTC endpoint preserves ordinary ownership review. Metadata refresh applies the same
+classification before selecting historical pricing. A description refresh alone cannot require historical ownership
+recalculation.
 
-One accepted catalogue and evidence client serve recovery and discovery within an update. Recovery acquires
-the catalogue once when it has selected work; discovery consumes that completed observation, exact positive
-and negative asset lookups, completed corporate-action intervals, failed requests and conflict latches.
-A phase transition neither invalidates these facts nor permits reacquisition or repeated normalization.
-Optional lookup prefetch retains its completed catalogue response for the full discovery producer; the
-stronger discovery schema must still succeed without a second provider request. A new invocation obtains
-fresh observations. Action coverage never approves an unqueried date interval.
+Validate new grids and accepted seam, then use the same compiled evaluator on only added rows from every group
+member’s active pricing partition. Empty accepted prefixes have no seam. Pricing validates their first rows. Empty
+append with applicable ownership/numerical decisions skips both evaluations. Newly supported membership or
+retired-label identity selects only affected assignments/newly joined numerical contests. Uncompleted dated-label
+collision may select metadata-only work. Rollover or legacy missing summary can require retained assignment bodies
+for publication. Previously unresolved/incomplete partitions remain conditional on later group facts. New group rows
+select complete-group work until an owning producer certifies a narrower affected interval. Resolved completed
+assignments remain closed.
 
-If newly acquired metadata invalidates this prefix after pricing has been decoded, full-history fallback
-retains the already decoded partitions under the same source generation and locks. It loads only the missing
-partitions. Single-source observation selection skips multi-source ownership/ranking preparation and retains
-the existing legacy activity validation.
+A latest-session pricing correction certificate retains prior resolved assignments if mapping/ownership evidence
+still applies. Evaluate the corrected row plus appends in all eight views. Unchanged cutoff means only the
+correction and no append calendar calculation. Assignment summaries and affected boundary metadata supply the prefix
+without authenticating older prices. Carry correction scope/ancestry through prefetch and execution. An earlier
+notice for sparse pre-current-month correction alone cannot reacquire historical actions.
+[Correction projection](../libs/alpaca_lineage_build/correction_prefix.py) and
+[publication/serving contract](technical-contracts.md#pricing-acquisition-and-continuation)
 
-Changed mapping/action facts, incompatible context or policy, corrections beyond the certified latest session, missing equality proof, or
-new group rows that can reconsider accepted unresolved/incomplete decisions select complete-group work. This
-selection precedes evaluation; the boundary never tries one set of rules and checks its outcome to choose another.
-Query-label bookkeeping alone does not invalidate an accepted append prefix. A strictly later suffix preserves
-both resolved and unresolved historical decisions when completed assignment bounds establish disjointness.
-Overlapping new observations, a previously observed future action whose date is reached by the suffix, missing
-bounds and incomplete partitions retain the owning reconciliation path.
-The existing evaluator retains its normal evidence reconciliation and ownership fallback. There is no separate
-continuation executor or mandatory context preparation.
+Recovery and discovery share one accepted catalogue and evidence client per update. Recovery acquires the catalogue
+once when it has selected work. Discovery consumes that observation, exact positive/negative lookups, completed
+action intervals, failures and conflict latches without reacquisition or renormalization on phase change. Optional
+lookup prefetch lends its catalogue response to full discovery, whose stronger schema must still succeed without a
+second request. New invocations get fresh observations. Coverage cannot extend to unqueried action dates.
 
-Each in-memory pricing input declares whether it contains `complete_history`, a `retained_suffix` or an
-`active_partition`; this scope is assigned by the loader request, never inferred from advertised retained counts.
-After metadata and append invalidation finalize complete-group work, every selected priced member is materialized
-as complete history under its already selected generation. The operation reuses decoded partitions while loading
-only missing data. Mixed complete/suffix inputs fail before correlation or publication. Accepted prefix reports
-and certificates remain available only to the added-session path; they cannot mark one member of a new
-complete-group decision as resumed. The separately certified closed-source path retains its explicit authority.
+If newly acquired metadata invalidates the prefix after decoding, full-history fallback under the same
+generation/locks loads only missing partitions. Single-source observation selection skips multi-source
+ownership/ranking preparation and retains legacy activity validation.
 
-The normal selector-last publication, unchanged output-reference reuse, pricing handoff and journal recovery
-contracts apply to both paths. Opt-in `--debug` records whether lineage is required, whether retained history is
-selected, its retained row count and the scope (`none`, `added_sessions` or `complete_group`); ordinary commands add
-no trace logging. Before each ordinary correlation, the trace also records every selected input's pricing
-generation and materialization scope from held values.
+Changed mapping/action facts, incompatible context/policy, corrections beyond certified latest session, missing
+equality proof or new rows that can reopen unresolved/incomplete decisions select complete-group work **before**
+evaluation, without trying alternate rules. Query-label bookkeeping alone preserves the prefix. A strictly later
+suffix with completed disjoint assignment bounds preserves resolved and unresolved history. Overlap, a previously
+observed future action reached by the suffix, missing bounds or incomplete partitions select owning reconciliation.
+The existing evaluator retains normal evidence reconciliation/ownership fallback without separate continuation
+executor or mandatory context preparation.
+
+Loader requests declare `complete_history`, `retained_suffix` or `active_partition` for each in-memory input.
+Retained counts cannot imply scope. Once metadata/append invalidation selects complete-group work, materialize each
+priced member’s complete history at its selected generation, retaining decoded partitions and loading only missing
+data. Reject mixed complete/suffix inputs before correlation/publication. Prefix reports/certificates apply only to
+added-session work, never to resuming one member of a new complete-group decision. Separately certified closed
+sources retain their explicit authority.
+
+Both paths publish selector last, reuse unchanged output references and share pricing handoff/journal recovery
+contracts. Only opt-in `--debug` traces lineage requirement, retained-history selection/count and scope (`none`,
+`added_sessions`, `complete_group`). Before ordinary correlation it also records each selected input’s
+generation/materialization scope from held values.
 
 ## Missing auxiliary prices
 
-An exactly rejected missing auxiliary may retain metadata and complete its group alongside independently
-supported histories, without an invented empty source. This excludes arbitrary failure, seeds and retained
-series. [acquisition.py](../libs/alpaca_lineage_build/acquisition.py) records rejected request, evidence and
-obligation before acknowledgement; auxiliary-only reselection preserves its group.
+An exactly rejected missing auxiliary may retain metadata and complete alongside independently supported group
+histories without inventing an empty source. Exclude arbitrary failures, seeds and retained series.
+[Acquisition](../libs/alpaca_lineage_build/acquisition.py) records rejected request, evidence and obligation before
+acknowledgement. Auxiliary-only reselection preserves the group.

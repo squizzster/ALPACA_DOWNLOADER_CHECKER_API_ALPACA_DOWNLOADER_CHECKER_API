@@ -1,12 +1,8 @@
 # Correlation policy lab
 
-For a single public-API CLI with an editable research YAML, recorded ticker explanations and explicit
-selected/all-group replay, use the [lineage rule tool](lineage-debug.md). Its `--all` evaluates every
-indexed group; the lab's `audit` below retains conservative affected-group selection and its hard timeout.
+The lab replays YAML-selected correlation against completed lineage. `compare` selects one complete identity group. Explicit `audit` conservatively selects affected groups in one bounded pass under a hard timeout. Both are read-only. Neither requests provider data, changes evidence or prices, publishes lineage, rewrites YAML or selects the acquisition universe.
 
-The lab replays YAML-selected correlation against completed lineage. `compare` selects one complete identity
-group; explicit `audit` checks the completed selector in one bounded pass. Both are read-only: no provider
-requests, evidence/price changes, lineage publication, YAML rewriting or acquisition-universe selection.
+For recorded explanations, editable research YAML or explicit selected/all-group replay via public API, use the [lineage rule tool](lineage-debug.md). Its `--all` evaluates every indexed group.
 
 ```bash
 python3.11 -m pip install -r requirements.txt
@@ -35,7 +31,7 @@ Research chronology remains an external reference for generic rule design and ev
 
 ## Current schema-4 policies
 
-[Canonical production YAML](../resources/alpaca_security_correlation_policy.yaml) binds correlation-92/lineage-37.
+The [canonical production YAML](../resources/alpaca_security_correlation_policy.yaml) binds its correlation and lineage versions under `policy.implementation`.
 It retains the frozen correlation-59/lineage-33 fixed-point structure and adds the strict exact same-symbol handoff
 certificate, bounded-entry form, bounded shared-UUID histories, complete-current-source early-successor bridge and
 terminal carry-forward exclusion, post-padding bounded alias, vacant-ticker non-observation, pre-entry carry-forward

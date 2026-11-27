@@ -1,24 +1,14 @@
 # Alpaca to Bloodhound converter
 
-An offline Bloodhound converter for online Alpaca catalogue histories, completed per-identity CSV exports and legacy resolved histories.
-It writes an 18-column Bloodhound Parquet file and a JSON report. This application has its own dependencies
-and CLI; the engine's separate [Parquet exporter](../docs/exports.md#parquet-conversion) remains available.
+Offline CLI for online Alpaca catalogue histories, completed per-identity CSV exports and legacy resolved histories. Writes 18-column Bloodhound Parquet plus a JSON report. It needs its own dependencies and no Alpaca credentials, price requests or corporate-action requests. The engine also has a [native Parquet exporter](../docs/exports.md#parquet-conversion).
 
-Imported from `alpaca_to_bloodhound_app_current_csv.zip`, application version 1.1.0. The accepted package
-handoff records SHA-256 `fd03f336b3bc4e955f58ec675658e14f1a885f4e45d394f9db95f5cbd332fe67`.
-Source, tests and synthetic examples are kept here. Generated data, environments and execution logs stay
-outside Git. The [repository trust-boundary review](../docs/trust-boundary-handoff.html) identifies the
-scope of the engine's guarantees; this app's known limitations are described below.
-Repository runtime changes are recorded in [change_log.json](change_log.json); one-based array position
-matches `RUNTIME_VERSION`. The CLI and output metadata retain the application's semantic version string.
+Imported app 1.1.0 from `alpaca_to_bloodhound_app_current_csv.zip`, accepted SHA-256 `fd03f336b3bc4e955f58ec675658e14f1a885f4e45d394f9db95f5cbd332fe67`. Git tracks source, tests and synthetic examples. Generated data, environments and logs stay outside Git. [Runtime changelog](change_log.json) positions are one-based and match `RUNTIME_VERSION`. CLI and output metadata retain the application semantic version. See the app limitations below and the [engine's distinct guarantees](../docs/trust-boundary-handoff.html).
 
 ```bash
 python alpaca_to_bloodhound.py --data-in /path/to/top_331 --blood-out bloodhound.parquet
 ```
 
-The corrected default conversion **copies each supplied fully adjusted OHLC value**, preserves raw close and raw volume, computes dollar volume from the raw pair, and keeps the split-only share factor separate from the overall price-adjustment ratio.
-
-The application is offline after installation. It does not require Alpaca credentials or fetch prices or corporate actions.
+Default conversion preserves each supplied fully adjusted OHLC, raw close and raw volume. Dollar volume uses the raw pair. Split-only share factor and overall adjustment ratio remain distinct.
 
 ## 1. Install and run
 
@@ -71,19 +61,15 @@ adjustment_ratio = adjusted_close / raw_close
 split_adjustment_ratio = separately_established_share_unit_price_factor
 ```
 
-The factor is inferred from source views by default, or constructed from explicitly supplied corporate-action records as described below. Its provenance is declared in both output files.
+Both files declare the share factor's provenance: inferred from source views by default, or constructed from explicitly supplied corporate actions. Copy supplied adjusted OHLC values individually. Reconstructing with `raw_price * (adjusted_close / raw_close)` can change individually rounded values (supplied open 33.33 versus about 33.3366 reconstructed).
 
-The implementation does not reconstruct adjusted open/high/low using `raw_price * (adjusted_close / raw_close)`. Those calculations can change individually rounded provider values. For example, a supplied adjusted open of 33.33 is preserved even when reconstruction from the rounded close would give about 33.3366.
-
-`volume` is `float64`, so fractional supplied quantities are retained. It is not multiplied by a split or dividend adjustment before storage. `dollar_volume` is the raw-close-based measure required by the supplied contract, not the sum of actual transaction values throughout the day.
-
-The downstream cutoff conversion, if needed by Bloodhound calculations, is:
+Float64 volume preserves fractional quantities without split or dividend adjustment. Dollar volume uses raw close × raw volume, so it need not equal summed transaction values. For downstream cutoff conversion:
 
 ```text
 volume_at_cutoff(t, c) = raw_volume(t) * S(c) / S(t)
 ```
 
-That formula is documented in the report but is deliberately not applied to the stored `volume` column.
+The report documents the formula. Stored `volume` stays raw.
 
 ### Explicit split-only price basis
 

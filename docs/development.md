@@ -2,66 +2,23 @@
 
 ## Find the owner
 
-Start with [AGENTS.md](../AGENTS.md), [architecture](ARCHITECTURE.md#code-ownership) and the relevant contract.
-Use synthetic stores/HTTP doubles, not production copies or ordinary live acquisition. Test changed behavior
-and its nearest failure: interruption, acknowledgement order and repeated upstream authentication matter.
-Version/changelog rules and constants live in [VERSION_TRACKER.md](../VERSION_TRACKER.md).
+Read [AGENTS.md](../AGENTS.md), the [package ownership map](ARCHITECTURE.md#code-ownership) and the owning contract. Develop with synthetic stores and HTTP doubles. Version and changelog rules are indexed in [VERSION_TRACKER.md](../VERSION_TRACKER.md).
 
-Before adding a boundary check, name the new fact it establishes and why the accepted producer handoff does not
-already guarantee it. Follow the [trust contract](../AGENTS.md#trust-before-touching-storage): a new caller, retry
-or workflow acknowledgement alone is not a new data fact. Keep the rationale beside the handoff: its owner,
-guarantee, scope/lifetime, actual invalidation condition and the upstream work consumers must not repeat.
-Do not justify an existing redundant check as necessary merely because it is already present.
+Before adding a check, identify the fact still missing. Document the handoff's owner, guarantee, scope, lifetime, invalidation and prohibited repeats. A retry, new caller or missing acknowledgement grants no authority to repeat an accepted check. [Trust contract](../AGENTS.md#trust-before-touching-storage)
 
-For behavioral changes, regression tests must reject forbidden work as well as incorrect results: unchanged
-maintenance inputs must not reopen upstream artifacts merely to repeat completed checks, replay decisions or
-republish data, while changed inputs must still take the owning update path. Selected payload reads needed to
-serve a new history or export request remain legitimate work. [Approval handoffs](../tests/test_alpaca_approval_handoffs.py) and
-[serving handoffs](../tests/test_alpaca_serving_handoffs.py) exercise this distinction, including generation changes,
-expired handoffs and interruption. Preserve those assertions when changing the mechanism of completion.
+Test the result and its nearest failure, including interruption and acknowledgement order. Unchanged inputs must forbid redundant reads, replays and publication. Changed inputs must reach the owning update path. Reading selected payloads to serve a new history or export is legitimate. Preserve these assertions when changing completion mechanics. [Approval regressions](../tests/test_alpaca_approval_handoffs.py) · [Serving regressions](../tests/test_alpaca_serving_handoffs.py)
 
 ## Lineage research and rule-improvement loop
 
-Research is an external reference; the main agent owns generic-rule implementation and acceptance.
-No fact-injection candidate or mechanism is admissible. Apply the
-[ownership allocation criterion](lineage.md#ownership-allocation-criterion) and the
-[generic inference instructions](../AGENTS.md#generic-lineage-inference).
+The main agent owns generic-rule implementation and acceptance. Research supplies an external reference only. [Ownership criterion](lineage.md#ownership-allocation-criterion) · [Generic inference requirements](../AGENTS.md#generic-lineage-inference)
 
-1. Define one active case: disputed dates, the complete dependency group and the ownership question.
-   Record store, selector, receipt/pricing, executable implementation and policy bindings before an
-   experiment. Carry applicable completed work forward. A queue predating an accepted repair does not
-   authorize repeating it.
-2. Use a fresh independent research agent per case: `gpt-6.1-sol`, high reasoning, `fork_turns="none"`.
-   Request primary-source chronology, conflicts, uncertainty and counterexamples without a preferred
-   verdict. Researchers never edit or publish. Their report is an external expected-result reference;
-   no part of it becomes inference evidence or a scoped runtime application. Research may confirm a
-   connection or establish that the API cannot reasonably connect the history; both are useful results.
-3. Explain the recorded result from retained provider observations and completed decisions. Classify
-   the cause before changing a rule: evidence availability, ownership inference, membership propagation,
-   numerical selection or consumer interpretation. Do not invent bars, provider UUIDs, endpoint outcomes
-   or unrecorded predicate explanations. Keep source identity, dated labels and numerical authority distinct.
-4. Propose one generic correction when the admissible retained data reasonably supports the researched
-   result. Prefer an existing-rule correction; new rules require ordered conditions and counterexamples.
-   Choose the most likely reasonably supported owner without demanding certainty or a special certificate.
-   A result that cannot reasonably support a connection is a valid completed, nonblocking processed
-   lineage outcome, with ownerless history unpublished to consumers. Both connecting and leaving
-   ownerless must be judged against the best interpretation of the available source evidence. Research conclusions, ticker lists and source documents
-   must never be supplied to the inference engine as assertions, overlays or exceptions.
-5. Test the candidate and nearest failures on identical held inputs with an explicit unchanged control.
-   Separate stored/control drift from candidate-caused effects. A Python change needs an opt-in candidate
-   or preserved control implementation. Test equivalent evidence under different ticker spellings, a
-   reasonably supported allocation without a particular certificate, competing owners, genuine ties,
-   scoped invalidation and interruption. Fail on research-file access, fact-injection ingress, repeated
-   provider requests, boundary reads or completed calculations. Do not repeat accepted comparisons.
-6. Measure wider impact from completed selectors and the actual generic rule conditions. A metadata
-   exclusion needs a necessary-condition proof; unknowns remain selected. Report affected identities,
-   dates, decisions, explanations, failed/unevaluated scope and limits. Unaffected classification does
-   not establish stored correctness. Preserve independent completed peer results.
-7. Close the case with the generic-rule verdict, external reference, counterexamples, measured impact
-   and limits before starting another. Complete owning regressions, mandatory trust review and full
-   checks before a code handoff. Production publication requires separate authorization; research and
-   diagnostic results never authorize it. Continuation and recovery consume completed results without
-   reopening research assertions or replaying accepted work.
+1. Select one case. Record disputed dates, complete dependency group, ownership question and bindings for store, selector, receipt/pricing, implementation and policy. Retain applicable completed work even if an older queue requests it.
+2. Assign one independent research agent per case (`gpt-6.1-sol`, high reasoning, `fork_turns="none"`). Request primary-source chronology, conflicts, uncertainty and counterexamples without suggesting a verdict. Researchers neither edit nor publish. A supported connection and evidence insufficient to connect are both valid findings. No report or scoped factual application enters inference.
+3. Explain the recorded result from retained API observations and completed decisions. Locate the cause in evidence availability, ownership inference, membership propagation, numerical selection or consumer interpretation. Preserve the distinction between security identity, dated ticker and numerical source. Never invent bars, UUIDs, endpoint results or predicate explanations.
+4. Change an existing generic rule when admissible inputs reasonably support correction. A new rule needs ordered predicates and counterexamples. Compare plausible owners with nonallocation, without requiring a special certificate or certainty. Unresolved history stays unpublished and counts as processed. Research results, ticker lists and source documents cannot become assertions, overlays or exceptions.
+5. Compare candidate and unchanged control on identical held inputs. Isolate stored/control drift. For Python changes, use an opt-in candidate or preserved control. Cover equivalent evidence under other tickers, owners supported without a specific certificate, competitors, ties, invalidation and interruption. Fail on research-file access, injected facts or repeated provider calls, boundary reads, comparisons and calculations.
+6. Measure impact using completed selectors and actual rule conditions. Excluding a group by metadata needs proof of a necessary condition. Keep unknowns selected. Report affected IDs, dates, decisions, reasons, failures, unevaluated scope and limits. Unaffected classification leaves stored correctness unverified. Retain completed peers.
+7. Before opening another case, record verdict, external reference, counterexamples, measured impact and limits. Run owning regressions, mandatory trust review and full checks before handoff. Production publication requires separate authorization. Continuation and recovery use completed decisions without reopening research or repeating accepted work.
 
 The [lineage regression symbols](../tests/fixtures/lineage_symbols.txt) select a bounded development
 comparison. The file contains one seed per selected group, including reused tickers, delistings,
@@ -129,25 +86,11 @@ dated test histories, duplicate version tables and speculative plans.
 
 ## Pipeline Phase 1: Prepare
 
-Prepare turns a daily-update request into a complete registered work package.
-The ordinary controller passes a native `Prepared` record by reference. The
-standalone JSON adapter can continue in a fresh process without repeating preparation
-or relying on predecessor Python objects. This is the first executable part of the three-part
-split: Prepare, history production, then serving. The six logical responsibilities
-are baseline restoration, initial selection, complete pricing/lineage production,
-serving component selection, serving preparation/assessment, and publication.
+Prepare → Histories → Serve is the executable pipeline. Its six responsibilities are baseline restoration, initial selection, complete pricing/lineage production, serving component selection, serving preparation/assessment, then publication.
 
-Prepare owns the operation identity and frozen inclusive cutoff, existing journal
-recovery, selected pending-summary recovery, catalogue observation, initial work
-selection, registration, completed-work acknowledgements and initial maintenance
-membership. Ordinary live pricing maintenance starts after it returns. Recovery
-may itself finish pricing and lineage work; its accepted results must cross too.
+Prepare registers daily work and returns a native `Prepared` by reference. Its independent JSON adapter can continue in a fresh process without predecessor objects or repeated preparation. It owns operation identity, frozen inclusive cutoff, journal and selected pending-summary recovery, catalogue observation, work selection, registration, completion acknowledgements and initial maintenance membership. Ordinary live pricing maintenance follows Prepare. Recovery can itself finish pricing/lineage work, whose accepted results must cross the handoff.
 
-The implementation is in [alpaca_pipeline](../libs/alpaca_pipeline/prepare.py).
-The public entrypoint is `alpaca_end_of_day.prepare_pipeline(request_json: bytes) -> bytes`;
-[alpaca_pipeline_prepare.py](../alpaca_pipeline_prepare.py) calls that same entrypoint
-with stdin and stdout. It requires the existing provider credential environment.
-For example, supply this document with absolute paths appropriate to your store:
+Implementation: [prepare.py](../libs/alpaca_pipeline/prepare.py). Public `alpaca_end_of_day.prepare_pipeline(request_json: bytes) -> bytes` and [stdin/stdout adapter](../alpaca_pipeline_prepare.py) share the implementation and existing provider credential environment. Supply absolute paths for the store and registry.
 
 ```json
 {

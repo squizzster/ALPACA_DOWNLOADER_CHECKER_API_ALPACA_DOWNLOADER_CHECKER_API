@@ -1,7 +1,6 @@
 # Version authorities
 
-Owning constants and runtime JSON changelogs are authoritative; this index stores no duplicate version table.
-Runtime validators check one-based changelog array position against the owning constant.
+Runtime versions come from the owning constant and its JSON changelog. Validators require matching one-based array positions.
 [AGENTS.md](AGENTS.md#changes) owns bump/entry requirements and the documentation-only exemption.
 
 ## Runtime releases
@@ -29,26 +28,13 @@ Runtime validators check one-based changelog array position against the owning c
 
 ## Compatibility
 
-Pipeline transport `VERSION` tracks implementation compatibility; `SCHEMA_VERSION`
-owns the transient request, prepared and histories document schemas independently.
-Its runtime binding rejects arguments from an incompatible executable implementation.
-
-Pricing/lineage/serving `RUNTIME_VERSION` tracks releases; their `VERSION` constants retain persisted publication
-contracts. A runtime bump alone neither invalidates completed decisions nor authorizes reconstruction.
-Correlation likewise separates runtime releases from `CORRELATION_VERSION`, the rule implementation selected
-by authorized policy. Reuse optimizations preserve that rule identity and its completed assignments.
-An exact retained-policy applicability proof can preserve an earlier completed decision's original provenance;
-it authorizes neither executing the earlier policy as current nor promoting potentially affected decisions.
-Metadata membership and mapped-source ownership have separate completion handoffs in the selecting lineage
-receipt; a pricing change alone does not invalidate an unchanged metadata decision.
-Pricing installation journals declare [INSTALLATION_HANDOFF_VERSION](libs/alpaca_pricing_download/storage.py)
-independently of readable source schemas; [recovery](docs/technical-contracts.md#publication-and-recovery) consumes
-their accepted staging and summary values.
-Public-common continuity and distinct-security conversions have independent version-1 fact schemas;
-their completed membership, source and relation handoffs belong to the lineage receipt. Serving numerical
-checkpoint reuse across accepted membership changes does not change eligibility policy or catalogue schema.
-Lineage computation revisions independently select owning reconstruction of earlier derived decisions while preserving accepted pricing and metadata; the lineage owner records the revision on receipts and compact index entries. Readable schemas need not be reusable. Owner compatibility gates decide reuse; do not relabel stored artifacts
-to make numbers agree.
+- Pipeline transport `VERSION` binds the executable implementation and rejects incompatible arguments. `SCHEMA_VERSION` separately owns transient request, prepared and histories documents.
+- Pricing, lineage and serving `RUNTIME_VERSION` track releases. Their `VERSION` constants govern persisted publications. A runtime bump alone neither invalidates completed decisions nor authorizes reconstruction.
+- Correlation separates runtime releases from policy-selected `CORRELATION_VERSION`. Reuse optimizations preserve rule identity and completed assignments. An exact retained-policy applicability proof preserves earlier provenance only. It cannot execute the old policy as current or promote potentially affected decisions.
+- Metadata membership and mapped-source ownership have separate handoffs in the selecting lineage receipt. Pricing changes alone leave unchanged metadata decisions valid.
+- Pricing journals declare [INSTALLATION_HANDOFF_VERSION](libs/alpaca_pricing_download/storage.py) independently of readable source schemas. [Recovery](docs/technical-contracts.md#publication-and-recovery) consumes accepted staging and summary values.
+- Public-common continuity and distinct-security conversions use independent version-1 fact schemas. The lineage receipt owns their membership, source and relation handoffs. Serving may reuse numerical checkpoints across accepted membership changes without changing eligibility policy or catalogue schema.
+- Lineage computation revisions select owning reconstruction of earlier derived decisions, preserving accepted pricing and metadata. Receipts and compact index entries record the revision. Readability alone cannot authorize reuse. Apply the owner's compatibility gate. Never relabel a stored artifact to match a version.
 
 - [Pricing representation](docs/technical-contracts.md#standalone-artifacts): source and selected boundary versions may differ.
 - [Pricing comparison handoff](docs/technical-contracts.md#pricing-acquisition-and-continuation): recognized legacy sources publish their missing tail without changing prices; the compact summary carries its actual pricing generation.

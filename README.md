@@ -1,51 +1,35 @@
 # Alpaca EOD Data Engine
 
-Maintains exact US-equity prices in eight adjustment views, dated security identities and an online serving
-catalogue. Incremental checks reuse completed work; journals recover interrupted publications. Local readers
-and CSV, Parquet, and EOD event exports consume published histories and evidence. Research and trading decisions
-stay outside the data boundary.
+Alpaca EOD stores US equity histories in eight adjustment views, with dated identities across ticker changes and reuse. Join prices and metadata by public security ID. Read the online catalogue locally or export CSV, Bloodhound Parquet, daily events or metadata JSON Lines.
 
-[Ownership allocation](docs/lineage.md#ownership-allocation-criterion) seeks the most likely lineage from the
-available evidence. Both incorrect allocation and withholding supported history are errors.
+**Each producer owns a trust boundary.** Pricing approves a generation and date range, lineage assigns ownership, and serving publishes eligible histories. Consumers reuse that handoff within scope. Changed generations return to their owner. Journals resume interrupted publication without repeating accepted checks or downloads. [Producer handoffs](docs/ARCHITECTURE.md#producer-handoffs)
 
-**Before continuing boundary or handoff work, read the [Trust-boundary implementation handoff](docs/trust-boundary-handoff.html).**
-It records the audit findings, verified fixes, remaining gaps, owning regressions and live verification limits.
-The review covers trust repairs and evidence-gated lineage extensions. [AGENTS.md](AGENTS.md) remains authoritative.
+Requires Unix, Python 3.11, `flock` and `America/New_York` timezone data. Acquisition needs Alpaca credentials and SIP access. Published reads and exports run offline. [Prerequisites](docs/operations.md#prerequisites)
 
-Requires Python 3.11, Unix `flock` and `America/New_York` timezone data. Production policy compilation uses
-[PyYAML](requirements.txt). Parquet and EOD event exports use the [converter dependencies](requirements-bloodhound.txt).
-See [setup and credentials](docs/operations.md#prerequisites). Runtime stores stay outside Git.
+## Set up and operate
 
-## Run and consume
+- [Fresh installation](NEW_SETUP_VIRGIN_INSTALL_GUIDE.md) — acquisition, lineage, catalogue bootstrap, explicit exchange backfill and reproducibility.
+- [Operations](docs/operations.md) — daily updates, cutoffs, registry Git behavior, recovery and focused maintenance.
+- [CLI reporting](docs/cli-reporting.md) — exit codes, warnings, lock waits, heartbeats and debug traces.
 
-- [Operations](docs/operations.md): setup, `./alpaca-cli-eod update`, cutoffs, recovery and focused commands.
-- [Public API](docs/public-api.md): identity selection, snapshots, histories and errors.
-- [Exports](docs/exports.md) covers CSV, Parquet and EOD events. The [metadata companion](docs/exports.md#security-metadata-companion)
-  joins dated labels, observations and coverage to exported prices by public security ID.
-- [Bloodhound integrity audit](docs/exports.md#bloodhound-integrity-audit) checks a completed Parquet export offline.
-- [Standalone Bloodhound converter](bloodhound_app/README.md): convert online catalogue histories, completed CSV exports or legacy histories
-  with the imported app, its own dependencies, tests and documented limitations.
-- [CLI reports](docs/cli-reporting.md): completion, exit codes and the shared stderr heartbeat protocol.
-- [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md): independent metadata and lineage export
-  without pricing, with the definition retained for later assessments.
+## Read and export data
 
-## Understand the system
+- [Public API](docs/public-api.md) — ticker ambiguity, public IDs, online availability and snapshot reads with `DataLibrary` and `StandaloneReader`.
+- [Export formats](docs/exports.md) — metadata JSON Lines, CSV, Parquet, daily events and the optional offline Parquet audit.
+- [Standalone Bloodhound converter](bloodhound_app/README.md) — inputs, adjustment arithmetic, Parquet schema and partial publication.
+- [Business-equity baseline](IS_ELIGIBLE_LISTED_BUSINESS_EQUITY/README.md) — resolved IDs and group evidence for subsequent eligibility assessment.
 
-- [Architecture and ownership](docs/ARCHITECTURE.md): execution paths and responsible packages.
-- [Technical contracts](docs/technical-contracts.md): authoritative artifacts, pricing, work state, serving and recovery.
-- [Lineage](docs/lineage.md): policy-bound reuse, metadata continuation, ownership evidence and correction limits.
-- [Correlation policy lab](docs/policy-lab.md): read-only comparison/audit, candidate constraints and parity meanings.
-- [Lineage rule tool](docs/lineage-debug.md): one YAML research policy, rule index, ticker explanations,
-  selected/all-group replay, saved handoffs and exported ticker instances.
+## Understand and change the system
 
-## Change and verify
+- [Agent instructions](AGENTS.md) — required before changes. Covers inference, storage access, handoffs and verification.
+- [Architecture](docs/ARCHITECTURE.md) — end-to-end update and package ownership.
+- [Technical contracts](docs/technical-contracts.md) — selectors, scope, invalidation, locking, publication and recovery.
+- [Trust-boundary implementation review](docs/trust-boundary-handoff.html) — required before handoff changes. Verified repairs, open findings, regressions and production evidence gaps.
+- [Lineage contracts](docs/lineage.md) — admissible evidence, dated ownership, competing owners, exchange changes and unresolved outcomes.
+- [Development and verification](docs/development.md) — generic-rule research, required checks, three pipeline stages and JSON adapters.
+- [Version authorities](VERSION_TRACKER.md) — runtime and publication constants and changelogs.
 
-- [Agent instructions](AGENTS.md): authoritative repository and storage boundaries.
-- [Development](docs/development.md): research loop, tests and documentation verification;
-  [Pipeline Phase 1](docs/development.md#pipeline-phase-1-prepare) and
-  [Phase 2](docs/development.md#pipeline-phase-2-history-production) and
-  [Phase 3](docs/development.md#pipeline-phase-3-complete-pipeline) own native stage contracts and their standalone JSON adapters.
-- [Version tracker](VERSION_TRACKER.md): owning constants, runtime changelogs and publication compatibility.
+## Investigate a lineage decision
 
-Start with [store setup](docs/operations.md#adopt-or-reconstruct-an-existing-store); update does not bootstrap
-missing boundaries. Command definitions and help live in [the CLI](libs/alpaca_cli/__init__.py).
+- [Lineage rule tool](docs/lineage-debug.md) — explain published decisions or replay selected groups with a research candidate.
+- [Correlation policy lab](docs/policy-lab.md) — offline policy comparison, candidate effects and stored/control drift.

@@ -1,257 +1,216 @@
 # CLI reports
 
-[CLI `main`](../libs/alpaca_cli/__init__.py) owns result/exit behavior. Diagnostics go to
-stderr; final reports use JSON stdout, except commands explicitly producing CSV or selected reader formats.
-Every command in `alpaca-cli-eod` and `alpaca-lineage-lab` uses the shared lifecycle below.
+[CLI `main`](../libs/alpaca_cli/__init__.py) owns results and exit codes. Final results go to stdout as JSON
+unless the command selects CSV or another reader format. Every parsed `alpaca-cli-eod` and `alpaca-lineage-lab`
+command reports its lifecycle on stderr.
 
 ## Completion and status
 
-`update` reports completion, failures, pending work, effective cutoff, stage results and request counts.
-The `maintenance` stage handles existing eligible summary members before discovery; `maintenance_after_discovery`
-handles newly eligible or invalidated members and late-bar work. Reused checks issue no additional comparison
-requests. The final `complete` value includes both stages and serving completion. A finished daily pipeline reports
-`outcome: complete` or `outcome: completed_with_warnings`, with explicit `warnings`, failures and pending work.
-A completed attempt exits zero even when required data work remains; its warning diagnostic and `complete: false`
-keep that limitation visible. Registry Git bookkeeping runs only for fully complete data results. An execution
-that cannot return the complete attempt, malformed input and interrupted publication retain their error paths.
-An unfinished workflow item at the completion stage includes a `completion` object in both the report and its
-durable outcome. It gives the required and published date bounds, obligation and correction IDs, published
-and approved pricing generations, and group labels with a pending lineage check. These values come from the
-same selection used for acknowledgement. A null field means the corresponding observation was absent.
-Serving reports `pending_export_inputs` counts for pricing and lineage invalidations affecting published
-components; applicable unfinished invalidations prevent completion even when its scheduling queue is empty.
-Work-plan fields are conditional, not a guarantee of total requests; see
-[preview scope](operations.md#daily-update). Published unresolved identity may be completed processing.
+`update` reports effective cutoff, stages, request counts, failures, pending work and completion. Before
+discovery, `maintenance` handles existing eligible summary members. Afterwards, `maintenance_after_discovery`
+handles newly eligible or invalidated members and late bars. Reused checks make no comparison requests. Final
+`complete` includes both stages and serving. Pricing/lineage invalidations affecting published components appear
+in serving's `pending_export_inputs`. Applicable unfinished invalidations prevent completion even with an empty
+queue. An unresolved published identity can be complete.
+[Plan estimates are conditional](operations.md#daily-update).
 
-`status` is offline/read-only; missing/incomplete boundaries report blockers and reconstruction commands:
+A finished daily attempt reports `outcome: complete` or `outcome: completed_with_warnings` and exits 0.
+Outstanding required work yields `complete: false`, `warnings`, a warning diagnostic and pending/failure
+details. Registry Git bookkeeping requires full data completion. Malformed input, interrupted publication and
+inability to finish the attempt retain their error paths.
 
-- `ready_for_update`: required boundaries exist.
-- `processing_complete`: also no outstanding local work/publications.
+Each unfinished item at completion records `completion` in the report and durable outcome. The acknowledgement
+selection supplies required/published date bounds, obligation/correction IDs, published/approved pricing
+generations and group labels awaiting a lineage check. Null means unobserved.
 
-Either false exits nonzero. Neither asserts a fresh provider check or future coverage. Counts separate
-empty/nonempty history, unresolved rows and complete assignment; exclusive coverage ends differ from last bars.
-Each inspected boundary is coherent separately, not one cross-producer transaction.
-[Status authority](../libs/alpaca_lineage_build/status.py): `inspect_status`.
+Offline, read-only `status` lists blockers and reconstruction commands for missing/incomplete boundaries.
+`ready_for_update` requires all boundaries. `processing_complete` additionally requires no outstanding local
+work or publications. Either false exits nonzero. Each boundary is independently coherent. Counts distinguish
+empty/nonempty histories, unresolved rows and complete assignments. Exclusive coverage ends differ from last
+bars. Status establishes neither current provider freshness nor future coverage.
+[`inspect_status`](../libs/alpaca_lineage_build/status.py)
 
-Canonical exit codes: 0 success or completed daily update with warnings; 1 execution failure or other incomplete work; 2 invalid arguments; 3 busy store/reader/export lock.
-Store-writing commands wait for the store gate, emitting an immediate diagnostic and holding the `WAIT` heartbeat
-until acquisition; Ctrl-C cancels the wait before store or provider work. Standalone reads may wait with `--wait`;
-CSV exports always fail immediately when busy. Executable keyboard
-interruption exits 130. [Policy-lab exit codes](policy-lab.md#all-lineage-audit) differ.
+| Canonical exit | Meaning |
+|---|---|
+| 0 | Success, including finished daily attempts with warnings |
+| 1 | Execution failure or other incomplete work |
+| 2 | Invalid arguments |
+| 3 | Busy store, reader or export lock |
+| 130 | Executable keyboard interruption |
+
+Store writers emit an immediate diagnostic and hold `WAIT` until acquiring the gate. Ctrl-C cancels that wait
+before store/provider work. Standalone reads support `--wait`. Busy CSV exports fail immediately.
+[Policy-lab exit codes](policy-lab.md#all-lineage-audit) differ.
 
 ## Optional update debug trace
 
-Daily `update` (including `--plan`), `pricing acquire` and focused `lineage update` / `lineage refresh` accept
-`--debug FILE.jsonl`. The destination must be a new file in an existing directory; opening it fails before
-update work if it is unavailable or already exists. For example:
+Daily `update` (including `--plan`), `pricing acquire`, focused `lineage update` and `lineage refresh` accept
+`--debug FILE.jsonl`. Choose a new file in an existing directory. An existing or unavailable destination fails
+before update work.
 
 ```bash
 ./alpaca-cli-eod update --debug /tmp/alpaca-update.jsonl
 ./alpaca-cli-eod lineage update --symbol AAPL --no-pricing-acquisition --debug /tmp/alpaca-AAPL.jsonl
 ```
 
-For ordinary `update`, DEBUG captures compact native stage summaries and scalar producer
-effects in `FILE.jsonl.handoffs/<operation-id>/`, outside the production store. It does not
-encode held prices, receipts, assignments or caches. Explicit standalone JSON stages retain
-their exact argument/result captures.
-See the [pipeline contract](development.md#pipeline-phase-3-complete-pipeline).
-Planning and focused commands retain compact tracing only.
+Ordinary DEBUG updates capture compact native stage summaries and scalar producer effects outside the store at
+`FILE.jsonl.handoffs/<operation-id>/`. Held prices, receipts, assignments and caches stay in memory. Explicit
+standalone JSON stages capture exact arguments/results. Plans and focused commands retain compact tracing only.
+[Pipeline contract](development.md#pipeline-phase-3-complete-pipeline)
 
-This separate compact JSONL stream records events as they occur, including phases too brief for a heartbeat.
-It uses only arguments, results and decisions already held by the producer. It does not inspect storage to
-improve diagnostics or repeat a completed validation. Implementation: [debug_trace.py](../libs/common/debug_trace.py).
+The separate [JSONL trace](../libs/common/debug_trace.py) records events as they happen, including phases
+between heartbeats. It consumes held arguments, results and decisions without additional reads, validation,
+digests or provider calls.
 
-Each record carries schema `alpaca.update.debug`, schema version 1, run ID, sequence number, monotonic elapsed
-seconds, thread, event and stage. The run starts with UTC time and ends with status/exit code. Paired `enter` /
-`exit` records carry span and parent IDs; exits include duration and bounded result counters. Durations include
-child work: do not sum nested spans as independent elapsed time. Lock spans emit an acquired event to separate
-waiting from held work. `progress` records retain bounded existing observations; `decision` records identify
-prefix eligibility and fallback reasons. Lists carry counts and up to eight examples; nested values and strings
-are bounded and lines are at most 8 KiB. Records are serialized across workers and line-buffered without `fsync`.
+- Every record carries `alpaca.update.debug` v1, run ID, sequence, monotonic elapsed seconds, thread, event and
+  stage. Start records UTC time, end records status/exit code.
+- Paired `enter`/`exit` records carry span and parent IDs. Exits include duration and bounded result counters.
+  Durations include children. Lock-acquired events separate wait from hold time.
+- `progress` retains existing observations. `decision` gives prefix eligibility/fallback reasons. Lists carry
+  counts and up to eight examples. Nested values and strings are bounded. Lines ≤8 KiB, serialized across
+  workers, line-buffered without `fsync`.
 
-Coverage includes command/store-lock entry, universe-lock acquisition, durable work-state loading, owner recovery,
-accepted selectors, catalogue observation, selection and estimates, serving control-map loading,
-registration/work acceptance, initial pricing, live history checks, corrections, appends and
-worker publication, dependency catch-up/prefetch, complete lineage groups, receipt/boundary/payload reads,
-correlation/publication/acknowledgement, serving components/evaluation/publication, result output and automatic
-registry commit/push. CLI HTTP spans include limiter waits, request time and response handling, not exclusively network latency.
-Full GET targets and parameters are recorded in ordered `http_target` chunks (join `url_part` by request ID and
-part number), including long symbol rosters and pagination tokens. Request headers, credentials and response
-bodies are not serialized. HTTP exits retain observed request-count changes and available failure status,
-including a status carried by a wrapped exception's cause.
-Correction conflict events retain selected/acquired row values and the acquired session row count.
-`late_bar_action_positive` identifies each completed positive action and whether it was persisted;
-`late_bar_action_failed` includes the selected symbols, mapping, bounds and classified cause.
-`updated_boundaries` reports changed partition references or explicit repairs, not candidates.
-Effective price changes, generation changes and files written are distinct; an equal correction can
-write a completion receipt while preserving every pricing file.
-Prefix decisions explain incompatible or
-unresolved histories, changed ancestry/evidence, incomplete session seams and changed suffix identity/source priority. Group
-exits report rows processed versus reused; serving exits report reused prefixes and full-history evaluations.
+Coverage runs from command/store-lock entry through universe-lock acquisition, durable work loading, owner
+recovery, accepted selectors, catalogue observation, selection/estimates, serving control-map loading,
+registration/work acceptance, initial pricing, live checks, corrections, appends and worker publication. It
+includes dependency catch-up/prefetch, complete lineage groups, receipt/boundary/payload reads,
+correlation/publication/acknowledgement, serving components/evaluation/publication, output and automatic
+registry commit/push.
 
-`pricing_storage_read` brackets each actual read through the pricing owner and the shared reader's gzip
-loader. It identifies the path, symbol, artifact kind, purpose, available selector digest and byte count.
-Purposes distinguish selected payload/validator consumption from staged or installed producer validation
-and explicit authentication. Cache hits emit no physical-read span; exact-copy views share their existing
-physical reads. Staged reads identify their output path. Failed reads close with the error type.
-`pricing_source_selected` links an already computed source generation to its validator and boundary digests.
-`endpoint_selection_binding`, `pricing_generation_check` and `append_approval_binding` record the held
-selected/current generations and applicable request scope, including rejected stale bindings.
-`history_comparison` records each completed symbol's matching/differing result, source generation, summary
-token, endpoint sessions and mapping; `history_endpoint_difference` names the endpoint and changed fields.
-No response bodies, extra file reads, digests or provider requests are produced for these diagnostics.
-These are owning-path observations, not a filesystem sandbox or proof that every recorded operation is necessary.
+| Observation | Interpretation |
+|---|---|
+| HTTP spans | Include limiter wait, request and response handling. Join ordered `http_target` chunks by request ID and part number using `url_part` for full GET targets/parameters, including long rosters and pagination tokens. Omit headers, credentials and response bodies. Exits carry observed request-count changes and available failure status, including wrapped causes. |
+| Correction conflicts | Selected/acquired row values and acquired session row count. Correction completion consumption and transactional acceptance emit separate events. |
+| `late_bar_action_positive`, `late_bar_action_failed` | Each completed positive action and whether persisted. Failure gives selected symbols, mapping, bounds and classified cause. |
+| `updated_boundaries`, `pricing_publication` | Actual changed partition references or explicit repairs. Distinguish effective price change, previous/new source generation and files written. An equal correction may write a completion receipt and preserve every pricing file. |
+| Prefix decisions and exits | Explain incompatible/unresolved histories, changed ancestry/evidence, incomplete session seams and changed suffix identity/source priority. Group exits count processed/reused rows. Serving exits count reused prefixes/full-history evaluations. |
+| `pricing_storage_read` | Each actual pricing-owner/shared gzip loader read, with path, symbol, artifact kind, purpose, available selector digest and byte count. Distinguishes selected payload/validator consumption, staged/installed validation and explicit authentication. Cache hits emit none. Exact-copy views share physical reads. Staged reads name the output path. Failed spans close with the error type. |
+| `pricing_source_selected` | Links the computed generation to validator and boundary digests. |
+| `endpoint_selection_binding`, `pricing_generation_check`, `append_approval_binding` | Held selected/current generations and applicable request scope, including rejected stale bindings. |
+| `history_comparison`, `history_endpoint_difference` | Each completed symbol's match/difference, source generation, summary token, endpoint sessions and mapping. Differences identify endpoint and changed fields. |
+| `metadata_exact_lookup` | Actual uncached lookup attempt, kind and selection reason. Cache hits emit none. |
 
-Normal returns (including unchanged, blocked and incomplete results), exceptions and keyboard interruption
-close their started spans. A killed process leaves open spans identifying its last active work. A trace write
-failure disables tracing and emits a stderr warning while preserving the update outcome; missing records then
-must not be interpreted as successful completion. Argument-parser failures occur before tracing starts.
-Keep trace files outside Git. The synthetic trace tests exercise complete updates, append workers, failures,
-early exits and interruption; they do not establish production throughput.
+These owner observations neither enforce a filesystem sandbox nor prove every operation necessary. Normal
+returns (including unchanged, blocked or incomplete), exceptions and keyboard interruption close started spans.
+Killing the process leaves its last active spans open. Trace write failure disables tracing and warns on stderr
+without changing the update outcome. Missing records then cannot establish completion. Parser failures precede
+tracing. Keep traces outside Git. Synthetic tests cover complete updates, append workers, failures, early exits
+and interruption. Production throughput requires separate evidence.
 
 ## Shared lifecycle
 
-Both executables emit bounded, versioned compact JSONL on stderr for every successfully parsed command,
-including plans and short reads. Stdout retains each command's existing JSON/CSV result format. Help and
-argument errors retain argparse behavior and do not start a lifecycle. Reporting activates before contract
-checks, store locks or command work, and immediately flushes `INIT` with a command-specific startup message.
-Authority: [LifecycleReporter](../libs/alpaca_heartbeat/__init__.py). A short command can emit just `INIT` and
-`FINAL_EXIT`; the timer does not delay completion.
+Every successfully parsed command, including plans and short reads, flushes command-specific `INIT` before
+contract checks, locks or work. Help/argument errors retain argparse behavior. One
+[LifecycleReporter](../libs/alpaca_heartbeat/__init__.py) per executable covers nested pricing, lineage and
+catalogue work. Library calls stay silent unless a reporter/progress callback is attached. Reporting observes
+held memory only, with no provider calls, discovery, payload reads, locks, validation or work selection. A short
+command can emit only `INIT` and `FINAL_EXIT`.
 
-One executable owns one reporter, including nested pricing/lineage/catalogue work. Library calls stay silent
-unless a caller explicitly attaches a reporter or progress callback. The reporter reads held memory only:
-no provider requests, store discovery, payload reads, locks, validation or work-selection decisions.
+Every command/library reporter uses fixed intervals of 10, 60, 120, 180, 240, then repeating 300 seconds
+(elapsed 10, 70, 190, 370, 610, 910, 1210…). There is no CLI/reporter override. Tests advance a controlled
+clock. A separate timer samples one held status even during waits. Updates replace status/context without
+printing, queuing, leaking prior scope or resetting the timer. Invalid/oversized updates retain the last valid
+status. Unchanged work repeats with updated elapsed time. Brief phases may never appear.
 
-Fixed heartbeat intervals: 10, 60, 120, 180, 240, then repeating 300 seconds—elapsed times
-10, 70, 190, 370, 610, 910, 1210… . This cadence applies to every command and library reporter;
-there is no CLI or reporter interval override. Tests advance a controlled clock instead of changing the cadence.
-Whole `elapsed_seconds` use the monotonic clock from activation.
+Progress uses compact stderr JSONL, schema `alpaca.lifecycle.progress` v4:
 
-One held status is sampled by a separate timer, including while work waits. Updates replace status/context
-without printing, queuing or resetting the timer. Heartbeats retain it; unchanged work repeats with new elapsed
-time. Context replacement prevents previous-scope leakage. Invalid/oversized updates preserve the last valid
-status; brief phases may fall between samples and never appear.
+| Field | Meaning |
+|---|---|
+| `schema`, `schema_version`, `phase`, `message` | Protocol and reported phase |
+| `elapsed_seconds` | Whole monotonic seconds since activation |
+| `next_heart_beat_in_seconds` | Remaining scheduled seconds, rounded up. Terminal error/`FINAL_EXIT` carry `null`. |
+| Optional `current`/`total` | Paired counts, `0 <= current <= total`, in stage units. CSV counts selected public identities. |
+| Optional `scope` | Command or current work scope |
+| `context` | Registered scalar phase fields only. Large symbol lists/nested producer reports stay in final results. |
 
-Progress schema `alpaca.lifecycle.progress`, version 4: `schema`, `schema_version`, `elapsed_seconds`,
-`next_heart_beat_in_seconds`, `phase`, `message`. The next-heartbeat value is remaining scheduled seconds rounded
-up, or `null` in terminal error/`FINAL_EXIT` records. Optional `current`/`total` occur together with
-`0 <= current <= total`; their meaning follows the reported stage/unit. CSV counts selected public identities.
-`context` permits only registered scalar phase fields; large symbol lists and nested producer reports stay in
-the final result rather than entering heartbeat records.
-An optional `scope` identifies the command or current work scope.
+Only initial `INIT` includes `ai_agent_read_this`, even if later samples still hold `INIT`. Monitor heartbeats,
+derive reports from their messages, investigate elsewhere only when >10 seconds late, and update the user each
+heartbeat unless directed otherwise. Delivery establishes reporter liveness only. Unchanged counts can indicate
+waits or stalls. Estimates do not guarantee completion.
 
-Only initial `INIT` includes `ai_agent_read_this`: monitor heartbeats; use other monitoring only when a heartbeat
-is over 10 seconds late; derive reports from heartbeat messages; update the user at each heartbeat unless directed
-otherwise. Later records omit it even if the held phase remains `INIT`.
+`context.estimated_remaining_seconds` is whole seconds or `"TBD"`. CSV estimates from completed identities. The
+initial 10-second sample always displays `"TBD"` in every phase, preserving any underlying estimate for later
+samples.
 
-`context.estimated_remaining_seconds` is `"TBD"` when there is no estimate. CSV export supplies an
-approximate estimate from completed identities; numeric estimates are whole seconds. Initial 10-second heartbeat always displays
-`"TBD"`, regardless of phase or an available estimate. This overrides display only; later heartbeats retain the estimate.
+Daily pricing reports `eta_scope: "known_pricing_requests"` and `eta_status: "conditional"`. After eight
+completed page calls, midpoint and `estimated_remaining_lower_seconds`/`estimated_remaining_upper_seconds`
+combine accepted plan assumptions with recent and invocation-wide wall-time throughput, bounded by the shared
+rate limit. Calls include retries and rate waits. Never sum worker durations. Failures withdraw the numeric
+estimate with `eta_status: "unknown"`, `eta_reason: "request_failed"`. Counters update held progress without
+changing phase/cadence. Reporting is identical with or without debug.
 
-Daily execution also estimates the remaining **known pricing requests**, identified by
-`eta_scope: "known_pricing_requests"` and `eta_status: "conditional"`. After eight completed page calls,
-the midpoint and `estimated_remaining_lower_seconds` / `estimated_remaining_upper_seconds` combine the
-accepted work-plan assumptions with recent and invocation-wide wall-time throughput, bounded by the shared
-request-rate limit. Worker durations are not added together. Completed calls include their own retries and
-rate waits; a failed call withdraws the numeric estimate with `eta_status: "unknown"` and
-`eta_reason: "request_failed"`. Request counters update held progress without
-changing the phase or heartbeat cadence, and work without debug receives the same reporting.
+Escaped pricing exceptions emit immediate warning `pricing_request_failure` with bounded type/message, available
+HTTP status and allowlisted scope, excluding headers/bodies. The pricing boundary bounds and credential-redacts
+provider messages/transport reasons before scalar handoff. Heartbeats retain `eta_request_failures`,
+`eta_unresolved_request_failures`, `eta_last_error_type` and available `eta_last_http_status`.
 
-Escaped pricing-call exceptions emit an immediate warning diagnostic containing `pricing_request_failure`:
-bounded error type/message, available HTTP status and allowlisted request scope, without headers or response bodies.
-Provider messages and transport reasons are bounded and credential-redacted at the pricing boundary before
-they enter scalar failure handoffs. Heartbeats retain `eta_request_failures`,
-`eta_unresolved_request_failures`, `eta_last_error_type` and an available `eta_last_http_status`.
-Successful retries inside the original call remain one successful observation. A completed producer request
-scope with zero failures retires exceptions observed inside that scope, including supported batch fallback;
-unrelated successful calls or scopes cannot retire an earlier unfinished failure. When a completed lineage group
-records an auxiliary symbol as unavailable, its matching initial raw SIP rejection leaves the unresolved count.
-The cumulative failure count and original diagnostic retain the request. Successful overall completion
-retires the remaining observations. Reporting never retries requests or reopens accepted work.
+- Successful retries within a call count as one success. A completed zero-failure producer scope retires
+  exceptions inside that scope, including supported batch fallback. Unrelated successes cannot retire unfinished
+  failures.
+- A completed group's unavailable auxiliary retires its matching initial raw SIP rejection from the unresolved
+  count. The cumulative count and original diagnostic retain it. Successful overall completion retires remaining
+  observations. Reporting never retries or reopens work.
 
-The exact late-bar request plan replaces its provisional selection estimate. Newly selected request plans
-extend an exhausted estimate. These are conditional estimates, not duration limits: later metadata,
-corrections, dependencies and publication work may extend the command. They do not estimate unknown provider
-work or unmeasured local work. Stalls hold the last observation until another callback arrives; subsequent
-measurements incorporate the delay. Completed/selected counters additionally supply
-`estimated_phase_remaining_seconds` and `eta_phase` after observed progress in that phase; a different phase
-or reset counter starts a new measurement. A completed component does not set the command estimate to zero.
-Exhausted request estimates return `TBD` until more scope is known; only successful data-update completion
-reports zero with `eta_scope: "data_update"`. Subsequent registry Git work has its own lifecycle.
-The estimator reads no store, debug file or provider endpoint and persists no timing cache.
+The exact late-bar plan supersedes its provisional estimate. Newly selected plans extend exhausted estimates.
+Unknown provider work and unmeasured local work have no estimate. Later metadata, corrections, dependencies and
+publication can extend runtime. Stalls retain the last observation until the next callback incorporates the
+delay. After observed progress, completed/selected counters supply `estimated_phase_remaining_seconds` and
+`eta_phase`. New phases/reset counters start new measurements. Component completion cannot zero the command
+estimate. Exhausted scope returns `TBD`. Only successful data-update completion yields zero with
+`eta_scope: "data_update"`. Registry Git then has its own lifecycle. The estimator reads no store/debug
+file/provider endpoint and persists no timing cache.
 
-Canonical phase definitions and adapters live in
-[command_progress.py](../libs/alpaca_cli/command_progress.py): `WAIT`, `UPDATE`, `RECOVERY`, `CATALOGUE`, `PLAN`,
-`PRICING`, `LINEAGE`, `MIGRATE`, `SUMMARY`, `UNIVERSE`, `STATUS`, `READ`, `RESOLVE`, `EXPORT`, `COMMIT`, `PUSH`.
-Existing callbacks replace held status with their stage, supported scalar counters and available counts.
-The adapter carries producer `completed`/`selected` counts into `current`/`total` when coherent, counts supplied
-symbol/processed/pending-work collections, and preserves request totals from producer reports. Component
-completion describes that component, not command completion. Selection emits an immediate diagnostic containing
-the accepted `expected_io` before selected mutation; its numeric estimates remain in later heartbeat context
-under `expected_` names. These are retained observations, with no reporting-driven storage reads.
-Commands without callbacks repeat their operation and elapsed time. The policy lab reports `POLICY` followed by
-`COMPARE` or `AUDIT`, without additional group inspection or invented progress counts.
-The final update `COMMIT` and `PUSH` phases hold `path`, `status` and the selected `commit` when available;
-immediate diagnostics also preserve fast outcomes between timer samples. A `status: failed` warning describes
-Git only; the terminal record still reflects the completed data update. See
-[automatic registry commits and pushes](operations.md#daily-update).
+[Canonical phases and adapters](../libs/alpaca_cli/command_progress.py) cover `WAIT`, `UPDATE`, `RECOVERY`,
+`CATALOGUE`, `PLAN`, `PRICING`, `LINEAGE`, `MIGRATE`, `SUMMARY`, `UNIVERSE`, `STATUS`, `READ`, `RESOLVE`,
+`EXPORT`, `COMMIT`, `PUSH`. Callbacks replace held state with stage, supported scalars and available counts.
+Coherent producer `completed`/`selected` become `current`/`total`. Adapters count supplied
+symbol/processed/pending-work collections and retain reported request totals. Before selected mutation, an
+immediate diagnostic reports accepted `expected_io`. Later heartbeat context retains numeric estimates as
+`expected_` fields. No callback means repeated operation and elapsed time. The lab reports `POLICY` then
+`COMPARE` or `AUDIT`, without extra group inspection or invented counts.
 
-Success stops reporting and flushes one `FINAL_EXIT` (`status: success`, code 0). Caught failure first flushes
-`alpaca.lifecycle.error`, version 4: error type/message, latest accepted phase, elapsed seconds, available
-causes/traceback; then `FINAL_EXIT` (`status: error`). Existing command exit codes determine terminal
-success/error; finished daily updates with warnings exit zero, while other incomplete work and policy differences remain nonzero. Keyboard interruption emits
-`status: aborted`, code 130. Finalization never waits for the next heartbeat; none follows it.
+Final update `COMMIT`/`PUSH` phases carry `path`, `status` and available selected `commit`. Immediate
+diagnostics preserve outcomes between samples. A `status: failed` Git warning leaves the completed data update's
+terminal status intact. [Automatic registry Git operations](operations.md#daily-update)
 
-Writes are serialized/flushed. Progress/final records are at most 4 KiB; errors 16 KiB, including newline.
-Oversized errors shorten diagnostics and set `truncated: true`. Reporting failures do not change command outcomes;
-abrupt termination or failed stderr writes can prevent delivery.
+| Record | Emission and limits, including newline |
+|---|---|
+| Progress/final | ≤4 KiB. Success stops reporting and flushes one `FINAL_EXIT` (`status: success`, code 0). Commands keep their exit codes, including nonzero incomplete work/policy differences. |
+| `alpaca.lifecycle.error` v4 | On caught failure flush type/message, latest accepted phase, elapsed seconds, available causes/traceback, then `FINAL_EXIT` (`status: error`). Keyboard interruption emits `status: aborted`, code 130. Errors ≤16 KiB. Oversized diagnostics are shortened with `truncated: true`. |
+| `alpaca.lifecycle.diagnostic` v4 | Immediate nonfatal records, e.g. cutoffs, Parquet rejections, cache/RSS summaries. Fields: `schema`, `schema_version`, `elapsed_seconds`, `phase`, `level` (`info`, `warning`, `error`), `message`. ≤16 KiB. Oversized messages shortened with `truncated: true`. An inner-adapter error may precede outer error/final records. Diagnostics leave held status, timer and command result intact. |
 
-Existing nonfatal diagnostics, such as pricing cutoffs, Parquet rejections and cache/RSS summaries, use
-`alpaca.lifecycle.diagnostic`, version 4. These immediate records have `schema`, `schema_version`,
-`elapsed_seconds`, `phase`, `level` (`info`, `warning`, `error`) and `message`; they do not replace held status,
-reset the timer or imply command failure. They are at most 16 KiB, including newline; oversized messages are
-shortened with `truncated: true`. A caught inner-adapter error can appear as a diagnostic before the outer
-error/final records. There are no diagnostic records after finalization.
-
-Heartbeat delivery confirms the reporting thread is alive, not that the operation has advanced. Unchanged
-counts can indicate a wait or stalled work; approximate estimates are not a completion guarantee.
+Writes serialize and flush. Finalization never waits for a heartbeat and emits no later records. Reporting
+failures preserve command outcomes. Abrupt termination or failed stderr writes can prevent delivery.
 
 ## CSV lifecycle
 
-CSV keeps its established startup message, `CATALOGUE` → `PLAN` → `EXPORT` → `PUBLISH` phases and phase-specific
-context. Planning uses the same lifecycle. Authority:
-[csv_progress.py](../libs/alpaca_cli/csv_progress.py), `PHASES`.
+CSV and its plan retain the established startup message and ordered phases.
+[`csv_progress.PHASES`](../libs/alpaca_cli/csv_progress.py)
 
-| Phase | Context scope |
+| Phase | Context |
 |---|---|
-| `INIT` | Reporting activation; no context. |
-| `CATALOGUE` | Open online catalogue; no context. |
-| `PLAN` | Catalogue generation, identity/group/source counts, workers/maximum active groups, output memory budget, metadata/payload/output bounds. |
-| `EXPORT` | Plan fields, read/write I/O phase, prepared identities, buffered bytes, batch count, completed counts and final-write estimate. |
-| `PUBLISH` | Final manifest inside run directory; completed identity/group/row counts, CSV bytes, column counts. |
-| `FINAL_EXIT` | Immediate terminal `status`, `exit_code`, `last_phase`. |
+| `INIT` | Activate, no context |
+| `CATALOGUE` | Open online catalogue, no context |
+| `PLAN` | Catalogue generation, identity/group/source counts, workers/maximum active groups, output memory budget, metadata/payload/output bounds |
+| `EXPORT` | Plan fields, read/write I/O phase, prepared identities, buffered bytes, batches/completed counts, final-write estimate |
+| `PUBLISH` | Final manifest inside run directory, completed identity/group/row counts, CSV bytes and column counts |
+| `FINAL_EXIT` | Immediate terminal `status`, `exit_code`, `last_phase` |
 
 ## Library use and consumption
 
-The shared internal library is `libs.alpaca_heartbeat`; importing it starts no timer and prints nothing.
-Callers register `Phase` definitions, create `LifecycleReporter`, call `start()` once, replace held status
-with `update()`, and call `finish()` on every exit. Use `diagnostic()` for immediate diagnostic events.
-Command adapters own messages/fields, result serialization and exit selection. Heartbeat runtime releases
-are separate from the version-4 wire schema and data/publication versions; reporting-only integration does
-not invalidate or relabel stored artifacts. [Version authorities](../VERSION_TRACKER.md).
+Importing internal `libs.alpaca_heartbeat` starts no timer or output. Register `Phase` definitions, create
+`LifecycleReporter`, call `start()` once, replace held status with `update()`, emit immediate events with
+`diagnostic()` and call `finish()` on every exit. Adapters own messages/fields, serialization and exit
+selection. Heartbeat runtime, v4 wire schema and data/publication versions are independent. Reporting
+integration does not invalidate/relabel stored artifacts. [Version authorities](../VERSION_TRACKER.md)
 
-Repository consumers read stderr line by line and call `parse_record(line)` to decode and check supported schema/version,
-record limits, envelope fields and progress counts/deadlines. It performs no I/O. Dispatch by `schema`, then
-`phase`; retain the last progress observation and use `FINAL_EXIT.status`/`exit_code` for the terminal report.
-Treat diagnostic `level` as severity, not the process exit status. Optional context is producer-specific.
-External monitors can consume the JSONL using their own JSON parser; `libs/` remains internal to this repository.
-For monitoring, use each progress record's remaining `next_heart_beat_in_seconds` from its receipt time; allow
-10 seconds of delivery slack before investigating a late heartbeat. Terminal records carry no next deadline.
+Repository consumers call I/O-free `parse_record(line)` on each stderr line to check supported schema/version,
+size, envelope and progress counts/deadlines. Dispatch by `schema`, then `phase`. Retain the last progress
+observation. Use `FINAL_EXIT.status`/`exit_code` for the terminal report and diagnostic `level` only for
+severity. Optional context is producer-specific. External monitors use their own JSON parser (`libs/` is
+internal). Next heartbeat due = receipt time + `next_heart_beat_in_seconds`. Allow 10 seconds' delivery slack
+before investigation. Terminal records have no deadline.
 
-Failure aggregation counts failed workflow symbol obligations once, regardless of how many maintenance or
-lineage reports describe them. Unscoped command failures and independent serving failures have separate owners.
-Stage-specific counts remain diagnostic and are not added again to the aggregate. DEBUG `metadata_exact_lookup`
-events identify actual uncached lookup attempts, lookup kind and selection reason; cache hits emit no lookup
-event. `pricing_publication` distinguishes effective price change from previous/new source generation and writes.
-Correction completion consumption and transactional acceptance have separate events. These events use existing
-producer values and perform no additional storage checks.
+Count failed workflow symbol obligations once across maintenance and lineage reports. Unscoped command and
+independent serving failures have separate owners. Stage counts remain diagnostic and add nothing to the
+aggregate.

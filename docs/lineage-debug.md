@@ -1,9 +1,8 @@
 # Lineage rule tool
 
-`./alpaca-lineage-debug` explains published lineage and evaluates candidate rules through the
-[public JSON API](public-api.md#lineage-diagnostics). It uses the same compiler, rule functions,
-correlation engine and numerical selector as Histories. It makes no provider requests and never
-publishes to the production store. Research does not rerun the daily update.
+`./alpaca-lineage-debug` explains published decisions and tests candidates offline through the
+[public JSON API](public-api.md#lineage-diagnostics). It shares Histories’ compiler, rule functions, correlation
+engine and numerical selector. No daily update, provider requests or production publication.
 
 ## One YAML policy
 
@@ -13,31 +12,29 @@ publishes to the production store. Research does not rerun the daily update.
 ./alpaca-lineage-debug rules --policy /tmp/lineage-candidate.yaml
 ```
 
-`init` creates a single self-contained copy of the
-[canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml). Its root sections are
-`ruleset_schema_version: 2`, `policy` and `producers`. The generated
-`policy.policy_role` is `research_candidate`; the configuration contains generic rules and producer selection only.
-It never overwrites an existing file. Edit the lists under
-`policy.execution.established_fixed_point`: reorder or remove registered ownership rules and row rules.
-An empty list disables that list's optional decisions. The unresolved default and terminal rule remain
-mandatory; frozen-baseline reconciliation, optional ownership fallback and second fixed point retain
-their explicit structure. Ownership's fourth fallback is separate from the editable established list.
+`init` writes a new, self-contained [canonical lineage YAML](../resources/alpaca_security_correlation_policy.yaml)
+copy without overwriting. Its roots are `ruleset_schema_version: 2`, `policy` and `producers`. The copy sets
+`policy.policy_role` to `research_candidate` and selects only generic rules/producers.
 
-YAML selects implemented rules; it is not a language for arbitrary Python predicates. New evidence
-conditions require generic registered Python implementations and their owning tests. The `rules`
-report identifies current function paths/lines, registered order, terminal promotion, fixed identity
-membership and numerical source selection. Those fixed steps are visible but cannot be reordered through
-these lists. The index also lists generic producer selection and its
-independent execution identity. Dated ownership and choosing which source supplies the prices are separate decisions.
+Under `policy.execution.established_fixed_point`, reorder/remove registered ownership and row rules. Empty lists
+disable their optional decisions. Preserve the unresolved default, terminal rule and explicit frozen-baseline
+reconciliation, optional ownership fallback and second fixed point. The fourth ownership fallback remains outside
+the established list.
 
-Only this diagnostic compiler admits the research role. The production compiler/authorization
-rejects it. Flat production and corrected-candidate schema-4 YAML files remain readable; the
-[policy lab](policy-lab.md) retains older executable profiles. Combined files keep generic membership and dated-label selection under `producers`. Authored factual applications,
-supplements, assertion overlays and `research.documented_facts` are rejected before store or provider access,
-including legacy inputs and empty factual fields. Removed `accepted_publication` and `documented_scopes`
-candidate modes are also rejected. The combined document is bounded to 1 MiB and its policy to 64 KiB.
-Duplicate/unknown keys, unregistered rules, duplicate rule names, unsafe tags, altered mandatory defaults/phases and incompatible
-implementations are rejected. Reports bind both exact YAML bytes and semantic rule configuration.
+New evidence predicates require registered generic Python implementations and owning tests. YAML selects
+implementations. `rules` lists paths/lines, registered order, terminal promotion, fixed identity membership,
+numerical source selection, selected generic producers and their independent execution identity. Fixed steps cannot
+be reordered. Dated ownership and price-source selection are independent decisions.
+
+Only the diagnostic compiler accepts the research role. Production compilation/authorization reject it. Flat
+schema-4 production/corrected-candidate YAML remains readable. The [policy lab](policy-lab.md) retains older
+executable profiles. Combined YAML selects generic membership and dated labels under `producers`.
+
+Before store/provider access, the loader rejects factual applications, supplements, assertion overlays and
+`research.documented_facts`, including legacy or empty factual fields. It rejects retired
+`accepted_publication`/`documented_scopes` modes, duplicate/unknown keys, unregistered/duplicate rules, unsafe tags,
+altered mandatory defaults/phases and incompatible implementations. Limits are 1 MiB combined, 64 KiB policy.
+Reports bind exact YAML bytes and rule semantics.
 
 ## Explain a recorded decision
 
@@ -46,21 +43,19 @@ implementations are rejected. Reports bind both exact YAML bytes and semantic ru
 ./alpaca-lineage-debug explain --store data_pricing --ticker CPST --format json
 ```
 
-The completed lineage index selects the full group. Each selected receipt and assignment boundary
-is consumed once. No pricing payload, endpoint validator, provider or rule evaluation is used.
-With `--session`, only the applicable closed-year, current-year or current-month assignment branch
-is read. The receipt's actual assignment handoffs expose explicit numerical-choice capabilities
-separately from the segment's recorded selection flag.
-Reports retain generation bindings, policy provenance, normalized evidence, selected rule, dated
-owner, numerical selection state, warnings and first-match paths. `--adjustment` defaults to `raw`;
-`--max-segments` bounds displayed segments per source, while counts cover the complete selection.
+The completed index selects the full group. Read selected receipts and assignment boundaries once, with no price
+payloads, endpoint validators, provider calls or rule evaluation. `--session` selects only the applicable
+closed-year, current-year or current-month assignment branch. Assignment handoffs report numerical-choice capability
+separately from each segment’s selection flag.
 
-Earlier first-match rules are described as having fallen through. Their individual failed predicate
-reasons were not recorded by the producer, so the tool does not invent them or apply current rules to
-explain an older publication. Missing capabilities remain missing. Overlapping selected segment
-bounds are reported separately from exact shared first timestamps; bounds alone do not establish
-duplicate interior sessions or different prices. Several ticker labels, several public identities,
-and several selected numerical observations are different facts.
+Reports include generation bindings, policy provenance, normalized evidence, selected rule, dated owner, numerical
+selection state, warnings and first-match paths. `--adjustment` defaults to `raw`. `--max-segments` limits displayed
+segments per source. Counts cover the full selection.
+
+Earlier rules fell through. Their failed predicates were unrecorded. The tool neither invents reasons or missing
+capabilities nor reinterprets past publications with current rules. It distinguishes overlapping bounds from
+identical first timestamps. Bounds alone establish neither duplicate interior sessions nor price differences. Label,
+public-identity and selected-observation counts measure distinct facts.
 
 ## Published lineage coverage
 
@@ -72,24 +67,21 @@ and several selected numerical observations are different facts.
   --reuse-report /tmp/lineage-coverage-details.json --format json > /tmp/lineage-coverage-next.json
 ```
 
-The compact report reads the completed index once and projects pending workflow outcomes without validating
-pricing evidence again. It separates nonempty assigned histories, unresolved histories and empty sources.
-Pending work is independent: a published resolved source may still owe a new application or publication.
-This is a census of recorded decisions, not independent evidence that every assigned owner is correct.
+One completed-index read reports nonempty assigned histories, unresolved histories, empty sources and independent
+pending workflow outcomes. A resolved source may still owe an application or publication. Counts describe recorded
+decisions without revalidating prices or establishing ownership accuracy.
 
-`--unresolved-details` explicitly selects only indexed sources with unresolved rows. It reads their receipts
-and assignment metadata, never prices, provider observations or rule execution. Expected I/O reports that
-selection and its maximum three assignment boundaries per source. An unresolved reason naming ambiguity,
-conflict or dispute is reported as ambiguous; another recorded reason withholding allocation is unsupported.
-Excluded exchange test symbols and missing recorded reasons remain separate. These are explanation classes,
-not a new assessment of the evidence. A source can contain multiple classes; row counts include adjustment
-views, and overlapping reason counts must not be added as unique rows. Required unreadable metadata leaves
-the detail report incomplete while preserving independent completed details.
+`--unresolved-details` reads receipts and assignment metadata only for indexed sources with unresolved rows.
+Expected I/O specifies that selection and at most three assignment boundaries per source. No prices, provider
+observations or rule execution. Recorded ambiguity/conflict/dispute counts as ambiguous. Other reasons withholding
+allocation count as unsupported. Excluded exchange test symbols and missing reasons have separate classes. Classes
+explain existing reasons. A source can span classes. Counts include adjustment views and overlapping reasons cannot
+be summed as unique rows. Unreadable required metadata leaves details incomplete and preserves completed peers.
 
-The operation and publication gates keep the selected metadata coherent. No per-source pricing lock,
-directory inventory, historical authentication or repair occurs. A supplied coverage report carries completed
-details for the same store, implementation and receipt/pricing generations. Changed workflow status alone
-does not repeat them; a genuinely changed selected generation reads only its affected metadata.
+Operation/publication gates maintain coherence without per-source price locks, inventories, historical
+authentication or repair. Reuse completed details for the same store, implementation and receipt/pricing
+generations. Workflow-status changes alone retain details. A changed selected generation reads only affected
+metadata.
 
 ## Run a candidate
 
@@ -102,39 +94,39 @@ does not repeat them; a genuinely changed selected generation reads only its aff
   --policy /tmp/lineage-candidate.yaml --all --format json > /tmp/lineage-all.json
 ```
 
-Choose tickers **or** `--all`. One index read selects and deduplicates complete groups. Two aliases in
-the same group produce one evaluation. `--all` explicitly selects **every indexed group**, without the
-policy lab audit's affected-group prefilters. It does not discover directories or select an acquisition
-universe. A full research replay can be expensive; no all-group run occurs implicitly.
+Select tickers or `--all`. One index read deduplicates complete groups, including aliases. `--all` explicitly
+replays every indexed group without policy-lab audit prefilters, directory discovery or acquisition-universe
+selection. It can be expensive.
 
-Selected completed evidence and prices are materialized once per group, used by the existing shared
-engine, then released before the next group. Prices are trusted inputs, not authenticated again.
-Published assignments serve as comparison data, never candidate evidence. The report separates
-assignment, unresolved, membership, rule-explanation, numerical-source and dated-label differences;
-it also reports candidate mapping corrections, invariants and fixed-point/fallback traces.
-`--max-differences` bounds examples per dimension/group, not total counts. `--format json` retains
-the detailed trace and examples; text summarizes each group.
+Materialize accepted evidence and prices once per group, run the shared engine and release its inputs. No price
+reauthentication. Published assignments supply comparison data only. Reports distinguish assignment, unresolved,
+membership, rule-explanation, numerical-source and dated-label differences, plus candidate mapping corrections,
+invariants and fixed-point/fallback traces. `--max-differences` caps examples per dimension/group. Counts remain
+complete. `--format json` includes detailed traces/examples. Text summarizes groups.
 
-Independent group failures retain completed peer reports with an incomplete overall result. There
-is no automatic retry, acquisition, publication or reconstruction. Changed selector/generation
-applicability stops the affected consumption; a changed final selector invalidates the operation.
-Results are transient until the caller explicitly redirects them. Memory includes one materialized
-group plus accumulated compact reports; it is not constant for an arbitrarily large research run.
+Failed groups leave overall results incomplete and preserve completed peers. No automatic retry, acquisition,
+publication or reconstruction. A stale selector/generation stops affected consumption. A changed final selector
+invalidates the operation. Redirect to retain results. Memory includes one materialized group plus accumulated
+compact reports.
 
-`--timeout-seconds` is optional and checked between complete groups. An active group finishes before
-the deadline is reported. Interrupting the command stops it without production writes. This is not
-the policy lab audit's hard POSIX timeout.
+Optional `--timeout-seconds` checks only between complete groups. The active group finishes even past the deadline,
+unlike the policy-lab audit’s hard POSIX timeout. Interruption stops without production writes.
 
-Exit codes: `0` complete exact parity (or completed inspection); `1` completed comparison with
-differences; `2` invalid input, failed/incomplete diagnostic or output delivery; `124` incomplete
-deadline; `130` interruption. Genuine ambiguity is a recorded semantic result, not a technical error.
-Candidate differences do not authorize publishing the candidate or automatically establish better lineage.
+| Exit | Meaning |
+|---|---|
+| `0` | Complete exact parity or completed inspection |
+| `1` | Completed comparison with differences |
+| `2` | Invalid input, failed/incomplete diagnostic or output failure |
+| `124` | Deadline, incomplete |
+| `130` | Interrupted |
+
+Genuine ambiguity is a semantic outcome. Differences alone establish neither improved lineage nor publication
+authority.
 
 ## Paired candidate impact
 
-Combined YAML uses the current canonical rule configuration as its default control; the report names
-`canonical_ruleset_default` as that selection. An explicit unchanged control can select a different accepted
-baseline and makes the comparison binding visible in the command:
+Combined YAML defaults to the current canonical control (`canonical_ruleset_default`). An explicit unchanged control
+names the binding and can select another accepted baseline.
 
 ```bash
 ./alpaca-lineage-debug run --store data_pricing --tickers CISSV \
@@ -142,20 +134,18 @@ baseline and makes the comparison binding visible in the command:
   --policy /tmp/lineage-candidate.yaml --format json > /tmp/lineage-impact.json
 ```
 
-The same command accepts `--all` instead of `--tickers` after focused validation. Each selected group is
-loaded once. The report separates `published_to_control`, `control_to_candidate` and
-`published_to_candidate`. Counts and per-source timestamp bounds cover every difference; examples alone
-are bounded. Paired decision parity covers ownership, labels, numerical selections, membership and mapping
-corrections. Explanation-only differences remain visible separately. Failed and unevaluated groups prevent
-a complete conclusion. No production publication occurs.
+After focused validation, `--all` can replace `--tickers`. Load each group once. Report `published_to_control`,
+`control_to_candidate` and `published_to_candidate`. Counts and per-source timestamp bounds include every
+difference. Only examples are bounded. Decision parity covers ownership, labels, numerical choices, membership and
+mapping corrections. Explanation-only differences remain separate. Failed/unevaluated groups preclude complete
+conclusions. No production publication.
 
-Both arms execute within this installed implementation. An ordinary YAML candidate that changes the
-cascade receives its own evaluation on the held inputs; completed baseline normalization, row indexes and
-digests carry forward. Identical executable cascades reuse the completed control. A Python change needs an
-explicit preserved control implementation or an opt-in candidate with the unchanged path still present;
-changing Python globally and naming two YAML files does not restore the earlier implementation.
+Both arms run the installed implementation. A changed YAML cascade runs on held inputs, reusing baseline
+normalization, row indexes and digests. Equal executable cascades reuse the completed control. A Python change
+requires a preserved control implementation or an opt-in candidate alongside the unchanged path. Two YAML files
+cannot restore globally replaced code.
 
-The combined YAML selects registered producers; the canonical configuration enables both:
+The canonical combined YAML enables both registered producers.
 
 ```yaml
 producers:
@@ -163,49 +153,40 @@ producers:
   dated_labels: observed_rename_periods_over_mapped_alias_v1
 ```
 
-Flat legacy research YAML retains its `research.membership_refinement` compatibility setting.
+Flat legacy YAML retains `research.membership_refinement` and requires explicit `--control-policy`. Omitted producer
+selection means null. `init` copies the canonical selections. Each arm uses its own YAML. To measure a producer’s
+addition/removal, explicitly disable/enable it in the control. Identical selections reuse the completed result.
 
-Omitted producer selection means null. The canonical YAML explicitly enables these producers;
-`init` carries that selection into the research copy.
-Both arms retain the producers actually selected by their YAML. To measure adding or removing one producer,
-use an explicit control copy with that producer disabled or enabled respectively. Identical selections carry
-the completed result. Combined YAML can use its canonical default control; a flat legacy research file
-requires explicit `--control-policy`.
-The membership producer consumes an already completed containing identity, the exact retained same-CUSIP rename
-observation, the shared dated provider UUID/CUSIP and the donor report's completed directed split edges.
-Every additional member needs that same-security extension path. Mere containment, shared UUIDs, ticker
-similarity, spin-offs, mergers and competing destinations cannot authorize this refinement. Conflicting
-rename dates can agree on identity; the experiment retains the existing labels and does not choose a date.
+Membership refinement requires a completed containing identity, exact retained same-CUSIP rename, shared dated
+provider UUID/CUSIP and donor report’s completed directed split edges. Every additional member needs that
+same-security extension path. Containment alone, shared UUIDs, similar tickers, spin-offs, mergers and competing
+destinations cannot authorize refinement. Conflicting rename dates may support identity while leaving labels and
+dates unchanged.
 
-The candidate replaces only the applicable `security_identity` and `canonical_security.security_id`.
-It retains dated UUID/CUSIP, source positions, ownership explanations, prices and unrelated identities.
-For the same cascade it consumes completed control reports and numerical choices, opening only the newly
-joined observation contest through the existing eight-view selector. No UUID edges or identity hashes are
-reconstructed. The applicability plan reports affected positions, source/receipt generations and the accepted
-extension edges. A genuinely changed binding requires a new experiment rather than replaying a consumer.
+The candidate replaces only applicable `security_identity` and `canonical_security.security_id`. It retains dated
+UUID/CUSIP, source positions, ownership explanations, prices and unrelated identities. With the same cascade, reuse
+control reports and numerical choices. Run the existing eight-view selector only for the newly joined contest. No
+UUID-edge or identity-hash reconstruction. The applicability plan records affected positions, source/receipt
+generations and accepted extension edges. A changed binding requires a new experiment.
 
-The diagnostic remains read-only. Authorized production can select this same named producer in the canonical
-YAML; omitting its selection disables it. A successful research comparison does not authorize publication or by itself prove
-ordinary append, interruption recovery or complete production preservation. Production consumes its completed
-plan under the selected group and generation bindings, preserving accepted ownership and opening only the
-new numerical overlap.
+Authorized production can select the named producer in canonical YAML or omit it to disable it. Research remains
+read-only. A successful comparison alone cannot authorize publication or establish append, interruption recovery or
+full production preservation. Production consumes the completed plan within its group/generation bindings, retaining
+ownership and opening only the new numerical overlap.
 
-When the candidate disables membership refinement, paired evaluation holds the unrefined candidate and
-applies refinement once to produce the control. Both comparisons use the same selected publication and
-correlation result. Older saved comparisons of affected membership toggles require a fresh comparison for
-that group. Peers with an applicable completed comparison retain their results.
+Disabling candidate membership refinement holds the unrefined candidate and applies refinement once for the control.
+Both comparisons share the publication and correlation result. Older saved comparisons for affected toggles need a
+fresh group comparison. Applicable completed peers remain reusable.
 
-Dated-label comparisons use the [same domain rule](lineage.md#dated-label-collisions) as normal lineage.
-They retain completed ownership, numerical choices and explanation dimensions, projecting only label
-observations. Removing the producer restores its held pre-label frame; identical selection performs no
-second label plan or projection. Only a changed observation dimension receives a new digest.
+Dated-label comparisons apply the [production rule](lineage.md#dated-label-collisions) only to label observations.
+Retain completed ownership, numerical choices and explanations. Removing the producer restores the held pre-label
+frame. Identical selections skip repeat planning/projection. Only changed observation dimensions get new digests.
 
 ## Screen and carry a membership study
 
-Copy the canonical YAML to `/tmp/membership-control.yaml` and set its `membership_refinement` to null,
-keeping every other producer selection identical to the candidate. For the named membership candidate
-with an otherwise unchanged cascade, a metadata screen can establish
-which groups cannot be affected without replaying prices or rules:
+Copy canonical YAML to `/tmp/membership-control.yaml`, set `membership_refinement` to null and match all other
+candidate producers. With an otherwise unchanged cascade, the metadata screen excludes unaffected groups without
+replaying prices or rules.
 
 ```bash
 ./alpaca-lineage-debug screen --store data_pricing \
@@ -217,56 +198,48 @@ which groups cannot be affected without replaying prices or rules:
   --format json > /tmp/lineage-impact.json
 ```
 
-The completed index excludes groups without another indexed donor. Selected multi-source receipts supply
-accepted source-local components. No strict cross-source containment pair proves this candidate cannot
-apply; missing compact membership remains unknown and is retained for evaluation. Positive pairs identify
-possibilities, not confirmed changes. The smaller component must itself be accepted in its source receipt;
-a component created solely by control replay cannot gain this research authority.
+The completed index excludes groups lacking another indexed donor. Selected multi-source receipts provide accepted
+source-local components. A confirmed absence of strict cross-source containment pairs excludes the candidate.
+Missing compact membership remains unknown and requires evaluation. Positive pairs establish possibility only. The
+smaller component needs acceptance in its own receipt. Control replay alone cannot supply it.
 
-The screen reports expected pricing-source scope before evaluation and carries its full accepted index,
-selected receipts and component pairs through JSON. Consumption checks the selector's actual applicability,
-then uses those values without rereading index or receipt bodies. Immutable store/path acceptance likewise
-crosses selected reader groups without reopening the store manifest. Each distinct rename and extension
-proof is completed once and lent to its view-specific segments.
+Before evaluation, the screen reports expected pricing-source scope and carries its full accepted index, selected
+receipts and component pairs through JSON. Consumers check selector applicability, then reuse those bodies.
+Immutable store/path acceptance crosses selected reader groups without reopening the manifest. Complete each
+distinct rename/extension proof once and lend it to its view-specific segments.
 
-Proven candidate-unaffected groups have no control replay: their classification does **not** establish
-published/control parity or overall lineage correctness. The impact report distinguishes assessed control
-drift from unassessed groups, evaluated groups from proven exclusions, failures and remaining scope.
-The screen is specific to this named candidate and rejects a changed YAML cascade.
+Proven exclusions skip control replay and establish neither published/control parity nor overall correctness. The
+impact report distinguishes assessed control drift, unassessed groups, evaluated groups, proven exclusions, failures
+and remaining scope. A changed YAML cascade invalidates this candidate-specific screen.
 
-An applicable completed paired report can be supplied with `--reuse-report /tmp/previous-impact.json`.
-Completed peer groups from incomplete attempts remain usable; failed groups are not manufactured into
-success. The diagnostic's own schema, version, implementation, store, selector and semantic policy bindings
-must match or have explicitly declared implementation compatibility. Known completed generic reports remain
-usable when a runtime release adds a separate opt-in producer without changing their research path.
-Compatibility does not turn them into completed work for that new producer. Unknown future implementations
-require their own compatibility decision, and fact-backed reports remain inadmissible regardless of version.
-Formatting or moving an equivalent YAML file does not invalidate its meaning. A real invocation
-gap checks selected receipt and pricing applicability, never prices or completed calculations. Failed
-applicability records the affected group without replaying it or discarding independent peer results.
+`--reuse-report /tmp/previous-impact.json` carries applicable completed groups, including peers of failed groups in
+incomplete attempts. Failure remains failure. Require matching diagnostic schema, version, implementation, store,
+selector and semantic policy bindings or explicitly declared implementation compatibility. A release adding a
+separate opt-in producer may preserve completed generic reports for unchanged research paths only. Future unknown
+implementations require their own compatibility decision. Fact-backed reports remain inadmissible at every version.
+Formatting or moving equivalent YAML preserves semantics.
 
-Reports created before the required implementation/store bindings are present are rejected; the tool never
-silently reconstructs them. Saved research reports are explicit operator outputs outside the production store.
+Across invocations check selected receipt and pricing applicability without rereading prices or recalculating
+completed decisions. Record stale groups without replay or loss of completed peers. Reject older reports missing
+required implementation/store bindings without reconstructing them. Operators explicitly save research reports
+outside production.
 
 ## Research generic rules from retained observations
 
-Research chronology is an external expected-result reference for generic rule design and evaluation.
-It never supplies runtime assertions, event supplements or per-ticker rule applications. A candidate must
-reach its result from retained provider observations and applicable completed producer decisions, using
-registered generic rules and parameters that apply equally to future securities with matching evidence.
+Research chronology supplies an external expected result for rule design/evaluation. Runtime excludes researched
+assertions, event supplements and per-ticker applications. Registered generic rules and parameters must reach the
+same result for future matching evidence using retained provider observations and applicable completed decisions.
 
-Compare plausible connections with leaving history ownerless. Connect the most likely owner when the
-available evidence reasonably supports it; missing certainty or a particular certificate does not require
-withholding. When no connection is reasonably supported, record the unresolved disposition, evidence limits
-and competing interpretations. Such lineage is completed and nonblocking, with ownerless history unpublished
-to consumers. The [research loop](development.md#lineage-research-and-rule-improvement-loop) owns this process.
+Compare plausible connections with leaving history ownerless. Publish the reasonably supported most likely owner
+even without certainty or a particular certificate. If no connection is reasonably supported, record the unresolved
+disposition, limits and competing interpretations, withhold ownerless history from consumers and acknowledge
+completed, nonblocking processing. [Research loop](development.md#lineage-research-and-rule-improvement-loop)
 
-Completed generic paired reports remain reusable under their exact policy, store, selector and generation
-bindings. Reports containing factual candidate inputs are rejected as execution authority; older reports can
-still be inspected as data. Generic control results and unchanged numerical choices carry forward without
-repeating their accepted calculations. A changed selected binding takes the explicit owning work path.
+Reuse completed generic paired reports within their exact policy, store, selector and generation bindings. Reports
+containing factual candidate inputs cannot authorize execution. Older reports remain inspectable as data. Carry
+generic control results and unchanged numerical choices without replay. Changed bindings select owning work.
 
-Capture the metadata already read during a complete explanation and pass it directly to a subsequent run:
+Pass metadata read by a complete explanation to the next run.
 
 ```bash
 ./alpaca-lineage-debug explain --store data_pricing --ticker SSNT \
@@ -277,11 +250,10 @@ Capture the metadata already read during a complete explanation and pass it dire
   --metadata-handoff /tmp/lineage-case-input.json --format json > /tmp/lineage-case-result.json
 ```
 
-The capture contains selected index entries, receipt/assignment bodies and actual store/selector/generation
-bindings. A session-filtered explanation cannot claim a complete capture. Selected consumption uses those
-entries without another index-body read; `--all` still needs its full selector or an applicable screen. Changed
-bindings stop consumption before pricing assembly. This is an explicitly saved research input, not a normal-run
-archive or recovery mechanism.
+Capture includes selected index entries, receipt/assignment bodies and store/selector/generation bindings. A
+session-filtered explanation cannot yield a complete capture. Reuse selected entries without an index reread.
+`--all` requires the full selector or applicable screen. Changed bindings stop consumption before price assembly.
+This explicitly saved research input serves neither normal-run archiving nor recovery.
 
 ## Ticker instances in a completed CSV export
 
@@ -291,16 +263,14 @@ archive or recovery mechanism.
   --tickers CPST CGRN --include-single --format json
 ```
 
-The named completed manifest and its named digest files are consumed once. No CSV rows, upstream
-catalogue or pricing payloads are opened, and no hashes are recalculated. This is an explicit
-export-wide metadata report, even when its output is filtered to tickers: digests own the dated labels.
-By default it reports tickers present in multiple public-ID CSVs, with names, filenames and inclusive
-date ranges. It distinguishes disjoint dated reuse from overlapping instance bounds. Multiple labels
-inside one public identity do not count as multiple instances of that ticker. Missing legacy dated
-label handoffs are reported as incomplete rather than reconstructed from ownership rules.
+Read the named completed manifest and its named digests once. Digests own dated labels, so even ticker-filtered
+output requires export-wide metadata. No CSV rows, upstream catalogue, prices or rehashing. By default report
+tickers in multiple public-ID CSVs, with names, filenames and inclusive dates. Distinguish disjoint dated reuse from
+overlapping instance bounds. Several labels for one public ID do not multiply instances of a ticker. Missing legacy
+dated-label handoffs leave the report incomplete, without rule reconstruction.
 
-Overlapping bounds are evidence to investigate, not automatic proof of wrong ownership. An identity's
-presence in an earlier export does not establish that run's flags or reader behavior.
+Overlapping bounds merit investigation but cannot prove incorrect ownership alone. Presence in an earlier export
+cannot establish that run’s flags or reader behavior.
 
 ## Saved pipeline handoffs
 
@@ -309,16 +279,14 @@ presence in an earlier export does not establish that run's flags or reader beha
   --tickers CPST CGRN --format json
 ```
 
-Prepare establishes the baseline and selected work; Histories completes pricing/lineage and the
-numerical choices; Serve assesses and publishes the catalogue. Ordinary execution carries native values
-under one continuous operation lock. Its DEBUG captures contain compact operation metadata and counts,
-with no held values or index bodies; the diagnostic identifies those limits explicitly. Standalone JSON
-stages retain exact saved prepared/histories documents. The diagnostic reads these or a final report as data,
-without restoring acceptance objects or executing stages. Historical runtime bindings are displayed,
-never used as execution authority. Unrelated encoded prices are not decoded. A full standalone JSON
-capture is still parsed in memory, so its size remains a memory consideration.
+Prepare establishes baseline and selected work. Histories completes pricing, lineage and numerical choices. Serve
+assesses and publishes the catalogue. Normal execution passes native values under one continuous operation lock and
+saves no handoffs by default. Only DEBUG records them. Ordinary DEBUG retains compact operation metadata/counts and
+omits held values/index bodies. Diagnostics expose those limits.
 
-Normal pipeline execution saves no handoffs. DEBUG alone records them; this tool neither changes that
-retention rule nor creates a recovery archive. See the
-[three-stage contracts](development.md#pipeline-phase-3-complete-pipeline) and
+Standalone JSON stages retain exact prepared/histories documents. Inspect these or the final report as data. Display
+historical runtime bindings without restoring acceptance objects, executing stages, treating the bindings as
+execution authority or decoding unrelated prices. Full standalone JSON captures are parsed in memory. This tool
+neither changes retention nor creates a recovery archive.
+[Three-stage contracts](development.md#pipeline-phase-3-complete-pipeline) and
 [lineage research loop](development.md#lineage-research-and-rule-improvement-loop).

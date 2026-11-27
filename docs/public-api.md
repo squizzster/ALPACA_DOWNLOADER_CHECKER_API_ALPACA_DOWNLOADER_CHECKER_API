@@ -13,18 +13,9 @@ missing, incomplete, pending or incompatible publications fail without acquisiti
 
 ## Common semantics
 
-Tickers are dated labels. Resolution preserves multiple matches; date filters never silently select an identity.
-A 64-hex `public_id` is stable for fixed resolved provider-UUID membership. Membership changes can change the ID;
-no old-ID crosswalk is promised.
+Tickers are dated and reusable. One ID can have several labels. Resolution preserves multiple matches. Date filters never silently select an identity. Use ticker search to discover candidates, then use the 64-hex `public_id` for histories, exports, joins and cache keys. It is stable for fixed resolved provider-UUID membership. If accepted membership changes the ID, the old ID becomes unavailable. Select again from the catalogue. No crosswalk is promised.
 
-Discover candidates through ticker resolution/search, then retain `public_id` for finalized-data history,
-exports, joins and cache keys. Do not persist ticker identity keys or re-resolve on every read: one label may
-name several securities over time; one identity may retain several dated labels. If accepted UUID membership
-changes, the old ID becomes unavailable; select explicitly from the new catalogue.
-
-Dates: `datetime.date`, ISO date string or `None`; inclusive New York session bounds. Valid empty ranges return
-empty histories. [ADJUSTMENTS](../libs/alpaca_pricing_download/contract.py) defines eight names; `all` means fully
-adjusted, not every view. Numbers remain exact.
+Date bounds are inclusive New York sessions (`datetime.date`, ISO date string or `None`). Valid empty ranges return empty histories. Numbers remain exact. Among the eight [adjustment names](../libs/alpaca_pricing_download/contract.py), `all` selects the fully adjusted view.
 
 ## Standalone reader
 
@@ -153,8 +144,9 @@ offline. Both inherit `DataLibraryError`; malformed arguments raise `ValueError`
 `public_ids`, `symbols`, `csv_manifest` or `bloodhound_report`, plus `catalogue_only`. The writer also
 accepts `progress` and returns paths to the completed manifest and records. The
 [companion contract](exports.md#security-metadata-companion) defines the fields, selection and joins.
-Version-2 exports can include observed listing-exchange changes and effective session boundaries
-when supported by the selected serving publication.
+Version-3 exports can include both observed asset listing changes and historical listing assessments
+for a public ID. A completed historical assessment includes any dated tape transitions and the
+limits on its coverage.
 
 ## Pipeline execution
 

@@ -88,6 +88,9 @@ migration and invalidation</a>, <a href="../tests/test_metadata_export_format.py
 outputs</a>, <a href="../tests/test_metadata_preparation_selection.py">bounded preparation selection</a>,
 <a href="../tests/test_alpaca_listing_exchange_changes.py">exchange observations and bounded dating</a>,
 <a href="../tests/test_update_listing_exchange.py">ordinary update, export and interrupted exchange publication</a>,
+<a href="../tests/test_historical_listing_publication.py">batched historical listing publication, scope binding
+and generation-specific recovery</a>,
+<a href="../tests/test_historical_listing_staged_ranges.py">staged range selection across a daily extension</a>,
 <a href="../tests/test_alpaca_cli.py">CLI selection</a>,
 <a href="../tests/test_alpaca_assignment_migration.py">changed assignment capabilities</a> and
 <a href="../tests/test_alpaca_certificate_migration.py">unchanged decision migration</a>.</p>
@@ -415,6 +418,19 @@ bodies just as recovery does. Store and boundary-generation mismatches select th
 using stale rows. These transient values use native controller records or the explicit JSON adapter; production formats and lineage policy are
 unchanged. This repairs the reproduced correction-to-append and fresh-lineage handoff omissions, not every possible repeated-read path;
 F15 remains partial and operational acceptance requires measured execution.</p>
+<h3 id="historical-listing-assessment">Historical listing assessment</h3>
+<p>The explicit migration selects online ticker ranges, competing owners and prepared metadata from one
+catalogue snapshot. Its native evidence cache carries validated auction pages, dated trade observations,
+completed screens and assessments through interruption. Common date windows share native SIP requests.
+Only the lineage owner installs a supported change or an unresolved disposition. The catalogue carries
+the accepted numerical decision through this metadata publication.</p>
+<p>Regressions cover <a href="../tests/test_historical_listing_backfill.py">request scope, caching and retry</a>,
+<a href="../tests/test_historical_listing_ranges.py">competition and scoped invalidation</a>,
+<a href="../tests/test_historical_listing_auction_ranges.py">native auction coverage across changed ranges</a>,
+<a href="../tests/test_alpaca_historical_listing.py">tape limits and adjacent sessions</a>,
+<a href="../tests/test_alpaca_listing_trade_batch.py">bounded native trade windows</a>,
+<a href="../tests/test_historical_listing_publication.py">journal recovery and group binding</a> and
+<a href="../tests/test_historical_listing_metadata.py">public projection and export compatibility</a>.</p>
 <h2>Read-only lineage rule visibility</h2>
 <p>The <a href="lineage-debug.md">standalone lineage rule tool</a> uses the public JSON API.
 Recorded explanations consume only the selected complete group's receipts and assignment boundaries;
