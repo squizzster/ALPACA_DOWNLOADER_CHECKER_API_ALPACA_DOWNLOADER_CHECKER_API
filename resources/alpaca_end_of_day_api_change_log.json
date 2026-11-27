@@ -297,5 +297,10 @@
     "modifications": [
       "Write version-2 security metadata companions with attributable exchange changes, their observation times and available effective sessions. Advertise the new field when the selected publications support it."
     ]
+  },
+  {
+    "modifications": [
+      "Export version-3 metadata companions with completed historical listing assessments, observed tape changes, supported effective sessions and sampling limits for each public identity."
+    ]
   }
 ]

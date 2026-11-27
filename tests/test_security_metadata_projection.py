@@ -142,7 +142,7 @@ class MetadataProjectionTests(NativeCase):
             self.assertIn(extension, data.plan_metadata_export()["extensions"])
             mixed = data.write_metadata_export(self.directory / "mixed")
             manifest = json.loads(Path(mixed["manifest"]).read_text())
-            self.assertEqual(manifest["version"], 2)
+            self.assertEqual(manifest["version"], 3)
             self.assertIn(extension, manifest["extensions"])
             with gzip.open(mixed["records_file"], "rt") as rows:
                 records = {item["public_id"]: item for item in map(json.loads, rows)}
@@ -192,9 +192,25 @@ class MetadataProjectionTests(NativeCase):
     @skipUnless(HAS_CONVERTER, "install requirements-bloodhound.txt")
     def test_offline_exact_pairing_with_both_native_price_exports(self):
         from bloodhound_app import alpaca_to_bloodhound as converter
+        from libs.alpaca_lineage_build.historical_listing_publication import publish_many
+        from libs.alpaca_serving_catalogue import listing_selection
 
+        historical = {
+            "symbol": "TEST",
+            "status": "unresolved",
+            "observations": [],
+            "changes": [],
+            "limits": ["conflicting_trade_tapes", "sampled_sessions_only", "no_recognized_trade_tape"],
+        }
         change = self.publish_listing_change()
-        data = self.bootstrap()
+        self.bootstrap()
+        with operation_lock(self.store, exclusive=True):
+            _, groups, _, _ = listing_selection.select(self.store, ["TEST"], None, False)
+            (public_id,) = groups["TEST"]["ticker_ranges"]
+            (accepted,) = groups["TEST"]["ticker_ranges"][public_id]
+            historical.update(first_session=accepted["first_session"], last_session=accepted["last_session"])
+            publish_many(self.store, [(groups["TEST"], {public_id: [historical]})])
+        data = DataLibrary(store=self.store)
         csv = data.write_csv_export(self.directory / "price-csv")
         parquet = self.directory / "prices.parquet"
         args = converter.parser().parse_args(
@@ -211,9 +227,16 @@ class MetadataProjectionTests(NativeCase):
         pq_row = json.loads(gzip.decompress(Path(binary["records_file"]).read_bytes()))
         for result in (text, binary):
             manifest = json.loads(Path(result["manifest"]).read_text())
-            self.assertEqual(manifest["version"], 2)
+            self.assertEqual(manifest["version"], 3)
             self.assertIn("listing_exchange_changes", manifest["extensions"])
+            self.assertIn("historical_listings", manifest["extensions"])
         self.assertEqual(csv_row["listing_exchange_changes"], [change])
+        self.assertEqual(csv_row["historical_listings"], [historical])
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1] / "resources/security_metadata.schema.json").read_text()
+        )
+        limit_codes = schema["$defs"]["historicalListing"]["properties"]["limits"]["items"]["enum"]
+        self.assertTrue(set(historical["limits"]) <= set(limit_codes))
         self.assertEqual(binary["selection"]["output_sha256"], prices["output_sha256"])
         self.assertEqual(pq_row.pop("ohlcv_series_id"), str(prices["histories"][0]["ohlcv_series_id"]))
         self.assertEqual(csv_row["public_id"], public_id)

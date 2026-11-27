@@ -13,6 +13,8 @@ from itertools import chain
 from libs.alpaca_data_api_solver import instant
 from libs.alpaca_security_lineage.inference_evidence import ASSERTION_FIELDS
 
+from . import historical_listings
+
 
 def _single(values):
     return next(iter(values)) if len(values) == 1 else None
@@ -225,6 +227,13 @@ def _facts(records, receipts, members, source_owners, complete_members):
     exchange_changes = defaultdict(set)
     included_unpriced = False
     for receipt in receipts.values():
+        if "historical_listings" in receipt:
+            for owner, sections in historical_listings.project(
+                receipt["historical_listings"], records, rebuilt=True
+            ):
+                for section, items in sections.items():
+                    for item in items:
+                        yield owner, section, item
         evidence = receipt["evidence"]
         if complete_members:
             for owner, snapshot in _snapshots(evidence, members):
@@ -313,6 +322,7 @@ _SORT_FIELDS = {
     "trade_observations": ("trade_timestamp", "request_symbol"),
     "corporate_actions": ("effective_date", "action_id"),
     "listing_exchange_changes": ("from_observed_at_utc", "to_observed_at_utc", "from_symbol", "to_symbol"),
+    **historical_listings.SORT_FIELDS,
 }
 
 

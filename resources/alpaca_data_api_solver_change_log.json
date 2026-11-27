@@ -33,5 +33,10 @@
       "Plan a single chronological trade on one New York date or an inclusive literal OTC interval, and the last trade on a bounded historical SIP interval under an explicitly dated mapping.",
       "Plan a bounded single-CUSIP corporate-action discovery request using inclusive dates and complete US actions."
     ]
+  },
+  {
+    "modifications": [
+      "Construct literal SIP auction requests over published ticker dates and bounded multi-symbol SIP trade windows. Retain support for completed version 6 action plans."
+    ]
   }
 ]

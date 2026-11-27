@@ -431,6 +431,11 @@ def maintain(
                                         prior["policy"] == policy()
                                         and prior["references"]["lineage"] == proof["lineage_before"]
                                         and prior["references"]["pricing"] == proof["pricing"]
+                                        and (
+                                            "historical_listings" not in proof
+                                            or (proof["group_key"], proof["decision_generation"])
+                                            == (key, prior["decision_generation"])
+                                        )
                                         and all(
                                             (entries[name]["sha256"] if name in entries else None) == token
                                             for name, token in proof["lineage_after"].items()

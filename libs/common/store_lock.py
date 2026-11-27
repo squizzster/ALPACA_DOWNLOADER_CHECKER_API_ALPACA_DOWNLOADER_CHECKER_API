@@ -21,22 +21,30 @@ class _Ownership:
 _ownership = ContextVar("store_gate_ownership", default=())
 
 
-def exclusive_owned(store):
-    """Whether this execution actually holds the exclusive kernel gate.
+def exclusive_binding(store):
+    """Identify this execution's currently held exclusive kernel gate.
 
     This is execution infrastructure only. Revocation and process/thread binding
     prevent a copied context from lending ownership after release or after fork.
     Ordinary operation_lock calls remain non-reentrant.
     """
     store = Path(store).resolve()
-    return any(
-        owner.active
-        and owner.exclusive
-        and owner.store == store
-        and owner.process == os.getpid()
-        and owner.thread == get_ident()
-        for owner in _ownership.get()
+    return next(
+        (
+            owner
+            for owner in _ownership.get()
+            if owner.active
+            and owner.exclusive
+            and owner.store == store
+            and owner.process == os.getpid()
+            and owner.thread == get_ident()
+        ),
+        None,
     )
+
+
+def exclusive_owned(store):
+    return exclusive_binding(store) is not None
 
 
 class StoreBusyError(RuntimeError):

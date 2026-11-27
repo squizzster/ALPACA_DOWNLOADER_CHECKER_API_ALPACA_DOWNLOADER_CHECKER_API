@@ -280,5 +280,10 @@
     "modifications": [
       "Add export metadata for online securities, including selection by public ID, ticker or a completed native pricing export. Add catalogue prepare-metadata for existing serving publications."
     ]
+  },
+  {
+    "modifications": [
+      "Add lineage backfill-listings to plan, stage or publish missing historical listing assessments for online trading ranges."
+    ]
   }
 ]

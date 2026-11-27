@@ -282,5 +282,10 @@
     "modifications": [
       "Publish observed listing-exchange changes for unambiguous asset memberships, carrying effective sessions only from dated lineage evidence. Preserve generation-bound version-1 metadata with its original capabilities."
     ]
+  },
+  {
+    "modifications": [
+      "Install public-ID-bound historical listing assessments through a metadata-only batch publication. Preserve completed numerical decisions and the original fields of earlier serving projections."
+    ]
   }
 ]

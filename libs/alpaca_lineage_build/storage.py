@@ -525,7 +525,9 @@ def publish_membership_screens(root, index, updates):
         index["projection_state"] = {**previous, "revision": previous["revision"] + 1}
 
 
-def _update_index(root: Path, entries: dict, *, projection_complete=False, serving_handoff=None) -> dict:
+def _update_index(
+    root: Path, entries: dict, *, projection_complete=False, serving_handoff=None, serving_handoffs=None
+) -> dict:
     # One tiny indexed row per ticker, not a full-universe JSON rewrite on each
     # update. The chronological JSON boundaries remain the authoritative outputs.
     path = path_at(root, "index.sqlite3")
@@ -543,18 +545,21 @@ def _update_index(root: Path, entries: dict, *, projection_complete=False, servi
                 )
                 from .projection import PROJECTION_VERSION
 
-                count = connection.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+                empty = connection.execute("SELECT NOT EXISTS(SELECT 1 FROM symbols)").fetchone()[0]
                 from libs.alpaca_serving_catalogue.work import record_publication
 
                 # The serving obligation commits with the lineage selector, before
                 # upstream acknowledgement. Recovery can replay this transaction.
-                record_publication(connection, entries, empty=count == 0, handoff=serving_handoff)
+                record_publication(
+                    connection, entries, empty=empty, handoff=serving_handoff, handoffs=serving_handoffs
+                )
                 from .occupation_pivots import record as record_occupation_pivots
 
-                record_occupation_pivots(connection, entries)
+                if serving_handoffs is None:
+                    record_occupation_pivots(connection, entries)
                 connection.execute(
                     "INSERT OR IGNORE INTO projection_state VALUES (1, ?, 0, ?)",
-                    (PROJECTION_VERSION, int(count == 0)),
+                    (PROJECTION_VERSION, int(empty)),
                 )
                 connection.execute(f"PRAGMA user_version={VERSION}")
                 connection.executemany(
@@ -725,13 +730,23 @@ def _install(root: Path, journal: dict, *, compare=True, policy_accepted=False) 
         while parent != root and parent.exists() and not any(parent.iterdir()):
             parent.rmdir()
             parent = parent.parent
-    return _update_index(root, journal["index_updates"], serving_handoff=journal.get("serving_handoff"))
+    return _update_index(
+        root,
+        journal["index_updates"],
+        serving_handoff=journal.get("serving_handoff"),
+        serving_handoffs=journal.get("serving_handoffs"),
+    )
 
 
 def _validate_journal_policy(journal: dict) -> None:
     """Require one frozen policy provenance across a transaction and its outputs."""
     from .correlation_policy_contract import valid_policy_provenance
 
+    if journal.get("historical_listing_publication") == 1:
+        from .historical_listing_publication import validate_journal
+
+        validate_journal(journal)
+        return
     policy = journal.get("correlation_policy")
     schema_version = journal.get("schema_version")
     if (
@@ -881,8 +896,19 @@ def recover_journal(store, root, journal):
     ):
         raise LineageError("unsupported lineage recovery transaction")
     # Same order as publication/readers: price locks BEFORE the publication gate.
-    group = set(journal["sources"]) | set(journal.get("unavailable_pricing", ()))
+    group = (
+        set(journal["index_updates"])
+        if journal.get("historical_listing_publication") == 1
+        else set(journal["sources"]) | set(journal.get("unavailable_pricing", ()))
+    )
     with pricing_locks(store, group), publication_lock(root, exclusive=True):
+        if journal.get("historical_listing_publication") == 1:
+            from .historical_listing_publication import installed
+
+            if installed(root, journal):
+                # Receipt files and serving obligations both precede this selector.
+                path_at(root, ".pending.json").unlink()
+                return True
         finish_publication(store, root, journal)
     return True
 
@@ -1172,7 +1198,7 @@ def publish(
             else:
                 receipt.pop("serving_ownership", None)
             receipt["assignment_handoff_kinds"] = sorted(receipt["assignment_handoffs"])
-        from . import historical_labels, price_basis_limits
+        from . import historical_labels, historical_listing_publication, price_basis_limits
         from .dated_price_publication import FIELD as DATED_PRICES
         from .dated_price_publication import TOKENS as DATED_TOKENS
         from .dated_price_publication import retain
@@ -1187,6 +1213,7 @@ def publish(
             }
         price_basis_limits.retain(old, receipt, continued=source_continued)
         historical_labels.retain(old, receipt, continued=source_continued)
+        listing_fields = historical_listing_publication.retain(old, receipt, index["symbols"].get(symbol))
         retain(
             old,
             receipt,
@@ -1206,6 +1233,7 @@ def publish(
             receipt.setdefault("provider_split_relations", old["provider_split_relations"])
         updated[symbol] = {
             **overlap_marker,
+            **listing_fields,
             **occupation_storage.index_fields(receipt, index["symbols"].get(symbol)),
             **(
                 {"selected_owner_repair": completed_overlap["source_decision"]}
@@ -1322,7 +1350,7 @@ def publish(
                 for symbol, receipt in receipts.items()
                 for kind in receipt["boundaries"]
             ):
-                journal["serving_handoff"]["unchanged_metadata_projection_version"] = 2
+                journal["serving_handoff"]["unchanged_metadata_projection_version"] = 3
     if checks is not None:
         journal["checks"] = {
             "epoch": checks["epoch"],

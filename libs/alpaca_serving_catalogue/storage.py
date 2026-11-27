@@ -288,51 +288,47 @@ def publish_supported_gap_ranges(store, selection, group, records, state, symbol
     return published
 
 
-def retarget_decision(store, key, handoff, accepted_state):
-    """Trust one producer handoff; preserve every completed serving outcome."""
+def _retarget_group(connection, key, handoff):
+    from . import export_inputs, metadata_projection
+
+    update = (
+        "UPDATE groups SET selection=json_set(selection, '$.references.lineage', json(?)), "
+        "body=json_set(body, '$.references.lineage', json(?)) WHERE group_key=?"
+    )
+    new = encoded(handoff["lineage_after"])
+    connection.execute(update, (new, new, key))
+    metadata_projection.retarget(connection, key, handoff)
+    export_inputs.accept(connection, {"lineage": handoff["lineage_after"], "pricing": handoff["pricing"]})
+
+
+def _retarget_decisions(store, handoffs, accepted_state):
     with closing(connect_sqlite(path(store), timeout=WRITE_TIMEOUT_SECONDS)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
         state = _state(connection, incomplete=True)
         if state["generation"] != accepted_state["generation"]:
             raise CatalogueError("catalogue changed before unchanged-decision publication")
-        new = encoded(handoff["lineage_after"])
-        connection.execute(
-            "UPDATE groups SET selection=json_set(selection, '$.references.lineage', json(?)), "
-            "body=json_set(body, '$.references.lineage', json(?)) WHERE group_key=?",
-            (new, new, key),
-        )
-        from . import metadata_projection
-
-        proof = handoff.get("unchanged_metadata_projection_version")
-        if (
-            type(proof) is int
-            and metadata_projection.OLDEST_READABLE_VERSION <= proof <= metadata_projection.VERSION
-        ):
-            # A v2 proof preserves the original capabilities of either stored
-            # projection. A frozen v1 proof covers only its original fields.
-            try:
-                connection.execute(
-                    "UPDATE metadata_evidence SET lineage=? WHERE group_key=? AND version BETWEEN ? AND ? AND lineage=? "
-                    "AND decision_generation=(SELECT decision_generation FROM groups WHERE group_key=?)",
-                    (
-                        new,
-                        key,
-                        metadata_projection.OLDEST_READABLE_VERSION,
-                        proof,
-                        encoded(handoff["lineage_before"]),
-                        key,
-                    ),
-                )
-            except sqlite3.OperationalError as error:
-                if "no such table: metadata_evidence" not in str(error):
-                    raise
-        from . import export_inputs
-
-        export_inputs.accept(connection, {"lineage": handoff["lineage_after"], "pricing": handoff["pricing"]})
+        if not handoffs:
+            return state
+        # The selector already bound the requested decisions and skipped completed groups.
+        for key, handoff in handoffs.items():
+            _retarget_group(connection, key, handoff)
         published = _write_state(connection, complete=state["complete"], previous=state)
     from libs.alpaca_lineage_build.recovery_handoffs import serving_published
 
-    serving_published(store, state["generation"], published["generation"], {key})
+    serving_published(store, state["generation"], published["generation"], handoffs.keys())
     return published
+
+
+def retarget_decision(store, key, handoff, accepted_state):
+    """Trust one producer handoff; preserve every completed serving outcome."""
+    return _retarget_decisions(store, {key: handoff}, accepted_state)
+
+
+def retarget_historical_decisions(store, handoffs_by_group, accepted_state):
+    """Publish selected listing metadata and its catalogue selector atomically for the batch."""
+    if any("historical_listings" not in handoff for handoff in handoffs_by_group.values()):
+        raise CatalogueError("historical listing publication requires a completed metadata handoff")
+    return _retarget_decisions(store, handoffs_by_group, accepted_state)
 
 
 @traced("serving_late_bar_selection")

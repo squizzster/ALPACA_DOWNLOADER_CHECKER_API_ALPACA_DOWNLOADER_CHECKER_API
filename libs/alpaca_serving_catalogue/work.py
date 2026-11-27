@@ -11,7 +11,7 @@ from .contract import CatalogueError
 WORK_VERSION = 2
 
 
-def record_publication(connection, entries, *, empty, handoff=None):
+def record_publication(connection, entries, *, empty, handoff=None, handoffs=None):
     # Called inside the lineage index transaction: selecting a changed receipt
     # and recording its serving obligation become visible together. Queue state
     # selects work; the committed catalogue decides whether it is already done.
@@ -25,21 +25,31 @@ def record_publication(connection, entries, *, empty, handoff=None):
     connection.execute(
         "CREATE TABLE IF NOT EXISTS serving_handoffs (symbol TEXT PRIMARY KEY, generation TEXT NOT NULL, body TEXT NOT NULL)"
     )
-    if handoff is not None:
+    if handoff is not None or handoffs is not None:
         state = connection.execute("SELECT version FROM serving_work_state WHERE id=1").fetchone()
         if state != (WORK_VERSION,):
             raise CatalogueError("serving work handoff version changed; run catalogue rebuild")
     if any("group_members" not in entry for entry in entries.values()):
         connection.execute("UPDATE serving_work_state SET complete=0 WHERE id=1")
     for symbol, entry in entries.items():
-        prior = connection.execute("SELECT receipt FROM symbols WHERE symbol=?", (symbol,)).fetchone()
-        if prior is None or json.loads(prior[0])["sha256"] != entry["sha256"]:
+        if handoffs is None:
+            prior = connection.execute(
+                "SELECT json_extract(receipt,'$.sha256') FROM symbols WHERE symbol=?", (symbol,)
+            ).fetchone()
+            changed = prior != (entry["sha256"],)
+            selected = handoff
+        else:
+            # A frozen listing journal contains only changed anchors. Installing
+            # it again before queue acknowledgement is an idempotent upsert.
+            changed, selected = True, handoffs[symbol]
+        if changed:
             connection.execute("INSERT OR REPLACE INTO serving_work VALUES(?, ?)", (symbol, entry["sha256"]))
-            connection.execute("DELETE FROM serving_handoffs WHERE symbol=?", (symbol,))
-        if handoff is not None:
+            if selected is None:
+                connection.execute("DELETE FROM serving_handoffs WHERE symbol=?", (symbol,))
+        if selected is not None:
             connection.execute(
                 "INSERT OR REPLACE INTO serving_handoffs VALUES(?, ?, ?)",
-                (symbol, entry["sha256"], json.dumps(handoff, sort_keys=True, separators=(",", ":"))),
+                (symbol, entry["sha256"], json.dumps(selected, sort_keys=True, separators=(",", ":"))),
             )
 
 

@@ -797,5 +797,10 @@
     "modifications": [
       "Retain dated changes between Alpaca listing-exchange observations on the same asset, identify supported session boundaries using SIP trades and carry the completed record through daily updates and serving."
     ]
+  },
+  {
+    "modifications": [
+      "Recover historical listing observations from literal SIP auctions and trades over accepted ownership ranges, and publish completed assessments through a metadata-only handoff."
+    ]
   }
 ]

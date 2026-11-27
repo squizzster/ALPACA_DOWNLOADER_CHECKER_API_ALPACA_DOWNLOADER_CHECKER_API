@@ -2,7 +2,7 @@ import hashlib
 import json
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -88,6 +88,30 @@ def market_sessions_between(first: str, last: str) -> tuple[str, ...]:
     """Return known exchange dates in an inclusive, already selected range."""
     dates, _, _ = _calendar()
     return dates[bisect_left(dates, first) : bisect_right(dates, last)]
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionWindow(Sequence[str]):
+    dates: tuple[str, ...] = field(repr=False)
+    indices: range
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, position):
+        selected = self.indices[position]
+        if isinstance(selected, range):
+            return _SessionWindow(self.dates, selected)
+        return self.dates[selected]
+
+    def __iter__(self):
+        return map(self.dates.__getitem__, self.indices)
+
+
+def market_session_window(first: str, last: str) -> Sequence[str]:
+    """Hold inclusive date bounds against the shared calendar without copying its session axis."""
+    dates, _, _ = _calendar()
+    return _SessionWindow(dates, range(bisect_left(dates, first), bisect_right(dates, last)))
 
 
 def next_market_session_after(session_date: str) -> str | None:

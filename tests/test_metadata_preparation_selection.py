@@ -85,6 +85,25 @@ class PreparationSelectionTests(NativeCase):
             with self.assertRaisesRegex(ValueError, "not available"):
                 metadata_projection.prepare(self.store, symbols=["1shared", "ABSENT"], plan=True)
 
+    def test_listing_migration_selects_only_its_two_fields_after_generation_binding(self):
+        self.add_symbol("SECOND")
+        data = self.bootstrap()
+        pid = data.resolve_ticker("TEST")[0].public_id
+        target = {"historical_listings": [{"symbol": "held"}], "trade_observations": [{"session": "held"}]}
+        stored = {pid: {**target, "asset_snapshots": ["private"], "cross_ticker_listing_changes": ["private"]}}
+        with closing(connect_sqlite(storage.path(self.store))) as db, db:
+            db.execute("UPDATE metadata_evidence SET body=? WHERE group_key='TEST'", (storage.encoded(stored),))
+            db.execute("UPDATE metadata_evidence SET body='unselected' WHERE group_key='SECOND'")
+            selected = {"TEST": data._groups["TEST"]}
+            for all_online in (True, False):
+                result = metadata_projection._selected(
+                    db, selected, bodies=True, all_online=all_online, listing_fields=True
+                )
+                self.assertEqual(result, {"TEST": {pid: target}})
+            self.assertEqual(
+                metadata_projection._selected(db, selected, bodies=True, all_online=False), {"TEST": stored}
+            )
+
     def test_execution_skips_unrelated_records_and_uses_one_catalogue_transaction(self):
         self.add_symbol("SECOND")
         data = self.bootstrap()

@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo
 
 from libs.common.provider_http import SYMBOL_BATCH_LIMIT, balanced_batches
 
-VERSION = 6
+VERSION = 7
+# Version 7 adds standalone request constructors. Persisted v6 action plans retain their wire contract.
+READABLE_ACTION_PLAN_VERSIONS = (6, VERSION)
 BAR_URL = "https://data.alpaca.markets/v2/stocks/bars"
 ASSET_URL = "https://paper-api.alpaca.markets/v2/assets"
 ACTION_URL = "https://data.alpaca.markets/v1/corporate-actions"
@@ -213,6 +215,25 @@ def trade_tape_request(symbol, session, asof="-", feed="sip", *, through_session
             "end": closing_second.removesuffix("Z") + ".999999999Z",
             "sort": sort,
             "limit": 1,
+        },
+    }
+
+
+def auction_request(symbol, first, last):
+    """Literal SIP auctions over inclusive New York dates of one published trading label."""
+    if first > last:
+        raise ValueError("unordered auction dates")
+    start = trade_tape_request(symbol, first)["params"]["start"]
+    end = trade_tape_request(symbol, last)["params"]["end"]
+    return {
+        "url": f"{STOCK_URL}/auctions",
+        "params": {
+            "symbols": symbol,
+            "feed": "sip",
+            "asof": "-",
+            "start": start,
+            "end": end,
+            "limit": PAGE_LIMIT,
         },
     }
 

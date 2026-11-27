@@ -13,6 +13,7 @@ from libs.alpaca_data_api_solver import (
     ACTION_URL,
     ASSET_URL,
     NEW_YORK,
+    READABLE_ACTION_PLAN_VERSIONS,
     build_plan,
     cusip_action_request,
     instant,
@@ -20,7 +21,6 @@ from libs.alpaca_data_api_solver import (
     trade_tape_request,
     validate_version,
 )
-from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
 from libs.common.provider_http import (
     RETRY,
     fetch_symbol_batches,
@@ -292,7 +292,7 @@ class AlpacaIdentityClient:
         # The solver owns request construction, but this credential-bearing
         # executor owns allowed strategies/targets and complete pagination.
         # Plan validity is not permission to send credentials to an arbitrary URL.
-        if plan.get("schema_version") != PLAN_VERSION:
+        if plan.get("schema_version") not in READABLE_ACTION_PLAN_VERSIONS:
             raise RuntimeError("unsupported API action-plan version")
         for step in plan["steps"]:
             for action in step["actions"]:

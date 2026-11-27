@@ -5,17 +5,21 @@ import sqlite3
 from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import closing, contextmanager, nullcontext
+from operator import itemgetter
 from pathlib import Path
 
 from libs.alpaca_lineage_build.storage import selected_metadata_receipts
 from libs.common.sqlite_connections import connect_sqlite
 from libs.common.store_lock import exclusive_owned, operation_lock
 
-from . import export_inputs, storage
+from . import export_inputs, historical_listings, storage
 from .contract import CatalogueError
 
-VERSION = 2
+VERSION = 3
 OLDEST_READABLE_VERSION = 1
+# A targeted historical assessment can augment a completed v1 projection.
+# Keep this distinct from a full v3 projection, which also owns v2 fields.
+V1_WITH_HISTORICAL = 4
 
 
 def initialize(connection):
@@ -44,6 +48,54 @@ def install(connection, key, group, facts):
         connection.execute(sql, row)
 
 
+def retarget(connection, key, handoff):
+    """Carry unchanged capabilities and install just the selected historical assessment."""
+    proof = handoff.get("unchanged_metadata_projection_version")
+    envelope = handoff.get("historical_listings")
+    if "historical_listings" in handoff and (
+        not isinstance(envelope, dict) or envelope.get("version") != 1 or proof != 2
+    ):
+        raise CatalogueError("incompatible historical listing publication")
+    if type(proof) is not int or not OLDEST_READABLE_VERSION <= proof <= VERSION:
+        return
+    # Older frozen journals can only carry the set of fields they covered.
+    maximum = V1_WITH_HISTORICAL if proof == VERSION or envelope is not None else proof
+    selected = (
+        "group_key=? AND version BETWEEN ? AND ? AND lineage=? AND decision_generation="
+        "(SELECT decision_generation FROM groups WHERE group_key=?)"
+    )
+    args = (key, OLDEST_READABLE_VERSION, maximum, storage.encoded(handoff["lineage_before"]), key)
+    lineage = storage.encoded(handoff["lineage_after"])
+    try:
+        if envelope is None:
+            connection.execute("UPDATE metadata_evidence SET lineage=? WHERE " + selected, (lineage, *args))
+            return
+        patch = {
+            pid: {
+                section: sorted(rows, key=itemgetter(*historical_listings.SORT_FIELDS[section])) or None
+                for section, rows in sections.items()
+            }
+            for pid, sections in historical_listings.project(envelope, envelope["assessments"])
+        }
+        # Merge into existing IDs in the selected row. SQLite assembles the
+        # updated body once. The caller never reloads prior public metadata.
+        sql = (
+            """UPDATE metadata_evidence SET lineage=?,
+                     version=CASE WHEN version IN (1,?) THEN ? ELSE ? END,
+                     body=json_patch(body, (
+                         SELECT json_group_object(p.key,json(p.value)) FROM json_each(?) p
+                         WHERE p.key IN (SELECT key FROM json_each(metadata_evidence.body))
+                     )) WHERE """
+            + selected
+        )
+        connection.execute(
+            sql, (lineage, V1_WITH_HISTORICAL, V1_WITH_HISTORICAL, VERSION, storage.encoded(patch), *args)
+        )
+    except sqlite3.OperationalError as error:
+        if "no such table: metadata_evidence" not in str(error):
+            raise
+
+
 def _group_selectors(db, keys=None, *, all_online=False):
     # The securities table contains online public IDs only. Its covering group
     # index supplies the universe without reading or decoding security bodies.
@@ -63,7 +115,7 @@ def _group_selectors(db, keys=None, *, all_online=False):
     }
 
 
-def _selected(db, groups, *, bodies, all_online, versions=None):
+def _selected(db, groups, *, bodies, all_online, versions=None, listing_fields=False):
     if not groups:
         return {}
     if not isinstance(groups, Mapping):
@@ -73,24 +125,36 @@ def _selected(db, groups, *, bodies, all_online, versions=None):
     bindings = [
         [key, group["decision_generation"], group["references"]["lineage"]] for key, group in groups.items()
     ]
-    column = "m.body" if bodies else "m.group_key"
+    column = "m.body" if bodies else "NULL"
+    if bodies and listing_fields:
+        # The historical migration needs only its own completed ranges and
+        # literal print candidates. Keep the other serving evidence in SQLite.
+        column = """(SELECT json_group_object(owner.key,json((
+                         SELECT json_group_object(field.key,json(field.value)) FROM json_each(owner.value) field
+                         WHERE field.key IN ('historical_listings','trade_observations')
+                     ))) FROM json_each(m.body) owner)"""
     if all_online:
         # Visit table pages in row order on a universe export. A partial or obsolete
         # projection fails the binding predicate before SQLite returns its body.
         source = """metadata_evidence AS m NOT INDEXED WHERE m.version BETWEEN ? AND ? AND (m.group_key,m.decision_generation,m.lineage)
                     IN (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?))"""
-        args = (OLDEST_READABLE_VERSION, VERSION, storage.encoded(bindings))
+        args = (OLDEST_READABLE_VERSION, V1_WITH_HISTORICAL, storage.encoded(bindings))
     else:
         source = """json_each(?) AS t CROSS JOIN metadata_evidence m ON m.group_key=json_extract(t.value,'$[0]')
                     WHERE m.version BETWEEN ? AND ? AND m.decision_generation=json_extract(t.value,'$[1]') AND m.lineage=json_extract(t.value,'$[2]')"""
-        args = (storage.encoded(bindings), OLDEST_READABLE_VERSION, VERSION)
+        args = (storage.encoded(bindings), OLDEST_READABLE_VERSION, V1_WITH_HISTORICAL)
     try:
         rows = db.execute(f"SELECT m.group_key,m.version,{column} FROM " + source, args)
         selected = {}
         for key, version, value in rows:
             selected[key] = json.loads(value) if bodies else True
             if versions is not None:
-                versions.add(version)
+                if version == VERSION:
+                    versions.update((2, 3))
+                elif version == V1_WITH_HISTORICAL:
+                    versions.update((1, 3))
+                else:
+                    versions.add(version)
         return selected
     except sqlite3.OperationalError as error:
         if "no such table: metadata_evidence" not in str(error):

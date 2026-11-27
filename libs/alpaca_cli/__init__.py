@@ -25,7 +25,7 @@ from libs.common.work_scope import UnexpectedStoreWork
 
 from .registry_commit import commit_registry
 
-VERSION = 54
+VERSION = 55
 REPOSITORY = Path(__file__).resolve().parents[2]
 # CLI defaults live here; acquisition consumes the parsed store and worker count.
 DEFAULT_STORE = REPOSITORY / "data_pricing"
@@ -328,6 +328,32 @@ def build_parser():
         if name == "check":
             p.add_argument("--batch-size", type=int, default=4000)
     lineage = commands.add_parser("lineage").add_subparsers(dest="operation", required=True, parser_class=Parser)
+    p = lineage.add_parser(
+        "backfill-listings", help="recover dated SIP listing evidence over published ticker ranges"
+    )
+    _store(p)
+    subset = p.add_mutually_exclusive_group(required=True)
+    subset.add_argument(
+        "--symbol", action="append", help="select complete online groups by dated ticker or source label"
+    )
+    subset.add_argument("--public-id", action="append")
+    subset.add_argument("--all-published", action="store_true", help="all published online trading ranges")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--plan", action="store_true", help="read selectors only")
+    mode.add_argument(
+        "--publish-staged",
+        action="store_true",
+        help="publish only whole groups whose selected assessments are already staged",
+    )
+    mode.add_argument("--stage-auctions", action="store_true", help="stage only missing native auction screens")
+    mode.add_argument("--dry-run", action="store_true", help="acquire and retain evidence without publishing")
+    mode.add_argument(
+        "--apply", action="store_true", help="complete missing evidence and publish selected lineage"
+    )
+    p.add_argument("--workers", type=bounded_integer(1, 12), default=4)
+    p.add_argument(
+        "--limit", type=bounded_integer(1, 100000), help="maximum groups awaiting publication, in stable order"
+    )
     for name in (
         "update",
         "refresh",
@@ -658,6 +684,29 @@ def dispatch(args):
         _, identity = clients()
         return reconcile_universe(args.store, end, identity_client=identity)
     if command == "lineage":
+        if operation == "backfill-listings":
+            from libs.alpaca_lineage_build.listing_backfill import run
+
+            return run(
+                args.store,
+                symbols=args.symbol,
+                public_ids=args.public_id,
+                all_published=args.all_published,
+                plan=args.plan,
+                apply=args.apply,
+                stage_auctions=args.stage_auctions,
+                publish_staged=args.publish_staged,
+                workers=args.workers,
+                limit=args.limit,
+                client_factory=lambda: clients()[1],
+                progress=(
+                    lambda unit, done, total, pages: reported_progress(
+                        "lineage_backfill", {"unit": unit, "done": done, "total": total, "page_requests": pages}
+                    )
+                )
+                if reported_progress
+                else None,
+            )
         if operation == "prepare-recovery":
             from libs.alpaca_lineage_build.candidate_preparation import prepare
 

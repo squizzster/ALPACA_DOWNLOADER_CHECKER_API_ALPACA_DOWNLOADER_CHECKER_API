@@ -10,7 +10,14 @@ from pathlib import Path
 from . import ADJUSTMENTS, CatalogChangedError
 from .standalone import _date
 
-EXTENSIONS = ("asset_snapshots", "corporate_actions", "listing_exchange_changes", "trade_observations")
+EXTENSIONS = (
+    "asset_snapshots",
+    "corporate_actions",
+    "cross_ticker_listing_changes",
+    "historical_listings",
+    "listing_exchange_changes",
+    "trade_observations",
+)
 RECORDS_FILE = "securities.jsonl.gz"
 MANIFEST_FILE = "manifest.json"
 HEX64 = re.compile("[0-9a-f]{64}")
@@ -147,7 +154,8 @@ def select(data, *, public_ids=None, symbols=None, csv_manifest=None, bloodhound
 
 
 def available_extensions(versions):
-    return EXTENSIONS if 2 in versions else tuple(key for key in EXTENSIONS if key != "listing_exchange_changes")
+    required = {"cross_ticker_listing_changes": 3, "historical_listings": 3, "listing_exchange_changes": 2}
+    return tuple(key for key in EXTENSIONS if key not in required or required[key] in versions)
 
 
 def plan(selected, group_count, *, catalogue_only=False, extensions=EXTENSIONS):
@@ -213,7 +221,7 @@ def write(
             scope[field] = os.path.relpath(scope[field], output)
     manifest = {
         "schema": "alpaca.security_metadata",
-        "version": 2,
+        "version": 3,
         "catalogue_generation": selected.catalogue_generation,
         "records_file": RECORDS_FILE,
         "identity_count": len(selected.public_ids),

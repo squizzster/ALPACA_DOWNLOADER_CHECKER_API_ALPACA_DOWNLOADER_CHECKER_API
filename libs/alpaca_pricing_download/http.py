@@ -15,8 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 
-from libs.alpaca_data_api_solver import BAR_URL, build_plan, validate_version
-from libs.alpaca_data_api_solver import VERSION as PLAN_VERSION
+from libs.alpaca_data_api_solver import BAR_URL, READABLE_ACTION_PLAN_VERSIONS, build_plan, validate_version
 from libs.common.provider_http import (
     RETRY,
     fetch_symbol_batches,
@@ -221,7 +220,7 @@ class BarsClient:
 
 def execute_bar_plan(plan, get_page, *, metrics=None, on_failure=None, on_completed=None):
     """Execute the solver's ordered bar actions and route only requested slices."""
-    if plan.get("schema_version") != PLAN_VERSION:
+    if plan.get("schema_version") not in READABLE_ACTION_PLAN_VERSIONS:
         raise DownloadError("unsupported API action-plan version")
     strategies = {"bars_single_range", "bars_multi_range", "bars_boundary_batch"}
     for step in plan["steps"]:

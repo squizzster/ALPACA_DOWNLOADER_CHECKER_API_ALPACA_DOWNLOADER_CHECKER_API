@@ -44,7 +44,10 @@ class HeartbeatCommandTests(unittest.TestCase):
                     )
             for group in parser._mutually_exclusive_groups:
                 if group.required:
-                    arguments.extend([group._group_actions[0].option_strings[0], "AAA"])
+                    chosen = group._group_actions[0]
+                    arguments.append(chosen.option_strings[0])
+                    if chosen.nargs != 0:
+                        arguments.append("AAA")
             yield arguments
 
     def test_every_canonical_leaf_has_one_lifecycle_and_identical_stdout(self):
