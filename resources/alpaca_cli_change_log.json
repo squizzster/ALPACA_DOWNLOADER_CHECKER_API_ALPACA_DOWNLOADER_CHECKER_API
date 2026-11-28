@@ -285,5 +285,10 @@
     "modifications": [
       "Add lineage backfill-listings to plan, stage or publish missing historical listing assessments for online trading ranges."
     ]
+  },
+  {
+    "modifications": [
+      "Prefer the checkout's executable Python 3.11 virtual environment for the canonical launcher while preserving an already active environment and installations without a checkout virtual environment."
+    ]
   }
 ]

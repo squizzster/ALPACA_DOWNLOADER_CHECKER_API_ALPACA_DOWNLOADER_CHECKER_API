@@ -16,6 +16,11 @@ python3.11 -m pip install -r requirements.txt
 ./alpaca-cli-eod update --help
 ```
 
+The canonical `./alpaca-cli-eod` launcher preserves an active virtual environment. Otherwise, it uses
+this checkout's executable `.venv/bin/python3.11` when present, falling back to the current Python only
+when that checkout environment is unavailable. Install optional dependency groups, including Bloodhound,
+in the environment the launcher selects.
+
 - Acquisition requires `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` and Alpaca SIP access. Local reads
   and offline catalogue maintenance require only compatible publications. Parquet and EOD event exports
   need the [Bloodhound dependencies](../requirements-bloodhound.txt).

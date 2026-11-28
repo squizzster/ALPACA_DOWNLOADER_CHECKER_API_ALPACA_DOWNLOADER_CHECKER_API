@@ -20,6 +20,9 @@ python -m pip install -r requirements.txt
 store_dir="$PWD/data_pricing"
 ```
 
+The launcher selects this checkout's `.venv` automatically when no virtual environment is active.
+Install optional dependency groups such as `requirements-bloodhound.txt` into the same environment.
+
 ## 2. Build pricing, lineage and the serving catalogue
 
 ```bash

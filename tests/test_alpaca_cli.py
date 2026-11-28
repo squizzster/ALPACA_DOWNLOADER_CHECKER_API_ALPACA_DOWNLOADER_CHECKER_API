@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -13,10 +14,55 @@ from unittest.mock import patch
 
 from libs.alpaca_cli import _store_operation_mode, build_parser, dispatch, end_exclusive, main
 from libs.alpaca_heartbeat import LifecycleReporter, run_cli
+from libs.common.checkout_environment import reexec_in_checkout_venv
 from libs.common.store_lock import StoreBusyError
 
 
 class CanonicalCliTests(unittest.TestCase):
+    def test_checkout_launcher_prefers_local_venv_from_base_interpreter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "alpaca-cli-eod"
+            checkout_python = script.parent / ".venv" / "bin" / "python3.11"
+            checkout_python.parent.mkdir(parents=True)
+            checkout_python.touch(mode=0o755)
+            original = ["/usr/bin/python3.11", "-B", str(script), "--help"]
+            with (
+                patch("libs.common.checkout_environment.sys.prefix", "/system"),
+                patch("libs.common.checkout_environment.sys.base_prefix", "/system"),
+                patch("libs.common.checkout_environment.sys.executable", "/usr/bin/python3.11"),
+                patch("libs.common.checkout_environment.sys.orig_argv", original),
+                patch("libs.common.checkout_environment.os.execv") as execute,
+            ):
+                reexec_in_checkout_venv(script)
+            execute.assert_called_once_with(
+                str(checkout_python), [str(checkout_python), "-B", str(script), "--help"]
+            )
+
+    def test_checkout_launcher_preserves_an_active_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "alpaca-cli-eod"
+            checkout_python = script.parent / ".venv" / "bin" / "python3.11"
+            checkout_python.parent.mkdir(parents=True)
+            checkout_python.touch(mode=0o755)
+            with (
+                patch("libs.common.checkout_environment.sys.prefix", "/active"),
+                patch("libs.common.checkout_environment.sys.base_prefix", "/base"),
+                patch("libs.common.checkout_environment.os.execv") as execute,
+            ):
+                reexec_in_checkout_venv(script)
+            execute.assert_not_called()
+
+    def test_checkout_launcher_uses_current_python_without_a_local_venv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "alpaca-cli-eod"
+            with (
+                patch("libs.common.checkout_environment.sys.prefix", "/system"),
+                patch("libs.common.checkout_environment.sys.base_prefix", "/system"),
+                patch("libs.common.checkout_environment.os.execv") as execute,
+            ):
+                reexec_in_checkout_venv(script)
+            execute.assert_not_called()
+
     def test_store_operation_modes_cover_every_writer_and_csv_export(self):
         cases = [
             ("update", None, False, "exclusive"),

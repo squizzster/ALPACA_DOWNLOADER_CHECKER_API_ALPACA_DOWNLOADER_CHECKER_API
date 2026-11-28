@@ -2,11 +2,16 @@
 """Canonical executable adapter; command and domain behavior live in their packages."""
 
 import sys
+from pathlib import Path
 
 # Keep this executable an adapter. DO NOT add store discovery, validation or
 # recovery here; the command's owning package establishes those boundaries once.
 
 sys.dont_write_bytecode = True
+
+from libs.common.checkout_environment import reexec_in_checkout_venv  # noqa: E402
+
+reexec_in_checkout_venv(Path(__file__).resolve())
 
 from libs.alpaca_cli import main  # noqa: E402
 from libs.alpaca_heartbeat import run_cli  # noqa: E402
